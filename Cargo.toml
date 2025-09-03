@@ -1,0 +1,8 @@
+[package]
+name = "stokes-browser"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+winit = "0.30.12"
+skia-safe = "0.87.0"
