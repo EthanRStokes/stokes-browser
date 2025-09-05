@@ -5,4 +5,6 @@ edition = "2024"
 
 [dependencies]
 winit = "0.30.12"
+wgpu = "26.0.1"
 skia-safe = "0.87.0"
+tokio = { version = "1.47.1", features = ["rt", "rt-multi-thread", "macros"] }

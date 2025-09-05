@@ -1,3 +1,4 @@
+use wgpu::{DeviceDescriptor, InstanceDescriptor, RequestAdapterOptions};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
@@ -11,6 +12,11 @@ struct Browser {
 struct BrowserApp {
     browser: Browser,
     window: Option<Window>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    size: winit::dpi::PhysicalSize<u32>,
+    surface: wgpu::Surface<'static>,
+    surface_format: wgpu::TextureFormat,
 }
 
 impl Browser {
@@ -22,8 +28,18 @@ impl Browser {
 }
 
 impl BrowserApp {
-    fn new() -> Self {
+    async fn new() -> Self {
         let mut browser = Browser::new();
+        let instance = wgpu::Instance::new(&InstanceDescriptor::default());
+        let adapter = instance
+            .request_adapter(&RequestAdapterOptions::default())
+            .await
+            .unwrap();
+        let (device, queue) = adapter
+            .request_device(&DeviceDescriptor::default())
+            .await
+            .unwrap();
+
         Self {
             browser,
             window: None,
@@ -65,10 +81,11 @@ impl ApplicationHandler for BrowserApp {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Hello, world!");
     let event_loop = EventLoop::new()?;
-    let mut app = BrowserApp::new();
+    let mut app = BrowserApp::new().await;
 
     event_loop.run_app(&mut app)?;
 
