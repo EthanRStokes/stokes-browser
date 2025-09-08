@@ -1,4 +1,5 @@
-use wgpu::{DeviceDescriptor, InstanceDescriptor, RequestAdapterOptions};
+use std::sync::Arc;
+use wgpu::{DeviceDescriptor, InstanceDescriptor, RequestAdapterOptions, TextureFormat};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
@@ -11,7 +12,7 @@ struct Browser {
 
 struct BrowserApp {
     browser: Browser,
-    window: Option<Window>,
+    window: Arc<Window>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     size: winit::dpi::PhysicalSize<u32>,
@@ -28,7 +29,7 @@ impl Browser {
 }
 
 impl BrowserApp {
-    async fn new() -> Self {
+    async fn new(window: Arc<Window>) -> Self {
         let mut browser = Browser::new();
         let instance = wgpu::Instance::new(&InstanceDescriptor::default());
         let adapter = instance
@@ -40,24 +41,25 @@ impl BrowserApp {
             .await
             .unwrap();
 
+        let surface = instance.create_surface(window.clone()).unwrap();
+        let cap = surface.get_capabilities(&adapter);
+        let surface_format = cap.formats[0];
+
         Self {
             browser,
-            window: None,
+            window,
+            device,
+            queue,
+            size: Default::default(),
+            surface,
+            surface_format,
         }
     }
 }
 
 impl ApplicationHandler for BrowserApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window_attributes = Window::default_attributes()
-            .with_title("Stokes Browser")
-            .with_inner_size(LogicalSize::new(800, 600));
-
-        let window = event_loop.create_window(window_attributes).unwrap();
-
         // todo impl resizing
-
-        self.window = Some(window);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
@@ -66,15 +68,11 @@ impl ApplicationHandler for BrowserApp {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
+                self.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                if let Some(window) = &self.window {
-                    let size = window.inner_size();
-                    window.request_redraw();
-                }
+                let size = self.window.inner_size();
+                self.window.request_redraw();
             }
             _ => {}
         }
@@ -85,7 +83,16 @@ impl ApplicationHandler for BrowserApp {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Hello, world!");
     let event_loop = EventLoop::new()?;
-    let mut app = BrowserApp::new().await;
+    let window = Arc::new(
+        event_loop
+            .create_window(
+                Window::default_attributes()
+                    .with_title("Stokes Browser")
+                    .with_inner_size(LogicalSize::new(800, 600)),
+            )
+            .unwrap()
+    );
+    let mut app = BrowserApp::new(window).await;
 
     event_loop.run_app(&mut app)?;
 
