@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 winit = "0.30.12"
-wgpu = "26.0.1"
+wgpu = { version = "26.0.1", features = ["wgsl"] }
+bytemuck = { version = "1.19.0", features = ["derive"] }
 skia-safe = "0.87.0"
 tokio = { version = "1.47.1", features = ["rt", "rt-multi-thread", "macros"] }
