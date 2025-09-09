@@ -1,11 +1,13 @@
 use std::sync::Arc;
-use wgpu::{DeviceDescriptor, InstanceDescriptor, RequestAdapterOptions, TextureFormat};
+use wgpu::{DeviceDescriptor, InstanceDescriptor, RequestAdapterOptions};
 use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::window::{Window, WindowAttributes, WindowId};
+use winit::window::{Window, WindowId};
+use reqwest;
+use scraper::{Html, Selector};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -36,10 +38,10 @@ impl Vertex {
 }
 
 const VERTICES: &[Vertex] = &[
-    Vertex { position: [-0.5, -0.5, 0.0], color: [0.0, 1.0, 0.0] }, // bottom left
-    Vertex { position: [0.5, -0.5, 0.0], color: [0.0, 1.0, 0.0] },  // bottom right
-    Vertex { position: [0.5, 0.5, 0.0], color: [0.0, 1.0, 0.0] },   // top right
-    Vertex { position: [-0.5, 0.5, 0.0], color: [0.0, 1.0, 0.0] },  // top left
+    Vertex { position: [-1.0, -1.0, 0.0], color: [0.9, 0.9, 0.9] }, // background quad
+    Vertex { position: [1.0, -1.0, 0.0], color: [0.9, 0.9, 0.9] },
+    Vertex { position: [1.0, 1.0, 0.0], color: [0.9, 0.9, 0.9] },
+    Vertex { position: [-1.0, 1.0, 0.0], color: [0.9, 0.9, 0.9] },
 ];
 
 const INDICES: &[u16] = &[
@@ -49,6 +51,8 @@ const INDICES: &[u16] = &[
 
 struct Browser {
     url: String,
+    html_content: String,
+    parsed_text: Vec<String>,
 }
 
 struct BrowserApp {
@@ -69,7 +73,57 @@ impl Browser {
     fn new() -> Self {
         Self {
             url: String::new(),
+            html_content: String::new(),
+            parsed_text: Vec::new(),
         }
+    }
+
+    async fn fetch_html(&mut self, url: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.url = url.to_string();
+        println!("Fetching HTML from: {}", url);
+
+        let response = reqwest::get(url).await?;
+        self.html_content = response.text().await?;
+
+        self.parse_html();
+        Ok(())
+    }
+
+    fn parse_html(&mut self) {
+        let document = Html::parse_document(&self.html_content);
+        self.parsed_text.clear();
+
+        // Extract text from common HTML elements
+        let selectors = [
+            "title", "h1", "h2", "h3", "h4", "h5", "h6",
+            "p", "div", "span", "a", "li", "td", "th"
+        ];
+
+        for selector_str in &selectors {
+            if let Ok(selector) = Selector::parse(selector_str) {
+                for element in document.select(&selector) {
+                    let text = element.text().collect::<Vec<_>>().join(" ").trim().to_string();
+                    if !text.is_empty() && text.len() > 1 {
+                        self.parsed_text.push(format!("{}: {}", selector_str.to_uppercase(), text));
+                    }
+                }
+            }
+        }
+
+        if self.parsed_text.is_empty() {
+            self.parsed_text.push("No readable content found.".to_string());
+        }
+
+        println!("Parsed {} text elements", self.parsed_text.len());
+
+        // Print the parsed content to console for verification
+        println!("\n--- HTML Content from {} ---", self.url);
+        for (i, text) in self.parsed_text.iter().enumerate() {
+            if i < 10 { // Show first 10 elements
+                println!("{}", text);
+            }
+        }
+        println!("--- End of Content ---\n");
     }
 }
 
@@ -164,6 +218,12 @@ impl BrowserApp {
             usage: wgpu::BufferUsages::INDEX,
         });
 
+        // Fetch HTML content from example.com
+        if let Err(e) = browser.fetch_html("https://example.com").await {
+            println!("Failed to fetch HTML: {}", e);
+            browser.parsed_text = vec!["Failed to load content from example.com".to_string()];
+        }
+
         Self {
             browser,
             window,
@@ -187,6 +247,7 @@ impl BrowserApp {
             label: Some("Render Encoder"),
         });
 
+        // Render a simple background representing the browser window
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -196,9 +257,9 @@ impl BrowserApp {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
+                            r: 0.95,
+                            g: 0.95,
+                            b: 0.95,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -223,11 +284,12 @@ impl BrowserApp {
 }
 
 impl ApplicationHandler for BrowserApp {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        // todo impl resizing
+    fn resumed(&mut self, _event_loop: &ActiveEventLoop) {
+        // Window is already created, trigger a redraw
+        self.window.request_redraw();
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -262,18 +324,21 @@ impl ApplicationHandler for BrowserApp {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Hello, world!");
+    println!("Starting Stokes Browser...");
     let event_loop = EventLoop::new()?;
+
     let window = Arc::new(
         event_loop
             .create_window(
                 Window::default_attributes()
-                    .with_title("Stokes Browser")
+                    .with_title("Stokes Browser - example.com")
                     .with_inner_size(LogicalSize::new(800, 600)),
             )
             .unwrap()
     );
+
     let mut app = BrowserApp::new(window).await;
+    println!("Browser initialized, fetching and rendering HTML content...");
 
     event_loop.run_app(&mut app)?;
 
