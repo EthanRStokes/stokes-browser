@@ -1,3 +1,5 @@
+mod html_renderer;
+
 use std::sync::Arc;
 use wgpu::{DeviceDescriptor, InstanceDescriptor, RequestAdapterOptions};
 use wgpu::util::DeviceExt;
@@ -8,6 +10,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 use reqwest;
 use scraper::{Html, Selector};
+use crate::html_renderer::HtmlRenderer;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -65,6 +68,7 @@ struct BrowserApp {
     surface_format: wgpu::TextureFormat,
     surface_config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
+    html_renderer: HtmlRenderer,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
 }
@@ -218,6 +222,8 @@ impl BrowserApp {
             usage: wgpu::BufferUsages::INDEX,
         });
 
+        let html_renderer = HtmlRenderer::new(&device, &queue, surface_config.format);
+
         // Fetch HTML content from example.com
         if let Err(e) = browser.fetch_html("https://example.com").await {
             println!("Failed to fetch HTML: {}", e);
@@ -234,6 +240,7 @@ impl BrowserApp {
             surface_format,
             surface_config,
             render_pipeline,
+            html_renderer,
             vertex_buffer,
             index_buffer,
         }
@@ -276,8 +283,11 @@ impl BrowserApp {
             render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..1);
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        //self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+
+        // Render HTML content using our dedicated HTML renderer
+        self.html_renderer.render(&mut encoder, &view, &self.browser.parsed_text, &self.device);
 
         Ok(())
     }
