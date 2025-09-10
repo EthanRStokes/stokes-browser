@@ -10,7 +10,6 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 use reqwest;
-use scraper::{Html, Selector};
 use crate::html_renderer::HtmlRenderer;
 
 #[repr(C)]
@@ -89,7 +88,7 @@ impl Browser {
         let response = reqwest::get(url).await?;
         self.html_content = response.text().await?;
 
-        // Parse HTML content into DOM tree instead of flat text
+        // Parse HTML content into DOM tree
         self.html_renderer.set_html_content(&self.html_content);
         println!("HTML content parsed into DOM structure");
 

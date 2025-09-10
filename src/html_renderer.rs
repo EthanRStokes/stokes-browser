@@ -1,8 +1,8 @@
 use wgpu::util::DeviceExt;
 use crate::Vertex;
-use crate::dom::{Dom, DomNode, NodeType};
-use std::rc::Rc;
-use std::cell::RefCell;
+use crate::dom::{Dom, NodeType};
+use markup5ever_rcdom::{Handle, NodeData};
+use std::collections::HashMap;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -11,11 +11,21 @@ pub struct ContentBox {
     pub color: [f32; 3],
 }
 
+// Basic CSS styles for different HTML elements
+struct ElementStyle {
+    color: [f32; 3],
+    height: f32,
+    margin_top: f32,
+    margin_bottom: f32,
+    font_weight: f32, // 1.0 for normal, 1.5 for bold
+}
+
 pub struct HtmlRenderer {
     pub content_boxes: Vec<ContentBox>,
     render_pipeline: wgpu::RenderPipeline,
     index_buffer: wgpu::Buffer,
     dom: Dom,
+    styles: HashMap<String, ElementStyle>,
 }
 
 const BOX_INDICES: &[u16] = &[
@@ -80,11 +90,38 @@ impl HtmlRenderer {
             usage: wgpu::BufferUsages::INDEX,
         });
 
+        // Initialize element styles
+        let mut styles = HashMap::new();
+
+        // Default styles for common HTML elements
+        styles.insert("html".to_string(), ElementStyle {
+            color: [0.0, 0.0, 0.0], height: 0.0, margin_top: 0.0, margin_bottom: 0.0, font_weight: 1.0
+        });
+        styles.insert("body".to_string(), ElementStyle {
+            color: [0.0, 0.0, 0.0], height: 0.0, margin_top: 0.0, margin_bottom: 0.0, font_weight: 1.0
+        });
+        styles.insert("div".to_string(), ElementStyle {
+            color: [0.0, 0.0, 0.0], height: 0.06, margin_top: 0.02, margin_bottom: 0.02, font_weight: 1.0
+        });
+        styles.insert("h1".to_string(), ElementStyle {
+            color: [0.1, 0.1, 0.1], height: 0.12, margin_top: 0.05, margin_bottom: 0.03, font_weight: 1.5
+        });
+        styles.insert("h2".to_string(), ElementStyle {
+            color: [0.1, 0.1, 0.1], height: 0.10, margin_top: 0.04, margin_bottom: 0.02, font_weight: 1.5
+        });
+        styles.insert("p".to_string(), ElementStyle {
+            color: [0.0, 0.0, 0.0], height: 0.06, margin_top: 0.02, margin_bottom: 0.02, font_weight: 1.0
+        });
+        styles.insert("a".to_string(), ElementStyle {
+            color: [0.0, 0.0, 0.8], height: 0.06, margin_top: 0.0, margin_bottom: 0.0, font_weight: 1.0
+        });
+
         Self {
             content_boxes: Vec::new(),
             render_pipeline,
             index_buffer,
             dom: Dom::new(),
+            styles,
         }
     }
 
@@ -96,62 +133,95 @@ impl HtmlRenderer {
 
     pub fn create_content_boxes_from_dom(&mut self) {
         self.content_boxes.clear();
-        let mut y_offset = 0.8f32; // Start from top
-        
+
+        // Start layout from top of the screen
+        let mut y_offset = 0.8f32;
+
+        // Process the DOM starting from the document node
         self.process_node_for_layout(self.dom.document.clone(), &mut y_offset, 0);
     }
     
-    fn process_node_for_layout(&mut self, node: Rc<RefCell<DomNode>>, y_offset: &mut f32, depth: usize) {
-        let node_ref = node.borrow();
-        let indent_factor = depth as f32 * 0.05; // Indentation based on depth
-        
-        match &node_ref.node_type {
-            NodeType::Document => {
+    fn process_node_for_layout(&mut self, node: Handle, y_offset: &mut f32, depth: usize) {
+        // Calculate indentation based on depth
+        let indent_factor = depth as f32 * 0.05;
+
+        match &node.data {
+            NodeData::Document => {
                 // Process document's children
-                for child in &node_ref.children {
+                for child in node.children.borrow().iter() {
                     self.process_node_for_layout(child.clone(), y_offset, depth);
                 }
             },
-            
-            NodeType::Element(tag) => {
-                // Create a box for this element
-                let (color, height) = match tag.as_str() {
-                    "title" => ([0.2, 0.4, 0.8], 0.12), // Blue for title
-                    "h1" => ([0.1, 0.6, 0.1], 0.10),   // Green for h1
-                    "h2" => ([0.1, 0.6, 0.1], 0.08),   // Green for h2
-                    "h3" | "h4" | "h5" | "h6" => ([0.1, 0.6, 0.1], 0.06), // Green for other headers
-                    "p" => ([0.8, 0.8, 0.8], 0.06),    // Light gray for paragraphs
-                    "a" => ([0.8, 0.2, 0.2], 0.05),    // Red for links
-                    "div" => ([0.6, 0.6, 0.6], 0.04),  // Gray for divs
-                    _ => ([0.5, 0.5, 0.5], 0.04),      // Default gray for other elements
-                };
-                
-                // Only create box if there's visible content
-                let text = node_ref.get_text_content();
+
+            NodeData::Element { name, .. } => {
+                let tag_name = name.local.to_string();
+
+                // Skip non-visible elements or containers
+                if tag_name == "html" || tag_name == "head" || tag_name == "meta" || tag_name == "link" || tag_name == "script" {
+                    // Just process their children without creating boxes
+                    for child in node.children.borrow().iter() {
+                        self.process_node_for_layout(child.clone(), y_offset, depth);
+                    }
+                    return;
+                }
+
+                // Get element style or use a default
+                let style = self.styles.get(&tag_name).unwrap_or(&ElementStyle {
+                    color: [0.2, 0.2, 0.2],
+                    height: 0.05,
+                    margin_top: 0.01,
+                    margin_bottom: 0.01,
+                    font_weight: 1.0,
+                });
+
+                // Apply top margin
+                *y_offset -= style.margin_top;
+
+                // Only create a box for elements with text content
+                let text = Dom::get_text_content(&node);
                 if !text.trim().is_empty() {
+                    // Special coloring for specific elements
+                    let color = match tag_name.as_str() {
+                        "h1" => [0.2, 0.2, 0.7],  // Blue for h1
+                        "h2" => [0.2, 0.5, 0.2],  // Green for h2
+                        "a" => [0.0, 0.0, 0.8],   // Blue for links
+                        _ => style.color,         // Default from style
+                    };
+
+                    // Create the content box
                     self.content_boxes.push(ContentBox {
-                        position: [-0.9 + indent_factor, *y_offset, 1.8 - indent_factor * 2.0, height],
+                        position: [-0.9 + indent_factor, *y_offset, 1.8 - indent_factor * 2.0, style.height],
                         color,
                     });
                     
-                    *y_offset -= height + 0.02; // Add spacing between boxes
+                    // Move down by element height
+                    *y_offset -= style.height;
                 }
                 
-                // Process children
-                for child in &node_ref.children {
+                // Process children with increased depth
+                for child in node.children.borrow().iter() {
                     self.process_node_for_layout(child.clone(), y_offset, depth + 1);
+                }
+
+                // Apply bottom margin
+                *y_offset -= style.margin_bottom;
+            },
+            
+            NodeData::Text { contents } => {
+                // Check if parent is already handling this text
+                let text = contents.borrow().to_string();
+                if !text.trim().is_empty() && node.parent.take().is_none() {
+                    // Only create a standalone text box if it's not inside a rendered element
+                    self.content_boxes.push(ContentBox {
+                        position: [-0.9 + indent_factor, *y_offset, 1.8 - indent_factor * 2.0, 0.05],
+                        color: [0.0, 0.0, 0.0],
+                    });
+
+                    *y_offset -= 0.07; // height + spacing
                 }
             },
             
-            NodeType::Text(content) => {
-                // Text nodes are typically rendered by their parent element
-                // We won't create separate boxes for them
-                // The content is already handled by the parent element
-            },
-            
-            NodeType::Comment(_) => {
-                // Comments are not rendered visually
-            },
+            _ => {} // Skip other node types
         }
         
         // Stop if we reach bottom of screen
