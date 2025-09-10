@@ -1,4 +1,5 @@
 mod html_renderer;
+mod dom;
 
 use std::sync::Arc;
 use wgpu::{DeviceDescriptor, InstanceDescriptor, RequestAdapterOptions};
@@ -55,7 +56,7 @@ const INDICES: &[u16] = &[
 struct Browser {
     url: String,
     html_content: String,
-    parsed_text: Vec<String>,
+    html_renderer: HtmlRenderer,
 }
 
 struct BrowserApp {
@@ -68,17 +69,16 @@ struct BrowserApp {
     surface_format: wgpu::TextureFormat,
     surface_config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
-    html_renderer: HtmlRenderer,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
 }
 
 impl Browser {
-    fn new() -> Self {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, surface_format: wgpu::TextureFormat) -> Self {
         Self {
             url: String::new(),
             html_content: String::new(),
-            parsed_text: Vec::new(),
+            html_renderer: HtmlRenderer::new(device, queue, surface_format),
         }
     }
 
@@ -89,51 +89,16 @@ impl Browser {
         let response = reqwest::get(url).await?;
         self.html_content = response.text().await?;
 
-        self.parse_html();
+        // Parse HTML content into DOM tree instead of flat text
+        self.html_renderer.set_html_content(&self.html_content);
+        println!("HTML content parsed into DOM structure");
+
         Ok(())
-    }
-
-    fn parse_html(&mut self) {
-        let document = Html::parse_document(&self.html_content);
-        self.parsed_text.clear();
-
-        // Extract text from common HTML elements
-        let selectors = [
-            "title", "h1", "h2", "h3", "h4", "h5", "h6",
-            "p", "div", "span", "a", "li", "td", "th"
-        ];
-
-        for selector_str in &selectors {
-            if let Ok(selector) = Selector::parse(selector_str) {
-                for element in document.select(&selector) {
-                    let text = element.text().collect::<Vec<_>>().join(" ").trim().to_string();
-                    if !text.is_empty() && text.len() > 1 {
-                        self.parsed_text.push(format!("{}: {}", selector_str.to_uppercase(), text));
-                    }
-                }
-            }
-        }
-
-        if self.parsed_text.is_empty() {
-            self.parsed_text.push("No readable content found.".to_string());
-        }
-
-        println!("Parsed {} text elements", self.parsed_text.len());
-
-        // Print the parsed content to console for verification
-        println!("\n--- HTML Content from {} ---", self.url);
-        for (i, text) in self.parsed_text.iter().enumerate() {
-            if i < 10 { // Show first 10 elements
-                println!("{}", text);
-            }
-        }
-        println!("--- End of Content ---\n");
     }
 }
 
 impl BrowserApp {
     async fn new(window: Arc<Window>) -> Self {
-        let mut browser = Browser::new();
         let instance = wgpu::Instance::new(&InstanceDescriptor::default());
         let adapter = instance
             .request_adapter(&RequestAdapterOptions::default())
@@ -185,7 +150,7 @@ impl BrowserApp {
                 module: &shader,
                 entry_point: Option::from("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_config.format,
+                    format: surface_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -222,12 +187,13 @@ impl BrowserApp {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let html_renderer = HtmlRenderer::new(&device, &queue, surface_config.format);
+        // Create the browser with the HTML renderer
+        let mut browser = Browser::new(&device, &queue, surface_format);
 
         // Fetch HTML content from example.com
         if let Err(e) = browser.fetch_html("https://example.com").await {
             println!("Failed to fetch HTML: {}", e);
-            browser.parsed_text = vec!["Failed to load content from example.com".to_string()];
+            browser.html_renderer.set_html_content("<h1>Failed to load content from example.com</h1>");
         }
 
         Self {
@@ -240,7 +206,6 @@ impl BrowserApp {
             surface_format,
             surface_config,
             render_pipeline,
-            html_renderer,
             vertex_buffer,
             index_buffer,
         }
@@ -283,11 +248,12 @@ impl BrowserApp {
             render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..1);
         }
 
-        //self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
+        // Render HTML content using our DOM-based HTML renderer
+        self.browser.html_renderer.render(&mut encoder, &view, &self.device);
 
-        // Render HTML content using our dedicated HTML renderer
-        self.html_renderer.render(&mut encoder, &view, &self.browser.parsed_text, &self.device);
+        // Submit all the work to the GPU
+        self.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
 
         Ok(())
     }

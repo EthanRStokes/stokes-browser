@@ -7,8 +7,9 @@ edition = "2024"
 winit = "0.30.12"
 wgpu = { version = "26.0.1", features = ["wgsl"] }
 bytemuck = { version = "1.19.0", features = ["derive"] }
-skia-safe = "0.87.0"
+skia-safe = "0.88.0"
 tokio = { version = "1.47.1", features = ["rt", "rt-multi-thread", "macros"] }
 reqwest = "0.12.23"
 scraper = "0.24.0"
-
+html5ever = "0.35.0"
+markup5ever_rcdom = "0.35.0+unofficial"

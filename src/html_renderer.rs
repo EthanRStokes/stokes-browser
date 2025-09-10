@@ -1,5 +1,8 @@
 use wgpu::util::DeviceExt;
 use crate::Vertex;
+use crate::dom::{Dom, DomNode, NodeType};
+use std::rc::Rc;
+use std::cell::RefCell;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -12,6 +15,7 @@ pub struct HtmlRenderer {
     pub content_boxes: Vec<ContentBox>,
     render_pipeline: wgpu::RenderPipeline,
     index_buffer: wgpu::Buffer,
+    dom: Dom,
 }
 
 const BOX_INDICES: &[u16] = &[
@@ -80,35 +84,79 @@ impl HtmlRenderer {
             content_boxes: Vec::new(),
             render_pipeline,
             index_buffer,
+            dom: Dom::new(),
         }
     }
 
-    pub fn create_content_boxes(&mut self, parsed_text: &[String]) {
+    pub fn set_html_content(&mut self, html: &str) {
+        self.dom.parse_html(html);
+        println!("DOM structure parsed:");
+        self.dom.print_dom(); // Print DOM for debugging
+    }
+
+    pub fn create_content_boxes_from_dom(&mut self) {
         self.content_boxes.clear();
         let mut y_offset = 0.8f32; // Start from top
-
-        for (i, text) in parsed_text.iter().enumerate() {
-            if i >= 20 { break; } // Limit to first 20 elements
-
-            let (color, height) = if text.starts_with("TITLE:") {
-                ([0.2, 0.4, 0.8], 0.12) // Blue for title
-            } else if text.starts_with("H1:") || text.starts_with("H2:") || text.starts_with("H3:") {
-                ([0.1, 0.6, 0.1], 0.08) // Green for headers
-            } else if text.starts_with("P:") {
-                ([0.8, 0.8, 0.8], 0.06) // Light gray for paragraphs
-            } else if text.starts_with("A:") {
-                ([0.8, 0.2, 0.2], 0.05) // Red for links
-            } else {
-                ([0.6, 0.6, 0.6], 0.04) // Gray for other elements
-            };
-
-            self.content_boxes.push(ContentBox {
-                position: [-0.9, y_offset, 1.8, height], // x, y, width, height
-                color,
-            });
-
-            y_offset -= height + 0.02; // Add spacing between boxes
-            if y_offset < -0.9 { break; } // Stop if we reach bottom
+        
+        self.process_node_for_layout(self.dom.document.clone(), &mut y_offset, 0);
+    }
+    
+    fn process_node_for_layout(&mut self, node: Rc<RefCell<DomNode>>, y_offset: &mut f32, depth: usize) {
+        let node_ref = node.borrow();
+        let indent_factor = depth as f32 * 0.05; // Indentation based on depth
+        
+        match &node_ref.node_type {
+            NodeType::Document => {
+                // Process document's children
+                for child in &node_ref.children {
+                    self.process_node_for_layout(child.clone(), y_offset, depth);
+                }
+            },
+            
+            NodeType::Element(tag) => {
+                // Create a box for this element
+                let (color, height) = match tag.as_str() {
+                    "title" => ([0.2, 0.4, 0.8], 0.12), // Blue for title
+                    "h1" => ([0.1, 0.6, 0.1], 0.10),   // Green for h1
+                    "h2" => ([0.1, 0.6, 0.1], 0.08),   // Green for h2
+                    "h3" | "h4" | "h5" | "h6" => ([0.1, 0.6, 0.1], 0.06), // Green for other headers
+                    "p" => ([0.8, 0.8, 0.8], 0.06),    // Light gray for paragraphs
+                    "a" => ([0.8, 0.2, 0.2], 0.05),    // Red for links
+                    "div" => ([0.6, 0.6, 0.6], 0.04),  // Gray for divs
+                    _ => ([0.5, 0.5, 0.5], 0.04),      // Default gray for other elements
+                };
+                
+                // Only create box if there's visible content
+                let text = node_ref.get_text_content();
+                if !text.trim().is_empty() {
+                    self.content_boxes.push(ContentBox {
+                        position: [-0.9 + indent_factor, *y_offset, 1.8 - indent_factor * 2.0, height],
+                        color,
+                    });
+                    
+                    *y_offset -= height + 0.02; // Add spacing between boxes
+                }
+                
+                // Process children
+                for child in &node_ref.children {
+                    self.process_node_for_layout(child.clone(), y_offset, depth + 1);
+                }
+            },
+            
+            NodeType::Text(content) => {
+                // Text nodes are typically rendered by their parent element
+                // We won't create separate boxes for them
+                // The content is already handled by the parent element
+            },
+            
+            NodeType::Comment(_) => {
+                // Comments are not rendered visually
+            },
+        }
+        
+        // Stop if we reach bottom of screen
+        if *y_offset < -0.9 {
+            return;
         }
     }
 
@@ -131,11 +179,10 @@ impl HtmlRenderer {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
-        parsed_text: &[String],
         device: &wgpu::Device,
     ) {
-        // Update content boxes based on current parsed text
-        self.create_content_boxes(parsed_text);
+        // Update content boxes based on current DOM
+        self.create_content_boxes_from_dom();
 
         if self.content_boxes.is_empty() {
             return;
