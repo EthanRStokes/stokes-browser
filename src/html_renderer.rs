@@ -141,7 +141,8 @@ impl HtmlRenderer {
         self.process_node_for_layout(self.dom.document.clone(), &mut y_offset, 0);
     }
     
-    fn process_node_for_layout(&mut self, node: Handle, y_offset: &mut f32, depth: usize) {
+    fn process_node_for_layout(&mut self, node: Handle, y_offset: &f32, depth: usize) {
+        let mut y_offset: f32 = *y_offset;
         // Calculate indentation based on depth
         let indent_factor = depth as f32 * 0.05;
 
@@ -149,7 +150,7 @@ impl HtmlRenderer {
             NodeData::Document => {
                 // Process document's children
                 for child in node.children.borrow().iter() {
-                    self.process_node_for_layout(child.clone(), y_offset, depth);
+                    self.process_node_for_layout(child.clone(), &y_offset, depth);
                 }
             },
 
@@ -160,7 +161,7 @@ impl HtmlRenderer {
                 if tag_name == "html" || tag_name == "head" || tag_name == "meta" || tag_name == "link" || tag_name == "script" {
                     // Just process their children without creating boxes
                     for child in node.children.borrow().iter() {
-                        self.process_node_for_layout(child.clone(), y_offset, depth);
+                        self.process_node_for_layout(child.clone(), &y_offset, depth);
                     }
                     return;
                 }
@@ -175,7 +176,7 @@ impl HtmlRenderer {
                 });
 
                 // Apply top margin
-                *y_offset -= style.margin_top;
+                y_offset -= style.margin_top;
 
                 // Only create a box for elements with text content
                 let text = Dom::get_text_content(&node);
@@ -190,21 +191,22 @@ impl HtmlRenderer {
 
                     // Create the content box
                     self.content_boxes.push(ContentBox {
-                        position: [-0.9 + indent_factor, *y_offset, 1.8 - indent_factor * 2.0, style.height],
+                        position: [-0.9 + indent_factor, y_offset, 1.8 - indent_factor * 2.0, style.height],
                         color,
                     });
                     
                     // Move down by element height
-                    *y_offset -= style.height;
+                    y_offset -= style.height;
                 }
+                let margin_bottom = style.margin_bottom.clone();
                 
                 // Process children with increased depth
                 for child in node.children.borrow().iter() {
-                    self.process_node_for_layout(child.clone(), y_offset, depth + 1);
+                    self.process_node_for_layout(child.clone(), &y_offset, depth + 1);
                 }
 
                 // Apply bottom margin
-                *y_offset -= style.margin_bottom;
+                y_offset -= margin_bottom;
             },
             
             NodeData::Text { contents } => {
@@ -213,11 +215,11 @@ impl HtmlRenderer {
                 if !text.trim().is_empty() && node.parent.take().is_none() {
                     // Only create a standalone text box if it's not inside a rendered element
                     self.content_boxes.push(ContentBox {
-                        position: [-0.9 + indent_factor, *y_offset, 1.8 - indent_factor * 2.0, 0.05],
+                        position: [-0.9 + indent_factor, y_offset, 1.8 - indent_factor * 2.0, 0.05],
                         color: [0.0, 0.0, 0.0],
                     });
 
-                    *y_offset -= 0.07; // height + spacing
+                    y_offset -= 0.07; // height + spacing
                 }
             },
             
@@ -225,7 +227,7 @@ impl HtmlRenderer {
         }
         
         // Stop if we reach bottom of screen
-        if *y_offset < -0.9 {
+        if y_offset < -0.9 {
             return;
         }
     }
