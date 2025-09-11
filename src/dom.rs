@@ -100,46 +100,120 @@ impl Dom {
         }
     }
 
-    // Helper to traverse DOM and print for debugging
-    pub fn print_dom(&self) {
-        self.print_node(self.document.clone(), 0);
+    // Get the page title from the DOM
+    pub fn get_title(&self) -> String {
+        self.find_title_element(&self.document)
     }
 
-    fn print_node(&self, node: Handle, depth: usize) {
-        let indent = "  ".repeat(depth);
+    // Find the title element in the DOM
+    fn find_title_element(&self, node: &Handle) -> String {
+        if let NodeData::Element { name, .. } = &node.data {
+            if name.local.to_string() == "title" {
+                return Self::get_text_content(node);
+            }
+        }
+
+        // Recursively search in children
+        for child in node.children.borrow().iter() {
+            let title = self.find_title_element(child);
+            if !title.is_empty() {
+                return title;
+            }
+        }
+
+        String::new()
+    }
+
+    // Find all links in the document
+    pub fn get_links(&self) -> Vec<(String, String)> {
+        let mut links = Vec::new();
+        self.collect_links(&self.document, &mut links);
+        links
+    }
+
+    // Collect links from the DOM
+    fn collect_links(&self, node: &Handle, links: &mut Vec<(String, String)>) {
+        if let NodeData::Element { name, .. } = &node.data {
+            if name.local.to_string() == "a" {
+                let attrs = Self::get_attributes(node);
+                if let Some(href) = attrs.get("href") {
+                    let text = Self::get_text_content(node);
+                    links.push((text, href.clone()));
+                }
+            }
+        }
+
+        // Process children
+        for child in node.children.borrow().iter() {
+            self.collect_links(child, links);
+        }
+    }
+
+    // Find all images in the document
+    pub fn get_images(&self) -> Vec<String> {
+        let mut images = Vec::new();
+        self.collect_images(&self.document, &mut images);
+        images
+    }
+
+    // Collect images from the DOM
+    fn collect_images(&self, node: &Handle, images: &mut Vec<String>) {
+        if let NodeData::Element { name, .. } = &node.data {
+            if name.local.to_string() == "img" {
+                let attrs = Self::get_attributes(node);
+                if let Some(src) = attrs.get("src") {
+                    images.push(src.clone());
+                }
+            }
+        }
+
+        // Process children
+        for child in node.children.borrow().iter() {
+            self.collect_images(child, images);
+        }
+    }
+
+    // Helper method to print the DOM structure for debugging
+    pub fn print_dom(&self) {
+        self.print_node(&self.document, 0);
+    }
+
+    // Helper method to print a node and its children
+    fn print_node(&self, node: &Handle, depth: usize) {
+        let indent = " ".repeat(depth * 2);
 
         match &node.data {
-            NodeData::Document => println!("{}Document", indent),
-
+            NodeData::Document => {
+                println!("{}Document", indent);
+            }
             NodeData::Element { name, attrs, .. } => {
-                print!("{}<{}", indent, name.local);
+                print!("{}Element: <{}", indent, name.local);
 
                 // Print attributes
                 for attr in attrs.borrow().iter() {
                     print!(" {}=\"{}\"", attr.name.local, attr.value);
                 }
+
                 println!(">");
-
-                // Print children
-                for child in node.children.borrow().iter() {
-                    self.print_node(child.clone(), depth + 1);
-                }
-
-                println!("{}</{}>", indent, name.local);
-            },
-
+            }
             NodeData::Text { contents } => {
                 let text = contents.borrow().to_string();
-                if !text.trim().is_empty() {
-                    println!("{}\"{}\"", indent, text.trim());
+                let text = text.trim();
+                if !text.is_empty() {
+                    println!("{}Text: \"{}\"", indent, text);
                 }
-            },
-
+            }
             NodeData::Comment { contents } => {
-                println!("{}<!-- {} -->", indent, contents);
-            },
+                println!("{}Comment: \"{}\"", indent, contents);
+            }
+            _ => {
+                println!("{}Other", indent);
+            }
+        }
 
-            _ => {} // Ignore other node types
+        // Print children
+        for child in node.children.borrow().iter() {
+            self.print_node(child, depth + 1);
         }
     }
 }

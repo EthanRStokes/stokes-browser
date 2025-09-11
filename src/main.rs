@@ -1,16 +1,20 @@
-mod html_renderer;
 mod dom;
+mod engine;
+mod networking;
+mod renderer;
+mod ui;
 
 use std::sync::Arc;
 use wgpu::{DeviceDescriptor, InstanceDescriptor, RequestAdapterOptions};
-use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
-use winit::event::WindowEvent;
+use winit::dpi::{LogicalSize, PhysicalPosition};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
-use reqwest;
-use crate::html_renderer::HtmlRenderer;
+
+use crate::engine::{Engine, EngineConfig};
+use crate::renderer::Renderer;
+use crate::ui::BrowserUI;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -40,64 +44,39 @@ impl Vertex {
     }
 }
 
-const VERTICES: &[Vertex] = &[
-    Vertex { position: [-1.0, -1.0, 0.0], color: [0.9, 0.9, 0.9] }, // background quad
-    Vertex { position: [1.0, -1.0, 0.0], color: [0.9, 0.9, 0.9] },
-    Vertex { position: [1.0, 1.0, 0.0], color: [0.9, 0.9, 0.9] },
-    Vertex { position: [-1.0, 1.0, 0.0], color: [0.9, 0.9, 0.9] },
-];
-
-const INDICES: &[u16] = &[
-    0, 1, 2,
-    2, 3, 0,
-];
-
-struct Browser {
-    url: String,
-    html_content: String,
-    html_renderer: HtmlRenderer,
+/// Tab structure representing a browser tab
+struct Tab {
+    id: String,
+    engine: Engine,
 }
 
+impl Tab {
+    fn new(id: &str, config: EngineConfig) -> Self {
+        Self {
+            id: id.to_string(),
+            engine: Engine::new(config),
+        }
+    }
+}
+
+/// The main browser application
 struct BrowserApp {
-    browser: Browser,
+    tabs: Vec<Tab>,
+    active_tab_index: usize,
+    ui: BrowserUI,
     window: Arc<Window>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    renderer: Renderer,
     size: winit::dpi::PhysicalSize<u32>,
     surface: wgpu::Surface<'static>,
     surface_format: wgpu::TextureFormat,
     surface_config: wgpu::SurfaceConfiguration,
-    render_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-}
-
-impl Browser {
-    fn new(device: &wgpu::Device, queue: &wgpu::Queue, surface_format: wgpu::TextureFormat) -> Self {
-        Self {
-            url: String::new(),
-            html_content: String::new(),
-            html_renderer: HtmlRenderer::new(device, queue, surface_format),
-        }
-    }
-
-    async fn fetch_html(&mut self, url: &str) -> Result<(), Box<dyn std::error::Error>> {
-        self.url = url.to_string();
-        println!("Fetching HTML from: {}", url);
-
-        let response = reqwest::get(url).await?;
-        self.html_content = response.text().await?;
-
-        // Parse HTML content into DOM tree
-        self.html_renderer.set_html_content(&self.html_content);
-        println!("HTML content parsed into DOM structure");
-
-        Ok(())
-    }
 }
 
 impl BrowserApp {
     async fn new(window: Arc<Window>) -> Self {
+        // Initialize wgpu
         let instance = wgpu::Instance::new(&InstanceDescriptor::default());
         let adapter = instance
             .request_adapter(&RequestAdapterOptions::default())
@@ -108,6 +87,11 @@ impl BrowserApp {
             .await
             .unwrap();
 
+        // Share device and queue using Arc
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
+
+        // Initialize surface
         let surface = instance.create_surface(window.clone()).unwrap();
         let cap = surface.get_capabilities(&adapter);
         let surface_format = cap.formats[0];
@@ -125,88 +109,124 @@ impl BrowserApp {
         };
         surface.configure(&device, &surface_config);
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
-        });
+        // Initialize UI
+        let mut ui = BrowserUI::new(Arc::clone(&device), Arc::clone(&queue));
+        ui.initialize_renderer(surface_format);
 
-        let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[],
-            push_constant_ranges: &[],
-        });
+        // Initialize renderer
+        let renderer = Renderer::new(Arc::clone(&device), Arc::clone(&queue), surface_format);
 
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Option::from("vs_main"),
-                buffers: &[Vertex::desc()],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Option::from("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-            cache: None,
-        });
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(VERTICES),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(INDICES),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        // Create the browser with the HTML renderer
-        let mut browser = Browser::new(&device, &queue, surface_format);
-
-        // Fetch HTML content from example.com
-        if let Err(e) = browser.fetch_html("https://example.com").await {
-            println!("Failed to fetch HTML: {}", e);
-            browser.html_renderer.set_html_content("<h1>Failed to load content from example.com</h1>");
-        }
+        // Create initial tab
+        let config = EngineConfig::default();
+        let initial_tab = Tab::new("tab1", config.clone());
 
         Self {
-            browser,
+            tabs: vec![initial_tab],
+            active_tab_index: 0,
+            ui,
             window,
             device,
             queue,
+            renderer,
             size,
             surface,
             surface_format,
             surface_config,
-            render_pipeline,
-            vertex_buffer,
-            index_buffer,
+        }
+    }
+
+    // Get the currently active tab
+    fn active_tab(&self) -> &Tab {
+        &self.tabs[self.active_tab_index]
+    }
+
+    // Get the currently active tab as mutable
+    fn active_tab_mut(&mut self) -> &mut Tab {
+        &mut self.tabs[self.active_tab_index]
+    }
+
+    // Navigate to a URL in the current tab
+    async fn navigate(&mut self, url: &str) {
+        // Update window title to show loading state
+        self.window.set_title(&format!("Loading: {}", url));
+
+        // First, navigate and store the result
+        let tab_id = self.active_tab().id.clone();
+        let navigation_result = self.active_tab_mut().engine.navigate(url).await;
+
+        // Now process the result without holding multiple mutable borrows
+        match navigation_result {
+            Ok(_) => {
+                // Get data from active tab with an immutable borrow
+                let current_url = self.active_tab().engine.current_url().to_string();
+                let title = self.active_tab().engine.page_title().to_string();
+
+                // Update UI with the data we already collected
+                self.ui.update_address_bar(&current_url);
+                self.ui.update_tab_title(&tab_id, &title);
+
+                // Update window title
+                self.window.set_title(&format!("{} - Stokes Browser", title));
+            }
+            Err(e) => {
+                println!("Navigation error: {}", e);
+                self.window.set_title("Error - Stokes Browser");
+            }
+        }
+    }
+
+    // Add a new tab
+    fn add_tab(&mut self) {
+        let tab_id = format!("tab{}", self.tabs.len() + 1);
+        let config = EngineConfig::default();
+        let new_tab = Tab::new(&tab_id, config);
+
+        // Add to tabs list
+        self.tabs.push(new_tab);
+        self.active_tab_index = self.tabs.len() - 1;
+
+        // Update UI
+        self.ui.add_tab(&tab_id, "New Tab");
+    }
+
+    // Switch to a tab by index
+    fn switch_to_tab(&mut self, index: usize) {
+        if index < self.tabs.len() {
+            self.active_tab_index = index;
+
+            // Update UI to reflect active tab
+            let url = self.active_tab().engine.current_url();;
+            let title = self.active_tab().engine.page_title();
+        // TODO   self.ui.update_address_bar(url);
+            self.window.set_title(&format!("{} - Stokes Browser", title));
+        }
+    }
+
+    // Handle mouse click
+    fn handle_click(&mut self, x: f32, y: f32) {
+        // Convert window coordinates to normalized device coordinates
+        let ndc_x = (x / self.size.width as f32) * 2.0 - 1.0;
+        let ndc_y = -((y / self.size.height as f32) * 2.0 - 1.0);
+
+        // Check for UI interaction
+        if let Some(component_id) = self.ui.handle_click(ndc_x, ndc_y) {
+            // Handle based on component
+            if component_id == "back" {
+                println!("Back button clicked");
+                // Back navigation would go here
+            } else if component_id == "forward" {
+                println!("Forward button clicked");
+                // Forward navigation would go here
+            } else if component_id == "refresh" {
+                println!("Refresh button clicked");
+                // Page refresh would go here
+            } else if component_id.starts_with("tab") {
+                // Tab switching
+                let tab_index = component_id[3..].parse::<usize>().unwrap_or(1) - 1;
+                if tab_index < self.tabs.len() {
+                    self.switch_to_tab(tab_index);
+                }
+            }
         }
     }
 
@@ -218,10 +238,10 @@ impl BrowserApp {
             label: Some("Render Encoder"),
         });
 
-        // Render a simple background representing the browser window
+        // Clear the screen
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
+                label: Some("Clear Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -240,17 +260,17 @@ impl BrowserApp {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
-
-            render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..1);
         }
 
-        // Render HTML content using our DOM-based HTML renderer
-        self.browser.html_renderer.render(&mut encoder, &view, &self.device);
+        let dom_ref = &self.active_tab().engine.dom;
 
-        // Submit all the work to the GPU
+        // Render the current web page content
+        // TODO
+        //self.renderer.layout_and_render(dom_ref, &mut encoder, &view);
+
+        // Render browser UI
+        self.ui.render(&mut encoder, &view);
+
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
@@ -292,6 +312,14 @@ impl ApplicationHandler for BrowserApp {
                     }
                 }
             }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            //    // Get cursor position
+            //    if let Some(position) = self.window.cursor_position() {
+            //        let PhysicalPosition { x, y } = position;
+            //        self.handle_click(x as f32, y as f32);
+            //    }
+                self.window.request_redraw();
+            }
             _ => {}
         }
     }
@@ -306,14 +334,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         event_loop
             .create_window(
                 Window::default_attributes()
-                    .with_title("Stokes Browser - example.com")
-                    .with_inner_size(LogicalSize::new(800, 600)),
+                    .with_title("Stokes Browser")
+                    .with_inner_size(LogicalSize::new(1024, 768)),
             )
             .unwrap()
     );
 
     let mut app = BrowserApp::new(window).await;
-    println!("Browser initialized, fetching and rendering HTML content...");
+    println!("Browser initialized, navigating to homepage...");
+
+    // Navigate to the default homepage
+    app.navigate("https://example.com").await;
 
     event_loop.run_app(&mut app)?;
 
