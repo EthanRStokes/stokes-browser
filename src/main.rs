@@ -262,11 +262,11 @@ impl BrowserApp {
             });
         }
 
-        let dom_ref = &self.active_tab().engine.dom;
+        // active tab's DOM
+        let dom = self.tabs[self.active_tab_index].engine.dom.document.clone();
 
         // Render the current web page content
-        // TODO
-        //self.renderer.layout_and_render(dom_ref, &mut encoder, &view);
+        self.renderer.layout_and_render(&dom, &mut encoder, &view);
 
         // Render browser UI
         self.ui.render(&mut encoder, &view);

@@ -245,7 +245,7 @@ impl Renderer {
     }
 
     /// Layout and render the DOM
-    pub fn layout_and_render(&mut self, dom: &Dom, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
+    pub fn layout_and_render(&mut self, document: &Handle, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
         // Clear previous layout
         self.content_boxes.clear();
 
@@ -253,7 +253,7 @@ impl Renderer {
         let mut y_offset = 0.8f32;
 
         // Process the DOM to create layout boxes
-        self.process_node_for_layout(dom.document.clone(), &mut y_offset, 0);
+        self.process_node_for_layout(document.clone(), &mut y_offset, 0);
 
         // Render the boxes
         self.render_content_boxes(encoder, view);
