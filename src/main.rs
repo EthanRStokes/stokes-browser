@@ -13,7 +13,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
 use crate::engine::{Engine, EngineConfig};
-use crate::renderer::Renderer;
+use crate::renderer::DomRenderer;
 use crate::ui::BrowserUI;
 
 #[repr(C)]
@@ -67,7 +67,7 @@ struct BrowserApp {
     window: Arc<Window>,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
-    renderer: Renderer,
+    renderer: DomRenderer,
     size: winit::dpi::PhysicalSize<u32>,
     surface: wgpu::Surface<'static>,
     surface_format: wgpu::TextureFormat,
@@ -114,7 +114,7 @@ impl BrowserApp {
         ui.initialize_renderer(surface_format);
 
         // Initialize renderer
-        let renderer = Renderer::new(Arc::clone(&device), Arc::clone(&queue), surface_format);
+        let renderer = DomRenderer::new(Arc::clone(&device), Arc::clone(&queue), surface_format, size.width as f32, size.height as f32);
 
         // Create initial tab
         let config = EngineConfig::default();
@@ -266,7 +266,7 @@ impl BrowserApp {
         let dom = self.tabs[self.active_tab_index].engine.dom.document.clone();
 
         // Render the current web page content
-        self.renderer.layout_and_render(&dom, &mut encoder, &view);
+        self.renderer.render(&dom, &mut encoder, &view);
 
         // Render browser UI
         self.ui.render(&mut encoder, &view);

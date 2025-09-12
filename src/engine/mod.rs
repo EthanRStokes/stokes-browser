@@ -1,10 +1,8 @@
 // The core browser engine that coordinates between components
 mod config;
 
-use crate::networking::HttpClient;
-use crate::renderer::Renderer;
 use crate::dom::Dom;
-use std::sync::Arc;
+use crate::networking::HttpClient;
 
 pub use self::config::EngineConfig;
 
