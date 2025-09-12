@@ -144,8 +144,88 @@ impl StyleResolver {
     /// Compute final styles for an element based on inherited styles,
     /// element type, classes, IDs, and inline styles
     pub fn compute_style_for_element(&self, element_tag: &str) -> ComputedStyle {
-        // For now, just return a simple default style
-        // In a real implementation, this would handle inheritance, cascade, etc.
-        todo!("Implement style resolution")
+        // For a basic implementation, just return default styles based on element type
+        // In a full browser, this would handle CSS cascading and specificity
+
+        match self.stylesheet.get_style(element_tag) {
+            Some(style) => style.clone(),
+            None => {
+                // Create a default style based on element type
+                let mut style = ComputedStyle {
+                    color: [0.0, 0.0, 0.0], // Black text
+                    background_color: [1.0, 1.0, 1.0], // White background
+                    width: None,
+                    height: None,
+                    margin: crate::renderer::style::BoxValues {
+                        top: crate::renderer::style::Dimension::Pixels(0.0),
+                        right: crate::renderer::style::Dimension::Pixels(0.0),
+                        bottom: crate::renderer::style::Dimension::Pixels(0.0),
+                        left: crate::renderer::style::Dimension::Pixels(0.0),
+                    },
+                    padding: crate::renderer::style::BoxValues {
+                        top: crate::renderer::style::Dimension::Pixels(0.0),
+                        right: crate::renderer::style::Dimension::Pixels(0.0),
+                        bottom: crate::renderer::style::Dimension::Pixels(0.0),
+                        left: crate::renderer::style::Dimension::Pixels(0.0),
+                    },
+                    border: crate::renderer::style::BoxValues {
+                        top: crate::renderer::style::Border {
+                            width: 0.0,
+                            style: crate::renderer::style::BorderStyle::None,
+                            color: [0.0, 0.0, 0.0],
+                        },
+                        right: crate::renderer::style::Border {
+                            width: 0.0,
+                            style: crate::renderer::style::BorderStyle::None,
+                            color: [0.0, 0.0, 0.0],
+                        },
+                        bottom: crate::renderer::style::Border {
+                            width: 0.0,
+                            style: crate::renderer::style::BorderStyle::None,
+                            color: [0.0, 0.0, 0.0],
+                        },
+                        left: crate::renderer::style::Border {
+                            width: 0.0,
+                            style: crate::renderer::style::BorderStyle::None,
+                            color: [0.0, 0.0, 0.0],
+                        },
+                    },
+                    display: crate::renderer::style::DisplayType::Inline,
+                    position: crate::renderer::style::PositionType::Static,
+                    top: None,
+                    right: None,
+                    bottom: None,
+                    left: None,
+                    font_size: crate::renderer::style::Dimension::Pixels(16.0),
+                    font_weight: crate::renderer::style::FontWeight::Normal,
+                    font_family: vec!["Arial".to_string(), "sans-serif".to_string()],
+                    text_align: crate::renderer::style::TextAlign::Left,
+                };
+
+                // Apply element-specific styles
+                match element_tag {
+                    "div" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "section" | "article" => {
+                        style.display = crate::renderer::style::DisplayType::Block;
+                    }
+                    "a" => {
+                        style.color = [0.0, 0.0, 1.0]; // Blue for links
+                    }
+                    "strong" | "b" => {
+                        style.font_weight = crate::renderer::style::FontWeight::Bold;
+                    }
+                    "h1" => {
+                        style.font_size = crate::renderer::style::Dimension::Pixels(32.0);
+                        style.font_weight = crate::renderer::style::FontWeight::Bold;
+                    }
+                    "h2" => {
+                        style.font_size = crate::renderer::style::Dimension::Pixels(24.0);
+                        style.font_weight = crate::renderer::style::FontWeight::Bold;
+                    }
+                    _ => {}
+                }
+
+                style
+            }
+        }
     }
 }

@@ -173,30 +173,271 @@ impl LayoutEngine {
 
     /// Layout algorithm for block-level elements
     fn layout_block(&self, layout_box: &mut LayoutBox) {
-        // In a real implementation, this would handle the CSS box model
-        // including margin, border, padding, and content dimensions
-        todo!("Implement block layout")
+        let parent_width = layout_box.width;
+
+        // Calculate box dimensions
+        self.calculate_block_width(layout_box, parent_width);
+        self.calculate_block_position(layout_box);
+
+        // Layout children
+        self.layout_block_children(layout_box);
+
+        // Calculate height based on children
+        self.calculate_block_height(layout_box);
+    }
+
+    /// Calculate the width of a block element
+    fn calculate_block_width(&self, layout_box: &mut LayoutBox, containing_width: f32) {
+        // Get style properties
+        let style = &layout_box.style;
+
+        // Default width if not specified is 100% of containing block
+        let mut width = match style.width {
+            Some(crate::renderer::style::Dimension::Pixels(px)) => px,
+            Some(crate::renderer::style::Dimension::Percentage(pct)) => containing_width * pct / 100.0,
+            Some(crate::renderer::style::Dimension::Auto) | None => containing_width,
+            _ => containing_width, // Default to 100% for other dimensions
+        };
+
+        // Apply min/max width constraints (would be in style in a real implementation)
+        width = width.max(0.0).min(containing_width);
+
+        layout_box.width = width;
+    }
+
+    /// Calculate the vertical position of a block element
+    fn calculate_block_position(&self, layout_box: &mut LayoutBox) {
+        // For simplicity, just stack blocks vertically
+        if let Some(parent) = layout_box.node.parent.take() {
+            // In a real implementation, we'd get the parent box and use its dimensions
+            // For now, just set y to 0 (we'll position children later)
+            layout_box.y = 0.0;
+            layout_box.x = 0.0; // Align to left edge
+        }
+    }
+
+    /// Layout children of a block element
+    fn layout_block_children(&self, layout_box: &mut LayoutBox) {
+        let mut current_y = 0.0; // Start at the top of the parent
+
+        for child in &mut layout_box.children {
+            // Position child relative to parent
+            child.x = 0.0; // Align to left edge
+            child.y = current_y;
+
+            // Update current_y for next child
+            current_y += child.height;
+        }
+    }
+
+    /// Calculate the height of a block element based on its children
+    fn calculate_block_height(&self, layout_box: &mut LayoutBox) {
+        // Use explicit height if specified, otherwise sum of children
+        let style = &layout_box.style;
+
+        let height = match style.height {
+            Some(crate::renderer::style::Dimension::Pixels(px)) => px,
+            Some(crate::renderer::style::Dimension::Percentage(pct)) => {
+                // In a real browser, this would be based on the containing block's height
+                // For simplicity, we'll use viewport height
+                self.viewport_height * pct / 100.0
+            },
+            Some(crate::renderer::style::Dimension::Auto) | None => {
+                // Sum of children's heights
+                layout_box.children.iter()
+                    .map(|child| child.y + child.height)
+                    .max_by(|a, b| a.partial_cmp(b).unwrap())
+                    .unwrap_or(0.0)
+            },
+            _ => 0.0, // Default for other dimensions
+        };
+
+        layout_box.height = height;
     }
 
     /// Layout algorithm for inline elements
     fn layout_inline(&self, layout_box: &mut LayoutBox) {
-        // In a real implementation, this would handle inline layout flow
-        // including text measurement and line breaking
-        todo!("Implement inline layout")
+        // In a real implementation, this would handle text layout and line breaking
+        // For now, implement a simple inline layout
+
+        // Set default dimensions for simplicity
+        layout_box.width = 100.0;  // Default width
+        layout_box.height = 20.0;  // Default height for text line
+
+        // In a real browser, we would calculate the width based on text content and font metrics
+        // For now, we'll use a simple approximation
+
+        match &layout_box.node.data {
+            markup5ever_rcdom::NodeData::Text { contents } => {
+                let text = contents.borrow();
+                if !text.is_empty() {
+                    // Rough approximation: each character is ~10px wide
+                    let text_width = text.len() as f32 * 10.0;
+                    layout_box.width = text_width.min(layout_box.width);
+                }
+            },
+            _ => {}
+        }
     }
 
     /// Default style for the root box
     fn default_root_style(&self) -> ComputedStyle {
-        todo!("Create default root style")
+        use crate::renderer::style::*;
+
+        ComputedStyle {
+            color: [0.0, 0.0, 0.0],  // Black text
+            background_color: [1.0, 1.0, 1.0],  // White background
+            width: Some(Dimension::Pixels(self.viewport_width)),
+            height: Some(Dimension::Pixels(self.viewport_height)),
+            margin: BoxValues {
+                top: Dimension::Pixels(0.0),
+                right: Dimension::Pixels(0.0),
+                bottom: Dimension::Pixels(0.0),
+                left: Dimension::Pixels(0.0),
+            },
+            padding: BoxValues {
+                top: Dimension::Pixels(0.0),
+                right: Dimension::Pixels(0.0),
+                bottom: Dimension::Pixels(0.0),
+                left: Dimension::Pixels(0.0),
+            },
+            border: BoxValues {
+                top: Border { width: 0.0, style: BorderStyle::None, color: [0.0, 0.0, 0.0] },
+                right: Border { width: 0.0, style: BorderStyle::None, color: [0.0, 0.0, 0.0] },
+                bottom: Border { width: 0.0, style: BorderStyle::None, color: [0.0, 0.0, 0.0] },
+                left: Border { width: 0.0, style: BorderStyle::None, color: [0.0, 0.0, 0.0] },
+            },
+            display: DisplayType::Block,
+            position: PositionType::Static,
+            top: None,
+            right: None,
+            bottom: None,
+            left: None,
+            font_size: Dimension::Pixels(16.0),
+            font_weight: FontWeight::Normal,
+            font_family: vec!["Arial".to_string(), "sans-serif".to_string()],
+            text_align: TextAlign::Left,
+        }
     }
 
     /// Default style based on element tag
     fn default_element_style(&self, tag_name: &str) -> ComputedStyle {
-        todo!("Create default element style")
+        use crate::renderer::style::*;
+
+        let mut style = ComputedStyle {
+            color: [0.0, 0.0, 0.0],  // Black text
+            background_color: [1.0, 1.0, 1.0],  // White background (transparent)
+            width: None,  // Auto width by default
+            height: None, // Auto height by default
+            margin: BoxValues {
+                top: Dimension::Pixels(0.0),
+                right: Dimension::Pixels(0.0),
+                bottom: Dimension::Pixels(0.0),
+                left: Dimension::Pixels(0.0),
+            },
+            padding: BoxValues {
+                top: Dimension::Pixels(0.0),
+                right: Dimension::Pixels(0.0),
+                bottom: Dimension::Pixels(0.0),
+                left: Dimension::Pixels(0.0),
+            },
+            border: BoxValues {
+                top: Border { width: 0.0, style: BorderStyle::None, color: [0.0, 0.0, 0.0] },
+                right: Border { width: 0.0, style: BorderStyle::None, color: [0.0, 0.0, 0.0] },
+                bottom: Border { width: 0.0, style: BorderStyle::None, color: [0.0, 0.0, 0.0] },
+                left: Border { width: 0.0, style: BorderStyle::None, color: [0.0, 0.0, 0.0] },
+            },
+            display: DisplayType::Inline,  // Default display type
+            position: PositionType::Static,
+            top: None,
+            right: None,
+            bottom: None,
+            left: None,
+            font_size: Dimension::Pixels(16.0),
+            font_weight: FontWeight::Normal,
+            font_family: vec!["Arial".to_string(), "sans-serif".to_string()],
+            text_align: TextAlign::Left,
+        };
+
+        // Adjust style based on element type
+        match tag_name {
+            "html" | "body" => {
+                style.display = DisplayType::Block;
+                style.width = Some(Dimension::Percentage(100.0));
+                style.height = Some(Dimension::Percentage(100.0));
+            },
+            "div" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "section" | "article" | "header" | "footer" | "nav" => {
+                style.display = DisplayType::Block;
+                style.margin.bottom = Dimension::Pixels(10.0);
+            },
+            "h1" => {
+                style.font_size = Dimension::Pixels(32.0);
+                style.font_weight = FontWeight::Bold;
+                style.margin.bottom = Dimension::Pixels(16.0);
+            },
+            "h2" => {
+                style.font_size = Dimension::Pixels(24.0);
+                style.font_weight = FontWeight::Bold;
+                style.margin.bottom = Dimension::Pixels(14.0);
+            },
+            "h3" => {
+                style.font_size = Dimension::Pixels(20.0);
+                style.font_weight = FontWeight::Bold;
+                style.margin.bottom = Dimension::Pixels(12.0);
+            },
+            "a" => {
+                style.color = [0.0, 0.0, 1.0]; // Blue for links
+            },
+            "span" | "a" | "strong" | "em" | "b" | "i" => {
+                style.display = DisplayType::Inline;
+            },
+            "strong" | "b" => {
+                style.font_weight = FontWeight::Bold;
+            },
+            // Add more element styles as needed
+            _ => {} // Default style for unknown elements
+        }
+
+        style
     }
 
     /// Default style for text nodes
     fn default_text_style(&self) -> ComputedStyle {
-        todo!("Create default text style")
+        use crate::renderer::style::*;
+
+        ComputedStyle {
+            color: [0.0, 0.0, 0.0],  // Black text
+            background_color: [1.0, 1.0, 1.0],  // Transparent background
+            width: None,
+            height: None,
+            margin: BoxValues {
+                top: Dimension::Pixels(0.0),
+                right: Dimension::Pixels(0.0),
+                bottom: Dimension::Pixels(0.0),
+                left: Dimension::Pixels(0.0),
+            },
+            padding: BoxValues {
+                top: Dimension::Pixels(0.0),
+                right: Dimension::Pixels(0.0),
+                bottom: Dimension::Pixels(0.0),
+                left: Dimension::Pixels(0.0),
+            },
+            border: BoxValues {
+                top: Border { width: 0.0, style: BorderStyle::None, color: [0.0, 0.0, 0.0] },
+                right: Border { width: 0.0, style: BorderStyle::None, color: [0.0, 0.0, 0.0] },
+                bottom: Border { width: 0.0, style: BorderStyle::None, color: [0.0, 0.0, 0.0] },
+                left: Border { width: 0.0, style: BorderStyle::None, color: [0.0, 0.0, 0.0] },
+            },
+            display: DisplayType::Inline,
+            position: PositionType::Static,
+            top: None,
+            right: None,
+            bottom: None,
+            left: None,
+            font_size: Dimension::Pixels(16.0),
+            font_weight: FontWeight::Normal,
+            font_family: vec!["Arial".to_string(), "sans-serif".to_string()],
+            text_align: TextAlign::Left,
+        }
     }
 }
