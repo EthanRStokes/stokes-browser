@@ -1,6 +1,7 @@
 // Painter module - responsible for rendering layout boxes to the screen
 use wgpu::util::DeviceExt;
 use std::sync::Arc;
+use crate::renderer::element_renderer::ElementRendererFactory;
 use crate::Vertex;
 use crate::renderer::layout::LayoutBox;
 
@@ -10,6 +11,7 @@ pub struct Painter {
     queue: Arc<wgpu::Queue>,
     render_pipeline: wgpu::RenderPipeline,
     index_buffer: wgpu::Buffer,
+    renderer_factory: ElementRendererFactory
 }
 
 impl Painter {
@@ -71,12 +73,14 @@ impl Painter {
             contents: bytemuck::cast_slice(rect_indices),
             usage: wgpu::BufferUsages::INDEX,
         });
+        let renderer_factory = ElementRendererFactory::new(&device);
 
         Self {
             device,
             queue,
             render_pipeline,
             index_buffer,
+            renderer_factory,
         }
     }
 
@@ -152,19 +156,25 @@ impl Painter {
     /// Render a single layout box
     fn render_box(&self, layout_box: &LayoutBox, render_pass: &mut wgpu::RenderPass) {
         // Create vertices for this box
-        let vertices = self.create_box_vertices(layout_box);
-
-        // Create vertex buffer
+        self.create_box_vertices(layout_box);
+        // Find an appropriate renderer for this layout box
+        if let Some(renderer) = self.renderer_factory.get_renderer(layout_box) {
+            // Use the specialized renderer
+            renderer.render(layout_box, render_pass, &self.index_buffer);
+        } else {
+            // Fallback to basic rendering if no specialized renderer is found
+            let vertices = self.create_box_vertices(layout_box);
         let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Box Vertex Buffer"),
             contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-
-        // Draw the box
-        render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-        render_pass.draw_indexed(0..6, 0, 0..1);
+            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            // Draw the box
+            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            render_pass.draw_indexed(0..6, 0, 0..1);
+        }
     }
 
     /// Create vertices for a layout box
