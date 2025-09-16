@@ -117,6 +117,7 @@ impl Painter {
     }
 
     /// Render a single layout box
+    /// This function should not actually be used because rendering a website is not just boxes.
     fn render_box(&self, layout_box: &LayoutBox, encoder: &mut wgpu::CommandEncoder, render_pass: &mut wgpu::RenderPass) {
         // Create vertices for this box
         let vertices = self.create_box_vertices(layout_box);
