@@ -111,14 +111,46 @@ impl Painter {
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView
     ) {
-        // In a real implementation, this would traverse the layout tree
-        // and render each box according to its style and position
-        todo!("Implement rendering of layout tree");
+        // Create a render pass to draw all boxes
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Render Layout Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load, // Use Load to preserve the background
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        });
+
+        // Set up the render pipeline
+        render_pass.set_pipeline(&self.render_pipeline);
+
+        // Render the entire layout tree recursively
+        self.render_box_and_children(layout_root, &mut render_pass);
+    }
+
+    /// Recursively render a layout box and all its children
+    fn render_box_and_children(&self, layout_box: &LayoutBox, render_pass: &mut wgpu::RenderPass) {
+        // Only render visible boxes
+        if layout_box.width > 0.0 && layout_box.height > 0.0 {
+            // Render this box
+            self.render_box(layout_box, render_pass);
+
+            // Render all children
+            for child in &layout_box.children {
+                self.render_box_and_children(child, render_pass);
+            }
+        }
     }
 
     /// Render a single layout box
-    /// This function should not actually be used because rendering a website is not just boxes.
-    fn render_box(&self, layout_box: &LayoutBox, encoder: &mut wgpu::CommandEncoder, render_pass: &mut wgpu::RenderPass) {
+    fn render_box(&self, layout_box: &LayoutBox, render_pass: &mut wgpu::RenderPass) {
         // Create vertices for this box
         let vertices = self.create_box_vertices(layout_box);
 
