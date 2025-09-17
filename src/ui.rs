@@ -184,7 +184,7 @@ impl BrowserUI {
     }
 
     /// Render the UI
-    pub fn render(&self, canvas: &mut Canvas) {
+    pub fn render(&self, canvas: &Canvas) {
         let mut paint = Paint::default();
         let font = Font::default();
         for comp in &self.components {

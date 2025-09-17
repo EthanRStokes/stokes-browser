@@ -12,7 +12,8 @@ use winit::window::{Window, WindowId};
 
 use crate::engine::{Engine, EngineConfig};
 use crate::ui::BrowserUI;
-use skia_safe::{Surface, gpu, Color};
+use skia_safe::{gpu, Color, Surface};
+use skia_safe::gpu::DirectContext;
 
 /// Tab structure representing a browser tab
 struct Tab {
@@ -41,8 +42,11 @@ struct BrowserApp {
 
 impl BrowserApp {
     async fn new(window: Arc<Window>) -> Self {
-        // Create Skia context
-        let mut gr_context = gpu::DirectContext::new_gl(None, None).expect("Failed to create Skia GL context");
+        // Create Skia context - using the correct API for version 0.88.0
+        let context_options = gpu::ContextOptions::default();
+        let gr_context = gpu::DirectContext::new_gl(Some(&context_options))
+            .expect("Failed to create Skia GL context");
+
         let size = window.inner_size();
 
         // Initialize UI
@@ -123,9 +127,9 @@ impl BrowserApp {
             self.active_tab_index = index;
 
             // Update UI to reflect active tab
-            let url = self.active_tab().engine.current_url();;
+            let url = self.active_tab().engine.current_url(); // Fixed double semicolon
             let title = self.active_tab().engine.page_title();
-        // TODO   self.ui.update_address_bar(url);
+            // TODO: self.ui.update_address_bar(url);
             self.window.set_title(&format!("{} - Stokes Browser", title));
         }
     }
@@ -159,14 +163,31 @@ impl BrowserApp {
     }
 
     fn render(&mut self) -> Result<(), String> {
-        // Create Skia surface for the window
-        let surface = Surface::new_raster_n32_premul((self.size.width as i32, self.size.height as i32))
+        // Create Skia surface for the window using updated API
+        let info = skia_safe::ImageInfo::new(
+            (self.size.width as i32, self.size.height as i32),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Premul,
+            None,
+        );
+
+        let mut surface = skia_safe::Surface::new_raster(&info, None, None)
             .ok_or("Failed to create Skia surface")?;
+
+        // Get a mutable canvas for rendering
         let canvas = surface.canvas();
         canvas.clear(Color::WHITE);
-        self.active_tab().engine.render(canvas);
-        self.ui.render(canvas);
-        // Present the surface to the window (platform-specific, may require integration)
+
+        // Get mutable references to engine and UI for rendering
+        let engine = &self.active_tab().engine;
+        let ui = &self.ui;
+
+        // Render the active tab and UI
+        engine.render(canvas);
+        ui.render(canvas);
+
+        // Note: To display this on screen with winit, you'd need to convert
+        // the surface pixels to a texture and present it to the window
         Ok(())
     }
 }

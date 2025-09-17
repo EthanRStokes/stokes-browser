@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::sync::Arc;
-
+use skia_safe::Canvas;
 use crate::networking::HttpClient;
 use crate::dom::{Dom, DomNode};
 //use crate::layout::{LayoutEngine, LayoutBox};
@@ -87,7 +87,7 @@ impl Engine {
     }
     
     /// Render the current page to a canvas
-    pub fn render(&self, canvas: &mut skia_safe::Canvas) {
+    pub fn render(&self, canvas: &Canvas) {
     //    if let Some(layout) = &self.layout {
             // Create a renderer (or use a cached one)
             // In a real implementation, you'd want to cache this
