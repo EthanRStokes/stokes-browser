@@ -1,11 +1,10 @@
 // HTML parser using html5ever
 use html5ever::parse_document;
-use html5ever::rcdom::{Handle, NodeData, RcDom};
 use html5ever::tendril::TendrilSink;
 use markup5ever_rcdom as rcdom;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
-
+use markup5ever_rcdom::{Handle, NodeData};
 use super::{Dom, DomNode, NodeType, ElementData, AttributeMap};
 
 /// HTML Parser for converting HTML strings into DOM structures
@@ -19,8 +18,8 @@ impl HtmlParser {
     /// Parse HTML string into a DOM structure
     pub fn parse(&self, html: &str) -> Dom {
         // Parse with html5ever
-        let parser = parse_document(RcDom::default(), Default::default());
-        let rcdom = parser.one(html.into());
+        let parser = parse_document(rcdom::RcDom::default(), Default::default());
+        let rcdom = parser.one(html);
 
         // Convert RcDom to our DOM structure
         let mut dom = Dom::new();
@@ -37,10 +36,9 @@ impl HtmlParser {
         target_node: &mut DomNode
     ) {
         let node = handle;
-        let borrow = node.borrow();
 
         // Set the node type based on the html5ever node data
-        match borrow.data {
+        match node.data {
             NodeData::Document => {
                 // Document node, just process children
                 target_node.node_type = NodeType::Document;
@@ -51,7 +49,7 @@ impl HtmlParser {
                 
                 // Process attributes
                 let mut attributes = AttributeMap::new();
-                for attr in attrs.iter() {
+                for attr in attrs.take() {
                     let name = attr.name.local.to_string();
                     let value = attr.value.to_string();
                     attributes.insert(name, value);
@@ -66,7 +64,7 @@ impl HtmlParser {
             },
             NodeData::Comment { ref contents } => {
                 // Comment node
-                let comment = contents.borrow().to_string();
+                let comment = contents.to_string();
                 target_node.node_type = NodeType::Comment(comment);
             },
             // Ignore other node types
@@ -74,9 +72,9 @@ impl HtmlParser {
         }
 
         // Process children
-        for child_handle in borrow.children.iter() {
+        for child_handle in node.children.take().iter() {
             // Skip processing if this is a doctype node
-            if let NodeData::Doctype { .. } = child_handle.borrow().data {
+            if let NodeData::Doctype { .. } = child_handle.data {
                 continue;
             }
 
@@ -84,7 +82,7 @@ impl HtmlParser {
             let mut child_node = DomNode::new(NodeType::Document, None);  // Temporary type
             
             // Get a weak reference to parent
-            let parent_weak = Rc::downgrade(&Rc::new(RefCell::new(target_node.clone())));
+            let parent_weak = Rc::downgrade(&Rc::new(RefCell::new(target_node)));
             
             // Recursively build the DOM for this child
             self.build_dom_from_handle(child_handle, Some(parent_weak), &mut child_node);

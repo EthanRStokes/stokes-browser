@@ -55,6 +55,7 @@ impl ElementData {
 }
 
 /// A node in the DOM tree
+#[derive(Clone)]
 pub struct DomNode {
     /// The type of node
     pub node_type: NodeType,
@@ -122,7 +123,7 @@ impl DomNode {
         
         // Recursively check children
         for child in &self.children {
-            let child_borrowed = &*child.borrow();
+            let child_borrowed = child.borrow().clone();
             let mut child_matches = child_borrowed.find_nodes(&predicate);
             result.append(&mut child_matches);
         }
