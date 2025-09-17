@@ -1,7 +1,5 @@
-mod dom;
 mod engine;
 mod networking;
-mod renderer;
 mod ui;
 
 use std::sync::Arc;
@@ -13,7 +11,6 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
 use crate::engine::{Engine, EngineConfig};
-use crate::renderer::DomRenderer;
 use crate::ui::BrowserUI;
 
 #[repr(C)]
@@ -67,7 +64,6 @@ struct BrowserApp {
     window: Arc<Window>,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
-    renderer: DomRenderer,
     size: winit::dpi::PhysicalSize<u32>,
     surface: wgpu::Surface<'static>,
     surface_format: wgpu::TextureFormat,
@@ -113,9 +109,6 @@ impl BrowserApp {
         let mut ui = BrowserUI::new(Arc::clone(&device), Arc::clone(&queue));
         ui.initialize_renderer(surface_format);
 
-        // Initialize renderer
-        let renderer = DomRenderer::new(Arc::clone(&device), Arc::clone(&queue), surface_format, size.width as f32, size.height as f32);
-
         // Create initial tab
         let config = EngineConfig::default();
         let initial_tab = Tab::new("tab1", config.clone());
@@ -127,7 +120,6 @@ impl BrowserApp {
             window,
             device,
             queue,
-            renderer,
             size,
             surface,
             surface_format,
@@ -238,41 +230,46 @@ impl BrowserApp {
             label: Some("Render Encoder"),
         });
 
-        // Clear the screen
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Clear Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.95,
-                            g: 0.95,
-                            b: 0.95,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-            });
-        }
+        // Create a Skia surface for rendering HTML content
+        let surface_texture = output.texture.as_hal::<skia_safe::gpu::backend_render_targets::D3D12RenderTargetHandle>(
+            &wgpu::hal::D3D12 {},
+            &wgpu::TextureViewDescriptor::default(),
+        ).expect("Failed to get texture handle");
 
-        // active tab's DOM
-        let dom = self.tabs[self.active_tab_index].engine.dom.document.clone();
+        // Create Skia context and surface
+        let context = skia_safe::gpu::DirectContext::new(self.device.as_ref(), self.queue.as_ref())
+            .expect("Failed to create Skia context");
 
-        // Render the current web page content
-        self.renderer.render(&dom, &mut encoder, &view);
+        let render_target_info = skia_safe::gpu::backend_render_targets::WGPURenderTargetInfo {
+            width: self.size.width as i32,
+            height: self.size.height as i32,
+            sample_count: 1,
+            color_type: skia_safe::ColorType::RGBA8888,
+            surface_origin: skia_safe::gpu::SurfaceOrigin::TopLeft,
+            srgb_encoded: false,
+        };
 
-        // Render browser UI
+        let render_target = skia_safe::gpu::backend_render_targets::make_d3d12(render_target_info, surface_texture);
+        let surface = skia_safe::Surface::from_backend_render_target(
+            &context,
+            &render_target,
+            skia_safe::SurfaceOrigin::TopLeft,
+            skia_safe::ColorType::RGBA8888,
+            None,
+            None,
+        ).expect("Failed to create Skia surface");
+
+        // Get canvas from surface
+        let canvas = surface.canvas();
+
+        // Clear canvas with white background
+        canvas.clear(skia_safe::Color::WHITE);
+
+        // Render active tab content
+        self.active_tab().engine.render(canvas);
+
+
         self.ui.render(&mut encoder, &view);
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
 
         Ok(())
     }
