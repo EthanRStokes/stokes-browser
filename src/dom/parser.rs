@@ -32,10 +32,13 @@ impl HtmlParser {
     fn build_dom_from_handle(
         &self, 
         handle: &Handle, 
-        parent: Option<Weak<RefCell<DomNode>>>,
+        parent: Option<Weak<RefCell<DomNode>>>, // Remove underscore since we'll use it
         target_node: &mut DomNode
     ) {
         let node = handle;
+
+        // Set the parent reference in the target node
+        target_node.parent = parent;
 
         // Set the node type based on the html5ever node data
         match node.data {
@@ -79,16 +82,19 @@ impl HtmlParser {
             }
 
             // Create a new child node
-            let mut child_node = DomNode::new(NodeType::Document, None);  // Temporary type
+            let child_node = DomNode::new(NodeType::Document, None);  // Temporary type
             
-            // Get a weak reference to parent
-            let parent_weak = Rc::downgrade(&Rc::new(RefCell::new(target_node)));
+            // Add the child to the parent first to get the Rc reference
+            let child_rc = target_node.add_child(child_node);
             
-            // Recursively build the DOM for this child
-            self.build_dom_from_handle(child_handle, Some(parent_weak), &mut child_node);
+            // Create a weak reference to pass as parent to the recursive call
+            let parent_weak = Some(Rc::downgrade(&child_rc));
             
-            // Add the child to the parent
-            target_node.add_child(child_node);
+            // Get a mutable reference to the child for the recursive call
+            let mut child_ref = child_rc.borrow_mut();
+            
+            // Recursively build the DOM for this child, passing the current node as parent
+            self.build_dom_from_handle(child_handle, parent_weak, &mut child_ref);
         }
     }
 }
