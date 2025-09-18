@@ -2,6 +2,9 @@
 mod parser;
 mod node;
 
+use std::rc::Rc;
+use std::cell::RefCell;
+
 pub use self::parser::HtmlParser;
 pub use self::node::{DomNode, NodeType, ElementData, AttributeMap};
 
@@ -25,14 +28,14 @@ impl Dom {
     }
 
     /// Find nodes by tag name
-    pub fn query_selector(&self, selector: &str) -> Vec<&DomNode> {
+    pub fn query_selector(&self, selector: &str) -> Vec<Rc<RefCell<DomNode>>> {
         self.root.query_selector(selector)
     }
 
     /// Find nodes that match a predicate
-    pub fn find_nodes<F>(&self, predicate: F) -> Vec<&DomNode>
+    pub fn find_nodes<F>(&self, predicate: F) -> Vec<Rc<RefCell<DomNode>>>
     where
-        F: Fn(&DomNode) -> bool,
+        F: Fn(&DomNode) -> bool + Clone,
     {
         self.root.find_nodes(predicate)
     }
@@ -43,7 +46,7 @@ impl Dom {
         let title_nodes = self.query_selector("title");
         if let Some(title_node) = title_nodes.first() {
             // Get text content of the title
-            title_node.text_content()
+            title_node.borrow().text_content()
         } else {
             // Default title if not found
             "Untitled Page".to_string()

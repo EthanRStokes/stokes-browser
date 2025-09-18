@@ -3,17 +3,26 @@ mod networking;
 mod ui;
 mod dom;
 
+use std::ffi::CString;
+use std::num::NonZeroU32;
 use std::sync::Arc;
+use glutin::config::{ConfigTemplateBuilder, GlConfig};
+use glutin::context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext};
+use glutin::display::{GetGlDisplay, GlDisplay};
+use glutin::surface::{SurfaceAttributesBuilder, WindowSurface};
+use glutin_winit::DisplayBuilder;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::window::{Window, WindowId};
+use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::engine::{Engine, EngineConfig};
 use crate::ui::BrowserUI;
 use skia_safe::{gpu, Color, Surface};
 use skia_safe::gpu::DirectContext;
+use skia_safe::gpu::gl::Interface;
+use winit::raw_window_handle::HasWindowHandle;
 
 /// Tab structure representing a browser tab
 struct Tab {
@@ -41,10 +50,89 @@ struct BrowserApp {
 }
 
 impl BrowserApp {
-    async fn new(window: Arc<Window>) -> Self {
+    async fn new(el: &EventLoop<()>) -> Self {
+        let window_attrs = WindowAttributes::default()
+            .with_title("Stokes Browser")
+            .with_inner_size(LogicalSize::new(1024, 768));
+
+        let template = ConfigTemplateBuilder::new()
+            .with_alpha_size(8)
+            .with_transparency(true);
+
+        let display_builder = DisplayBuilder::new().with_window_attributes(window_attrs.into());
+        let (window, gl_config) = display_builder
+            .build(el, template, |configs| {
+                configs
+                    .reduce(|accum, config| {
+                        let transparency_check = config.supports_transparency().unwrap_or(false)
+                            & !accum.supports_transparency().unwrap_or(false);
+
+                        if transparency_check || config.num_samples() < accum.num_samples() {
+                            config
+                        } else {
+                            accum
+                        }
+                    })
+                    .unwrap()
+            })
+            .unwrap();
+        let window = window.expect("Could not create window with OpenGL context.");
+        let window_handle = window.window_handle().expect("Failed to retrieve RawWindowHandle");
+        let raw_window_handle = window_handle.as_raw();
+
+        let context_attributes = ContextAttributesBuilder::new().build(Some(raw_window_handle));
+
+        let fallback_context_attributes = ContextAttributesBuilder::new()
+            .with_context_api(ContextApi::Gles(None))
+            .build(Some(raw_window_handle));
+        let not_current_gl_context = unsafe {
+            gl_config
+                .display()
+                .create_context(&gl_config, &context_attributes)
+                .unwrap_or_else(|_| {
+                    gl_config
+                        .display()
+                        .create_context(&gl_config, &fallback_context_attributes)
+                        .expect("failed to create context")
+                })
+        };
+
+        let (width, height) = window.inner_size().into();
+
+        let attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(
+            raw_window_handle,
+            NonZeroU32::new(width).unwrap(),
+            NonZeroU32::new(height).unwrap()
+        );
+
+        let gl_surface = unsafe {
+            gl_config
+                .display()
+                .create_window_surface(&gl_config, &attrs)
+                .expect("Failed to create GL surface")
+        };
+
+        let gl_context = not_current_gl_context
+            .make_current(&gl_surface)
+            .expect("Failed to make GL context current");
+
+        gl::load_with(|s| {
+            gl_config
+                .display()
+                .get_proc_address(CString::new(s).unwrap().as_c_str())
+        });
+        let interface = Interface::new_load_with(|name| {
+            if name == "eglGetCurrentDisplay" {
+                return std::ptr::null();
+            }
+            gl_config
+                .display()
+                .get_proc_address(CString::new(name).unwrap().as_c_str())
+        }).expect("Could not create interface");
+
         // Create Skia context - using the correct API for version 0.88.0
         let context_options = gpu::ContextOptions::default();
-        let gr_context = gpu::DirectContext::new_gl(Some(&context_options))
+        let gr_context = gpu::DirectContext::new_gl(interface, Some(&context_options))
             .expect("Failed to create Skia GL context");
 
         let size = window.inner_size();
@@ -61,7 +149,7 @@ impl BrowserApp {
             tabs: vec![initial_tab],
             active_tab_index: 0,
             ui,
-            window,
+            window: Arc::new(window),
             size,
             skia_context: gr_context,
         }
@@ -227,16 +315,8 @@ impl ApplicationHandler for BrowserApp {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting Stokes Browser...");
     let event_loop = EventLoop::new()?;
-    let window = Arc::new(
-        event_loop
-            .create_window(
-                Window::default_attributes()
-                    .with_title("Stokes Browser")
-                    .with_inner_size(LogicalSize::new(1024, 768)),
-            )
-            .unwrap()
-    );
-    let mut app = BrowserApp::new(window).await;
+
+    let mut app = BrowserApp::new(&event_loop).await;
     println!("Browser initialized, navigating to homepage...");
     app.navigate("https://example.com").await;
     event_loop.run_app(&mut app)?;

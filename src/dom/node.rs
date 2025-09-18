@@ -98,7 +98,7 @@ impl DomNode {
     }
 
     /// Find nodes that match a CSS selector (simplified)
-    pub fn query_selector(&self, selector: &str) -> Vec<&DomNode> {
+    pub fn query_selector(&self, selector: &str) -> Vec<Rc<RefCell<DomNode>>> {
         // Very simplified selector matching for now - just match by tag name
         self.find_nodes(|node| {
             if let NodeType::Element(data) = &node.node_type {
@@ -109,22 +109,27 @@ impl DomNode {
         })
     }
 
-    /// Find nodes that match a predicate
-    pub fn find_nodes<F>(&self, predicate: F) -> Vec<&DomNode>
+    /// Find nodes that match a predicate, returning owned references
+    pub fn find_nodes<F>(&self, predicate: F) -> Vec<Rc<RefCell<DomNode>>>
     where
-        F: Fn(&DomNode) -> bool,
+        F: Fn(&DomNode) -> bool + Clone,
     {
         let mut result = Vec::new();
         
-        // Check if current node matches
-        if predicate(self) {
-            result.push(self);
-        }
-        
+        // We can't include self in the result since we don't have an Rc to self
+        // This method is meant to be called on nodes that are already in Rc<RefCell<>>
+
         // Recursively check children
         for child in &self.children {
-            let child_borrowed = child.borrow().clone();
-            let mut child_matches = child_borrowed.find_nodes(&predicate);
+            let child_borrowed = child.borrow();
+            if predicate(&*child_borrowed) {
+                result.push(Rc::clone(child));
+            }
+            drop(child_borrowed); // Explicitly drop the borrow
+
+            // Recursively search in child's children
+            let child_borrowed = child.borrow();
+            let mut child_matches = child_borrowed.find_nodes(predicate.clone());
             result.append(&mut child_matches);
         }
         
