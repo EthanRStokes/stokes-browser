@@ -6,22 +6,26 @@ mod dom;
 use std::ffi::CString;
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use gl::types::GLint;
 use glutin::config::{ConfigTemplateBuilder, GlConfig};
-use glutin::context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext};
+use glutin::context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext};
 use glutin::display::{GetGlDisplay, GlDisplay};
-use glutin::surface::{SurfaceAttributesBuilder, WindowSurface};
+use glutin::surface::{GlSurface, SurfaceAttributesBuilder, WindowSurface};
+use glutin::surface::Surface as GlutinSurface;
 use glutin_winit::DisplayBuilder;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::engine::{Engine, EngineConfig};
 use crate::ui::BrowserUI;
-use skia_safe::{gpu, Color, Surface};
-use skia_safe::gpu::DirectContext;
-use skia_safe::gpu::gl::Interface;
+use skia_safe::{gpu, Color, ColorType, Surface};
+use skia_safe::gpu::{backend_render_targets, DirectContext};
+use skia_safe::gpu::gl::{Format, FramebufferInfo, Interface};
+use skia_safe::gpu::surfaces::wrap_backend_render_target;
 use winit::raw_window_handle::HasWindowHandle;
 
 /// Tab structure representing a browser tab
@@ -41,12 +45,26 @@ impl Tab {
 
 /// The main browser application
 struct BrowserApp {
+    env: Env,
+    fb_info: FramebufferInfo,
+    num_samples: usize,
+    stencil_size: usize,
+    modifiers: Modifiers,
+    frame: usize,
+    previous_frame_start: Instant,
     tabs: Vec<Tab>,
     active_tab_index: usize,
     ui: BrowserUI,
-    window: Arc<Window>,
     size: winit::dpi::PhysicalSize<u32>,
     skia_context: gpu::DirectContext,
+}
+
+struct Env {
+    surface: Surface,
+    gl_surface: GlutinSurface<WindowSurface>,
+    gr_context: DirectContext,
+    gl_context: PossiblyCurrentContext,
+    window: Window,
 }
 
 impl BrowserApp {
@@ -132,10 +150,34 @@ impl BrowserApp {
 
         // Create Skia context - using the correct API for version 0.88.0
         let context_options = gpu::ContextOptions::default();
-        let gr_context = gpu::DirectContext::new_gl(interface, Some(&context_options))
+        let mut gr_context = gpu::direct_contexts::make_gl(interface, Some(&context_options))
             .expect("Failed to create Skia GL context");
 
         let size = window.inner_size();
+
+        let fb_info = {
+            let mut fboid: GLint = 0;
+            unsafe { gl::GetIntegerv(gl::FRAMEBUFFER_BINDING, &mut fboid) };
+
+            FramebufferInfo {
+                fboid: fboid.try_into().unwrap(),
+                format: Format::RGBA8.into(),
+                ..Default::default()
+            }
+        };
+
+        let num_samples = gl_config.num_samples() as usize;
+        let stencil_size = gl_config.stencil_size() as usize;
+
+        let surface = Self::create_surface(&window, fb_info, &mut gr_context, num_samples, stencil_size);
+
+        let env = Env {
+            surface,
+            gl_surface,
+            gr_context: gr_context.clone(),
+            gl_context,
+            window
+        };
 
         // Initialize UI
         let mut ui = BrowserUI::new(&gr_context);
@@ -146,13 +188,43 @@ impl BrowserApp {
         let initial_tab = Tab::new("tab1", config.clone());
 
         Self {
+            env,
+            fb_info,
+            num_samples,
+            stencil_size,
+            modifiers: Modifiers::default(),
+            frame: 0,
+            previous_frame_start: Instant::now(),
             tabs: vec![initial_tab],
             active_tab_index: 0,
             ui,
-            window: Arc::new(window),
             size,
             skia_context: gr_context,
         }
+    }
+
+    fn create_surface(
+        window: &Window,
+        fb_info: FramebufferInfo,
+        gr_context: &mut DirectContext,
+        num_samples: usize,
+        stencil_size: usize
+    ) -> Surface {
+        let size = window.inner_size();
+        let size = (
+            size.width.try_into().expect("Could not convert width"),
+            size.height.try_into().expect("Could not convert height")
+        );
+        let backend_render_target = backend_render_targets::make_gl(size, num_samples, stencil_size, fb_info);
+
+        wrap_backend_render_target(
+            gr_context,
+            &backend_render_target,
+            gpu::SurfaceOrigin::BottomLeft,
+            ColorType::RGBA8888,
+            None,
+            None
+        ).expect("Failed to wrap backend render target")
     }
 
     // Get the currently active tab
@@ -168,7 +240,7 @@ impl BrowserApp {
     // Navigate to a URL in the current tab
     async fn navigate(&mut self, url: &str) {
         // Update window title to show loading state
-        self.window.set_title(&format!("Loading: {}", url));
+        self.env.window.set_title(&format!("Loading: {}", url));
 
         // First, navigate and store the result
         let tab_id = self.active_tab().id.clone();
@@ -186,11 +258,11 @@ impl BrowserApp {
                 self.ui.update_tab_title(&tab_id, &title);
 
                 // Update window title
-                self.window.set_title(&format!("{} - Stokes Browser", title));
+                self.env.window.set_title(&format!("{} - Stokes Browser", title));
             }
             Err(e) => {
                 println!("Navigation error: {}", e);
-                self.window.set_title("Error - Stokes Browser");
+                self.env.window.set_title("Error - Stokes Browser");
             }
         }
     }
@@ -218,7 +290,7 @@ impl BrowserApp {
             let url = self.active_tab().engine.current_url(); // Fixed double semicolon
             let title = self.active_tab().engine.page_title();
             // TODO: self.ui.update_address_bar(url);
-            self.window.set_title(&format!("{} - Stokes Browser", title));
+            self.env.window.set_title(&format!("{} - Stokes Browser", title));
         }
     }
 
@@ -282,20 +354,34 @@ impl BrowserApp {
 
 impl ApplicationHandler for BrowserApp {
     fn resumed(&mut self, _event_loop: &ActiveEventLoop) {
-        self.window.request_redraw();
+        self.env.window.request_redraw();
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
+        let mut draw_frame = false;
+        let frame_start = Instant::now();
+
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
             WindowEvent::Resized(new_size) => {
-                if new_size.width > 0 && new_size.height > 0 {
-                    self.size = new_size;
-                }
-                self.window.request_redraw();
+                self.env.surface = Self::create_surface(
+                    &self.env.window,
+                    self.fb_info,
+                    &mut self.env.gr_context,
+                    self.num_samples,
+                    self.stencil_size
+                );
+                let (width, height): (u32, u32) = new_size.into();
+
+                self.env.gl_surface.resize(
+                    &self.env.gl_context,
+                    NonZeroU32::new(width.max(1)).unwrap(),
+                    NonZeroU32::new(height.max(1)).unwrap()
+                );
             }
             WindowEvent::RedrawRequested => {
+                draw_frame = true;
                 match self.render() {
                     Ok(_) => {}
                     Err(e) => {
@@ -304,10 +390,34 @@ impl ApplicationHandler for BrowserApp {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                self.window.request_redraw();
+                self.env.window.request_redraw();
             }
             _ => {}
         }
+
+        let expected_frame_length_seconds = 1.0 / 20.0;
+        let frame_duration = Duration::from_secs_f32(expected_frame_length_seconds);
+
+        if frame_start - self.previous_frame_start > frame_duration {
+            draw_frame = true;
+            self.previous_frame_start = frame_start;
+        }
+        if draw_frame {
+            self.frame += 1;
+            let canvas = self.env.surface.canvas();
+            canvas.clear(Color::WHITE);
+            /// todo render frame right here
+
+            self.env.gr_context.flush_and_submit();
+            self.env
+                .gl_surface
+                .swap_buffers(&self.env.gl_context)
+                .unwrap();
+        }
+
+        event_loop.set_control_flow(ControlFlow::WaitUntil(
+            self.previous_frame_start + frame_duration
+        ))
     }
 }
 
