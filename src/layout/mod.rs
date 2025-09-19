@@ -38,8 +38,13 @@ impl LayoutEngine {
         // Build layout tree from DOM
         let mut layout_root = self.build_layout_tree(root);
 
-        // Compute layout dimensions
-        layout_root.layout(self.viewport_width, self.viewport_height);
+        // Reserve space for browser UI at the top (address bar, tabs, etc.)
+        let ui_height = 80.0; // Approximate height for browser chrome
+        let content_start_y = ui_height;
+        let available_height = self.viewport_height - ui_height;
+
+        // Compute layout dimensions with proper viewport offset using the new position-aware method
+        layout_root.layout_with_position(self.viewport_width, available_height, 0.0, content_start_y);
 
         layout_root
     }
