@@ -1,4 +1,4 @@
-use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob, Vector};
+use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob, Vector, FontStyle};
 use winit::window::Window;
 use std::sync::Arc;
 
@@ -309,7 +309,10 @@ impl BrowserUI {
         canvas.draw_rect(border_rect, &chrome_paint);
 
         let mut paint = Paint::default();
-        let font = Font::default();
+        let font_mgr = skia_safe::FontMgr::new();
+        let typeface = font_mgr.legacy_make_typeface(None, FontStyle::default())
+            .expect("Failed to create default typeface");
+        let font = Font::new(typeface, 18.0);
 
         for comp in &self.components {
             match comp {
