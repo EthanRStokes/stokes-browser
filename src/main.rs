@@ -59,6 +59,7 @@ struct BrowserApp {
     ui: BrowserUI,
     size: winit::dpi::PhysicalSize<u32>,
     skia_context: gpu::DirectContext,
+    cursor_position: (f64, f64), // Track cursor position
 }
 
 struct Env {
@@ -202,6 +203,7 @@ impl BrowserApp {
             ui,
             size,
             skia_context: gr_context,
+            cursor_position: (0.0, 0.0), // Initialize cursor position
         }
     }
 
@@ -399,15 +401,14 @@ impl ApplicationHandler for BrowserApp {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                if let Some(pos) = position {
-                    self.handle_click(pos.x as f32, pos.y as f32);
-                }
+                // Use the stored cursor position for click handling
+                self.handle_click(self.cursor_position.0 as f32, self.cursor_position.1 as f32);
                 self.env.window.request_redraw();
             }
-            WindowEvent::CursorMoved { device_id, position } => {
-                let (x, y) = (position.x, position.y);
-
-                self.handle_click()
+            WindowEvent::CursorMoved { position, .. } => {
+                // Update cursor position when mouse moves
+                self.cursor_position = (position.x, position.y);
+                // No need to handle click on cursor move - only track position
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // Handle mouse wheel scrolling
@@ -433,13 +434,7 @@ impl ApplicationHandler for BrowserApp {
                     // Handle text input and navigation keys
                     match event.logical_key {
                         Key::Named(NamedKey::Backspace) => {
-                            if let Some(url) = self.ui.handle_key_input("Backspace") {
-                                // Navigate if Enter was pressed in address bar
-                                let app_ptr = self as *mut Self;
-                                tokio::spawn(async move {
-                                    unsafe { (*app_ptr).navigate(&url).await; }
-                                });
-                            }
+                            self.ui.handle_key_input("Backspace");
                             self.env.window.request_redraw();
                         }
                         Key::Named(NamedKey::Delete) => {
@@ -500,11 +495,10 @@ impl ApplicationHandler for BrowserApp {
                                     format!("https://{}", url)
                                 };
 
-                                // Navigate directly without spawning async task
-                                let app = self;
+                                // Navigate synchronously using block_in_place
                                 tokio::task::block_in_place(|| {
                                     tokio::runtime::Handle::current().block_on(async {
-                                        app.navigate(&url_to_navigate).await;
+                                        self.navigate(&url_to_navigate).await;
                                     })
                                 });
                             }
