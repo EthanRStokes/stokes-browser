@@ -233,7 +233,7 @@ impl HtmlRenderer {
                 if let Some(skia_image) = self.decode_image_data(image_bytes) {
                     let mut paint = Paint::default();
                     paint.set_anti_alias(true);
-                    
+
                     // Draw the image scaled to fit the content rect
                     canvas.draw_image_rect(
                         &skia_image,
@@ -295,11 +295,11 @@ impl HtmlRenderer {
 
             if let Some(text_blob) = TextBlob::new(&display_text, &self.default_font) {
                 let text_bounds = text_blob.bounds();
-                
+
                 // Center the text in the placeholder
                 let text_x = rect.left + (rect.width() - text_bounds.width()) / 2.0;
                 let text_y = rect.top + (rect.height() + text_bounds.height()) / 2.0;
-                
+
                 canvas.draw_text_blob(&text_blob, (text_x, text_y), &text_paint);
             }
         }
@@ -315,7 +315,7 @@ impl HtmlRenderer {
             let icon_x = rect.left + (rect.width() - icon_size) / 2.0;
             let icon_y = rect.top + 8.0;
             let icon_rect = Rect::from_xywh(icon_x, icon_y, icon_size, icon_size);
-            
+
             // Draw a simple square with an X
             canvas.draw_rect(icon_rect, &icon_paint);
             canvas.draw_line(
@@ -333,7 +333,56 @@ impl HtmlRenderer {
 
     /// Decode image data into a Skia image
     fn decode_image_data(&self, image_bytes: &[u8]) -> Option<skia_safe::Image> {
-        // Try to decode the image using Skia's built-in decoders
-        skia_safe::Image::from_encoded(skia_safe::Data::new_copy(image_bytes))
+        // Add debugging information
+        println!("Attempting to decode image data: {} bytes", image_bytes.len());
+
+        if image_bytes.is_empty() {
+            println!("Error: Empty image data");
+            return None;
+        }
+
+        // Check the first few bytes to identify the image format
+        if image_bytes.len() >= 4 {
+            let header = &image_bytes[0..4];
+            match header {
+                [0xFF, 0xD8, 0xFF, ..] => println!("Detected JPEG image format"),
+                [0x89, 0x50, 0x4E, 0x47] => println!("Detected PNG image format"),
+                [0x47, 0x49, 0x46, 0x38] => println!("Detected GIF image format"),
+                [0x42, 0x4D, ..] => println!("Detected BMP image format"),
+                [0x52, 0x49, 0x46, 0x46] => println!("Detected WebP image format"),
+                _ => println!("Unknown image format, header: {:02X} {:02X} {:02X} {:02X}",
+                            header[0], header[1], header[2], header[3]),
+            }
+        }
+
+        // Try to create Skia Data object
+        let skia_data = skia_safe::Data::new_copy(image_bytes);
+        // write image to a random file in the user folder
+        let folder = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("skia_debug");
+        let file_path = folder.join("debug_image_data.bin");
+        if let Err(e) = std::fs::write(&file_path, image_bytes)
+        {
+            println!("Warning: Failed to write debug image data to file: {}", e);
+        } else {
+            println!("Wrote debug image data to {}", file_path.display());
+        }
+        if skia_data.is_empty() {
+            println!("Error: Failed to create Skia Data object");
+            return None;
+        }
+
+        println!("Skia Data created successfully: {} bytes", skia_data.size());
+
+        // Try to decode the image using the primary method
+        match skia_safe::Image::from_encoded(skia_data.clone()) {
+            Some(image) => {
+                println!("Successfully decoded image: {}x{}", image.width(), image.height());
+                Some(image)
+            }
+            None => {
+                println!("Error: Skia failed to decode image data with from_encoded");
+                None
+            }
+        }
     }
 }
