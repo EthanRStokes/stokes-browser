@@ -213,11 +213,15 @@ impl StyleResolver {
             PropertyName::Width => {
                 if let CssValue::Length(length) = &declaration.value {
                     computed.width = Some(length.clone());
+                } else if let CssValue::Auto = &declaration.value {
+                    computed.width = None; // Auto width
                 }
             }
             PropertyName::Height => {
                 if let CssValue::Length(length) = &declaration.value {
                     computed.height = Some(length.clone());
+                } else if let CssValue::Auto = &declaration.value {
+                    computed.height = None; // Auto height
                 }
             }
             PropertyName::Margin => {
@@ -225,6 +229,9 @@ impl StyleResolver {
                     let parent_size = 400.0; // Default container width
                     let px_value = length.to_px(computed.font_size, parent_size);
                     computed.margin = EdgeSizes::uniform(px_value);
+                } else if let CssValue::Auto = &declaration.value {
+                    // Auto margins for centering
+                    computed.margin = EdgeSizes::new(0.0, f32::INFINITY, 0.0, f32::INFINITY);
                 }
             }
             PropertyName::MarginTop => {
@@ -237,6 +244,8 @@ impl StyleResolver {
                 if let CssValue::Length(length) = &declaration.value {
                     let parent_size = 400.0;
                     computed.margin.right = length.to_px(computed.font_size, parent_size);
+                } else if let CssValue::Auto = &declaration.value {
+                    computed.margin.right = f32::INFINITY; // Auto for centering
                 }
             }
             PropertyName::MarginBottom => {
@@ -249,6 +258,8 @@ impl StyleResolver {
                 if let CssValue::Length(length) = &declaration.value {
                     let parent_size = 400.0;
                     computed.margin.left = length.to_px(computed.font_size, parent_size);
+                } else if let CssValue::Auto = &declaration.value {
+                    computed.margin.left = f32::INFINITY; // Auto for centering
                 }
             }
             PropertyName::Padding => {

@@ -148,9 +148,9 @@ impl LayoutBox {
 
     /// Layout block elements with position offset (stack vertically)
     fn layout_block_with_position(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32) {
-        // Set default dimensions
-        self.dimensions.padding = EdgeSizes::uniform(8.0); // Default padding
-        self.dimensions.margin = EdgeSizes::new(8.0, 0.0, 8.0, 0.0); // Top/bottom margin
+        // Set default dimensions (will be overridden by CSS if present)
+        self.dimensions.padding = EdgeSizes::uniform(8.0);
+        self.dimensions.margin = EdgeSizes::new(8.0, 0.0, 8.0, 0.0);
 
         // Calculate content area with proper offset positioning
         let content_x = offset_x + self.dimensions.margin.left + self.dimensions.border.left + self.dimensions.padding.left;
@@ -281,7 +281,7 @@ impl LayoutBox {
         self.dimensions.margin = styles.margin.clone();
         self.dimensions.padding = styles.padding.clone();
         self.dimensions.border = styles.border.clone();
-        
+
         // Note: Other style properties like colors, fonts are handled in the renderer
     }
 }

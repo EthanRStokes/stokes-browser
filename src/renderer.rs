@@ -153,12 +153,20 @@ impl HtmlRenderer {
         if let Some(dom_node_rc) = node_map.get(&layout_box.node_id) {
             let dom_node = dom_node_rc.borrow();
 
+            // Check if this node should be skipped from rendering
+            if self.should_skip_rendering(&dom_node) {
+                return; // Skip rendering this node and its children
+            }
+
             match &dom_node.node_type {
                 NodeType::Element(element_data) => {
                     self.render_element_with_styles(canvas, layout_box, element_data, computed_styles);
                 },
                 NodeType::Text(_) => {
-                    self.render_text_node_with_styles(canvas, layout_box, computed_styles);
+                    // Check if text node is inside a non-visual element
+                    if !self.is_inside_non_visual_element(&dom_node) {
+                        self.render_text_node_with_styles(canvas, layout_box, computed_styles);
+                    }
                 },
                 NodeType::Image(image_data) => {
                     self.render_image_node(canvas, layout_box, image_data);
@@ -172,9 +180,14 @@ impl HtmlRenderer {
             }
         }
 
-        // Render children
-        for child in &layout_box.children {
-            self.render_box_with_styles(canvas, child, node_map, style_map);
+        // Render children only if this node should be rendered
+        if let Some(dom_node_rc) = node_map.get(&layout_box.node_id) {
+            let dom_node = dom_node_rc.borrow();
+            if !self.should_skip_rendering(&dom_node) {
+                for child in &layout_box.children {
+                    self.render_box_with_styles(canvas, child, node_map, style_map);
+                }
+            }
         }
     }
 
@@ -597,6 +610,34 @@ impl HtmlRenderer {
             _ => {
                 paint.set_color(Color::WHITE);
             }
+        }
+    }
+
+    /// Determine if rendering should be skipped for this node (and its children)
+    fn should_skip_rendering(&self, dom_node: &DomNode) -> bool {
+        // Skip rendering for non-visual elements like <style>, <script>, etc.
+        match dom_node.node_type {
+            NodeType::Element(ref element_data) => {
+                let tag = element_data.tag_name.as_str();
+                // Skip if the tag is one of the non-visual elements
+                tag == "style" || tag == "script" || tag == "head" || tag == "title"
+            },
+            _ => false
+        }
+    }
+
+    /// Check if the current node is inside a non-visual element
+    fn is_inside_non_visual_element(&self, dom_node: &DomNode) -> bool {
+        // Simple approach: just check if this is a text node and skip the parent traversal
+        // Text nodes inside style/script tags should be filtered out during DOM building
+        // or layout phase, not during rendering
+        match dom_node.node_type {
+            NodeType::Text(_) => {
+                // For now, we'll be conservative and not traverse parents to avoid infinite loops
+                // The better approach is to filter these out during layout building
+                false
+            },
+            _ => false
         }
     }
 }

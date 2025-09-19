@@ -69,6 +69,7 @@ impl CssParser {
         let mut brace_depth = 0;
         let mut in_string = false;
         let mut string_char = '"';
+        let mut in_at_rule = false;
 
         for ch in css.chars() {
             match ch {
@@ -81,6 +82,11 @@ impl CssParser {
                     in_string = false;
                     current_rule.push(ch);
                 }
+                '@' if !in_string && brace_depth == 0 => {
+                    // Start of at-rule like @media
+                    in_at_rule = true;
+                    current_rule.push(ch);
+                }
                 '{' if !in_string => {
                     brace_depth += 1;
                     current_rule.push(ch);
@@ -90,10 +96,12 @@ impl CssParser {
                     brace_depth -= 1;
                     if brace_depth == 0 {
                         let trimmed = current_rule.trim().to_string();
-                        if !trimmed.is_empty() {
+                        if !trimmed.is_empty() && !in_at_rule {
+                            // Only add regular CSS rules, skip @media and other at-rules
                             rules.push(trimmed);
                         }
                         current_rule.clear();
+                        in_at_rule = false;
                     }
                 }
                 _ => {
