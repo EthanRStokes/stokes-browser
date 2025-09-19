@@ -116,17 +116,28 @@ impl LayoutBox {
     /// Layout text nodes
     fn layout_text(&mut self, container_width: f32, _container_height: f32) {
         if let Some(text) = &self.content {
-            // Estimate text dimensions (simplified)
+            // Handle newlines and calculate proper text dimensions
             let char_width = 8.0; // Average character width
             let line_height = 16.0;
-            let chars_per_line = (container_width / char_width) as usize;
-            let lines = (text.len() / chars_per_line.max(1)) + 1;
+            
+            // Split text by newlines to handle line breaks properly
+            let lines: Vec<&str> = text.split('\n').collect();
+            let num_lines = lines.len().max(1);
+            
+            // Calculate width based on the longest line
+            let max_line_width = lines.iter()
+                .map(|line| line.len() as f32 * char_width)
+                .fold(0.0, f32::max)
+                .min(container_width);
+            
+            let text_width = if text.trim().is_empty() { 0.0 } else { max_line_width };
+            let text_height = num_lines as f32 * line_height;
 
             self.dimensions.content = Rect::from_xywh(
                 0.0,
                 0.0,
-                container_width.min(text.len() as f32 * char_width),
-                lines as f32 * line_height
+                text_width,
+                text_height
             );
         } else {
             self.dimensions.content = Rect::from_xywh(0.0, 0.0, 0.0, 0.0);
@@ -199,17 +210,28 @@ impl LayoutBox {
     /// Layout text nodes with position offset
     fn layout_text_with_position(&mut self, container_width: f32, _container_height: f32, offset_x: f32, offset_y: f32) {
         if let Some(text) = &self.content {
-            // Estimate text dimensions (simplified)
+            // Handle newlines and calculate proper text dimensions
             let char_width = 8.0; // Average character width
             let line_height = 16.0;
-            let chars_per_line = (container_width / char_width) as usize;
-            let lines = (text.len() / chars_per_line.max(1)) + 1;
+            
+            // Split text by newlines to handle line breaks properly
+            let lines: Vec<&str> = text.split('\n').collect();
+            let num_lines = lines.len().max(1);
+            
+            // Calculate width based on the longest line
+            let max_line_width = lines.iter()
+                .map(|line| line.len() as f32 * char_width)
+                .fold(0.0, f32::max)
+                .min(container_width);
+            
+            let text_width = if text.trim().is_empty() { 0.0 } else { max_line_width };
+            let text_height = num_lines as f32 * line_height;
 
             self.dimensions.content = Rect::from_xywh(
                 offset_x,
                 offset_y,
-                container_width.min(text.len() as f32 * char_width),
-                lines as f32 * line_height
+                text_width,
+                text_height
             );
         } else {
             self.dimensions.content = Rect::from_xywh(offset_x, offset_y, 0.0, 0.0);

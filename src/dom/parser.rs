@@ -61,9 +61,10 @@ impl HtmlParser {
                 target_node.node_type = NodeType::Element(ElementData::with_attributes(&tag_name, attributes));
             },
             NodeData::Text { ref contents } => {
-                // Text node
-                let text_content = contents.borrow().to_string();
-                target_node.node_type = NodeType::Text(text_content);
+                // Text node - process whitespace according to HTML rules
+                let raw_text = contents.borrow().to_string();
+                let processed_text = self.process_html_whitespace(&raw_text);
+                target_node.node_type = NodeType::Text(processed_text);
             },
             NodeData::Comment { ref contents } => {
                 // Comment node
@@ -96,5 +97,45 @@ impl HtmlParser {
             // Recursively build the DOM for this child, passing the current node as parent
             self.build_dom_from_handle(child_handle, parent_weak, &mut child_ref);
         }
+    }
+
+    /// Process raw HTML whitespace in text nodes according to HTML standards
+    fn process_html_whitespace(&self, raw_text: &str) -> String {
+        // HTML whitespace processing rules:
+        // 1. Convert sequences of whitespace characters to single spaces
+        // 2. Preserve explicit line breaks (\n) as they may be intentional
+        // 3. Trim leading and trailing whitespace from text nodes
+
+        if raw_text.trim().is_empty() {
+            return String::new();
+        }
+
+        // Replace sequences of spaces and tabs with single spaces
+        // but preserve newlines as they represent intentional line breaks
+        let mut result = String::new();
+        let mut prev_was_space = false;
+
+        for ch in raw_text.chars() {
+            match ch {
+                ' ' | '\t' | '\r' => {
+                    if !prev_was_space {
+                        result.push(' ');
+                        prev_was_space = true;
+                    }
+                }
+                '\n' => {
+                    // Preserve newlines for proper line break handling
+                    result.push('\n');
+                    prev_was_space = false;
+                }
+                _ => {
+                    result.push(ch);
+                    prev_was_space = false;
+                }
+            }
+        }
+
+        // Trim whitespace from start and end, but preserve internal structure
+        result.trim().to_string()
     }
 }

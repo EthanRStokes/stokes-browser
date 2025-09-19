@@ -147,14 +147,25 @@ impl HtmlRenderer {
 
             // Choose font based on parent context (simplified)
             let font = &self.default_font;
+            let line_height = 16.0;
 
-            // Create text blob
-            if let Some(text_blob) = TextBlob::new(trimmed_text, font) {
-                // Position text within content area
-                let x = content_rect.left;
-                let y = content_rect.top + font.size(); // Baseline offset
+            // Split text by newlines and render each line separately
+            let lines: Vec<&str> = text.split('\n').collect();
+            
+            for (line_index, line) in lines.iter().enumerate() {
+                // Skip empty lines but still advance the Y position
+                if line.trim().is_empty() && lines.len() > 1 {
+                    continue;
+                }
+                
+                // Create text blob for this line
+                if let Some(text_blob) = TextBlob::new(line.trim(), font) {
+                    // Position text within content area, with proper line spacing
+                    let x = content_rect.left;
+                    let y = content_rect.top + font.size() + (line_index as f32 * line_height);
 
-                canvas.draw_text_blob(&text_blob, (x, y), &self.text_paint);
+                    canvas.draw_text_blob(&text_blob, (x, y), &self.text_paint);
+                }
             }
         }
     }
