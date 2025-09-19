@@ -53,7 +53,29 @@ impl HtmlRenderer {
         layout: &LayoutBox,
         node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
     ) {
+        self.render_with_scroll(canvas, layout, node_map, 0.0, 0.0);
+    }
+
+    /// Render a layout tree to the canvas with scroll offset
+    pub fn render_with_scroll(
+        &self,
+        canvas: &Canvas,
+        layout: &LayoutBox,
+        node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
+        scroll_x: f32,
+        scroll_y: f32,
+    ) {
+        // Save the current canvas state
+        canvas.save();
+
+        // Apply scroll offset by translating the canvas
+        canvas.translate((-scroll_x, -scroll_y));
+
+        // Render the layout tree
         self.render_box(canvas, layout, node_map);
+
+        // Restore the canvas state
+        canvas.restore();
     }
 
     /// Render a single layout box
@@ -151,13 +173,13 @@ impl HtmlRenderer {
 
             // Split text by newlines and render each line separately
             let lines: Vec<&str> = text.split('\n').collect();
-            
+
             for (line_index, line) in lines.iter().enumerate() {
                 // Skip empty lines but still advance the Y position
                 if line.trim().is_empty() && lines.len() > 1 {
                     continue;
                 }
-                
+
                 // Create text blob for this line
                 if let Some(text_blob) = TextBlob::new(line.trim(), font) {
                     // Position text within content area, with proper line spacing

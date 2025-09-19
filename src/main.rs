@@ -18,7 +18,7 @@ use glutin::surface::Surface as GlutinSurface;
 use glutin_winit::DisplayBuilder;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent, MouseScrollDelta, DeviceEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
@@ -389,6 +389,65 @@ impl ApplicationHandler for BrowserApp {
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 self.env.window.request_redraw();
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // Handle mouse wheel scrolling
+                let scroll_speed = 50.0;
+                match delta {
+                    MouseScrollDelta::LineDelta(_x, y) => {
+                        // Vertical scrolling (most common)
+                        self.active_tab_mut().engine.scroll_vertical(-y * scroll_speed);
+                        self.env.window.request_redraw();
+                    }
+                    MouseScrollDelta::PixelDelta(pos) => {
+                        // Pixel-precise scrolling (trackpad)
+                        self.active_tab_mut().engine.scroll_vertical(-pos.y as f32);
+                        self.active_tab_mut().engine.scroll_horizontal(-pos.x as f32);
+                        self.env.window.request_redraw();
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == ElementState::Pressed {
+                    use winit::keyboard::{KeyCode, PhysicalKey};
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::ArrowUp) => {
+                            self.active_tab_mut().engine.scroll_vertical(-30.0);
+                            self.env.window.request_redraw();
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowDown) => {
+                            self.active_tab_mut().engine.scroll_vertical(30.0);
+                            self.env.window.request_redraw();
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowLeft) => {
+                            self.active_tab_mut().engine.scroll_horizontal(-30.0);
+                            self.env.window.request_redraw();
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowRight) => {
+                            self.active_tab_mut().engine.scroll_horizontal(30.0);
+                            self.env.window.request_redraw();
+                        }
+                        PhysicalKey::Code(KeyCode::PageUp) => {
+                            self.active_tab_mut().engine.scroll_vertical(-300.0);
+                            self.env.window.request_redraw();
+                        }
+                        PhysicalKey::Code(KeyCode::PageDown) => {
+                            self.active_tab_mut().engine.scroll_vertical(300.0);
+                            self.env.window.request_redraw();
+                        }
+                        PhysicalKey::Code(KeyCode::Home) => {
+                            self.active_tab_mut().engine.set_scroll_position(0.0, 0.0);
+                            self.env.window.request_redraw();
+                        }
+                        PhysicalKey::Code(KeyCode::End) => {
+                            // Scroll to bottom - we'll need to calculate max scroll
+                            let engine = &mut self.active_tab_mut().engine;
+                            engine.set_scroll_position(0.0, f32::MAX); // Will be clamped to max
+                            self.env.window.request_redraw();
+                        }
+                        _ => {}
+                    }
+                }
             }
             _ => {}
         }
