@@ -11,9 +11,19 @@ pub type AttributeMap = HashMap<String, String>;
 #[derive(Debug, Clone, PartialEq)]
 pub enum NodeType {
     Document,
+    DocumentType {
+        name: String,
+        public_id: String,
+        system_id: String,
+    },
+    DocumentFragment,
     Element(ElementData),
     Text(String),
     Comment(String),
+    ProcessingInstruction {
+        target: String,
+        data: String,
+    },
 }
 
 /// Data specific to element nodes
@@ -97,16 +107,138 @@ impl DomNode {
         }
     }
 
-    /// Find nodes that match a CSS selector (simplified)
+    /// Enhanced CSS selector matching (still simplified but more comprehensive)
     pub fn query_selector(&self, selector: &str) -> Vec<Rc<RefCell<DomNode>>> {
-        // Very simplified selector matching for now - just match by tag name
-        self.find_nodes(|node| {
-            if let NodeType::Element(data) = &node.node_type {
-                data.tag_name == selector
+        self.find_nodes(|node| self.matches_selector(node, selector))
+    }
+
+    /// Check if a node matches a CSS selector
+    fn matches_selector(&self, node: &DomNode, selector: &str) -> bool {
+        if let NodeType::Element(data) = &node.node_type {
+            // Handle different selector types
+            if selector.starts_with('#') {
+                // ID selector
+                let id = &selector[1..];
+                return data.id() == Some(id);
+            } else if selector.starts_with('.') {
+                // Class selector
+                let class_name = &selector[1..];
+                return data.classes().contains(&class_name);
+            } else if selector.contains('[') && selector.contains(']') {
+                // Attribute selector [attr=value]
+                if let Some(start) = selector.find('[') {
+                    if let Some(end) = selector.find(']') {
+                        let attr_part = &selector[start+1..end];
+                        if let Some(eq_pos) = attr_part.find('=') {
+                            let attr_name = &attr_part[..eq_pos];
+                            let attr_value = &attr_part[eq_pos+1..].trim_matches('"');
+                            return data.attributes.get(attr_name) == Some(&attr_value.to_string());
+                        } else {
+                            // Just check if attribute exists
+                            return data.attributes.contains_key(attr_part);
+                        }
+                    }
+                }
             } else {
-                false
+                // Tag selector
+                return data.tag_name == selector;
             }
-        })
+        }
+        false
+    }
+
+    /// Get element by ID (returns first match)
+    pub fn get_element_by_id(&self, id: &str) -> Option<Rc<RefCell<DomNode>>> {
+        let selector = format!("#{}", id);
+        self.query_selector(&selector).into_iter().next()
+    }
+
+    /// Get elements by class name
+    pub fn get_elements_by_class_name(&self, class_name: &str) -> Vec<Rc<RefCell<DomNode>>> {
+        let selector = format!(".{}", class_name);
+        self.query_selector(&selector)
+    }
+
+    /// Get elements by tag name
+    pub fn get_elements_by_tag_name(&self, tag_name: &str) -> Vec<Rc<RefCell<DomNode>>> {
+        self.query_selector(tag_name)
+    }
+
+    /// Insert a child node at a specific position
+    pub fn insert_child(&mut self, index: usize, child: DomNode) -> Result<Rc<RefCell<DomNode>>, &'static str> {
+        if index > self.children.len() {
+            return Err("Index out of bounds");
+        }
+
+        let child_rc = Rc::new(RefCell::new(child));
+        self.children.insert(index, Rc::clone(&child_rc));
+        Ok(child_rc)
+    }
+
+    /// Remove a child node
+    pub fn remove_child(&mut self, child: &Rc<RefCell<DomNode>>) -> Result<(), &'static str> {
+        let position = self.children.iter().position(|c| Rc::ptr_eq(c, child));
+        match position {
+            Some(index) => {
+                self.children.remove(index);
+                Ok(())
+            },
+            None => Err("Child not found")
+        }
+    }
+
+    /// Check if this node contains another node as a descendant
+    pub fn contains(&self, other: &Rc<RefCell<DomNode>>) -> bool {
+        for child in &self.children {
+            if Rc::ptr_eq(child, other) {
+                return true;
+            }
+            if child.borrow().contains(other) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Get the next sibling element
+    pub fn next_element_sibling(&self) -> Option<Rc<RefCell<DomNode>>> {
+        if let Some(parent_weak) = &self.parent {
+            if let Some(parent_rc) = parent_weak.upgrade() {
+                let parent = parent_rc.borrow();
+                let mut found_self = false;
+
+                for child in &parent.children {
+                    if found_self {
+                        if let NodeType::Element(_) = child.borrow().node_type {
+                            return Some(Rc::clone(child));
+                        }
+                    } else if std::ptr::eq(self, &*child.borrow()) {
+                        found_self = true;
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Get the previous sibling element
+    pub fn previous_element_sibling(&self) -> Option<Rc<RefCell<DomNode>>> {
+        if let Some(parent_weak) = &self.parent {
+            if let Some(parent_rc) = parent_weak.upgrade() {
+                let parent = parent_rc.borrow();
+                let mut previous_element: Option<Rc<RefCell<DomNode>>> = None;
+
+                for child in &parent.children {
+                    if std::ptr::eq(self, &*child.borrow()) {
+                        return previous_element;
+                    }
+                    if let NodeType::Element(_) = child.borrow().node_type {
+                        previous_element = Some(Rc::clone(child));
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Find nodes that match a predicate, returning owned references
@@ -115,7 +247,7 @@ impl DomNode {
         F: Fn(&DomNode) -> bool + Clone,
     {
         let mut result = Vec::new();
-        
+
         // We can't include self in the result since we don't have an Rc to self
         // This method is meant to be called on nodes that are already in Rc<RefCell<>>
 
@@ -132,7 +264,7 @@ impl DomNode {
             let mut child_matches = child_borrowed.find_nodes(predicate.clone());
             result.append(&mut child_matches);
         }
-        
+
         result
     }
 }
@@ -172,7 +304,16 @@ impl fmt::Debug for DomNode {
             },
             NodeType::Comment(content) => {
                 write!(f, "<!-- {} -->", content)
-            }
+            },
+            NodeType::DocumentType { name, public_id, system_id } => {
+                write!(f, "<!DOCTYPE {} PUBLIC \"{}\" \"{}\">", name, public_id, system_id)
+            },
+            NodeType::DocumentFragment => {
+                write!(f, "<#document-fragment>")
+            },
+            NodeType::ProcessingInstruction { target, data } => {
+                write!(f, "<?{} {}?>", target, data)
+            },
         }
     }
 }
