@@ -72,7 +72,7 @@ struct Env {
 impl BrowserApp {
     async fn new(el: &EventLoop<()>) -> Self {
         let window_attrs = WindowAttributes::default()
-            .with_title("Stokes Browser")
+            .with_title("Web Browser")
             .with_inner_size(LogicalSize::new(1024, 768));
 
         let template = ConfigTemplateBuilder::new()
@@ -260,11 +260,11 @@ impl BrowserApp {
                 self.ui.update_tab_title(&tab_id, &title);
 
                 // Update window title
-                self.env.window.set_title(&format!("{} - Stokes Browser", title));
+                self.env.window.set_title(&format!("{} - Web Browser", title));
             }
             Err(e) => {
                 println!("Navigation error: {}", e);
-                self.env.window.set_title("Error - Stokes Browser");
+                self.env.window.set_title("Error - Web Browser");
             }
         }
     }
@@ -292,7 +292,7 @@ impl BrowserApp {
             let url = self.active_tab().engine.current_url(); // Fixed double semicolon
             let title = self.active_tab().engine.page_title();
             // TODO: self.ui.update_address_bar(url);
-            self.env.window.set_title(&format!("{} - Stokes Browser", title));
+            self.env.window.set_title(&format!("{} - Web Browser", title));
         }
     }
 
@@ -409,7 +409,7 @@ impl ApplicationHandler for BrowserApp {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Starting Stokes Browser...");
+    println!("Starting Web Browser...");
     let event_loop = EventLoop::new()?;
 
     let mut app = BrowserApp::new(&event_loop).await;
