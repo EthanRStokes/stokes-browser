@@ -2,6 +2,8 @@ mod engine;
 mod networking;
 mod ui;
 mod dom;
+mod layout;
+mod renderer;
 
 use std::ffi::CString;
 use std::num::NonZeroU32;
@@ -323,31 +325,23 @@ impl BrowserApp {
     }
 
     fn render(&mut self) -> Result<(), String> {
-        // Create Skia surface for the window using updated API
-        let info = skia_safe::ImageInfo::new(
-            (self.size.width as i32, self.size.height as i32),
-            skia_safe::ColorType::RGBA8888,
-            skia_safe::AlphaType::Premul,
-            None,
-        );
-
-        let mut surface = skia_safe::Surface::new_raster(&info, None, None)
-            .ok_or("Failed to create Skia surface")?;
-
-        // Get a mutable canvas for rendering
-        let canvas = surface.canvas();
+        // Get the canvas first
+        let canvas = self.env.surface.canvas();
         canvas.clear(Color::WHITE);
 
-        // Get mutable references to engine and UI for rendering
-        let engine = &self.active_tab().engine;
-        let ui = &self.ui;
-
-        // Render the active tab and UI
+        // Render the active tab's web content by temporarily moving the engine reference
+        let active_tab_index = self.active_tab_index;
+        let engine = &self.tabs[active_tab_index].engine;
         engine.render(canvas);
-        ui.render(canvas);
 
-        // Note: To display this on screen with winit, you'd need to convert
-        // the surface pixels to a texture and present it to the window
+        // Render UI on top of web content
+        self.ui.render(canvas);
+
+        // Flush to display
+        self.env.gr_context.flush_and_submit();
+        self.env.gl_surface.swap_buffers(&self.env.gl_context)
+            .map_err(|e| format!("Failed to swap buffers: {}", e))?;
+
         Ok(())
     }
 }
@@ -365,6 +359,7 @@ impl ApplicationHandler for BrowserApp {
                 event_loop.exit();
             }
             WindowEvent::Resized(new_size) => {
+                self.size = new_size;
                 self.env.surface = Self::create_surface(
                     &self.env.window,
                     self.fb_info,
@@ -379,6 +374,9 @@ impl ApplicationHandler for BrowserApp {
                     NonZeroU32::new(width.max(1)).unwrap(),
                     NonZeroU32::new(height.max(1)).unwrap()
                 );
+
+                // Update engine viewport size
+                self.active_tab_mut().engine.resize(width as f32, height as f32);
             }
             WindowEvent::RedrawRequested => {
                 draw_frame = true;
@@ -395,24 +393,12 @@ impl ApplicationHandler for BrowserApp {
             _ => {}
         }
 
-        let expected_frame_length_seconds = 1.0 / 20.0;
+        let expected_frame_length_seconds = 1.0 / 60.0;
         let frame_duration = Duration::from_secs_f32(expected_frame_length_seconds);
 
         if frame_start - self.previous_frame_start > frame_duration {
-            draw_frame = true;
             self.previous_frame_start = frame_start;
-        }
-        if draw_frame {
-            self.frame += 1;
-            let canvas = self.env.surface.canvas();
-            canvas.clear(Color::WHITE);
-            /// todo render frame right here
-
-            self.env.gr_context.flush_and_submit();
-            self.env
-                .gl_surface
-                .swap_buffers(&self.env.gl_context)
-                .unwrap();
+            self.env.window.request_redraw();
         }
 
         event_loop.set_control_flow(ControlFlow::WaitUntil(

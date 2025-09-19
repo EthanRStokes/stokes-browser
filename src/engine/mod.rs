@@ -4,12 +4,11 @@ mod config;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
-use std::sync::Arc;
 use skia_safe::Canvas;
 use crate::networking::HttpClient;
 use crate::dom::{Dom, DomNode};
-//use crate::layout::{LayoutEngine, LayoutBox};
-//use crate::renderer::HtmlRenderer;
+use crate::layout::{LayoutEngine, LayoutBox};
+use crate::renderer::HtmlRenderer;
 
 pub use self::config::EngineConfig;
 
@@ -21,8 +20,8 @@ pub struct Engine {
     page_title: String,
     is_loading: bool,
     dom: Option<Dom>,
-    //layout: Option<LayoutBox>,
-    //layout_engine: LayoutEngine,
+    layout: Option<LayoutBox>,
+    layout_engine: LayoutEngine,
     node_map: HashMap<usize, Rc<RefCell<DomNode>>>,
 }
 
@@ -35,8 +34,8 @@ impl Engine {
             page_title: "New Tab".to_string(),
             is_loading: false,
             dom: None,
-        //    layout: None,
-        //    layout_engine: LayoutEngine::new(800.0, 600.0), // Default viewport size
+            layout: None,
+            layout_engine: LayoutEngine::new(800.0, 600.0), // Default viewport size
             node_map: HashMap::new(),
         }
     }
@@ -73,33 +72,28 @@ impl Engine {
             let root_node = Rc::new(RefCell::new(dom.root.clone()));
             
             // Calculate layout
-    //        self.layout = Some(self.layout_engine.compute_layout(&root_node));
-            
+            self.layout = Some(self.layout_engine.compute_layout(&root_node));
+
             // Get node map for renderer
-    //        self.node_map = self.layout_engine.get_node_map();
+            self.node_map = self.layout_engine.get_node_map().clone();
         }
     }
     
     /// Resize the viewport
     pub fn resize(&mut self, width: f32, height: f32) {
-    //    self.layout_engine = LayoutEngine::new(width, height);
+        self.layout_engine = LayoutEngine::new(width, height);
         self.recalculate_layout();
     }
     
     /// Render the current page to a canvas
     pub fn render(&self, canvas: &Canvas) {
-    //    if let Some(layout) = &self.layout {
-            // Create a renderer (or use a cached one)
-            // In a real implementation, you'd want to cache this
-    //        let renderer = HtmlRenderer::new(
-    //            Arc::new(wgpu::Device::dummy()),  // You'd want real device/queue here
-    //            Arc::new(wgpu::Queue::dummy()),
-    //            wgpu::SurfaceConfiguration::default(),
-    //        );
+        if let Some(layout) = &self.layout {
+            // Create a renderer
+            let renderer = HtmlRenderer::new();
 
             // Render the layout
-    //        renderer.render(canvas, layout, &self.node_map);
-    //    }
+            renderer.render(canvas, layout, &self.node_map);
+        }
     }
 
     /// Get the current page title
