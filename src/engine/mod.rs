@@ -71,7 +71,10 @@ impl Engine {
         // Store the DOM
         self.dom = Some(dom);
 
-        // Calculate layout
+        // Parse and apply CSS styles from the document
+        self.parse_document_styles().await;
+
+        // Calculate layout with CSS styles applied
         self.recalculate_layout();
         
         // Start loading images after layout is calculated
@@ -233,8 +236,16 @@ impl Engine {
             // Create a renderer
             let renderer = HtmlRenderer::new();
 
-            // Render the layout with scroll offset
-            renderer.render_with_scroll(canvas, layout, &self.node_map, self.scroll_x, self.scroll_y);
+            // Get computed styles from the layout engine for CSS-aware rendering
+            let style_map: HashMap<usize, ComputedValues> = self.node_map.keys()
+                .filter_map(|&node_id| {
+                    self.layout_engine.get_computed_styles(node_id)
+                        .map(|styles| (node_id, styles.clone()))
+                })
+                .collect();
+
+            // Use CSS-aware rendering with styles
+            renderer.render_with_styles(canvas, layout, &self.node_map, &style_map, self.scroll_x, self.scroll_y);
         }
     }
 
