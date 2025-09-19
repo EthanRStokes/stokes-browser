@@ -274,4 +274,14 @@ impl LayoutBox {
         }
         result
     }
+
+    /// Apply CSS styles to this layout box
+    pub fn apply_styles(&mut self, styles: &crate::css::ComputedValues) {
+        // Apply margin, padding, and border from computed styles
+        self.dimensions.margin = styles.margin.clone();
+        self.dimensions.padding = styles.padding.clone();
+        self.dimensions.border = styles.border.clone();
+        
+        // Note: Other style properties like colors, fonts are handled in the renderer
+    }
 }

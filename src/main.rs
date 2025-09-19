@@ -4,6 +4,7 @@ mod ui;
 mod dom;
 mod layout;
 mod renderer;
+mod css;
 
 use std::ffi::CString;
 use std::num::NonZeroU32;

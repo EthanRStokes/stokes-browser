@@ -1,5 +1,5 @@
 // Layout engine for computing element positions and sizes
-mod box_model;
+pub(crate) mod box_model;
 mod layout_tree;
 
 pub use self::box_model::*;
@@ -10,13 +10,16 @@ use std::rc::{Rc, Weak};
 use std::cell::RefCell;
 use skia_safe::{Rect, Size};
 use crate::dom::{DomNode, NodeType, ElementData};
+use crate::css::{StyleResolver, ComputedValues, Stylesheet};
 
 /// Layout engine responsible for computing element positions and sizes
 pub struct LayoutEngine {
     viewport_width: f32,
     viewport_height: f32,
     node_map: HashMap<usize, Rc<RefCell<DomNode>>>,
+    style_map: HashMap<usize, ComputedValues>,
     next_node_id: usize,
+    style_resolver: StyleResolver,
 }
 
 impl LayoutEngine {
@@ -25,7 +28,9 @@ impl LayoutEngine {
             viewport_width,
             viewport_height,
             node_map: HashMap::new(),
+            style_map: HashMap::new(),
             next_node_id: 0,
+            style_resolver: StyleResolver::new(),
         }
     }
 
@@ -33,9 +38,14 @@ impl LayoutEngine {
     pub fn compute_layout(&mut self, root: &Rc<RefCell<DomNode>>) -> LayoutBox {
         // Clear previous layout
         self.node_map.clear();
+        self.style_map.clear();
         self.next_node_id = 0;
 
-        // Build layout tree from DOM
+        // First pass: compute styles for all nodes
+        self.compute_styles_recursive(root, None);
+        self.next_node_id = 0; // Reset for layout tree building
+
+        // Second pass: build layout tree from DOM with styles applied
         let mut layout_root = self.build_layout_tree(root);
 
         // Reserve space for browser UI at the top (address bar, tabs, etc.)
@@ -80,6 +90,14 @@ impl LayoutEngine {
             }
         };
 
+        // Apply CSS styles if available
+        if let Some(computed_styles) = self.style_map.get(&node_id) {
+            // Apply margin and padding from computed styles
+            layout_box.dimensions.margin = computed_styles.margin.clone();
+            layout_box.dimensions.padding = computed_styles.padding.clone();
+            layout_box.dimensions.border = computed_styles.border.clone();
+        }
+
         // Process children
         for child in &borrowed.children {
             let child_layout = self.build_layout_tree(child);
@@ -119,5 +137,33 @@ impl LayoutEngine {
     pub fn set_viewport(&mut self, width: f32, height: f32) {
         self.viewport_width = width;
         self.viewport_height = height;
+    }
+
+    /// Add a stylesheet to the style resolver
+    pub fn add_stylesheet(&mut self, stylesheet: Stylesheet) {
+        self.style_resolver.add_stylesheet(stylesheet);
+    }
+
+    /// Recursively compute styles for DOM nodes
+    fn compute_styles_recursive(&mut self, node: &Rc<RefCell<DomNode>>, parent_styles: Option<&ComputedValues>) {
+        let borrowed = node.borrow();
+        let node_id = self.next_node_id;
+        self.next_node_id += 1;
+
+        // Compute styles for this node
+        let computed_styles = self.style_resolver.resolve_styles(&*borrowed, parent_styles);
+        self.style_map.insert(node_id, computed_styles.clone());
+
+        // Process children
+        for child in &borrowed.children {
+            self.compute_styles_recursive(child, Some(&computed_styles));
+        }
+
+        drop(borrowed);
+    }
+
+    /// Get computed styles for a node
+    pub fn get_computed_styles(&self, node_id: usize) -> Option<&ComputedValues> {
+        self.style_map.get(&node_id)
     }
 }

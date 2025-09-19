@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob, FontStyle, Typeface};
 use crate::dom::{DomNode, NodeType, ElementData, ImageData, ImageLoadingState};
 use crate::layout::{LayoutBox, BoxType};
+use crate::css::ComputedValues;
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer {
@@ -78,6 +79,29 @@ impl HtmlRenderer {
         canvas.restore();
     }
 
+    /// Render a layout tree to the canvas with CSS styling support
+    pub fn render_with_styles(
+        &self,
+        canvas: &Canvas,
+        layout: &LayoutBox,
+        node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
+        style_map: &HashMap<usize, ComputedValues>,
+        scroll_x: f32,
+        scroll_y: f32,
+    ) {
+        // Save the current canvas state
+        canvas.save();
+
+        // Apply scroll offset by translating the canvas
+        canvas.translate((-scroll_x, -scroll_y));
+
+        // Render the layout tree with styles
+        self.render_box_with_styles(canvas, layout, node_map, style_map);
+
+        // Restore the canvas state
+        canvas.restore();
+    }
+
     /// Render a single layout box
     fn render_box(
         &self,
@@ -111,6 +135,46 @@ impl HtmlRenderer {
         // Render children
         for child in &layout_box.children {
             self.render_box(canvas, child, node_map);
+        }
+    }
+
+    /// Render a single layout box with CSS styles
+    fn render_box_with_styles(
+        &self,
+        canvas: &Canvas,
+        layout_box: &LayoutBox,
+        node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
+        style_map: &HashMap<usize, ComputedValues>,
+    ) {
+        // Get computed styles for this node
+        let computed_styles = style_map.get(&layout_box.node_id);
+
+        // Get the DOM node for this layout box
+        if let Some(dom_node_rc) = node_map.get(&layout_box.node_id) {
+            let dom_node = dom_node_rc.borrow();
+
+            match &dom_node.node_type {
+                NodeType::Element(element_data) => {
+                    self.render_element_with_styles(canvas, layout_box, element_data, computed_styles);
+                },
+                NodeType::Text(_) => {
+                    self.render_text_node_with_styles(canvas, layout_box, computed_styles);
+                },
+                NodeType::Image(image_data) => {
+                    self.render_image_node(canvas, layout_box, image_data);
+                },
+                NodeType::Document => {
+                    // Just render children for document
+                },
+                _ => {
+                    // Skip other node types
+                }
+            }
+        }
+
+        // Render children
+        for child in &layout_box.children {
+            self.render_box_with_styles(canvas, child, node_map, style_map);
         }
     }
 
@@ -159,6 +223,72 @@ impl HtmlRenderer {
         }
     }
 
+    /// Render an element with CSS styles applied
+    fn render_element_with_styles(
+        &self,
+        canvas: &Canvas,
+        layout_box: &LayoutBox,
+        element_data: &ElementData,
+        computed_styles: Option<&ComputedValues>,
+    ) {
+        let border_box = layout_box.dimensions.border_box();
+
+        // Create background paint with CSS colors
+        let mut bg_paint = Paint::default();
+        if let Some(styles) = computed_styles {
+            if let Some(bg_color) = &styles.background_color {
+                bg_paint.set_color(bg_color.to_skia_color());
+            } else {
+                // Fallback to default background colors
+                self.set_default_background_color(&mut bg_paint, &element_data.tag_name);
+            }
+        } else {
+            self.set_default_background_color(&mut bg_paint, &element_data.tag_name);
+        }
+
+        // Draw background
+        canvas.draw_rect(border_box, &bg_paint);
+
+        // Draw border if specified in styles or default for certain elements
+        let mut should_draw_border = false;
+        let mut border_paint = self.border_paint.clone();
+
+        if let Some(styles) = computed_styles {
+            // Check if border is specified in styles
+            if styles.border.top > 0.0 || styles.border.right > 0.0 || 
+               styles.border.bottom > 0.0 || styles.border.left > 0.0 {
+                should_draw_border = true;
+                // Use average border width for simplicity
+                let avg_border_width = (styles.border.top + styles.border.right + 
+                                      styles.border.bottom + styles.border.left) / 4.0;
+                border_paint.set_stroke_width(avg_border_width);
+            }
+        }
+
+        // Default border for certain elements
+        if !should_draw_border {
+            match element_data.tag_name.as_str() {
+                "div" | "section" | "article" | "header" | "footer" => {
+                    should_draw_border = true;
+                },
+                _ => {}
+            }
+        }
+
+        if should_draw_border {
+            canvas.draw_rect(border_box, &border_paint);
+        }
+
+        // Add visual indicators for headings
+        if element_data.tag_name.starts_with('h') {
+            let mut heading_paint = Paint::default();
+            heading_paint.set_color(Color::from_rgb(50, 50, 150));
+            heading_paint.set_stroke(true);
+            heading_paint.set_stroke_width(2.0);
+            canvas.draw_rect(border_box, &heading_paint);
+        }
+    }
+
     /// Render text content
     fn render_text_node(&self, canvas: &Canvas, layout_box: &LayoutBox) {
         if let Some(text) = &layout_box.content {
@@ -193,6 +323,69 @@ impl HtmlRenderer {
                 }
             }
         }
+    }
+
+    /// Render text with CSS styles applied
+    fn render_text_node_with_styles(
+        &self,
+        canvas: &Canvas,
+        layout_box: &LayoutBox,
+        computed_styles: Option<&ComputedValues>,
+    ) {
+        if let Some(text) = &layout_box.content {
+            let content_rect = layout_box.dimensions.content;
+
+            // Skip empty or whitespace-only text
+            let trimmed_text = text.trim();
+            if trimmed_text.is_empty() {
+                return;
+            }
+
+            // Create font with CSS font-size if available
+            let font = if let Some(styles) = computed_styles {
+                self.create_font_from_styles(styles)
+            } else {
+                self.default_font.clone()
+            };
+
+            // Create text paint with CSS color if available
+            let mut text_paint = self.text_paint.clone();
+            if let Some(styles) = computed_styles {
+                if let Some(text_color) = &styles.color {
+                    text_paint.set_color(text_color.to_skia_color());
+                }
+            }
+
+            let line_height = font.size() * 1.2; // 120% line height
+
+            // Split text by newlines and render each line separately
+            let lines: Vec<&str> = text.split('\n').collect();
+
+            for (line_index, line) in lines.iter().enumerate() {
+                // Skip empty lines but still advance the Y position
+                if line.trim().is_empty() && lines.len() > 1 {
+                    continue;
+                }
+
+                // Create text blob for this line
+                if let Some(text_blob) = TextBlob::new(line.trim(), &font) {
+                    // Position text within content area, with proper line spacing
+                    let x = content_rect.left;
+                    let y = content_rect.top + font.size() + (line_index as f32 * line_height);
+
+                    canvas.draw_text_blob(&text_blob, (x, y), &text_paint);
+                }
+            }
+        }
+    }
+
+    /// Create a font from CSS computed styles
+    fn create_font_from_styles(&self, styles: &ComputedValues) -> Font {
+        let font_mgr = skia_safe::FontMgr::new();
+        let typeface = font_mgr.legacy_make_typeface(None, FontStyle::default())
+            .expect("Failed to create typeface");
+        
+        Font::new(typeface, styles.font_size)
     }
 
     /// Update colors based on element attributes (simplified styling)
@@ -382,6 +575,27 @@ impl HtmlRenderer {
             None => {
                 println!("Error: Skia failed to decode image data with from_encoded");
                 None
+            }
+        }
+    }
+
+    /// Set default background color for elements
+    fn set_default_background_color(&self, paint: &mut Paint, tag_name: &str) {
+        match tag_name {
+            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                paint.set_color(Color::from_rgb(240, 240, 250));
+            },
+            "div" => {
+                paint.set_color(Color::from_rgb(248, 248, 248));
+            },
+            "p" => {
+                paint.set_color(Color::WHITE);
+            },
+            "a" => {
+                paint.set_color(Color::from_rgb(230, 240, 255));
+            },
+            _ => {
+                paint.set_color(Color::WHITE);
             }
         }
     }

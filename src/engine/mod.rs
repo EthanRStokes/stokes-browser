@@ -9,6 +9,7 @@ use crate::networking::HttpClient;
 use crate::dom::{Dom, DomNode, NodeType, ImageData, ImageLoadingState};
 use crate::layout::{LayoutEngine, LayoutBox};
 use crate::renderer::HtmlRenderer;
+use crate::css::{CssParser, Stylesheet, ComputedValues};
 
 pub use self::config::EngineConfig;
 
@@ -234,6 +235,89 @@ impl Engine {
 
             // Render the layout with scroll offset
             renderer.render_with_scroll(canvas, layout, &self.node_map, self.scroll_x, self.scroll_y);
+        }
+    }
+
+    /// Add a CSS stylesheet to the engine
+    pub fn add_stylesheet(&mut self, css_content: &str) {
+        let parser = CssParser::new();
+        let stylesheet = parser.parse(css_content);
+        self.layout_engine.add_stylesheet(stylesheet);
+
+        // Recalculate layout with new styles if DOM exists
+        if self.dom.is_some() {
+            self.recalculate_layout();
+        }
+    }
+
+    /// Add a CSS stylesheet from a URL
+    pub async fn load_external_stylesheet(&mut self, css_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let absolute_url = self.resolve_url(css_url)?;
+        let css_content = self.http_client.fetch(&absolute_url).await?;
+        self.add_stylesheet(&css_content);
+        Ok(())
+    }
+
+    /// Render the current page to a canvas with CSS styling
+    pub fn render_with_styles(&self, canvas: &Canvas) {
+        if let Some(layout) = &self.layout {
+            // Create a renderer
+            let renderer = HtmlRenderer::new();
+
+            // Get computed styles from the layout engine
+            let style_map: HashMap<usize, ComputedValues> = self.node_map.keys()
+                .filter_map(|&node_id| {
+                    self.layout_engine.get_computed_styles(node_id)
+                        .map(|styles| (node_id, styles.clone()))
+                })
+                .collect();
+
+            // Render the layout with CSS styles and scroll offset
+            renderer.render_with_styles(canvas, layout, &self.node_map, &style_map, self.scroll_x, self.scroll_y);
+        }
+    }
+
+    /// Extract and parse CSS from <style> tags and <link> tags in the current DOM
+    pub async fn parse_document_styles(&mut self) {
+        if let Some(dom) = &self.dom {
+            // Collect style contents first
+            let mut style_contents = Vec::new();
+            let style_elements = dom.query_selector("style");
+            for style_element in style_elements {
+                let style_node = style_element.borrow();
+                let css_content = style_node.text_content();
+                if !css_content.trim().is_empty() {
+                    style_contents.push(css_content);
+                }
+            }
+
+            // Collect link hrefs first
+            let mut link_hrefs = Vec::new();
+            let link_elements = dom.query_selector("link");
+            for link_element in link_elements {
+                let link_node = link_element.borrow();
+                if let crate::dom::NodeType::Element(element_data) = &link_node.node_type {
+                    if let (Some(rel), Some(href)) = (
+                        element_data.attributes.get("rel"),
+                        element_data.attributes.get("href")
+                    ) {
+                        if rel.to_lowercase() == "stylesheet" {
+                            link_hrefs.push(href.clone());
+                        }
+                    }
+                }
+            }
+
+            // Now process the collected data without holding DOM borrows
+            for css_content in style_contents {
+                self.add_stylesheet(&css_content);
+            }
+
+            for href in link_hrefs {
+                if let Err(e) = self.load_external_stylesheet(&href).await {
+                    println!("Failed to load stylesheet {}: {}", href, e);
+                }
+            }
         }
     }
 
