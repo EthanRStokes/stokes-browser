@@ -359,7 +359,7 @@ impl HtmlRenderer {
         let skia_data = skia_safe::Data::new_copy(image_bytes);
         // write image to a random file in the user folder
         let folder = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("skia_debug");
-        let file_path = folder.join("debug_image_data.bin");
+        let file_path = folder.join("image_".to_owned() + &format!("{:?}", std::time::Instant::now()) + ".png");
         if let Err(e) = std::fs::write(&file_path, image_bytes)
         {
             println!("Warning: Failed to write debug image data to file: {}", e);
