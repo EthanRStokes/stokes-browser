@@ -40,8 +40,8 @@ impl UiComponent {
         UiComponent::Button {
             id: id.to_string(),
             label: label.to_string(),
-            position: [x_pos, 0.9],
-            size: [0.05, 0.05],
+            position: [x_pos, 0.01], // Move to top of window
+            size: [0.03, 0.025],     // Smaller buttons for top bar
             color: [0.8, 0.8, 0.8],
             hover_color: [0.9, 0.9, 1.0],
             is_hover: false,
@@ -54,8 +54,8 @@ impl UiComponent {
         UiComponent::TextField {
             id: "address_bar".to_string(),
             text: url.to_string(),
-            position: [0.15, 0.9],
-            size: [0.7, 0.05],
+            position: [0.15, 0.01], // Move to top of window
+            size: [0.7, 0.025],     // Smaller height for top bar
             color: [1.0, 1.0, 1.0],
             border_color: [0.7, 0.7, 0.7],
             has_focus: false,
@@ -109,8 +109,8 @@ impl BrowserUI {
         Self {
             components: vec![
                 UiComponent::navigation_button("back", "<", 0.01),
-                UiComponent::navigation_button("forward", ">", 0.07),
-                UiComponent::navigation_button("refresh", "⟳", 0.13),
+                UiComponent::navigation_button("forward", ">", 0.05),
+                UiComponent::navigation_button("refresh", "⟳", 0.09),
                 UiComponent::address_bar("")
             ],
         }
@@ -123,11 +123,12 @@ impl BrowserUI {
 
     /// Add a new tab
     pub fn add_tab(&mut self, id: &str, title: &str) {
+        let tab_count = self.components.iter().filter(|c| matches!(c, UiComponent::TabButton { .. })).count();
         self.components.push(UiComponent::TabButton {
             id: id.to_string(),
             title: title.to_string(),
-            position: [0.2 + 0.1 * (self.components.len() as f32), 0.8],
-            size: [0.09, 0.07],
+            position: [0.2 + 0.1 * (tab_count as f32), 0.04], // Position tabs at top
+            size: [0.09, 0.03],
             color: [0.7, 0.7, 0.9],
             is_active: false,
         });
@@ -185,16 +186,31 @@ impl BrowserUI {
 
     /// Render the UI
     pub fn render(&self, canvas: &Canvas) {
+        let canvas_width = canvas.image_info().width() as f32;
+        let canvas_height = canvas.image_info().height() as f32;
+
+        // Draw browser chrome background bar at the top
+        let mut chrome_paint = Paint::default();
+        chrome_paint.set_color(Color::from_rgb(240, 240, 240)); // Light gray background
+        let chrome_rect = Rect::from_xywh(0.0, 0.0, canvas_width, canvas_height * 0.08);
+        canvas.draw_rect(chrome_rect, &chrome_paint);
+
+        // Draw a bottom border for the chrome
+        chrome_paint.set_color(Color::from_rgb(200, 200, 200));
+        let border_rect = Rect::from_xywh(0.0, canvas_height * 0.08 - 1.0, canvas_width, 1.0);
+        canvas.draw_rect(border_rect, &chrome_paint);
+
         let mut paint = Paint::default();
         let font = Font::default();
+
         for comp in &self.components {
             match comp {
-                UiComponent::Button { label, position, size, color, is_hover, .. } => {
+                UiComponent::Button { label, position, size, color, .. } => {
                     let rect = Rect::from_xywh(
-                        position[0] * canvas.image_info().width() as f32,
-                        position[1] * canvas.image_info().height() as f32,
-                        size[0] * canvas.image_info().width() as f32,
-                        size[1] * canvas.image_info().height() as f32,
+                        position[0] * canvas_width,
+                        position[1] * canvas_height,
+                        size[0] * canvas_width,
+                        size[1] * canvas_height,
                     );
                     paint.set_color(Color::from_rgb(
                         (color[0] * 255.0) as u8,
@@ -202,37 +218,52 @@ impl BrowserUI {
                         (color[2] * 255.0) as u8,
                     ));
                     canvas.draw_rect(rect, &paint);
-                    let blob = TextBlob::new(label, &font).unwrap();
-                    canvas.draw_text_blob(&blob, (rect.left() + 5.0, rect.top() + 20.0), &paint);
+
+                    // Draw button text in black
+                    paint.set_color(Color::BLACK);
+                    if let Some(blob) = TextBlob::new(label, &font) {
+                        canvas.draw_text_blob(&blob, (rect.left() + 3.0, rect.bottom() - 5.0), &paint);
+                    }
                 }
                 UiComponent::TextField { text, position, size, color, border_color, .. } => {
                     let rect = Rect::from_xywh(
-                        position[0] * canvas.image_info().width() as f32,
-                        position[1] * canvas.image_info().height() as f32,
-                        size[0] * canvas.image_info().width() as f32,
-                        size[1] * canvas.image_info().height() as f32,
+                        position[0] * canvas_width,
+                        position[1] * canvas_height,
+                        size[0] * canvas_width,
+                        size[1] * canvas_height,
                     );
+
+                    // Draw field background
                     paint.set_color(Color::from_rgb(
                         (color[0] * 255.0) as u8,
                         (color[1] * 255.0) as u8,
                         (color[2] * 255.0) as u8,
                     ));
                     canvas.draw_rect(rect, &paint);
+
+                    // Draw field border
                     paint.set_color(Color::from_rgb(
                         (border_color[0] * 255.0) as u8,
                         (border_color[1] * 255.0) as u8,
                         (border_color[2] * 255.0) as u8,
                     ));
+                    paint.set_stroke(true);
+                    paint.set_stroke_width(1.0);
                     canvas.draw_rect(rect, &paint);
-                    let blob = TextBlob::new(text, &font).unwrap();
-                    canvas.draw_text_blob(&blob, (rect.left() + 5.0, rect.top() + 20.0), &paint);
+                    paint.set_stroke(false);
+
+                    // Draw text content
+                    paint.set_color(Color::BLACK);
+                    if let Some(blob) = TextBlob::new(text, &font) {
+                        canvas.draw_text_blob(&blob, (rect.left() + 5.0, rect.bottom() - 5.0), &paint);
+                    }
                 }
                 UiComponent::TabButton { title, position, size, color, .. } => {
                     let rect = Rect::from_xywh(
-                        position[0] * canvas.image_info().width() as f32,
-                        position[1] * canvas.image_info().height() as f32,
-                        size[0] * canvas.image_info().width() as f32,
-                        size[1] * canvas.image_info().height() as f32,
+                        position[0] * canvas_width,
+                        position[1] * canvas_height,
+                        size[0] * canvas_width,
+                        size[1] * canvas_height,
                     );
                     paint.set_color(Color::from_rgb(
                         (color[0] * 255.0) as u8,
@@ -240,8 +271,12 @@ impl BrowserUI {
                         (color[2] * 255.0) as u8,
                     ));
                     canvas.draw_rect(rect, &paint);
-                    let blob = TextBlob::new(title, &font).unwrap();
-                    canvas.draw_text_blob(&blob, (rect.left() + 5.0, rect.top() + 20.0), &paint);
+
+                    // Draw tab text
+                    paint.set_color(Color::BLACK);
+                    if let Some(blob) = TextBlob::new(title, &font) {
+                        canvas.draw_text_blob(&blob, (rect.left() + 5.0, rect.bottom() - 5.0), &paint);
+                    }
                 }
             }
         }
