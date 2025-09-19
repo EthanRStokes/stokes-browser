@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use skia_safe::Canvas;
 use crate::networking::HttpClient;
-use crate::dom::{Dom, DomNode};
+use crate::dom::{Dom, DomNode, NodeType, ImageData, ImageLoadingState};
 use crate::layout::{LayoutEngine, LayoutBox};
 use crate::renderer::HtmlRenderer;
 
@@ -69,14 +69,135 @@ impl Engine {
         
         // Store the DOM
         self.dom = Some(dom);
-        
+
         // Calculate layout
         self.recalculate_layout();
         
+        // Start loading images after layout is calculated
+        self.start_image_loading().await;
+
         self.is_loading = false;
         Ok(())
     }
-    
+
+    /// Start loading all images found in the current DOM
+    pub async fn start_image_loading(&mut self) {
+        if let Some(dom) = &mut self.dom {
+            // Find all image nodes
+            let image_nodes = dom.find_nodes(|node| matches!(node.node_type, NodeType::Image(_)));
+
+            for image_node_rc in image_nodes {
+                if let Ok(mut image_node) = image_node_rc.try_borrow_mut() {
+                    if let NodeType::Image(ref mut image_data) = image_node.node_type {
+                        // Only start loading if not already loaded or loading
+                        if matches!(image_data.loading_state, ImageLoadingState::NotLoaded) {
+                            // Set to loading state
+                            image_data.loading_state = ImageLoadingState::Loading;
+
+                            // Start the async fetch (we'll need to handle this differently in practice)
+                            let src = image_data.src.clone();
+                            if !src.is_empty() {
+                                // For now, we'll fetch synchronously in this method
+                                // In a real browser, this would be done with proper async handling
+                                match self.fetch_image(&src).await {
+                                    Ok(image_bytes) => {
+                                        image_data.loading_state = ImageLoadingState::Loaded(image_bytes);
+                                        println!("Successfully loaded image: {}", src);
+                                    }
+                                    Err(err) => {
+                                        image_data.loading_state = ImageLoadingState::Failed(err.to_string());
+                                        println!("Failed to load image {}: {}", src, err);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Recalculate layout after images are loaded (dimensions may have changed)
+            self.recalculate_layout();
+        }
+    }
+
+    /// Fetch a single image from a URL
+    async fn fetch_image(&self, url: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        // Resolve relative URLs against the current page URL
+        let absolute_url = self.resolve_url(url)?;
+
+        println!("Fetching image: {}", absolute_url);
+
+        // Use the HTTP client to fetch the image data
+        let image_bytes = self.http_client.fetch_resource(&absolute_url).await?;
+
+        // Validate that we got some data
+        if image_bytes.is_empty() {
+            return Err("Empty image data received".into());
+        }
+
+        Ok(image_bytes)
+    }
+
+    /// Resolve a potentially relative URL against the current page URL
+    fn resolve_url(&self, url: &str) -> Result<String, Box<dyn std::error::Error>> {
+        // If the URL is already absolute, return it as-is
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return Ok(url.to_string());
+        }
+
+        // Handle protocol-relative URLs
+        if url.starts_with("//") {
+            // Use the same protocol as the current page
+            let protocol = if self.current_url.starts_with("https://") {
+                "https:"
+            } else {
+                "http:"
+            };
+            return Ok(format!("{}{}", protocol, url));
+        }
+
+        // For relative URLs, we need to resolve them against the current page URL
+        if self.current_url.is_empty() {
+            return Err("Cannot resolve relative URL: no current page URL".into());
+        }
+
+        // Parse the current URL to get the base
+        let base_url = if let Some(domain_end) = self.current_url.find('/') { // Skip "https://"
+            &self.current_url[..domain_end]
+        } else {
+            &self.current_url
+        };
+
+        // Handle different types of relative URLs
+        if url.starts_with('/') {
+            // Absolute path relative to domain root
+            Ok(format!("{}{}", base_url, url))
+        } else {
+            // Relative path - for simplicity, treat as relative to domain root
+            // In a real browser, this would be relative to the current page's path
+            Ok(format!("{}/{}", base_url, url))
+        }
+    }
+
+    /// Force reload images (useful for debugging or refresh)
+    pub async fn reload_images(&mut self) {
+        if let Some(dom) = &mut self.dom {
+            // Find all image nodes and reset their loading state
+            let image_nodes = dom.find_nodes(|node| matches!(node.node_type, NodeType::Image(_)));
+
+            for image_node_rc in image_nodes {
+                if let Ok(mut image_node) = image_node_rc.try_borrow_mut() {
+                    if let NodeType::Image(ref mut image_data) = image_node.node_type {
+                        image_data.loading_state = ImageLoadingState::NotLoaded;
+                    }
+                }
+            }
+
+            // Start loading again
+            self.start_image_loading().await;
+        }
+    }
+
     /// Recalculate layout based on current DOM
     pub fn recalculate_layout(&mut self) {
         if let Some(dom) = &self.dom {

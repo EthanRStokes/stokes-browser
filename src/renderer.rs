@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
 use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob, FontStyle, Typeface};
-use crate::dom::{DomNode, NodeType, ElementData};
+use crate::dom::{DomNode, NodeType, ElementData, ImageData, ImageLoadingState};
 use crate::layout::{LayoutBox, BoxType};
 
 /// HTML renderer that draws layout boxes to a canvas
@@ -95,6 +95,9 @@ impl HtmlRenderer {
                 },
                 NodeType::Text(_) => {
                     self.render_text_node(canvas, layout_box);
+                },
+                NodeType::Image(image_data) => {
+                    self.render_image_node(canvas, layout_box, image_data);
                 },
                 NodeType::Document => {
                     // Just render children for document
@@ -218,5 +221,119 @@ impl HtmlRenderer {
         }
 
         (bg_color, text_color)
+    }
+
+    /// Render image content
+    fn render_image_node(&self, canvas: &Canvas, layout_box: &LayoutBox, image_data: &ImageData) {
+        let content_rect = layout_box.dimensions.content;
+
+        match &image_data.loading_state {
+            ImageLoadingState::Loaded(image_bytes) => {
+                // Try to decode and render the actual image
+                if let Some(skia_image) = self.decode_image_data(image_bytes) {
+                    let mut paint = Paint::default();
+                    paint.set_anti_alias(true);
+                    
+                    // Draw the image scaled to fit the content rect
+                    canvas.draw_image_rect(
+                        &skia_image,
+                        None, // Use entire source image
+                        content_rect,
+                        &paint
+                    );
+                } else {
+                    // Failed to decode, show placeholder
+                    self.render_image_placeholder(canvas, &content_rect, "Failed to decode image");
+                }
+            },
+            ImageLoadingState::Loading => {
+                // Show loading placeholder
+                self.render_image_placeholder(canvas, &content_rect, "Loading...");
+            },
+            ImageLoadingState::Failed(error) => {
+                // Show error placeholder
+                self.render_image_placeholder(canvas, &content_rect, &format!("Error: {}", error));
+            },
+            ImageLoadingState::NotLoaded => {
+                // Show placeholder with alt text or src
+                let placeholder_text = if !image_data.alt.is_empty() {
+                    &image_data.alt
+                } else {
+                    &image_data.src
+                };
+                self.render_image_placeholder(canvas, &content_rect, placeholder_text);
+            }
+        }
+    }
+
+    /// Render a placeholder for images (when not loaded, loading, or failed)
+    fn render_image_placeholder(&self, canvas: &Canvas, rect: &Rect, text: &str) {
+        // Draw a light gray background
+        let mut bg_paint = Paint::default();
+        bg_paint.set_color(Color::from_rgb(240, 240, 240));
+        canvas.draw_rect(*rect, &bg_paint);
+
+        // Draw a border
+        let mut border_paint = Paint::default();
+        border_paint.set_color(Color::from_rgb(180, 180, 180));
+        border_paint.set_stroke(true);
+        border_paint.set_stroke_width(1.0);
+        canvas.draw_rect(*rect, &border_paint);
+
+        // Draw placeholder text
+        if !text.is_empty() && rect.width() > 20.0 && rect.height() > 20.0 {
+            let mut text_paint = Paint::default();
+            text_paint.set_color(Color::from_rgb(100, 100, 100));
+            text_paint.set_anti_alias(true);
+
+            // Truncate text if it's too long
+            let display_text = if text.len() > 20 {
+                format!("{}...", &text[..17])
+            } else {
+                text.to_string()
+            };
+
+            if let Some(text_blob) = TextBlob::new(&display_text, &self.default_font) {
+                let text_bounds = text_blob.bounds();
+                
+                // Center the text in the placeholder
+                let text_x = rect.left + (rect.width() - text_bounds.width()) / 2.0;
+                let text_y = rect.top + (rect.height() + text_bounds.height()) / 2.0;
+                
+                canvas.draw_text_blob(&text_blob, (text_x, text_y), &text_paint);
+            }
+        }
+
+        // Draw a simple "broken image" icon if there's space
+        if rect.width() > 40.0 && rect.height() > 40.0 {
+            let mut icon_paint = Paint::default();
+            icon_paint.set_color(Color::from_rgb(150, 150, 150));
+            icon_paint.set_stroke(true);
+            icon_paint.set_stroke_width(2.0);
+
+            let icon_size = 16.0;
+            let icon_x = rect.left + (rect.width() - icon_size) / 2.0;
+            let icon_y = rect.top + 8.0;
+            let icon_rect = Rect::from_xywh(icon_x, icon_y, icon_size, icon_size);
+            
+            // Draw a simple square with an X
+            canvas.draw_rect(icon_rect, &icon_paint);
+            canvas.draw_line(
+                (icon_rect.left, icon_rect.top),
+                (icon_rect.right, icon_rect.bottom),
+                &icon_paint
+            );
+            canvas.draw_line(
+                (icon_rect.right, icon_rect.top),
+                (icon_rect.left, icon_rect.bottom),
+                &icon_paint
+            );
+        }
+    }
+
+    /// Decode image data into a Skia image
+    fn decode_image_data(&self, image_bytes: &[u8]) -> Option<skia_safe::Image> {
+        // Try to decode the image using Skia's built-in decoders
+        skia_safe::Image::from_encoded(skia_safe::Data::new_copy(image_bytes))
     }
 }

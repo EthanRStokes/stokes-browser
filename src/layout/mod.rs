@@ -71,6 +71,9 @@ impl LayoutEngine {
                 text_box.content = Some(content.clone());
                 text_box
             },
+            NodeType::Image(_) => {
+                LayoutBox::new(BoxType::Image, node_id)
+            },
             _ => {
                 // Skip other node types for now
                 LayoutBox::new(BoxType::Block, node_id)

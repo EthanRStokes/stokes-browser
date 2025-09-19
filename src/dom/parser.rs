@@ -5,7 +5,7 @@ use markup5ever_rcdom as rcdom;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use markup5ever_rcdom::{Handle, NodeData};
-use super::{Dom, DomNode, NodeType, ElementData, AttributeMap};
+use super::{Dom, DomNode, NodeType, ElementData, AttributeMap, ImageData};
 
 /// HTML Parser for converting HTML strings into DOM structures
 pub struct HtmlParser;
@@ -58,7 +58,28 @@ impl HtmlParser {
                     attributes.insert(name, value);
                 }
                 
-                target_node.node_type = NodeType::Element(ElementData::with_attributes(&tag_name, attributes));
+                // Special handling for img tags
+                if tag_name == "img" {
+                    let src = attributes.get("src").cloned().unwrap_or_default();
+                    let alt = attributes.get("alt").cloned().unwrap_or_default();
+                    let mut image_data = ImageData::new(src, alt);
+
+                    // Parse width and height attributes if present
+                    if let Some(width_str) = attributes.get("width") {
+                        if let Ok(width) = width_str.parse::<u32>() {
+                            image_data.width = Some(width);
+                        }
+                    }
+                    if let Some(height_str) = attributes.get("height") {
+                        if let Ok(height) = height_str.parse::<u32>() {
+                            image_data.height = Some(height);
+                        }
+                    }
+
+                    target_node.node_type = NodeType::Image(image_data);
+                } else {
+                    target_node.node_type = NodeType::Element(ElementData::with_attributes(&tag_name, attributes));
+                }
             },
             NodeData::Text { ref contents } => {
                 // Text node - process whitespace according to HTML rules

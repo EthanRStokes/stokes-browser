@@ -24,6 +24,7 @@ pub enum NodeType {
         target: String,
         data: String,
     },
+    Image(ImageData),
 }
 
 /// Data specific to element nodes
@@ -60,6 +61,37 @@ impl ElementData {
         match self.attributes.get("class") {
             Some(classlist) => classlist.split_whitespace().collect(),
             None => Vec::new(),
+        }
+    }
+}
+
+/// Data specific to image nodes
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageData {
+    pub src: String,
+    pub alt: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub loading_state: ImageLoadingState,
+}
+
+/// Image loading state
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImageLoadingState {
+    NotLoaded,
+    Loading,
+    Loaded(Vec<u8>), // Raw image data
+    Failed(String),  // Error message
+}
+
+impl ImageData {
+    pub fn new(src: String, alt: String) -> Self {
+        Self {
+            src,
+            alt,
+            width: None,
+            height: None,
+            loading_state: ImageLoadingState::NotLoaded,
         }
     }
 }
@@ -313,6 +345,16 @@ impl fmt::Debug for DomNode {
             },
             NodeType::ProcessingInstruction { target, data } => {
                 write!(f, "<?{} {}?>", target, data)
+            },
+            NodeType::Image(data) => {
+                write!(f, "<img src=\"{}\" alt=\"{}\"", data.src, data.alt)?;
+                if let Some(width) = data.width {
+                    write!(f, " width=\"{}\"", width)?;
+                }
+                if let Some(height) = data.height {
+                    write!(f, " height=\"{}\"", height)?;
+                }
+                write!(f, "/>")
             },
         }
     }

@@ -55,10 +55,49 @@ impl HttpClient {
         Ok(html)
     }
 
-    /// Fetch an image or other resource (stub for future implementation)
+    /// Fetch an image or other resource
     pub async fn fetch_resource(&self, url: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let response = self.client.get(url).send().await?;
+        println!("Fetching resource: {}", url);
+
+        // Make the request with appropriate headers for resources
+        let response = self.client
+            .get(url)
+            .header(header::ACCEPT, "image/*, */*")
+            .send()
+            .await?;
+
+        // Check if successful
+        if !response.status().is_success() {
+            return Err(format!("HTTP error {}: {}", response.status().as_u16(), response.status().canonical_reason().unwrap_or("Unknown error")).into());
+        }
+
+        // Get content type to validate it's an image (optional validation)
+        if let Some(content_type) = response.headers().get(header::CONTENT_TYPE) {
+            if let Ok(content_type_str) = content_type.to_str() {
+                println!("Resource content type: {}", content_type_str);
+
+                // Log if it's not an image type (but still proceed)
+                if !content_type_str.starts_with("image/") {
+                    println!("Warning: Expected image content type, got: {}", content_type_str);
+                }
+            }
+        }
+
+        // Get the binary content
         let bytes = response.bytes().await?;
+
+        // Validate we got some data
+        if bytes.is_empty() {
+            return Err("Empty response body".into());
+        }
+
+        println!("Successfully fetched resource: {} bytes", bytes.len());
         Ok(bytes.to_vec())
+    }
+
+    /// Check if a URL is valid and reachable (for validation)
+    pub async fn head(&self, url: &str) -> Result<bool, Box<dyn std::error::Error>> {
+        let response = self.client.head(url).send().await?;
+        Ok(response.status().is_success())
     }
 }

@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 
 pub use self::parser::HtmlParser;
-pub use self::node::{DomNode, NodeType, ElementData, AttributeMap};
+pub use self::node::{DomNode, NodeType, ElementData, AttributeMap, ImageData, ImageLoadingState};
 
 /// Represents a DOM tree
 pub struct Dom {

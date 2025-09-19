@@ -9,6 +9,7 @@ pub enum BoxType {
     Inline,
     InlineBlock,
     Text,
+    Image,
 }
 
 /// A box in the layout tree
@@ -44,6 +45,7 @@ impl LayoutBox {
             BoxType::Inline => self.layout_inline_with_position(container_width, container_height, offset_x, offset_y),
             BoxType::InlineBlock => self.layout_inline_block_with_position(container_width, container_height, offset_x, offset_y),
             BoxType::Text => self.layout_text_with_position(container_width, container_height, offset_x, offset_y),
+            BoxType::Image => self.layout_image_with_position(container_width, container_height, offset_x, offset_y),
         }
     }
 
@@ -236,6 +238,32 @@ impl LayoutBox {
         } else {
             self.dimensions.content = Rect::from_xywh(offset_x, offset_y, 0.0, 0.0);
         }
+    }
+
+    /// Layout image nodes with position offset
+    fn layout_image_with_position(&mut self, container_width: f32, _container_height: f32, offset_x: f32, offset_y: f32) {
+        // Default image dimensions
+        let default_width = 150.0;
+        let default_height = 100.0;
+
+        // Use specified dimensions from HTML attributes if available
+        let image_width = container_width.min(default_width);
+        let image_height = default_height;
+
+        // Set margins for inline-block behavior
+        self.dimensions.margin = EdgeSizes::new(4.0, 4.0, 4.0, 4.0);
+        self.dimensions.padding = EdgeSizes::new(0.0, 0.0, 0.0, 0.0);
+
+        // Calculate final position with margins
+        let final_x = offset_x + self.dimensions.margin.left;
+        let final_y = offset_y + self.dimensions.margin.top;
+
+        self.dimensions.content = Rect::from_xywh(
+            final_x,
+            final_y,
+            image_width,
+            image_height
+        );
     }
 
     /// Get all layout boxes in depth-first order
