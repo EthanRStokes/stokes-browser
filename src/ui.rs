@@ -23,6 +23,9 @@ pub enum UiComponent {
         color: [f32; 3],
         border_color: [f32; 3],
         has_focus: bool,
+        cursor_position: usize,
+        selection_start: Option<usize>,
+        selection_end: Option<usize>,
     },
     TabButton {
         id: String,
@@ -59,6 +62,9 @@ impl UiComponent {
             color: [1.0, 1.0, 1.0],
             border_color: [0.7, 0.7, 0.7],
             has_focus: false,
+            cursor_position: 0,
+            selection_start: None,
+            selection_end: None,
         }
     }
 
@@ -101,7 +107,7 @@ impl UiComponent {
 
 /// Represents the browser UI (chrome)
 pub struct BrowserUI {
-    components: Vec<UiComponent>,
+    pub components: Vec<UiComponent>,
 }
 
 impl BrowserUI {
@@ -184,6 +190,108 @@ impl BrowserUI {
         None
     }
 
+    /// Set focus to a specific component
+    pub fn set_focus(&mut self, component_id: &str) {
+        for comp in &mut self.components {
+            match comp {
+                UiComponent::TextField { id, has_focus, cursor_position, text, .. } => {
+                    if id == component_id {
+                        *has_focus = true;
+                        *cursor_position = text.len(); // Move cursor to end
+                    } else {
+                        *has_focus = false;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Handle text input for focused component
+    pub fn handle_text_input(&mut self, text: &str) {
+        for comp in &mut self.components {
+            if let UiComponent::TextField { has_focus: true, text: field_text, cursor_position, .. } = comp {
+                // Insert text at cursor position
+                field_text.insert_str(*cursor_position, text);
+                *cursor_position += text.len();
+                break;
+            }
+        }
+    }
+
+    /// Handle key input for text editing
+    pub fn handle_key_input(&mut self, key: &str) -> Option<String> {
+        for comp in &mut self.components {
+            if let UiComponent::TextField {
+                id,
+                has_focus: true,
+                text: field_text,
+                cursor_position,
+                ..
+            } = comp {
+                match key {
+                    "Backspace" => {
+                        if *cursor_position > 0 {
+                            field_text.remove(*cursor_position - 1);
+                            *cursor_position -= 1;
+                        }
+                    }
+                    "Delete" => {
+                        if *cursor_position < field_text.len() {
+                            field_text.remove(*cursor_position);
+                        }
+                    }
+                    "ArrowLeft" => {
+                        if *cursor_position > 0 {
+                            *cursor_position -= 1;
+                        }
+                    }
+                    "ArrowRight" => {
+                        if *cursor_position < field_text.len() {
+                            *cursor_position += 1;
+                        }
+                    }
+                    "Home" => {
+                        *cursor_position = 0;
+                    }
+                    "End" => {
+                        *cursor_position = field_text.len();
+                    }
+                    "Enter" => {
+                        // Return the field content for navigation
+                        if id == "address_bar" {
+                            return Some(field_text.clone());
+                        }
+                    }
+                    _ => {}
+                }
+                break;
+            }
+        }
+        None
+    }
+
+    /// Get the current text of a text field
+    pub fn get_text_field_content(&self, field_id: &str) -> Option<String> {
+        for comp in &self.components {
+            if let UiComponent::TextField { id, text, .. } = comp {
+                if id == field_id {
+                    return Some(text.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Clear focus from all components
+    pub fn clear_focus(&mut self) {
+        for comp in &mut self.components {
+            if let UiComponent::TextField { has_focus, .. } = comp {
+                *has_focus = false;
+            }
+        }
+    }
+
     /// Render the UI
     pub fn render(&self, canvas: &Canvas) {
         let canvas_width = canvas.image_info().width() as f32;
@@ -225,7 +333,7 @@ impl BrowserUI {
                         canvas.draw_text_blob(&blob, (rect.left() + 3.0, rect.bottom() - 5.0), &paint);
                     }
                 }
-                UiComponent::TextField { text, position, size, color, border_color, .. } => {
+                UiComponent::TextField { text, position, size, color, border_color, has_focus, cursor_position, .. } => {
                     let rect = Rect::from_xywh(
                         position[0] * canvas_width,
                         position[1] * canvas_height,
@@ -233,22 +341,28 @@ impl BrowserUI {
                         size[1] * canvas_height,
                     );
 
-                    // Draw field background
-                    paint.set_color(Color::from_rgb(
-                        (color[0] * 255.0) as u8,
-                        (color[1] * 255.0) as u8,
-                        (color[2] * 255.0) as u8,
-                    ));
+                    // Draw field background (brighter when focused)
+                    let bg_color = if *has_focus {
+                        Color::WHITE
+                    } else {
+                        Color::from_rgb(250, 250, 250)
+                    };
+                    paint.set_color(bg_color);
                     canvas.draw_rect(rect, &paint);
 
-                    // Draw field border
-                    paint.set_color(Color::from_rgb(
-                        (border_color[0] * 255.0) as u8,
-                        (border_color[1] * 255.0) as u8,
-                        (border_color[2] * 255.0) as u8,
-                    ));
+                    // Draw field border (blue when focused)
+                    let border_color = if *has_focus {
+                        Color::from_rgb(100, 150, 255)
+                    } else {
+                        Color::from_rgb(
+                            (border_color[0] * 255.0) as u8,
+                            (border_color[1] * 255.0) as u8,
+                            (border_color[2] * 255.0) as u8,
+                        )
+                    };
+                    paint.set_color(border_color);
                     paint.set_stroke(true);
-                    paint.set_stroke_width(1.0);
+                    paint.set_stroke_width(if *has_focus { 2.0 } else { 1.0 });
                     canvas.draw_rect(rect, &paint);
                     paint.set_stroke(false);
 
@@ -256,6 +370,32 @@ impl BrowserUI {
                     paint.set_color(Color::BLACK);
                     if let Some(blob) = TextBlob::new(text, &font) {
                         canvas.draw_text_blob(&blob, (rect.left() + 5.0, rect.bottom() - 5.0), &paint);
+                    }
+
+                    // Draw cursor if focused
+                    if *has_focus {
+                        // Calculate cursor position in pixels
+                        let text_before_cursor = if *cursor_position > 0 {
+                            &text[..*cursor_position.min(&text.len())]
+                        } else {
+                            ""
+                        };
+                        let cursor_x = if let Some(text_blob) = TextBlob::new(text_before_cursor, &font) {
+                            rect.left() + 5.0 + text_blob.bounds().width()
+                        } else {
+                            rect.left() + 5.0
+                        };
+
+                        // Draw cursor line
+                        paint.set_color(Color::BLACK);
+                        paint.set_stroke(true);
+                        paint.set_stroke_width(1.0);
+                        canvas.draw_line(
+                            (cursor_x, rect.top() + 3.0),
+                            (cursor_x, rect.bottom() - 3.0),
+                            &paint
+                        );
+                        paint.set_stroke(false);
                     }
                 }
                 UiComponent::TabButton { title, position, size, color, .. } => {

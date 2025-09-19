@@ -18,7 +18,7 @@ use glutin::surface::Surface as GlutinSurface;
 use glutin_winit::DisplayBuilder;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent, MouseScrollDelta, DeviceEvent};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent, MouseScrollDelta, DeviceEvent, KeyEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
@@ -298,12 +298,12 @@ impl BrowserApp {
 
     // Handle mouse click
     fn handle_click(&mut self, x: f32, y: f32) {
-        // Convert window coordinates to normalized device coordinates
-        let ndc_x = (x / self.size.width as f32) * 2.0 - 1.0;
-        let ndc_y = -((y / self.size.height as f32) * 2.0 - 1.0);
+        // Convert window coordinates to normalized coordinates for UI
+        let norm_x = x / self.size.width as f32;
+        let norm_y = y / self.size.height as f32;
 
         // Check for UI interaction
-        if let Some(component_id) = self.ui.handle_click(ndc_x, ndc_y) {
+        if let Some(component_id) = self.ui.handle_click(norm_x, norm_y) {
             // Handle based on component
             if component_id == "back" {
                 println!("Back button clicked");
@@ -314,6 +314,10 @@ impl BrowserApp {
             } else if component_id == "refresh" {
                 println!("Refresh button clicked");
                 // Page refresh would go here
+            } else if component_id == "address_bar" {
+                // Focus the address bar for typing
+                self.ui.set_focus("address_bar");
+                self.env.window.request_redraw();
             } else if component_id.starts_with("tab") {
                 // Tab switching
                 let tab_index = component_id[3..].parse::<usize>().unwrap_or(1) - 1;
@@ -322,6 +326,13 @@ impl BrowserApp {
                 }
             }
         }
+    }
+
+    // Check if any text field currently has focus
+    fn has_focused_text_field(&self) -> bool {
+        self.ui.components.iter().any(|comp| {
+            matches!(comp, crate::ui::UiComponent::TextField { has_focus: true, .. })
+        })
     }
 
     fn render(&mut self) -> Result<(), String> {
@@ -388,7 +399,15 @@ impl ApplicationHandler for BrowserApp {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                if let Some(pos) = position {
+                    self.handle_click(pos.x as f32, pos.y as f32);
+                }
                 self.env.window.request_redraw();
+            }
+            WindowEvent::CursorMoved { device_id, position } => {
+                let (x, y) = (position.x, position.y);
+
+                self.handle_click()
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // Handle mouse wheel scrolling
@@ -409,40 +428,99 @@ impl ApplicationHandler for BrowserApp {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed {
-                    use winit::keyboard::{KeyCode, PhysicalKey};
-                    match event.physical_key {
-                        PhysicalKey::Code(KeyCode::ArrowUp) => {
+                    use winit::keyboard::{KeyCode, PhysicalKey, Key, NamedKey};
+
+                    // Handle text input and navigation keys
+                    match event.logical_key {
+                        Key::Named(NamedKey::Backspace) => {
+                            if let Some(url) = self.ui.handle_key_input("Backspace") {
+                                // Navigate if Enter was pressed in address bar
+                                let app_ptr = self as *mut Self;
+                                tokio::spawn(async move {
+                                    unsafe { (*app_ptr).navigate(&url).await; }
+                                });
+                            }
+                            self.env.window.request_redraw();
+                        }
+                        Key::Named(NamedKey::Delete) => {
+                            self.ui.handle_key_input("Delete");
+                            self.env.window.request_redraw();
+                        }
+                        Key::Named(NamedKey::ArrowLeft) => {
+                            // Check if we're in a text field first
+                            if !self.has_focused_text_field() {
+                                self.active_tab_mut().engine.scroll_horizontal(-30.0);
+                            } else {
+                                self.ui.handle_key_input("ArrowLeft");
+                            }
+                            self.env.window.request_redraw();
+                        }
+                        Key::Named(NamedKey::ArrowRight) => {
+                            // Check if we're in a text field first
+                            if !self.has_focused_text_field() {
+                                self.active_tab_mut().engine.scroll_horizontal(30.0);
+                            } else {
+                                self.ui.handle_key_input("ArrowRight");
+                            }
+                            self.env.window.request_redraw();
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
                             self.active_tab_mut().engine.scroll_vertical(-30.0);
                             self.env.window.request_redraw();
                         }
-                        PhysicalKey::Code(KeyCode::ArrowDown) => {
+                        Key::Named(NamedKey::ArrowDown) => {
                             self.active_tab_mut().engine.scroll_vertical(30.0);
                             self.env.window.request_redraw();
                         }
-                        PhysicalKey::Code(KeyCode::ArrowLeft) => {
-                            self.active_tab_mut().engine.scroll_horizontal(-30.0);
+                        Key::Named(NamedKey::Home) => {
+                            // Check if we're in a text field first
+                            if !self.has_focused_text_field() {
+                                self.active_tab_mut().engine.set_scroll_position(0.0, 0.0);
+                            } else {
+                                self.ui.handle_key_input("Home");
+                            }
                             self.env.window.request_redraw();
                         }
-                        PhysicalKey::Code(KeyCode::ArrowRight) => {
-                            self.active_tab_mut().engine.scroll_horizontal(30.0);
+                        Key::Named(NamedKey::End) => {
+                            // Check if we're in a text field first
+                            if !self.has_focused_text_field() {
+                                let engine = &mut self.active_tab_mut().engine;
+                                engine.set_scroll_position(0.0, f32::MAX); // Will be clamped to max
+                            } else {
+                                self.ui.handle_key_input("End");
+                            }
                             self.env.window.request_redraw();
                         }
-                        PhysicalKey::Code(KeyCode::PageUp) => {
+                        Key::Named(NamedKey::Enter) => {
+                            if let Some(url) = self.ui.handle_key_input("Enter") {
+                                // Navigate to the URL from the address bar
+                                let url_to_navigate = if url.starts_with("http://") || url.starts_with("https://") {
+                                    url
+                                } else {
+                                    format!("https://{}", url)
+                                };
+
+                                // Navigate directly without spawning async task
+                                let app = self;
+                                tokio::task::block_in_place(|| {
+                                    tokio::runtime::Handle::current().block_on(async {
+                                        app.navigate(&url_to_navigate).await;
+                                    })
+                                });
+                            }
+                            self.env.window.request_redraw();
+                        }
+                        Key::Named(NamedKey::PageUp) => {
                             self.active_tab_mut().engine.scroll_vertical(-300.0);
                             self.env.window.request_redraw();
                         }
-                        PhysicalKey::Code(KeyCode::PageDown) => {
+                        Key::Named(NamedKey::PageDown) => {
                             self.active_tab_mut().engine.scroll_vertical(300.0);
                             self.env.window.request_redraw();
                         }
-                        PhysicalKey::Code(KeyCode::Home) => {
-                            self.active_tab_mut().engine.set_scroll_position(0.0, 0.0);
-                            self.env.window.request_redraw();
-                        }
-                        PhysicalKey::Code(KeyCode::End) => {
-                            // Scroll to bottom - we'll need to calculate max scroll
-                            let engine = &mut self.active_tab_mut().engine;
-                            engine.set_scroll_position(0.0, f32::MAX); // Will be clamped to max
+                        Key::Character(text) => {
+                            // Handle regular character input
+                            self.ui.handle_text_input(text.as_str());
                             self.env.window.request_redraw();
                         }
                         _ => {}
