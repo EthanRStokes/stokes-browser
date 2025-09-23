@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
 use skia_safe::Canvas;
-use crate::networking::HttpClient;
+use crate::networking::{HttpClient, NetworkError};
 use crate::dom::{Dom, DomNode, NodeType, ImageData, ImageLoadingState};
 use crate::layout::{LayoutEngine, LayoutBox};
 use crate::renderer::HtmlRenderer;
@@ -54,7 +54,7 @@ impl Engine {
     }
 
     /// Navigate to a new URL
-    pub async fn navigate(&mut self, url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn navigate(&mut self, url: &str) -> Result<(), NetworkError> {
         println!("Navigating to: {}", url);
         self.is_loading = true;
         self.current_url = url.to_string();
@@ -125,7 +125,7 @@ impl Engine {
     }
 
     /// Fetch a single image from a URL
-    async fn fetch_image(&self, url: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    async fn fetch_image(&self, url: &str) -> Result<Vec<u8>, NetworkError> {
         // Resolve relative URLs against the current page URL
         let absolute_url = self.resolve_url(url)?;
 
@@ -136,14 +136,14 @@ impl Engine {
 
         // Validate that we got some data
         if image_bytes.is_empty() {
-            return Err("Empty image data received".into());
+            return Err(NetworkError::Empty);
         }
 
         Ok(image_bytes)
     }
 
     /// Resolve a potentially relative URL against the current page URL
-    fn resolve_url(&self, url: &str) -> Result<String, Box<dyn std::error::Error>> {
+    fn resolve_url(&self, url: &str) -> Result<String, NetworkError> {
         // If the URL is already absolute, return it as-is
         if url.starts_with("http://") || url.starts_with("https://") {
             return Ok(url.to_string());
@@ -162,7 +162,7 @@ impl Engine {
 
         // For relative URLs, we need to resolve them against the current page URL
         if self.current_url.is_empty() {
-            return Err("Cannot resolve relative URL: no current page URL".into());
+            return Err(NetworkError::Curl("Cannot resolve relative URL: no current page URL".to_string()));
         }
 
         // Parse the current URL to get the base
@@ -262,7 +262,7 @@ impl Engine {
     }
 
     /// Add a CSS stylesheet from a URL
-    pub async fn load_external_stylesheet(&mut self, css_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn load_external_stylesheet(&mut self, css_url: &str) -> Result<(), NetworkError> {
         let absolute_url = self.resolve_url(css_url)?;
         let css_content = self.http_client.fetch(&absolute_url).await?;
         self.add_stylesheet(&css_content);

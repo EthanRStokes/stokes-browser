@@ -1,26 +1,40 @@
 // Networking module for handling HTTP requests
-use reqwest::{Client, header};
+use curl::easy::{Easy, List};
 use std::time::Duration;
+
+#[derive(Debug)]
+pub enum NetworkError {
+    Curl(String),
+    Utf8(String),
+    Http(u32),
+    Empty,
+}
+
+impl std::fmt::Display for NetworkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            NetworkError::Curl(msg) => write!(f, "Curl error: {}", msg),
+            NetworkError::Utf8(msg) => write!(f, "UTF-8 error: {}", msg),
+            NetworkError::Http(code) => write!(f, "HTTP error: {}", code),
+            NetworkError::Empty => write!(f, "Empty response body"),
+        }
+    }
+}
+
+impl std::error::Error for NetworkError {}
 
 /// A client for making HTTP requests and fetching web resources
 pub struct HttpClient {
-    client: Client,
+    // curl::Easy is not Send/Sync, so we'll create it fresh for each request
 }
 
 impl HttpClient {
     pub fn new() -> Self {
-        // Create a custom client with appropriate settings
-        let client = Client::builder()
-            .user_agent("Stokes-Browser/1.0")
-            .timeout(Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
-
-        Self { client }
+        Self {}
     }
 
     /// Fetch HTML content from a URL
-    pub async fn fetch(&self, url: &str) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn fetch(&self, url: &str) -> Result<String, NetworkError> {
         println!("Fetching: {}", url);
 
         // Ensure URL starts with http:// or https://
@@ -30,74 +44,154 @@ impl HttpClient {
             url.to_string()
         };
 
-        // Make the request
-        let response = self.client.get(&url).send().await?;
+        // Run curl operation in a blocking task since curl is synchronous
+        let result = tokio::task::spawn_blocking(move || {
+            let mut easy = Easy::new();
+            let mut data = Vec::new();
+            let mut headers = Vec::new();
 
-        // Check if successful
-        if !response.status().is_success() {
-            return Err(format!("HTTP error: {}", response.status()).into());
-        }
+            // Configure curl
+            easy.url(&url).map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.useragent("Stokes-Browser/1.0").map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.timeout(Duration::from_secs(30)).map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.follow_location(true).map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.max_redirections(5).map_err(|e| NetworkError::Curl(e.to_string()))?;
 
-        // Get content type
-        let content_type = response
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("text/html");
+            // Set up data collection
+            {
+                let mut transfer = easy.transfer();
+                transfer.write_function(|new_data| {
+                    data.extend_from_slice(new_data);
+                    Ok(new_data.len())
+                }).map_err(|e| NetworkError::Curl(e.to_string()))?;
+                
+                transfer.header_function(|header| {
+                    headers.push(String::from_utf8_lossy(header).to_string());
+                    true
+                }).map_err(|e| NetworkError::Curl(e.to_string()))?;
+                
+                transfer.perform().map_err(|e| NetworkError::Curl(e.to_string()))?;
+            }
 
-        // Currently we only handle HTML
-        if !content_type.contains("text/html") {
-            println!("Warning: Content type is {}, not HTML", content_type);
-        }
+            // Check response code
+            let response_code = easy.response_code().map_err(|e| NetworkError::Curl(e.to_string()))?;
+            if response_code >= 400 {
+                return Err(NetworkError::Http(response_code));
+            }
 
-        // Get the text content
-        let html = response.text().await?;
-        Ok(html)
+            // Check content type
+            let content_type = headers.iter()
+                .find(|h| h.to_lowercase().starts_with("content-type:"))
+                .and_then(|h| h.split(':').nth(1))
+                .map(|s| s.trim())
+                .unwrap_or("text/html");
+
+            if !content_type.contains("text/html") {
+                println!("Warning: Content type is {}, not HTML", content_type);
+            }
+
+            // Convert to string
+            let html = String::from_utf8(data)
+                .map_err(|_| NetworkError::Utf8("Response contains invalid UTF-8".to_string()))?;
+
+            Ok::<String, NetworkError>(html)
+        }).await.map_err(|e| NetworkError::Curl(e.to_string()))?;
+
+        result
     }
 
     /// Fetch an image or other resource
-    pub async fn fetch_resource(&self, url: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    pub async fn fetch_resource(&self, url: &str) -> Result<Vec<u8>, NetworkError> {
         println!("Fetching resource: {}", url);
 
-        // Make the request with appropriate headers for resources
-        let response = self.client
-            .get(url)
-            .header(header::ACCEPT, "image/*, */*")
-            .send()
-            .await?;
+        // Run curl operation in a blocking task
+        let url = url.to_string();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut easy = Easy::new();
+            let mut data = Vec::new();
+            let mut headers = Vec::new();
 
-        // Check if successful
-        if !response.status().is_success() {
-            return Err(format!("HTTP error {}: {}", response.status().as_u16(), response.status().canonical_reason().unwrap_or("Unknown error")).into());
-        }
+            // Configure curl
+            easy.url(&url).map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.useragent("Stokes-Browser/1.0").map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.timeout(Duration::from_secs(30)).map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.follow_location(true).map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.max_redirections(5).map_err(|e| NetworkError::Curl(e.to_string()))?;
 
-        // Get content type to validate it's an image (optional validation)
-        if let Some(content_type) = response.headers().get(header::CONTENT_TYPE) {
-            if let Ok(content_type_str) = content_type.to_str() {
-                println!("Resource content type: {}", content_type_str);
+            // Set Accept header for resources
+            let mut header_list = List::new();
+            header_list.append("Accept: image/*, */*").map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.http_headers(header_list).map_err(|e| NetworkError::Curl(e.to_string()))?;
 
-                // Log if it's not an image type (but still proceed)
-                if !content_type_str.starts_with("image/") {
-                    println!("Warning: Expected image content type, got: {}", content_type_str);
+            // Set up data collection
+            {
+                let mut transfer = easy.transfer();
+                transfer.write_function(|new_data| {
+                    data.extend_from_slice(new_data);
+                    Ok(new_data.len())
+                }).map_err(|e| NetworkError::Curl(e.to_string()))?;
+                
+                transfer.header_function(|header| {
+                    headers.push(String::from_utf8_lossy(header).to_string());
+                    true
+                }).map_err(|e| NetworkError::Curl(e.to_string()))?;
+                
+                transfer.perform().map_err(|e| NetworkError::Curl(e.to_string()))?;
+            }
+
+            // Check response code
+            let response_code = easy.response_code().map_err(|e| NetworkError::Curl(e.to_string()))?;
+            if response_code >= 400 {
+                return Err(NetworkError::Http(response_code));
+            }
+
+            // Check content type
+            if let Some(content_type_header) = headers.iter()
+                .find(|h| h.to_lowercase().starts_with("content-type:")) {
+                if let Some(content_type) = content_type_header.split(':').nth(1) {
+                    let content_type = content_type.trim();
+                    println!("Resource content type: {}", content_type);
+
+                    if !content_type.starts_with("image/") {
+                        println!("Warning: Expected image content type, got: {}", content_type);
+                    }
                 }
             }
-        }
 
-        // Get the binary content
-        let bytes = response.bytes().await?;
+            // Validate we got some data
+            if data.is_empty() {
+                return Err(NetworkError::Empty);
+            }
 
-        // Validate we got some data
-        if bytes.is_empty() {
-            return Err("Empty response body".into());
-        }
+            println!("Successfully fetched resource: {} bytes", data.len());
+            Ok::<Vec<u8>, NetworkError>(data)
+        }).await.map_err(|e| NetworkError::Curl(e.to_string()))?;
 
-        println!("Successfully fetched resource: {} bytes", bytes.len());
-        Ok(bytes.to_vec())
+        result
     }
 
     /// Check if a URL is valid and reachable (for validation)
-    pub async fn head(&self, url: &str) -> Result<bool, Box<dyn std::error::Error>> {
-        let response = self.client.head(url).send().await?;
-        Ok(response.status().is_success())
+    pub async fn head(&self, url: &str) -> Result<bool, NetworkError> {
+        let url = url.to_string();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut easy = Easy::new();
+
+            // Configure curl for HEAD request
+            easy.url(&url).map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.useragent("Stokes-Browser/1.0").map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.timeout(Duration::from_secs(10)).map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.nobody(true).map_err(|e| NetworkError::Curl(e.to_string()))?; // This makes it a HEAD request
+            easy.follow_location(true).map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.max_redirections(5).map_err(|e| NetworkError::Curl(e.to_string()))?;
+
+            // Perform the request
+            easy.perform().map_err(|e| NetworkError::Curl(e.to_string()))?;
+
+            // Check response code
+            let response_code = easy.response_code().map_err(|e| NetworkError::Curl(e.to_string()))?;
+            Ok::<bool, NetworkError>(response_code < 400)
+        }).await.map_err(|e| NetworkError::Curl(e.to_string()))?;
+
+        result
     }
 }

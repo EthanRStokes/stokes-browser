@@ -10,7 +10,7 @@ gl = "0.14.0"
 skia-safe = { version = "0.88.0", features = ["gpu", "gl"] }
 winit = "0.30.12"
 tokio = { version = "1.47.1", features = ["rt", "rt-multi-thread", "macros"] }
-reqwest = "0.12.23"
+curl = "0.4"
 scraper = "0.24.0"
 html5ever = "0.35.0"
 markup5ever_rcdom = "0.35.0+unofficial"
