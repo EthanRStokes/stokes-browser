@@ -105,8 +105,15 @@ impl Engine {
                                 // In a real browser, this would be done with proper async handling
                                 match self.fetch_image(&src).await {
                                     Ok(image_bytes) => {
-                                        image_data.loading_state = ImageLoadingState::Loaded(image_bytes);
-                                        println!("Successfully loaded image: {}", src);
+                                        image_data.loading_state = ImageLoadingState::Loaded(image_bytes.clone());
+
+                                        // Decode and cache the image immediately after loading
+                                        if let Some(decoded_image) = ImageData::decode_image_data_static(&image_bytes) {
+                                            image_data.cached_image = Some(decoded_image);
+                                            println!("Successfully loaded and decoded image: {}", src);
+                                        } else {
+                                            println!("Successfully loaded but failed to decode image: {}", src);
+                                        }
                                     }
                                     Err(err) => {
                                         image_data.loading_state = ImageLoadingState::Failed(err.to_string());
@@ -165,9 +172,19 @@ impl Engine {
             return Err(NetworkError::Curl("Cannot resolve relative URL: no current page URL".to_string()));
         }
 
-        // Parse the current URL to get the base
-        let base_url = if let Some(domain_end) = self.current_url.find('/') { // Skip "https://"
-            &self.current_url[..domain_end]
+        // Parse the current URL to get the base domain
+        // Find the domain part by looking for the third slash (after protocol://)
+        let base_url = if self.current_url.starts_with("http://") || self.current_url.starts_with("https://") {
+            // Find the end of the domain part
+            let protocol_end = if self.current_url.starts_with("https://") { 8 } else { 7 }; // Length of "https://" or "http://"
+
+            if let Some(path_start) = self.current_url[protocol_end..].find('/') {
+                // Domain ends at the first slash after the protocol
+                &self.current_url[..protocol_end + path_start]
+            } else {
+                // No path, use the entire URL as the domain
+                &self.current_url
+            }
         } else {
             &self.current_url
         };
@@ -264,7 +281,8 @@ impl Engine {
     /// Add a CSS stylesheet from a URL
     pub async fn load_external_stylesheet(&mut self, css_url: &str) -> Result<(), NetworkError> {
         let absolute_url = self.resolve_url(css_url)?;
-        let css_content = self.http_client.fetch(&absolute_url).await?;
+        let css_content = self.http_client.fetch_resource(&absolute_url).await?;
+        let css_content = String::from_utf8(css_content).expect("Failed to decode CSS content as UTF-8");
         self.add_stylesheet(&css_content);
         Ok(())
     }

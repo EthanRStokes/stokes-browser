@@ -47,38 +47,6 @@ impl HtmlRenderer {
         }
     }
 
-    /// Render a layout tree to the canvas
-    pub fn render(
-        &self,
-        canvas: &Canvas,
-        layout: &LayoutBox,
-        node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
-    ) {
-        self.render_with_scroll(canvas, layout, node_map, 0.0, 0.0);
-    }
-
-    /// Render a layout tree to the canvas with scroll offset
-    pub fn render_with_scroll(
-        &self,
-        canvas: &Canvas,
-        layout: &LayoutBox,
-        node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
-        scroll_x: f32,
-        scroll_y: f32,
-    ) {
-        // Save the current canvas state
-        canvas.save();
-
-        // Apply scroll offset by translating the canvas
-        canvas.translate((-scroll_x, -scroll_y));
-
-        // Render the layout tree
-        self.render_box(canvas, layout, node_map);
-
-        // Restore the canvas state
-        canvas.restore();
-    }
-
     /// Render a layout tree to the canvas with CSS styling support
     pub fn render_with_styles(
         &self,
@@ -100,42 +68,6 @@ impl HtmlRenderer {
 
         // Restore the canvas state
         canvas.restore();
-    }
-
-    /// Render a single layout box
-    fn render_box(
-        &self,
-        canvas: &Canvas,
-        layout_box: &LayoutBox,
-        node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
-    ) {
-        // Get the DOM node for this layout box
-        if let Some(dom_node_rc) = node_map.get(&layout_box.node_id) {
-            let dom_node = dom_node_rc.borrow();
-
-            match &dom_node.node_type {
-                NodeType::Element(element_data) => {
-                    self.render_element(canvas, layout_box, element_data);
-                },
-                NodeType::Text(_) => {
-                    self.render_text_node(canvas, layout_box);
-                },
-                NodeType::Image(image_data) => {
-                    self.render_image_node(canvas, layout_box, image_data);
-                },
-                NodeType::Document => {
-                    // Just render children for document
-                },
-                _ => {
-                    // Skip other node types
-                }
-            }
-        }
-
-        // Render children
-        for child in &layout_box.children {
-            self.render_box(canvas, child, node_map);
-        }
     }
 
     /// Render a single layout box with CSS styles
@@ -188,51 +120,6 @@ impl HtmlRenderer {
                     self.render_box_with_styles(canvas, child, node_map, style_map);
                 }
             }
-        }
-    }
-
-    /// Render an element (with background, border, etc.)
-    fn render_element(&self, canvas: &Canvas, layout_box: &LayoutBox, element_data: &ElementData) {
-        let border_box = layout_box.dimensions.border_box();
-
-        // Render background based on element type
-        let mut bg_paint = self.background_paint.clone();
-        match element_data.tag_name.as_str() {
-            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
-                bg_paint.set_color(Color::from_rgb(240, 240, 250));
-            },
-            "div" => {
-                bg_paint.set_color(Color::from_rgb(248, 248, 248));
-            },
-            "p" => {
-                bg_paint.set_color(Color::WHITE);
-            },
-            "a" => {
-                bg_paint.set_color(Color::from_rgb(230, 240, 255));
-            },
-            _ => {
-                bg_paint.set_color(Color::WHITE);
-            }
-        }
-
-        // Draw background
-        canvas.draw_rect(border_box, &bg_paint);
-
-        // Draw border for certain elements
-        match element_data.tag_name.as_str() {
-            "div" | "section" | "article" | "header" | "footer" => {
-                canvas.draw_rect(border_box, &self.border_paint);
-            },
-            _ => {}
-        }
-
-        // Add visual indicators for different elements
-        if element_data.tag_name.starts_with('h') {
-            let mut heading_paint = Paint::default();
-            heading_paint.set_color(Color::from_rgb(50, 50, 150));
-            heading_paint.set_stroke(true);
-            heading_paint.set_stroke_width(2.0);
-            canvas.draw_rect(border_box, &heading_paint);
         }
     }
 
@@ -299,42 +186,6 @@ impl HtmlRenderer {
             heading_paint.set_stroke(true);
             heading_paint.set_stroke_width(2.0);
             canvas.draw_rect(border_box, &heading_paint);
-        }
-    }
-
-    /// Render text content
-    fn render_text_node(&self, canvas: &Canvas, layout_box: &LayoutBox) {
-        if let Some(text) = &layout_box.content {
-            let content_rect = layout_box.dimensions.content;
-
-            // Skip empty or whitespace-only text
-            let trimmed_text = text.trim();
-            if trimmed_text.is_empty() {
-                return;
-            }
-
-            // Choose font based on parent context (simplified)
-            let font = &self.default_font;
-            let line_height = 16.0;
-
-            // Split text by newlines and render each line separately
-            let lines: Vec<&str> = text.split('\n').collect();
-
-            for (line_index, line) in lines.iter().enumerate() {
-                // Skip empty lines but still advance the Y position
-                if line.trim().is_empty() && lines.len() > 1 {
-                    continue;
-                }
-
-                // Create text blob for this line
-                if let Some(text_blob) = TextBlob::new(line.trim(), font) {
-                    // Position text within content area, with proper line spacing
-                    let x = content_rect.left;
-                    let y = content_rect.top + font.size() + (line_index as f32 * line_height);
-
-                    canvas.draw_text_blob(&text_blob, (x, y), &self.text_paint);
-                }
-            }
         }
     }
 
@@ -434,22 +285,23 @@ impl HtmlRenderer {
         let content_rect = layout_box.dimensions.content;
 
         match &image_data.loading_state {
-            ImageLoadingState::Loaded(image_bytes) => {
-                // Try to decode and render the actual image
-                if let Some(skia_image) = self.decode_image_data(image_bytes) {
+            ImageLoadingState::Loaded(_) => {
+                // Try to get the cached decoded image
+                // We need to work around the borrowing issue by cloning the image if available
+                if let Some(cached_image) = &image_data.cached_image {
                     let mut paint = Paint::default();
                     paint.set_anti_alias(true);
 
-                    // Draw the image scaled to fit the content rect
+                    // Draw the cached image scaled to fit the content rect
                     canvas.draw_image_rect(
-                        &skia_image,
+                        cached_image,
                         None, // Use entire source image
                         content_rect,
                         &paint
                     );
                 } else {
-                    // Failed to decode, show placeholder
-                    self.render_image_placeholder(canvas, &content_rect, "Failed to decode image");
+                    // No cached image available, show placeholder indicating decoding issue
+                    self.render_image_placeholder(canvas, &content_rect, "Image decoding failed");
                 }
             },
             ImageLoadingState::Loading => {
@@ -534,61 +386,6 @@ impl HtmlRenderer {
                 (icon_rect.left, icon_rect.bottom),
                 &icon_paint
             );
-        }
-    }
-
-    /// Decode image data into a Skia image
-    fn decode_image_data(&self, image_bytes: &[u8]) -> Option<skia_safe::Image> {
-        // Add debugging information
-        println!("Attempting to decode image data: {} bytes", image_bytes.len());
-
-        if image_bytes.is_empty() {
-            println!("Error: Empty image data");
-            return None;
-        }
-
-        // Check the first few bytes to identify the image format
-        if image_bytes.len() >= 4 {
-            let header = &image_bytes[0..4];
-            match header {
-                [0xFF, 0xD8, 0xFF, ..] => println!("Detected JPEG image format"),
-                [0x89, 0x50, 0x4E, 0x47] => println!("Detected PNG image format"),
-                [0x47, 0x49, 0x46, 0x38] => println!("Detected GIF image format"),
-                [0x42, 0x4D, ..] => println!("Detected BMP image format"),
-                [0x52, 0x49, 0x46, 0x46] => println!("Detected WebP image format"),
-                _ => println!("Unknown image format, header: {:02X} {:02X} {:02X} {:02X}",
-                            header[0], header[1], header[2], header[3]),
-            }
-        }
-
-        // Try to create Skia Data object
-        let skia_data = skia_safe::Data::new_copy(image_bytes);
-        // write image to a random file in the user folder
-        let folder = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("skia_debug");
-        let file_path = folder.join("image_".to_owned() + &format!("{:?}", std::time::Instant::now()) + ".png");
-        if let Err(e) = std::fs::write(&file_path, image_bytes)
-        {
-            println!("Warning: Failed to write debug image data to file: {}", e);
-        } else {
-            println!("Wrote debug image data to {}", file_path.display());
-        }
-        if skia_data.is_empty() {
-            println!("Error: Failed to create Skia Data object");
-            return None;
-        }
-
-        println!("Skia Data created successfully: {} bytes", skia_data.size());
-
-        // Try to decode the image using the primary method
-        match skia_safe::Image::from_encoded(skia_data.clone()) {
-            Some(image) => {
-                println!("Successfully decoded image: {}x{}", image.width(), image.height());
-                Some(image)
-            }
-            None => {
-                println!("Error: Skia failed to decode image data with from_encoded");
-                None
-            }
         }
     }
 

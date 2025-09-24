@@ -66,13 +66,14 @@ impl ElementData {
 }
 
 /// Data specific to image nodes
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct ImageData {
     pub src: String,
     pub alt: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub loading_state: ImageLoadingState,
+    pub cached_image: Option<skia_safe::Image>, // Cached decoded image
 }
 
 /// Image loading state
@@ -84,6 +85,18 @@ pub enum ImageLoadingState {
     Failed(String),  // Error message
 }
 
+impl PartialEq for ImageData {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare all fields except cached_image (since skia_safe::Image doesn't implement PartialEq)
+        self.src == other.src
+            && self.alt == other.alt
+            && self.width == other.width
+            && self.height == other.height
+            && self.loading_state == other.loading_state
+        // Note: We don't compare cached_image as it's a derived/cached value
+    }
+}
+
 impl ImageData {
     pub fn new(src: String, alt: String) -> Self {
         Self {
@@ -92,7 +105,76 @@ impl ImageData {
             width: None,
             height: None,
             loading_state: ImageLoadingState::NotLoaded,
+            cached_image: None,
         }
+    }
+
+    /// Get or decode the Skia image, caching the result
+    pub fn get_or_decode_image(&mut self) -> Option<&skia_safe::Image> {
+        // If we already have a cached image, return it
+        if self.cached_image.is_some() {
+            return self.cached_image.as_ref();
+        }
+
+        // If we have loaded image data but no cached image, decode it
+        if let ImageLoadingState::Loaded(image_bytes) = &self.loading_state {
+            if let Some(decoded_image) = Self::decode_image_data(image_bytes) {
+                self.cached_image = Some(decoded_image);
+                return self.cached_image.as_ref();
+            }
+        }
+
+        None
+    }
+
+    /// Decode image data into a Skia image (static method for reuse)
+    fn decode_image_data(image_bytes: &[u8]) -> Option<skia_safe::Image> {
+        if image_bytes.is_empty() {
+            println!("Error: Empty image data");
+            return None;
+        }
+
+        // Check the first few bytes to identify the image format for debugging
+        if image_bytes.len() >= 4 {
+            let header = &image_bytes[0..4];
+            match header {
+                [0xFF, 0xD8, 0xFF, ..] => println!("Decoding JPEG image format"),
+                [0x89, 0x50, 0x4E, 0x47] => println!("Decoding PNG image format"),
+                [0x47, 0x49, 0x46, 0x38] => println!("Decoding GIF image format"),
+                [0x42, 0x4D, ..] => println!("Decoding BMP image format"),
+                [0x52, 0x49, 0x46, 0x46] => println!("Decoding WebP image format"),
+                _ => println!("Decoding unknown image format, header: {:02X} {:02X} {:02X} {:02X}",
+                            header[0], header[1], header[2], header[3]),
+            }
+        }
+
+        // Create Skia Data object and decode
+        let skia_data = skia_safe::Data::new_copy(image_bytes);
+        if skia_data.is_empty() {
+            println!("Error: Failed to create Skia Data object");
+            return None;
+        }
+
+        match skia_safe::Image::from_encoded(skia_data) {
+            Some(image) => {
+                println!("Successfully decoded image: {}x{}", image.width(), image.height());
+                Some(image)
+            }
+            None => {
+                println!("Error: Skia failed to decode image data");
+                None
+            }
+        }
+    }
+
+    /// Public static method for decoding image data (used by engine)
+    pub fn decode_image_data_static(image_bytes: &[u8]) -> Option<skia_safe::Image> {
+        Self::decode_image_data(image_bytes)
+    }
+
+    /// Clear the cached image (useful when image data changes)
+    pub fn clear_cache(&mut self) {
+        self.cached_image = None;
     }
 }
 
