@@ -343,9 +343,9 @@ impl BrowserApp {
         let canvas = self.env.surface.canvas();
         canvas.clear(Color::WHITE);
 
-        // Render the active tab's web content by temporarily moving the engine reference
+        // Render the active tab's web content using mutable reference
         let active_tab_index = self.active_tab_index;
-        let engine = &self.tabs[active_tab_index].engine;
+        let engine = &mut self.tabs[active_tab_index].engine;
         engine.render(canvas);
 
         // Render UI on top of web content

@@ -24,6 +24,10 @@ pub struct Engine {
     layout: Option<LayoutBox>,
     layout_engine: LayoutEngine,
     node_map: HashMap<usize, Rc<RefCell<DomNode>>>,
+    // Add cached renderer and style map
+    renderer: HtmlRenderer,
+    cached_style_map: HashMap<usize, ComputedValues>,
+    style_map_dirty: bool,
     scroll_y: f32,
     scroll_x: f32,
     content_height: f32,
@@ -44,6 +48,9 @@ impl Engine {
             layout: None,
             layout_engine: LayoutEngine::new(800.0, 600.0), // Default viewport size
             node_map: HashMap::new(),
+            renderer: HtmlRenderer::new(),
+            cached_style_map: HashMap::new(),
+            style_map_dirty: false,
             scroll_y: 0.0,
             scroll_x: 0.0,
             content_height: 0.0,
@@ -231,6 +238,9 @@ impl Engine {
             // Get node map for renderer
             self.node_map = self.layout_engine.get_node_map().clone();
 
+            // Mark style map as dirty since layout changed
+            self.style_map_dirty = true;
+
             // Update content dimensions after layout calculation
             self.update_content_dimensions();
         }
@@ -248,21 +258,21 @@ impl Engine {
     }
     
     /// Render the current page to a canvas
-    pub fn render(&self, canvas: &Canvas) {
+    pub fn render(&mut self, canvas: &Canvas) {
         if let Some(layout) = &self.layout {
-            // Create a renderer
-            let renderer = HtmlRenderer::new();
+            // Update style map only if it's dirty
+            if self.style_map_dirty {
+                self.cached_style_map = self.node_map.keys()
+                    .filter_map(|&node_id| {
+                        self.layout_engine.get_computed_styles(node_id)
+                            .map(|styles| (node_id, styles.clone()))
+                    })
+                    .collect();
+                self.style_map_dirty = false;
+            }
 
-            // Get computed styles from the layout engine for CSS-aware rendering
-            let style_map: HashMap<usize, ComputedValues> = self.node_map.keys()
-                .filter_map(|&node_id| {
-                    self.layout_engine.get_computed_styles(node_id)
-                        .map(|styles| (node_id, styles.clone()))
-                })
-                .collect();
-
-            // Use CSS-aware rendering with styles
-            renderer.render_with_styles(canvas, layout, &self.node_map, &style_map, self.scroll_x, self.scroll_y);
+            // Use the cached renderer and style map
+            self.renderer.render_with_styles(canvas, layout, &self.node_map, &self.cached_style_map, self.scroll_x, self.scroll_y);
         }
     }
 
@@ -290,9 +300,6 @@ impl Engine {
     /// Render the current page to a canvas with CSS styling
     pub fn render_with_styles(&self, canvas: &Canvas) {
         if let Some(layout) = &self.layout {
-            // Create a renderer
-            let renderer = HtmlRenderer::new();
-
             // Get computed styles from the layout engine
             let style_map: HashMap<usize, ComputedValues> = self.node_map.keys()
                 .filter_map(|&node_id| {
@@ -302,7 +309,7 @@ impl Engine {
                 .collect();
 
             // Render the layout with CSS styles and scroll offset
-            renderer.render_with_styles(canvas, layout, &self.node_map, &style_map, self.scroll_x, self.scroll_y);
+            self.renderer.render_with_styles(canvas, layout, &self.node_map, &style_map, self.scroll_x, self.scroll_y);
         }
     }
 

@@ -1,7 +1,7 @@
 // HTML renderer for drawing web content
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::cell::RefCell;
+use std::cell::{RefCell, Cell};
 use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob, FontStyle, Typeface};
 use crate::dom::{DomNode, NodeType, ElementData, ImageData, ImageLoadingState};
 use crate::layout::{LayoutBox, BoxType};
@@ -14,6 +14,9 @@ pub struct HtmlRenderer {
     text_paint: Paint,
     background_paint: Paint,
     border_paint: Paint,
+    // Add font cache for different sizes - wrapped in RefCell for interior mutability
+    font_cache: RefCell<HashMap<u32, Font>>, // key is font size as u32 (rounded)
+    typeface: Typeface,
 }
 
 impl HtmlRenderer {
@@ -23,7 +26,7 @@ impl HtmlRenderer {
         let typeface = font_mgr.legacy_make_typeface(None, FontStyle::default())
             .expect("Failed to create default typeface");
         let default_font = Font::new(typeface.clone(), 14.0);
-        let heading_font = Font::new(typeface, 18.0);
+        let heading_font = Font::new(typeface.clone(), 18.0);
 
         // Create paints
         let mut text_paint = Paint::default();
@@ -44,6 +47,8 @@ impl HtmlRenderer {
             text_paint,
             background_paint,
             border_paint,
+            font_cache: RefCell::new(HashMap::new()),
+            typeface,
         }
     }
 
@@ -245,11 +250,21 @@ impl HtmlRenderer {
 
     /// Create a font from CSS computed styles
     fn create_font_from_styles(&self, styles: &ComputedValues) -> Font {
+        // Use cached font if available
+        if let Some(cached_font) = self.font_cache.borrow().get(&(styles.font_size as u32)) {
+            return cached_font.clone();
+        }
+
         let font_mgr = skia_safe::FontMgr::new();
         let typeface = font_mgr.legacy_make_typeface(None, FontStyle::default())
             .expect("Failed to create typeface");
         
-        Font::new(typeface, styles.font_size)
+        let font = Font::new(typeface, styles.font_size);
+
+        // Cache the created font
+        self.font_cache.borrow_mut().insert(styles.font_size as u32, font.clone());
+
+        font
     }
 
     /// Update colors based on element attributes (simplified styling)
