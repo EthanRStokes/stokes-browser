@@ -204,66 +204,49 @@ impl HtmlRenderer {
         if let Some(text) = &layout_box.content {
             let content_rect = layout_box.dimensions.content;
 
-            // Skip empty or whitespace-only text
-            let trimmed_text = text.trim();
-            if trimmed_text.is_empty() {
-                return;
-            }
-
-            // Create font with CSS font-size if available
-            let font = if let Some(styles) = computed_styles {
-                self.create_font_from_styles(styles)
-            } else {
-                self.default_font.clone()
-            };
-
-            // Create text paint with CSS color if available
+            // Create text paint with CSS colors and font properties
             let mut text_paint = self.text_paint.clone();
+            let mut font_size = 14.0; // Default font size
+
             if let Some(styles) = computed_styles {
+                // Apply CSS color
                 if let Some(text_color) = &styles.color {
                     text_paint.set_color(text_color.to_skia_color());
                 }
+
+                // Apply CSS font size
+                font_size = styles.font_size;
             }
 
-            let line_height = font.size() * 1.2; // 120% line height
+            // Get or create font with the specified size
+            let font = self.get_font_for_size(font_size);
 
-            // Split text by newlines and render each line separately
-            let lines: Vec<&str> = text.split('\n').collect();
+            // Create text blob
+            if let Some(text_blob) = TextBlob::new(text, &font) {
+                // Position text within the content area
+                let x = content_rect.left + 2.0; // Small padding
+                let y = content_rect.top + font_size; // Baseline position
 
-            for (line_index, line) in lines.iter().enumerate() {
-                // Skip empty lines but still advance the Y position
-                if line.trim().is_empty() && lines.len() > 1 {
-                    continue;
-                }
-
-                // Create text blob for this line
-                if let Some(text_blob) = TextBlob::new(line.trim(), &font) {
-                    // Position text within content area, with proper line spacing
-                    let x = content_rect.left;
-                    let y = content_rect.top + font.size() + (line_index as f32 * line_height);
-
-                    canvas.draw_text_blob(&text_blob, (x, y), &text_paint);
-                }
+                canvas.draw_text_blob(&text_blob, (x, y), &text_paint);
             }
         }
     }
 
-    /// Create a font from CSS computed styles
-    fn create_font_from_styles(&self, styles: &ComputedValues) -> Font {
-        // Use cached font if available
-        if let Some(cached_font) = self.font_cache.borrow().get(&(styles.font_size as u32)) {
-            return cached_font.clone();
+    /// Get or create a font for the specified size
+    fn get_font_for_size(&self, size: f32) -> Font {
+        let size_key = size.round() as u32;
+
+        // Check cache first
+        {
+            let cache = self.font_cache.borrow();
+            if let Some(font) = cache.get(&size_key) {
+                return font.clone();
+            }
         }
 
-        let font_mgr = skia_safe::FontMgr::new();
-        let typeface = font_mgr.legacy_make_typeface(None, FontStyle::default())
-            .expect("Failed to create typeface");
-        
-        let font = Font::new(typeface, styles.font_size);
-
-        // Cache the created font
-        self.font_cache.borrow_mut().insert(styles.font_size as u32, font.clone());
-
+        // Create new font and cache it
+        let font = Font::new(self.typeface.clone(), size);
+        self.font_cache.borrow_mut().insert(size_key, font.clone());
         font
     }
 

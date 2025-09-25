@@ -105,26 +105,31 @@ impl Selector {
     }
 
     /// Check if this selector matches an element
-    pub(crate) fn matches_element(&self, element: &ElementData) -> bool {
+    pub fn matches_element(&self, element_data: &ElementData) -> bool {
         match &self.selector_type {
             SelectorType::Type(tag_name) => {
-                element.tag_name.to_lowercase() == tag_name.to_lowercase()
+                element_data.tag_name.to_lowercase() == tag_name.to_lowercase()
             }
             SelectorType::Class(class_name) => {
-                element.classes().contains(&class_name.as_str())
+                if let Some(class_attr) = element_data.attributes.get("class") {
+                    class_attr.split_whitespace().any(|c| c == class_name)
+                } else {
+                    false
+                }
             }
-            SelectorType::Id(id) => {
-                element.id() == Some(id.as_str())
+            SelectorType::Id(id_name) => {
+                element_data.attributes.get("id")
+                    .map(|id| id == id_name)
+                    .unwrap_or(false)
             }
             SelectorType::Attribute(attr_name, attr_value) => {
-                match element.attributes.get(attr_name) {
-                    Some(value) => {
-                        match attr_value {
-                            Some(expected_value) => value == expected_value,
-                            None => true, // Just check if attribute exists
-                        }
+                if let Some(element_value) = element_data.attributes.get(attr_name) {
+                    match attr_value {
+                        Some(expected_value) => element_value == expected_value,
+                        None => true, // Just check for attribute presence
                     }
-                    None => false,
+                } else {
+                    false
                 }
             }
             SelectorType::Universal => true,

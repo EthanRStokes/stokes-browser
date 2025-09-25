@@ -96,6 +96,39 @@ impl LayoutEngine {
             layout_box.dimensions.margin = computed_styles.margin.clone();
             layout_box.dimensions.padding = computed_styles.padding.clone();
             layout_box.dimensions.border = computed_styles.border.clone();
+
+            // Apply width and height constraints
+            if let Some(width) = &computed_styles.width {
+                let parent_width = self.viewport_width; // Simplified parent width
+                let computed_width = width.to_px(computed_styles.font_size, parent_width);
+                layout_box.dimensions.content.right = layout_box.dimensions.content.left + computed_width;
+            }
+
+            if let Some(height) = &computed_styles.height {
+                let parent_height = self.viewport_height; // Simplified parent height
+                let computed_height = height.to_px(computed_styles.font_size, parent_height);
+                layout_box.dimensions.content.bottom = layout_box.dimensions.content.top + computed_height;
+            }
+
+            // Override box type based on display property
+            match computed_styles.display {
+                crate::css::computed::DisplayType::Block => {
+                    layout_box.box_type = BoxType::Block;
+                },
+                crate::css::computed::DisplayType::Inline => {
+                    layout_box.box_type = BoxType::Inline;
+                },
+                crate::css::computed::DisplayType::InlineBlock => {
+                    layout_box.box_type = BoxType::InlineBlock;
+                },
+                crate::css::computed::DisplayType::None => {
+                    // Elements with display: none should not be rendered
+                    // We'll handle this by creating an empty block that takes no space
+                    layout_box.box_type = BoxType::Block;
+                    layout_box.dimensions.content.right = layout_box.dimensions.content.left;
+                    layout_box.dimensions.content.bottom = layout_box.dimensions.content.top;
+                }
+            }
         }
 
         // Process children

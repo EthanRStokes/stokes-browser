@@ -226,26 +226,42 @@ impl Engine {
         }
     }
 
-    /// Recalculate layout based on current DOM
+    /// Recalculate layout with current DOM and styles
     pub fn recalculate_layout(&mut self) {
         if let Some(dom) = &self.dom {
-            // Convert DOM root to Rc<RefCell<DomNode>> for layout engine
-            let root_node = Rc::new(RefCell::new(dom.root.clone()));
-            
-            // Calculate layout
-            self.layout = Some(self.layout_engine.compute_layout(&root_node));
+            let root = dom.get_root();
+            self.layout = Some(self.layout_engine.compute_layout(&root));
 
-            // Get node map for renderer
+            // Update node map from layout engine
             self.node_map = self.layout_engine.get_node_map().clone();
 
-            // Mark style map as dirty since layout changed
             self.style_map_dirty = true;
 
-            // Update content dimensions after layout calculation
+            // Update content dimensions
             self.update_content_dimensions();
         }
     }
-    
+
+    /// Update the viewport size
+    pub fn set_viewport_size(&mut self, width: f32, height: f32) {
+        self.viewport_width = width;
+        self.viewport_height = height;
+        self.layout_engine.set_viewport(width, height);
+
+        // Recalculate layout with new viewport
+        self.recalculate_layout();
+    }
+
+    /// Get the viewport size
+    pub fn viewport_size(&self) -> (f32, f32) {
+        (self.viewport_width, self.viewport_height)
+    }
+
+    /// Get the content dimensions
+    pub fn content_size(&self) -> (f32, f32) {
+        (self.content_width, self.content_height)
+    }
+
     /// Resize the viewport
     pub fn resize(&mut self, width: f32, height: f32) {
         self.viewport_width = width;

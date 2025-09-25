@@ -49,7 +49,12 @@ impl Dom {
             title_node.borrow().text_content()
         } else {
             // Default title if not found
-            "Untitled Page".to_string()
+            "Untitled".to_string()
         }
+    }
+
+    /// Get the root node as Rc<RefCell<DomNode>>
+    pub fn get_root(&self) -> Rc<RefCell<DomNode>> {
+        Rc::new(RefCell::new(self.root.clone()))
     }
 }

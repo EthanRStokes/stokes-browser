@@ -41,9 +41,9 @@ impl Default for ComputedValues {
             display: DisplayType::Block,
             width: None,
             height: None,
-            margin: EdgeSizes::uniform(0.0),
-            padding: EdgeSizes::uniform(0.0),
-            border: EdgeSizes::uniform(0.0),
+            margin: EdgeSizes::default(),
+            padding: EdgeSizes::default(),
+            border: EdgeSizes::default(),
         }
     }
 }

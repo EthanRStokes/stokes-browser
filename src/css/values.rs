@@ -99,8 +99,8 @@ impl Length {
             Unit::Px => self.value,
             Unit::Em => self.value * font_size,
             Unit::Rem => self.value * 16.0, // Default root font size
-            Unit::Percent => self.value * parent_size / 100.0,
-            Unit::Auto => 0.0, // Will be calculated based on context
+            Unit::Percent => self.value / 100.0 * parent_size,
+            Unit::Auto => 0.0, // Auto should be handled by layout algorithm
         }
     }
 }
@@ -108,111 +108,118 @@ impl Length {
 /// CSS property values
 #[derive(Debug, Clone, PartialEq)]
 pub enum CssValue {
-    Color(Color),
     Length(Length),
-    String(String),
+    Color(Color),
     Number(f32),
+    String(String),
     Keyword(String),
     Auto,
 }
 
 impl CssValue {
     /// Parse a CSS value from a string
-    pub fn parse(input: &str) -> Self {
-        let trimmed = input.trim();
+    pub fn parse(value: &str) -> Self {
+        let value = value.trim();
 
-        // Check for colors
-        if trimmed.starts_with('#') {
-            return CssValue::Color(Color::Hex(trimmed.to_string()));
+        // Check for auto
+        if value == "auto" {
+            return CssValue::Auto;
         }
 
-        if trimmed.starts_with("rgb(") && trimmed.ends_with(')') {
-            return Self::parse_rgb(trimmed);
+        // Check for color values
+        if value.starts_with('#') {
+            return CssValue::Color(Color::Hex(value.to_string()));
         }
 
-        if trimmed.starts_with("rgba(") && trimmed.ends_with(')') {
-            return Self::parse_rgba(trimmed);
+        // Check for rgb/rgba colors
+        if value.starts_with("rgb(") || value.starts_with("rgba(") {
+            return Self::parse_rgb_color(value);
         }
 
         // Check for named colors
-        match trimmed.to_lowercase().as_str() {
-            "black" | "white" | "red" | "green" | "blue" | "yellow" |
-            "cyan" | "magenta" | "gray" | "grey" => {
-                return CssValue::Color(Color::Named(trimmed.to_lowercase()));
-            }
-            _ => {}
+        if Self::is_named_color(value) {
+            return CssValue::Color(Color::Named(value.to_string()));
         }
 
-        // Check for lengths
-        if let Some(length) = Self::parse_length(trimmed) {
+        // Check for length values (px, em, rem, %)
+        if let Some(length) = Self::parse_length(value) {
             return CssValue::Length(length);
         }
 
-        // Check for numbers
-        if let Ok(num) = trimmed.parse::<f32>() {
+        // Check for pure numbers
+        if let Ok(num) = value.parse::<f32>() {
             return CssValue::Number(num);
         }
 
-        // Check for keywords
-        match trimmed.to_lowercase().as_str() {
-            "auto" => CssValue::Auto,
-            _ => CssValue::Keyword(trimmed.to_string()),
+        // Check for quoted strings
+        if (value.starts_with('"') && value.ends_with('"')) ||
+           (value.starts_with('\'') && value.ends_with('\'')) {
+            let unquoted = &value[1..value.len()-1];
+            return CssValue::String(unquoted.to_string());
         }
+
+        // Default to keyword
+        CssValue::Keyword(value.to_string())
     }
 
-    fn parse_rgb(input: &str) -> CssValue {
-        let inner = &input[4..input.len()-1]; // Remove "rgb(" and ")"
-        let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+    fn parse_rgb_color(value: &str) -> CssValue {
+        // Simple RGB/RGBA parsing
+        let content = if value.starts_with("rgb(") {
+            &value[4..value.len()-1]
+        } else if value.starts_with("rgba(") {
+            &value[5..value.len()-1]
+        } else {
+            return CssValue::Keyword(value.to_string());
+        };
 
-        if parts.len() == 3 {
+        let parts: Vec<&str> = content.split(',').map(|s| s.trim()).collect();
+
+        if parts.len() >= 3 {
             if let (Ok(r), Ok(g), Ok(b)) = (
                 parts[0].parse::<u8>(),
                 parts[1].parse::<u8>(),
                 parts[2].parse::<u8>(),
             ) {
+                if parts.len() >= 4 {
+                    if let Ok(a) = parts[3].parse::<f32>() {
+                        return CssValue::Color(Color::Rgba { r, g, b, a });
+                    }
+                }
                 return CssValue::Color(Color::Rgb { r, g, b });
             }
         }
 
-        CssValue::Color(Color::Named("black".to_string()))
+        CssValue::Keyword(value.to_string())
     }
 
-    fn parse_rgba(input: &str) -> CssValue {
-        let inner = &input[5..input.len()-1]; // Remove "rgba(" and ")"
-        let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
-
-        if parts.len() == 4 {
-            if let (Ok(r), Ok(g), Ok(b), Ok(a)) = (
-                parts[0].parse::<u8>(),
-                parts[1].parse::<u8>(),
-                parts[2].parse::<u8>(),
-                parts[3].parse::<f32>(),
-            ) {
-                return CssValue::Color(Color::Rgba { r, g, b, a });
+    fn parse_length(value: &str) -> Option<Length> {
+        if value.ends_with("px") {
+            if let Ok(num) = value[..value.len()-2].parse::<f32>() {
+                return Some(Length::px(num));
+            }
+        } else if value.ends_with("em") {
+            if let Ok(num) = value[..value.len()-2].parse::<f32>() {
+                return Some(Length::em(num));
+            }
+        } else if value.ends_with("rem") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length { value: num, unit: Unit::Rem });
+            }
+        } else if value.ends_with('%') {
+            if let Ok(num) = value[..value.len()-1].parse::<f32>() {
+                return Some(Length::percent(num));
             }
         }
-
-        CssValue::Color(Color::Named("black".to_string()))
-    }
-
-    fn parse_length(input: &str) -> Option<Length> {
-        if input.ends_with("px") {
-            if let Ok(value) = input[..input.len()-2].parse::<f32>() {
-                return Some(Length::px(value));
-            }
-        } else if input.ends_with("em") {
-            if let Ok(value) = input[..input.len()-2].parse::<f32>() {
-                return Some(Length::em(value));
-            }
-        } else if input.ends_with('%') {
-            if let Ok(value) = input[..input.len()-1].parse::<f32>() {
-                return Some(Length::percent(value));
-            }
-        } else if input == "auto" {
-            return Some(Length { value: 0.0, unit: Unit::Auto });
-        }
-
         None
+    }
+
+    fn is_named_color(value: &str) -> bool {
+        matches!(value.to_lowercase().as_str(),
+            "black" | "white" | "red" | "green" | "blue" | "yellow" |
+            "cyan" | "magenta" | "gray" | "grey" | "orange" | "purple" |
+            "brown" | "pink" | "lime" | "navy" | "teal" | "silver" |
+            "maroon" | "olive" | "aqua" | "fuchsia"
+        )
     }
 }
 

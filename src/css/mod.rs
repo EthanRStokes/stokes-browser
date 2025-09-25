@@ -3,7 +3,7 @@ mod parser;
 mod values;
 mod selector;
 mod stylesheet;
-mod computed;
+pub(crate) mod computed;
 
 pub use self::parser::CssParser;
 pub use self::values::{CssValue, Color, Length, Unit};
@@ -76,7 +76,10 @@ impl From<&str> for PropertyName {
             "right" => PropertyName::Right,
             "bottom" => PropertyName::Bottom,
             "left" => PropertyName::Left,
-            _ => PropertyName::Unknown(s.to_string()),
+            _ => {
+                println!("Warning: Unknown CSS property: {}", s);
+                PropertyName::Unknown(s.to_string())
+            },
         }
     }
 }

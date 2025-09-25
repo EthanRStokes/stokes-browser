@@ -101,61 +101,55 @@ impl Stylesheet {
             stylesheet.add_rule(Rule::new(selectors, declarations));
         }
         
-        // Body default styles
-        let selectors = vec![Selector::parse("body").into_iter().next().unwrap()];
-        let declarations = vec![
-            Declaration::new(PropertyName::Margin, CssValue::Length(super::values::Length::px(0.0))),
-            Declaration::new(PropertyName::Padding, CssValue::Length(super::values::Length::px(0.0))),
-            Declaration::new(PropertyName::BackgroundColor, CssValue::Color(super::values::Color::Named("white".to_string()))),
-        ];
-        stylesheet.add_rule(Rule::new(selectors, declarations));
-        
-        // HTML default styles
-        let selectors = vec![Selector::parse("html").into_iter().next().unwrap()];
-        let declarations = vec![
-            Declaration::new(PropertyName::Margin, CssValue::Length(super::values::Length::px(0.0))),
-            Declaration::new(PropertyName::Padding, CssValue::Length(super::values::Length::px(0.0))),
-        ];
-        stylesheet.add_rule(Rule::new(selectors, declarations));
-        
-        // Headings default styles
+        // Heading styles
         let heading_styles = vec![
-            ("h1", "32px", "bold"),
-            ("h2", "24px", "bold"),
-            ("h3", "18.72px", "bold"),
-            ("h4", "16px", "bold"),
-            ("h5", "13.28px", "bold"),
-            ("h6", "10.72px", "bold"),
+            ("h1", 32.0),
+            ("h2", 24.0),
+            ("h3", 18.72),
+            ("h4", 16.0),
+            ("h5", 13.28),
+            ("h6", 10.72),
         ];
         
-        for (tag, size, weight) in heading_styles {
+        for (tag, size) in heading_styles {
             let selectors = vec![Selector::parse(tag).into_iter().next().unwrap()];
             let declarations = vec![
-                Declaration::new(PropertyName::FontSize, CssValue::parse(size)),
-                Declaration::new(PropertyName::FontWeight, CssValue::Keyword(weight.to_string())),
-                Declaration::new(PropertyName::MarginTop, CssValue::parse("0.83em")),
-                Declaration::new(PropertyName::MarginBottom, CssValue::parse("0.83em")),
                 Declaration::new(PropertyName::Display, CssValue::Keyword("block".to_string())),
+                Declaration::new(PropertyName::FontSize, CssValue::Length(super::values::Length::px(size))),
+                Declaration::new(PropertyName::FontWeight, CssValue::Keyword("bold".to_string())),
+                Declaration::new(PropertyName::MarginTop, CssValue::Length(super::values::Length::em(0.67))),
+                Declaration::new(PropertyName::MarginBottom, CssValue::Length(super::values::Length::em(0.67))),
             ];
             stylesheet.add_rule(Rule::new(selectors, declarations));
         }
         
-        // Paragraph default margins
+        // Paragraph styles
         let selectors = vec![Selector::parse("p").into_iter().next().unwrap()];
         let declarations = vec![
-            Declaration::new(PropertyName::MarginTop, CssValue::parse("1em")),
-            Declaration::new(PropertyName::MarginBottom, CssValue::parse("1em")),
             Declaration::new(PropertyName::Display, CssValue::Keyword("block".to_string())),
+            Declaration::new(PropertyName::MarginTop, CssValue::Length(super::values::Length::em(1.0))),
+            Declaration::new(PropertyName::MarginBottom, CssValue::Length(super::values::Length::em(1.0))),
         ];
         stylesheet.add_rule(Rule::new(selectors, declarations));
         
-        // Link default styles
+        // Link styles
         let selectors = vec![Selector::parse("a").into_iter().next().unwrap()];
         let declarations = vec![
             Declaration::new(PropertyName::Color, CssValue::Color(super::values::Color::Named("blue".to_string()))),
         ];
         stylesheet.add_rule(Rule::new(selectors, declarations));
-        
+
+        // Body default styles
+        let selectors = vec![Selector::parse("body").into_iter().next().unwrap()];
+        let declarations = vec![
+            Declaration::new(PropertyName::FontFamily, CssValue::String("Arial, sans-serif".to_string())),
+            Declaration::new(PropertyName::FontSize, CssValue::Length(super::values::Length::px(16.0))),
+            Declaration::new(PropertyName::Color, CssValue::Color(super::values::Color::Named("black".to_string()))),
+            Declaration::new(PropertyName::BackgroundColor, CssValue::Color(super::values::Color::Named("white".to_string()))),
+            Declaration::new(PropertyName::Margin, CssValue::Length(super::values::Length::px(8.0))),
+        ];
+        stylesheet.add_rule(Rule::new(selectors, declarations));
+
         stylesheet
     }
 
