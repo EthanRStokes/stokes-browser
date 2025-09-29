@@ -325,7 +325,8 @@ impl BrowserApp {
                 // Forward navigation would go here
             } else if component_id == "refresh" {
                 println!("Refresh button clicked");
-                // Page refresh would go here
+                // Reload the current page
+                self.reload_current_page();
             } else if component_id == "address_bar" {
                 // Focus the address bar for typing
                 self.ui.set_focus("address_bar");
@@ -366,6 +367,26 @@ impl BrowserApp {
             .map_err(|e| format!("Failed to swap buffers: {}", e))?;
 
         Ok(())
+    }
+
+    // Reload the current page in the active tab
+    fn reload_current_page(&mut self) {
+        let current_url = self.active_tab().engine.current_url().to_string();
+        if !current_url.is_empty() {
+            println!("Reloading page: {}", current_url);
+
+            // Update window title to show reloading state
+            self.env.window.set_title(&format!("Reloading: {}", current_url));
+
+            // Navigate to the current URL again to reload the page
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    self.navigate(&current_url).await;
+                })
+            });
+        } else {
+            println!("No URL to reload");
+        }
     }
 }
 
