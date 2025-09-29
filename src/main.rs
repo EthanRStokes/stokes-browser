@@ -73,9 +73,18 @@ struct Env {
 
 impl BrowserApp {
     async fn new(el: &EventLoop<()>) -> Self {
+        let icon_data = include_bytes!("../assets/icon.png");
+        let icon = image::load_from_memory(icon_data)
+            .expect("Failed to load icon")
+            .into_rgba8();
+        let (icon_width, icon_height) = icon.dimensions();
+        let icon = winit::window::Icon::from_rgba(icon.into_raw(), icon_width, icon_height)
+            .expect("Failed to create icon");
+
         let window_attrs = WindowAttributes::default()
             .with_title("Web Browser")
-            .with_inner_size(LogicalSize::new(1024, 768));
+            .with_inner_size(LogicalSize::new(1024, 768))
+            .with_window_icon(Some(icon));
 
         let template = ConfigTemplateBuilder::new()
             .with_alpha_size(8)
