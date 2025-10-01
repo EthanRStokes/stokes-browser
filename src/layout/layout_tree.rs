@@ -1,6 +1,6 @@
 // Layout tree implementation
 use super::box_model::{Dimensions, EdgeSizes};
-use skia_safe::{Rect, Point, Size};
+use skia_safe::Rect;
 
 /// Type of layout box
 #[derive(Debug, Clone, PartialEq)]
@@ -20,6 +20,8 @@ pub struct LayoutBox {
     pub children: Vec<LayoutBox>,
     pub node_id: usize,
     pub content: Option<String>, // For text nodes
+    pub css_width: Option<crate::css::Length>, // CSS specified width
+    pub css_height: Option<crate::css::Length>, // CSS specified height
 }
 
 impl LayoutBox {
@@ -30,6 +32,8 @@ impl LayoutBox {
             children: Vec::new(),
             node_id,
             content: None,
+            css_width: None,
+            css_height: None,
         }
     }
 
@@ -54,9 +58,9 @@ impl LayoutBox {
         // Calculate content area after accounting for padding and margin
         let content_x = self.dimensions.margin.left + self.dimensions.border.left + self.dimensions.padding.left;
         let content_y = self.dimensions.margin.top + self.dimensions.border.top + self.dimensions.padding.top;
-        let content_width = container_width - self.dimensions.padding.left - self.dimensions.padding.right
-            - self.dimensions.border.left - self.dimensions.border.right
-            - self.dimensions.margin.left - self.dimensions.margin.right;
+        
+        // Use CSS width if specified, otherwise use available container width
+        let content_width = self.calculate_used_width(container_width);
 
         self.dimensions.content = Rect::from_xywh(content_x, content_y, content_width, 0.0);
 
@@ -147,9 +151,9 @@ impl LayoutBox {
         // Calculate content area with proper offset positioning
         let content_x = offset_x + self.dimensions.margin.left + self.dimensions.border.left + self.dimensions.padding.left;
         let content_y = offset_y + self.dimensions.margin.top + self.dimensions.border.top + self.dimensions.padding.top;
-        let content_width = container_width - self.dimensions.padding.left - self.dimensions.padding.right
-            - self.dimensions.border.left - self.dimensions.border.right
-            - self.dimensions.margin.left - self.dimensions.margin.right;
+
+        // Use CSS width if specified, otherwise use available container width
+        let content_width = self.calculate_used_width(container_width);
 
         self.dimensions.content = Rect::from_xywh(content_x, content_y, content_width, 0.0);
 
@@ -258,6 +262,20 @@ impl LayoutBox {
         );
     }
 
+    /// Calculate the actual width this box should use, respecting CSS width values
+    fn calculate_used_width(&self, container_width: f32) -> f32 {
+        if let Some(css_width) = &self.css_width {
+            // Use the CSS-specified width, converting to pixels
+            let parent_font_size = 16.0; // Default font size for length calculations
+            css_width.to_px(parent_font_size, container_width)
+        } else {
+            // Use auto width (full container width minus margins, borders, padding)
+            container_width - self.dimensions.padding.left - self.dimensions.padding.right
+                - self.dimensions.border.left - self.dimensions.border.right
+                - self.dimensions.margin.left - self.dimensions.margin.right
+        }
+    }
+
     /// Get all layout boxes in depth-first order
     pub fn get_all_boxes(&self) -> Vec<&LayoutBox> {
         let mut result = vec![self];
@@ -273,6 +291,10 @@ impl LayoutBox {
         self.dimensions.margin = styles.margin.clone();
         self.dimensions.padding = styles.padding.clone();
         self.dimensions.border = styles.border.clone();
+
+        // Store CSS width and height values
+        self.css_width = styles.width.clone();
+        self.css_height = styles.height.clone();
 
         // Note: Other style properties like colors, fonts are handled in the renderer
     }

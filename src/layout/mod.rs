@@ -110,6 +110,9 @@ impl LayoutEngine {
                 layout_box.dimensions.content.bottom = layout_box.dimensions.content.top + computed_height;
             }
 
+            layout_box.css_height = computed_styles.height.clone();
+            layout_box.css_width = computed_styles.width.clone();
+
             // Override box type based on display property
             match computed_styles.display {
                 crate::css::computed::DisplayType::Block => {

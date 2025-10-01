@@ -2,9 +2,6 @@
 use super::{PropertyName, CssValue, Stylesheet, Declaration, Selector};
 use crate::dom::{DomNode, NodeType, ElementData};
 use crate::layout::box_model::EdgeSizes;
-use std::collections::HashMap;
-use std::rc::Rc;
-use std::cell::RefCell;
 
 /// Computed CSS values for a node
 #[derive(Debug, Clone)]
