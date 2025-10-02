@@ -269,7 +269,7 @@ impl Engine {
     pub fn resize(&mut self, width: f32, height: f32) {
         self.viewport_width = width;
         self.viewport_height = height;
-        self.layout_engine = LayoutEngine::new(width, height);
+        self.layout_engine.set_viewport(width, height);
         self.recalculate_layout();
 
         // Update content dimensions after layout recalculation
