@@ -415,29 +415,10 @@ impl HtmlRenderer {
 
     /// Update colors based on element attributes (simplified styling)
     fn get_element_colors(&self, element_data: &ElementData) -> (Color, Color) {
-        let mut bg_color = Color::WHITE;
-        let mut text_color = Color::BLACK;
-
-        // Simple attribute-based styling
-        if let Some(style) = element_data.attributes.get("style") {
-            if style.contains("background-color:") {
-                // Very simplified CSS parsing
-                bg_color = Color::from_rgb(240, 240, 240);
-            }
-        }
-
-        // Default colors based on tag
-        match element_data.tag_name.as_str() {
-            "a" => {
-                text_color = Color::BLUE;
-            },
-            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
-                text_color = Color::from_rgb(50, 50, 100);
-                bg_color = Color::from_rgb(250, 250, 255);
-            },
-            _ => {}
-        }
-
+        // This method is now deprecated - colors should come from CSS computed styles
+        // Keeping for backward compatibility but returning neutral defaults
+        let bg_color = Color::WHITE;
+        let text_color = Color::BLACK;
         (bg_color, text_color)
     }
 

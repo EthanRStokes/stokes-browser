@@ -12,11 +12,8 @@ skia-safe = { version = "0.88.0", features = ["gpu", "gl", "wayland"] }
 image = "0.25.8"
 tokio = { version = "1.47.1", features = ["rt", "rt-multi-thread", "macros"] }
 curl = "0.4"
-scraper = "0.24.0"
 html5ever = "0.35.0"
 markup5ever_rcdom = "0.35.0+unofficial"
-base64 = "0.22.1"
-dirs = "6.0.0"
 
 [dependencies.winit]
 git = "https://github.com/Treetrain1/winit.git"

@@ -7,7 +7,7 @@ use std::cell::RefCell;
 /// A map of attribute names to values
 pub type AttributeMap = HashMap<String, String>;
 
-/// Represents the type of a DOM node
+/// Represents the type of DOM node
 #[derive(Debug, Clone, PartialEq)]
 pub enum NodeType {
     Document,

@@ -77,6 +77,12 @@ impl ComputedValues {
             _ => {}
         }
 
+        // Set default colors for links (similar to browser defaults)
+        if tag_name == "a" {
+            values.color = Some(super::values::Color::Hex("#0000EE".to_string())); // Blue for unvisited links
+            values.text_decoration = super::TextDecoration::Underline;
+        }
+
         values
     }
 }
