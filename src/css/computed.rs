@@ -1,5 +1,5 @@
 // Computed CSS values and style resolution
-use super::{PropertyName, CssValue, Stylesheet, Declaration, Selector};
+use super::{PropertyName, CssValue, Stylesheet, Declaration, Selector, BorderRadius};
 use crate::dom::{DomNode, NodeType, ElementData};
 use crate::layout::box_model::EdgeSizes;
 
@@ -17,6 +17,7 @@ pub struct ComputedValues {
     pub margin: EdgeSizes,
     pub padding: EdgeSizes,
     pub border: EdgeSizes,
+    pub border_radius: BorderRadius,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +42,7 @@ impl Default for ComputedValues {
             margin: EdgeSizes::default(),
             padding: EdgeSizes::default(),
             border: EdgeSizes::default(),
+            border_radius: BorderRadius::default(),
         }
     }
 }
@@ -288,6 +290,31 @@ impl StyleResolver {
                 if let CssValue::Length(length) = &declaration.value {
                     let parent_size = 400.0;
                     computed.padding.left = length.to_px(computed.font_size, parent_size);
+                }
+            }
+            PropertyName::BorderRadius => {
+                if let CssValue::Length(length) = &declaration.value {
+                    computed.border_radius = BorderRadius::uniform(length.clone());
+                }
+            }
+            PropertyName::BorderTopLeftRadius => {
+                if let CssValue::Length(length) = &declaration.value {
+                    computed.border_radius.top_left = length.clone();
+                }
+            }
+            PropertyName::BorderTopRightRadius => {
+                if let CssValue::Length(length) = &declaration.value {
+                    computed.border_radius.top_right = length.clone();
+                }
+            }
+            PropertyName::BorderBottomLeftRadius => {
+                if let CssValue::Length(length) = &declaration.value {
+                    computed.border_radius.bottom_left = length.clone();
+                }
+            }
+            PropertyName::BorderBottomRightRadius => {
+                if let CssValue::Length(length) = &declaration.value {
+                    computed.border_radius.bottom_right = length.clone();
                 }
             }
             _ => {

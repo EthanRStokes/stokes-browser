@@ -5,7 +5,7 @@ use std::cell::{RefCell, Cell};
 use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob, FontStyle, Typeface};
 use crate::dom::{DomNode, NodeType, ElementData, ImageData, ImageLoadingState};
 use crate::layout::{LayoutBox, BoxType};
-use crate::css::ComputedValues;
+use crate::css::{ComputedValues, BorderRadiusPx};
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer {
@@ -199,6 +199,73 @@ impl HtmlRenderer {
             heading_paint.set_stroke_width(scaled_heading_border);
             canvas.draw_rect(border_box, &heading_paint);
         }
+
+        // Render rounded corners if border radius is specified
+        if let Some(styles) = computed_styles {
+            let border_radius_px = styles.border_radius.to_px(styles.font_size, 400.0);
+            if border_radius_px.has_radius() {
+                self.render_rounded_element(canvas, border_box, &border_radius_px, &bg_paint, if should_draw_border { Some(&border_paint) } else { None }, scale_factor);
+                return; // Skip the regular rectangle drawing since we drew rounded shapes
+            }
+        }
+
+        // Draw background (only if no rounded corners)
+        canvas.draw_rect(border_box, &bg_paint);
+
+        if should_draw_border {
+            canvas.draw_rect(border_box, &border_paint);
+        }
+    }
+
+    /// Render an element with rounded corners
+    fn render_rounded_element(
+        &self,
+        canvas: &Canvas,
+        rect: Rect,
+        border_radius_px: &BorderRadiusPx,
+        bg_paint: &Paint,
+        border_paint: Option<&Paint>,
+        scale_factor: f64,
+    ) {
+        // Apply scale factor to border radius values
+        let scaled_top_left = border_radius_px.top_left * scale_factor as f32;
+        let scaled_top_right = border_radius_px.top_right * scale_factor as f32;
+        let scaled_bottom_right = border_radius_px.bottom_right * scale_factor as f32;
+        let scaled_bottom_left = border_radius_px.bottom_left * scale_factor as f32;
+
+        // For now, use uniform radius (average of all corners) for simplicity
+        // Skia's add_round_rect method expects a tuple for radius
+        let avg_radius = (scaled_top_left + scaled_top_right + scaled_bottom_right + scaled_bottom_left) / 4.0;
+
+        // Create a path with rounded rectangle for background
+        let mut bg_path = skia_safe::Path::new();
+        bg_path.add_round_rect(rect, (avg_radius, avg_radius), None);
+
+        // Draw the background with rounded corners
+        canvas.draw_path(&bg_path, bg_paint);
+
+        // Draw border if specified
+        if let Some(border_paint) = border_paint {
+            let mut border_path = skia_safe::Path::new();
+            border_path.add_round_rect(rect, (avg_radius, avg_radius), None);
+            canvas.draw_path(&border_path, border_paint);
+        }
+    }
+
+    /// Render rounded corners for an element
+    fn render_rounded_corners(
+        &self,
+        canvas: &Canvas,
+        rect: Rect,
+        border_radius: f32,
+        paint: &Paint,
+    ) {
+        // Create a path with rounded rectangle
+        let mut path = skia_safe::Path::new();
+        path.add_round_rect(rect, (border_radius, border_radius), None);
+
+        // Draw the path with the specified paint
+        canvas.draw_path(&path, paint);
     }
 
     /// Render text with CSS styles applied and DPI scale factor
