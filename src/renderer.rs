@@ -228,18 +228,25 @@ impl HtmlRenderer {
 
             // Apply DPI scaling to font size
             let scaled_font_size = font_size * scale_factor as f32;
+            let line_height = scaled_font_size * 1.0; // 1.2x line height for better readability
 
             // Get or create font with the scaled size
             let font = self.get_font_for_size(scaled_font_size);
 
-            // Create text blob
-            if let Some(text_blob) = TextBlob::new(text, &font) {
-                // Position text within the content area with scaled padding
-                let scaled_padding = 2.0 * scale_factor as f32;
-                let x = content_rect.left + scaled_padding; // Scaled padding
-                let y = content_rect.top + scaled_font_size; // Baseline position adjusted for scaled font
+            // Split text by newlines to handle line breaks properly
+            let lines: Vec<&str> = text.split('\n').collect();
 
-                canvas.draw_text_blob(&text_blob, (x, y), &text_paint);
+            // Position text within the content area with scaled padding
+            let scaled_padding = 2.0 * scale_factor as f32;
+            let start_x = content_rect.left + scaled_padding;
+            let mut current_y = content_rect.top + scaled_font_size; // Start at baseline position
+
+            // Render each line separately
+            for line in lines {
+                if let Some(text_blob) = TextBlob::new(line, &font) {
+                    canvas.draw_text_blob(&text_blob, (start_x, current_y), &text_paint);
+                }
+                current_y += line_height; // Move to next line
             }
         }
     }
