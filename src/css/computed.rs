@@ -241,13 +241,107 @@ impl StyleResolver {
                 }
             }
             PropertyName::Margin => {
-                if let CssValue::Length(length) = &declaration.value {
-                    let parent_size = 400.0; // Default container width
-                    let px_value = length.to_px(computed.font_size, parent_size);
-                    computed.margin = EdgeSizes::uniform(px_value);
-                } else if let CssValue::Auto = &declaration.value {
-                    // Auto margins for centering
-                    computed.margin = EdgeSizes::new(0.0, f32::INFINITY, 0.0, f32::INFINITY);
+                match &declaration.value {
+                    CssValue::Length(length) => {
+                        let parent_size = 400.0; // Default container width
+                        let px_value = length.to_px(computed.font_size, parent_size);
+                        computed.margin = EdgeSizes::uniform(px_value);
+                    }
+                    CssValue::Auto => {
+                        // Auto margins - keep as 0 for now, will be resolved during layout
+                        computed.margin = EdgeSizes::uniform(0.0);
+                    }
+                    CssValue::MultipleValues(values) => {
+                        // Handle CSS margin shorthand syntax
+                        let parent_size = 400.0;
+                        match values.len() {
+                            1 => {
+                                // margin: value -> all sides
+                                if let Some(val) = values.first() {
+                                    match val {
+                                        CssValue::Length(length) => {
+                                            let px_value = length.to_px(computed.font_size, parent_size);
+                                            computed.margin = EdgeSizes::uniform(px_value);
+                                        }
+                                        CssValue::Auto => {
+                                            computed.margin = EdgeSizes::uniform(0.0);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            2 => {
+                                // margin: vertical horizontal (e.g., "5em auto")
+                                let vertical = &values[0];
+                                let horizontal = &values[1];
+
+                                let top_bottom = match vertical {
+                                    CssValue::Length(length) => length.to_px(computed.font_size, parent_size),
+                                    CssValue::Auto => 0.0,
+                                    _ => 0.0,
+                                };
+
+                                let left_right = match horizontal {
+                                    CssValue::Length(length) => length.to_px(computed.font_size, parent_size),
+                                    CssValue::Auto => 0.0, // Changed from f32::INFINITY to 0.0
+                                    _ => 0.0,
+                                };
+
+                                computed.margin = EdgeSizes::new(top_bottom, left_right, top_bottom, left_right);
+                            }
+                            3 => {
+                                // margin: top horizontal bottom
+                                let top = match &values[0] {
+                                    CssValue::Length(length) => length.to_px(computed.font_size, parent_size),
+                                    CssValue::Auto => 0.0,
+                                    _ => 0.0,
+                                };
+                                let horizontal = match &values[1] {
+                                    CssValue::Length(length) => length.to_px(computed.font_size, parent_size),
+                                    CssValue::Auto => 0.0, // Changed from f32::INFINITY to 0.0
+                                    _ => 0.0,
+                                };
+                                let bottom = match &values[2] {
+                                    CssValue::Length(length) => length.to_px(computed.font_size, parent_size),
+                                    CssValue::Auto => 0.0,
+                                    _ => 0.0,
+                                };
+
+                                computed.margin = EdgeSizes::new(top, horizontal, bottom, horizontal);
+                            }
+                            4 => {
+                                // margin: top right bottom left
+                                let top = match &values[0] {
+                                    CssValue::Length(length) => length.to_px(computed.font_size, parent_size),
+                                    CssValue::Auto => 0.0,
+                                    _ => 0.0,
+                                };
+                                let right = match &values[1] {
+                                    CssValue::Length(length) => length.to_px(computed.font_size, parent_size),
+                                    CssValue::Auto => 0.0, // Changed from f32::INFINITY to 0.0
+                                    _ => 0.0,
+                                };
+                                let bottom = match &values[2] {
+                                    CssValue::Length(length) => length.to_px(computed.font_size, parent_size),
+                                    CssValue::Auto => 0.0,
+                                    _ => 0.0,
+                                };
+                                let left = match &values[3] {
+                                    CssValue::Length(length) => length.to_px(computed.font_size, parent_size),
+                                    CssValue::Auto => 0.0, // Changed from f32::INFINITY to 0.0
+                                    _ => 0.0,
+                                };
+
+                                computed.margin = EdgeSizes::new(top, right, bottom, left);
+                            }
+                            _ => {
+                                // Invalid number of values, ignore
+                            }
+                        }
+                    }
+                    _ => {
+                        // Unsupported value type for margin
+                    }
                 }
             }
             PropertyName::MarginTop => {
@@ -261,7 +355,7 @@ impl StyleResolver {
                     let parent_size = 400.0;
                     computed.margin.right = length.to_px(computed.font_size, parent_size);
                 } else if let CssValue::Auto = &declaration.value {
-                    computed.margin.right = f32::INFINITY; // Auto for centering
+                    computed.margin.right = 0.0; // Changed from f32::INFINITY to 0.0
                 }
             }
             PropertyName::MarginBottom => {
@@ -275,7 +369,7 @@ impl StyleResolver {
                     let parent_size = 400.0;
                     computed.margin.left = length.to_px(computed.font_size, parent_size);
                 } else if let CssValue::Auto = &declaration.value {
-                    computed.margin.left = f32::INFINITY; // Auto for centering
+                    computed.margin.left = 0.0; // Changed from f32::INFINITY to 0.0
                 }
             }
             PropertyName::Padding => {

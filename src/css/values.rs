@@ -186,11 +186,29 @@ pub enum CssValue {
     String(String),
     Keyword(String),
     Auto,
+    MultipleValues(Vec<CssValue>), // For shorthand properties like "5em auto"
 }
 
 impl CssValue {
     /// Parse a CSS value from a string
     pub fn parse(value: &str) -> Self {
+        let value = value.trim();
+
+        // Check if this contains multiple space-separated values (shorthand syntax)
+        let parts: Vec<&str> = value.split_whitespace().collect();
+        if parts.len() > 1 {
+            let parsed_values: Vec<CssValue> = parts.iter()
+                .map(|part| Self::parse_single_value(part))
+                .collect();
+            return CssValue::MultipleValues(parsed_values);
+        }
+
+        // Single value
+        Self::parse_single_value(value)
+    }
+
+    /// Parse a single CSS value (no spaces)
+    fn parse_single_value(value: &str) -> Self {
         let value = value.trim();
 
         // Check for auto
@@ -304,6 +322,16 @@ impl fmt::Display for CssValue {
             CssValue::Number(n) => write!(f, "{}", n),
             CssValue::Keyword(k) => write!(f, "{}", k),
             CssValue::Auto => write!(f, "auto"),
+            CssValue::MultipleValues(values) => {
+                let mut iter = values.iter();
+                if let Some(first) = iter.next() {
+                    write!(f, "{}", first)?;
+                    for value in iter {
+                        write!(f, " {}", value)?;
+                    }
+                }
+                Ok(())
+            },
         }
     }
 }
