@@ -244,8 +244,14 @@ impl CssValue {
         // Check for quoted strings
         if (value.starts_with('"') && value.ends_with('"')) ||
            (value.starts_with('\'') && value.ends_with('\'')) {
-            let unquoted = &value[1..value.len()-1];
-            return CssValue::String(unquoted.to_string());
+            // Check if the string has content between quotes
+            return if value.len() >= 2 {
+                let unquoted = &value[1..value.len() - 1];
+                CssValue::String(unquoted.to_string())
+            } else {
+                // Empty quotes, return empty string
+                CssValue::String(String::new())
+            }
         }
 
         // Default to keyword
