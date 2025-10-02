@@ -234,7 +234,9 @@ impl HtmlRenderer {
             let font = self.get_font_for_size(scaled_font_size);
 
             // Split text by newlines to handle line breaks properly
-            let lines: Vec<&str> = text.split('\n').collect();
+            let lines: Vec<&str> = text.split('\n')
+                .map(|line| line.trim_start()) // Remove leading whitespace from each line
+                .collect();
 
             // Position text within the content area with scaled padding
             let scaled_padding = 2.0 * scale_factor as f32;
