@@ -1,6 +1,7 @@
 // Layout tree implementation
 use super::box_model::{Dimensions, EdgeSizes};
 use skia_safe::Rect;
+use crate::dom::ImageData;
 
 /// Type of layout box
 #[derive(Debug, Clone, PartialEq)]
@@ -9,7 +10,7 @@ pub enum BoxType {
     Inline,
     InlineBlock,
     Text,
-    Image,
+    Image(ImageData),
 }
 
 /// A box in the layout tree
@@ -38,18 +39,18 @@ impl LayoutBox {
     }
 
     /// Calculate layout
-    pub fn layout(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32) {
-        match self.box_type {
-            BoxType::Block => self.layout_block(container_width, container_height, offset_x, offset_y),
-            BoxType::Inline => self.layout_inline(container_width, container_height, offset_x, offset_y),
-            BoxType::InlineBlock => self.layout_inline_block(container_width, container_height, offset_x, offset_y),
-            BoxType::Text => self.layout_text(container_width, container_height, offset_x, offset_y),
-            BoxType::Image => self.layout_image(container_width, container_height, offset_x, offset_y),
+    pub fn layout(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
+        match &self.box_type {
+            BoxType::Block => self.layout_block(container_width, container_height, offset_x, offset_y, scale_factor),
+            BoxType::Inline => self.layout_inline(container_width, container_height, offset_x, offset_y, scale_factor),
+            BoxType::InlineBlock => self.layout_inline_block(container_width, container_height, offset_x, offset_y, scale_factor),
+            BoxType::Text => self.layout_text(container_width, container_height, offset_x, offset_y, scale_factor),
+            BoxType::Image(data) => self.layout_image(data.clone(), container_width, container_height, offset_x, offset_y, scale_factor),
         }
     }
 
     /// Layout block elements with position offset (stack vertically)
-    fn layout_block(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32) {
+    fn layout_block(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
         // Calculate content area with proper offset positioning
         let content_x = offset_x + self.dimensions.margin.left + self.dimensions.border.left + self.dimensions.padding.left;
         let content_y = offset_y + self.dimensions.margin.top + self.dimensions.border.top + self.dimensions.padding.top;
@@ -64,7 +65,7 @@ impl LayoutBox {
 
         // Layout children vertically
         for child in &mut self.children {
-            child.layout(available_width, container_height, content_x, current_y);
+            child.layout(available_width, container_height, content_x, current_y, scale_factor);
             current_y += child.dimensions.total_height();
         }
 
@@ -84,7 +85,7 @@ impl LayoutBox {
     }
 
     /// Layout inline elements with position offset (flow horizontally)
-    fn layout_inline(&mut self, container_width: f32, _container_height: f32, offset_x: f32, offset_y: f32) {
+    fn layout_inline(&mut self, container_width: f32, _container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
         self.dimensions.padding = EdgeSizes::uniform(2.0);
 
         let content_x = offset_x + self.dimensions.padding.left;
@@ -96,19 +97,19 @@ impl LayoutBox {
         let mut current_x = content_x;
 
         for child in &mut self.children {
-            child.layout(100.0, 20.0, current_x, content_y);
+            child.layout(100.0, 20.0, current_x, content_y, scale_factor);
             current_x += child.dimensions.total_width();
         }
     }
 
     /// Layout inline-block elements with position offset
-    fn layout_inline_block(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32) {
+    fn layout_inline_block(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
         // Similar to block but flows inline
-        self.layout_block(container_width.min(200.0), container_height, offset_x, offset_y);
+        self.layout_block(container_width.min(200.0), container_height, offset_x, offset_y, scale_factor);
     }
 
     /// Layout text nodes with position offset
-    fn layout_text(&mut self, container_width: f32, _container_height: f32, offset_x: f32, offset_y: f32) {
+    fn layout_text(&mut self, container_width: f32, _container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
         if let Some(text) = &self.content {
             // Handle newlines and calculate proper text dimensions
             let char_width = 8.0; // Average character width
@@ -139,14 +140,16 @@ impl LayoutBox {
     }
 
     /// Layout image nodes with position offset
-    fn layout_image(&mut self, container_width: f32, _container_height: f32, offset_x: f32, offset_y: f32) {
+    fn layout_image(&mut self, data: ImageData, container_width: f32, _container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
         // Default image dimensions
-        let default_width = 150.0;
-        let default_height = 100.0;
+        let default_width = 150;
+        let default_height = 100;
 
         // Use specified dimensions from HTML attributes if available
-        let image_width = container_width.min(default_width);
-        let image_height = default_height;
+        //let image_width = container_width.min(default_width);
+        //let image_height = default_height;
+        let image_width = data.width.unwrap_or(default_width) as f32 * scale_factor;
+        let image_height = data.height.unwrap_or(default_height) as f32 * scale_factor;
 
         // Set margins for inline-block behavior
         self.dimensions.margin = EdgeSizes::new(4.0, 4.0, 4.0, 4.0);

@@ -54,7 +54,7 @@ impl LayoutEngine {
         let available_height = self.viewport_height - ui_height;
 
         // Compute layout dimensions with scaled viewport
-        layout_root.layout(self.viewport_width, available_height, 0.0, content_start_y);
+        layout_root.layout(self.viewport_width, available_height, 0.0, content_start_y, scale_factor as f32);
 
         layout_root
     }
@@ -81,8 +81,9 @@ impl LayoutEngine {
                 text_box.content = Some(content.clone());
                 text_box
             },
-            NodeType::Image(_) => {
-                LayoutBox::new(BoxType::Image, node_id)
+            NodeType::Image(data) => {
+                // TODO can i make this better?
+                LayoutBox::new(BoxType::Image(data.clone()), node_id)
             },
             _ => {
                 // Skip other node types for now
