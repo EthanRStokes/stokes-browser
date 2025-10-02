@@ -70,13 +70,13 @@ impl UiComponent {
 
     /// Create a tab button
     pub fn tab(id: &str, title: &str, index: usize, is_active: bool) -> Self {
-        let x_pos = -0.95 + (index as f32 * 0.15);
+        let x_pos = 0.05 + (index as f32 * 0.12); // Better spacing from left edge
         UiComponent::TabButton {
             id: id.to_string(),
             title: title.to_string(),
-            position: [x_pos, 0.95],
-            size: [0.14, 0.04],
-            color: if is_active { [0.9, 0.9, 0.9] } else { [0.7, 0.7, 0.7] },
+            position: [x_pos, 0.04], // Position in the chrome bar
+            size: [0.11, 0.03],
+            color: if is_active { [0.95, 0.95, 0.95] } else { [0.8, 0.8, 0.8] },
             is_active,
         }
     }
@@ -117,6 +117,7 @@ impl BrowserUI {
                 UiComponent::navigation_button("back", "<", 0.01),
                 UiComponent::navigation_button("forward", ">", 0.05),
                 UiComponent::navigation_button("refresh", "⟳", 0.09),
+                UiComponent::navigation_button("new_tab", "+", 0.87), // Add new tab button
                 UiComponent::address_bar("")
             ],
         }
@@ -130,14 +131,79 @@ impl BrowserUI {
     /// Add a new tab
     pub fn add_tab(&mut self, id: &str, title: &str) {
         let tab_count = self.components.iter().filter(|c| matches!(c, UiComponent::TabButton { .. })).count();
-        self.components.push(UiComponent::TabButton {
-            id: id.to_string(),
-            title: title.to_string(),
-            position: [0.2 + 0.1 * (tab_count as f32), 0.04], // Position tabs at top
-            size: [0.09, 0.03],
-            color: [0.7, 0.7, 0.9],
-            is_active: false,
+        
+        // Set all existing tabs to inactive
+        for comp in &mut self.components {
+            if let UiComponent::TabButton { is_active, color, .. } = comp {
+                *is_active = false;
+                *color = [0.8, 0.8, 0.8]; // Inactive color
+            }
+        }
+        
+        // Add the new tab as active
+        let new_tab = UiComponent::tab(id, title, tab_count, true);
+        self.components.push(new_tab);
+    }
+
+    /// Set active tab
+    pub fn set_active_tab(&mut self, tab_id: &str) {
+        for comp in &mut self.components {
+            if let UiComponent::TabButton { id, is_active, color, .. } = comp {
+                if id == tab_id {
+                    *is_active = true;
+                    *color = [0.95, 0.95, 0.95]; // Active color
+                } else {
+                    *is_active = false;
+                    *color = [0.8, 0.8, 0.8]; // Inactive color
+                }
+            }
+        }
+    }
+
+    /// Remove a tab
+    pub fn remove_tab(&mut self, tab_id: &str) -> bool {
+        let initial_count = self.components.len();
+        self.components.retain(|comp| {
+            if let UiComponent::TabButton { id, .. } = comp {
+                id != tab_id
+            } else {
+                true
+            }
         });
+        
+        // Reposition remaining tabs
+        let mut tab_index = 0;
+        for comp in &mut self.components {
+            if let UiComponent::TabButton { position, .. } = comp {
+                position[0] = 0.05 + (tab_index as f32 * 0.12);
+                tab_index += 1;
+            }
+        }
+        
+        self.components.len() < initial_count
+    }
+
+    /// Get all tab IDs
+    pub fn get_tab_ids(&self) -> Vec<String> {
+        self.components.iter()
+            .filter_map(|comp| {
+                if let UiComponent::TabButton { id, .. } = comp {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Get active tab ID
+    pub fn get_active_tab_id(&self) -> Option<String> {
+        for comp in &self.components {
+            if let UiComponent::TabButton { id, is_active: true, .. } = comp {
+                return Some(id.clone());
+            }
+        }
+        None
     }
 
     /// Update the address bar with a new URL

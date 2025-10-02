@@ -200,6 +200,9 @@ impl BrowserApp {
         let config = EngineConfig::default();
         let initial_tab = Tab::new("tab1", config.clone());
 
+        // Add the initial tab to the UI
+        ui.add_tab("tab1", "New Tab");
+
         Self {
             env,
             fb_info,
@@ -295,16 +298,64 @@ impl BrowserApp {
         self.ui.add_tab(&tab_id, "New Tab");
     }
 
+    // Close a tab
+    fn close_tab(&mut self, tab_index: usize) -> bool {
+        if self.tabs.len() <= 1 {
+            // Don't close the last tab
+            return false;
+        }
+
+        if tab_index < self.tabs.len() {
+            let tab_id = self.tabs[tab_index].id.clone();
+
+            // Remove from tabs list
+            self.tabs.remove(tab_index);
+
+            // Remove from UI
+            self.ui.remove_tab(&tab_id);
+
+            // Adjust active tab index
+            if self.active_tab_index >= self.tabs.len() {
+                self.active_tab_index = self.tabs.len() - 1;
+            } else if tab_index <= self.active_tab_index && self.active_tab_index > 0 {
+                self.active_tab_index -= 1;
+            }
+
+            // Update UI to show the new active tab
+            let active_tab_id = &self.tabs[self.active_tab_index].id;
+            self.ui.set_active_tab(active_tab_id);
+
+            // Update window title and address bar
+            let url = self.tabs[self.active_tab_index].engine.current_url().to_string();
+            let title = self.tabs[self.active_tab_index].engine.page_title().to_string();
+            self.ui.update_address_bar(&url);
+            self.env.window.set_title(&format!("{} - Web Browser", title));
+
+            return true;
+        }
+        false
+    }
+
     // Switch to a tab by index
     fn switch_to_tab(&mut self, index: usize) {
         if index < self.tabs.len() {
             self.active_tab_index = index;
 
             // Update UI to reflect active tab
-            let url = self.active_tab().engine.current_url(); // Fixed double semicolon
-            let title = self.active_tab().engine.page_title();
-            // TODO: self.ui.update_address_bar(url);
+            let tab_id = self.tabs[index].id.clone();
+            self.ui.set_active_tab(&tab_id);
+
+            let url = self.tabs[index].engine.current_url().to_string();
+            let title = self.tabs[index].engine.page_title().to_string();
+            self.ui.update_address_bar(&url);
             self.env.window.set_title(&format!("{} - Web Browser", title));
+        }
+    }
+
+    // Switch to tab by ID
+    fn switch_to_tab_by_id(&mut self, tab_id: &str) {
+        if let Some(index) = self.tabs.iter().position(|tab| tab.id == tab_id) {
+            self.switch_to_tab(index);
         }
     }
 
@@ -327,16 +378,18 @@ impl BrowserApp {
                 println!("Refresh button clicked");
                 // Reload the current page
                 self.reload_current_page();
+            } else if component_id == "new_tab" {
+                println!("New tab button clicked");
+                self.add_tab();
+                self.env.window.request_redraw();
             } else if component_id == "address_bar" {
                 // Focus the address bar for typing
                 self.ui.set_focus("address_bar");
                 self.env.window.request_redraw();
             } else if component_id.starts_with("tab") {
-                // Tab switching
-                let tab_index = component_id[3..].parse::<usize>().unwrap_or(1) - 1;
-                if tab_index < self.tabs.len() {
-                    self.switch_to_tab(tab_index);
-                }
+                // Tab switching by clicking
+                self.switch_to_tab_by_id(&component_id);
+                self.env.window.request_redraw();
             }
         }
     }
@@ -462,6 +515,71 @@ impl ApplicationHandler for BrowserApp {
                 if event.state == ElementState::Pressed {
                     use winit::keyboard::{KeyCode, PhysicalKey, Key, NamedKey};
 
+                    // Handle keyboard shortcuts with modifiers
+                    if self.modifiers.state().control_key() {
+                        match event.logical_key {
+                            Key::Character(ref text) => {
+                                match text.as_str() {
+                                    "t" => {
+                                        // Ctrl+T: New tab
+                                        println!("New tab shortcut (Ctrl+T)");
+                                        self.add_tab();
+                                        self.env.window.request_redraw();
+                                        return;
+                                    }
+                                    "w" => {
+                                        // Ctrl+W: Close current tab
+                                        println!("Close tab shortcut (Ctrl+W)");
+                                        if self.close_tab(self.active_tab_index) {
+                                            self.env.window.request_redraw();
+                                        }
+                                        return;
+                                    }
+                                    "l" => {
+                                        // Ctrl+L: Focus address bar
+                                        println!("Focus address bar shortcut (Ctrl+L)");
+                                        self.ui.set_focus("address_bar");
+                                        self.env.window.request_redraw();
+                                        return;
+                                    }
+                                    "r" => {
+                                        // Ctrl+R: Reload page
+                                        println!("Reload shortcut (Ctrl+R)");
+                                        self.reload_current_page();
+                                        return;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Key::Named(NamedKey::Tab) => {
+                                // Ctrl+Tab: Switch to next tab
+                                println!("Switch tab shortcut (Ctrl+Tab)");
+                                let next_index = (self.active_tab_index + 1) % self.tabs.len();
+                                self.switch_to_tab(next_index);
+                                self.env.window.request_redraw();
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Handle number keys for tab switching (Ctrl+1, Ctrl+2, etc.)
+                    if self.modifiers.state().control_key() {
+                        if let Key::Character(ref text) = event.logical_key {
+                            if let Ok(num) = text.parse::<usize>() {
+                                if num >= 1 && num <= 9 {
+                                    let tab_index = num - 1;
+                                    if tab_index < self.tabs.len() {
+                                        println!("Switch to tab {} shortcut (Ctrl+{})", tab_index + 1, num);
+                                        self.switch_to_tab(tab_index);
+                                        self.env.window.request_redraw();
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Handle text input and navigation keys
                     match event.logical_key {
                         Key::Named(NamedKey::Backspace) => {
@@ -551,6 +669,9 @@ impl ApplicationHandler for BrowserApp {
                         _ => {}
                     }
                 }
+            }
+            WindowEvent::ModifiersChanged(new_modifiers) => {
+                self.modifiers = new_modifiers;
             }
             _ => {}
         }
