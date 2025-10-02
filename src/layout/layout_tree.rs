@@ -74,41 +74,51 @@ impl LayoutBox {
             current_y += child.dimensions.total_height();
         }
 
-        // Update our content height based on children
-        let content_height = if self.children.is_empty() {
-            20.0 * scale_factor // Minimum height for empty blocks, scaled
+        // Calculate auto content height based on children
+        let auto_content_height = if self.children.is_empty() {
+            0.0 // No content height for empty blocks initially
         } else {
             current_y - content_y
         };
 
+        // Use CSS height if specified, otherwise use auto height
+        let final_content_height = self.calculate_used_height(container_height, scale_factor, auto_content_height);
+
+        // Update our content dimensions with the final height
         self.dimensions.content = Rect::from_xywh(
             content_x,
             content_y,
             content_width,
-            content_height
+            final_content_height
         );
     }
 
     /// Layout inline elements with position offset (flow horizontally)
-    fn layout_inline(&mut self, container_width: f32, _container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
+    fn layout_inline(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
         // Scale padding for high DPI
         self.dimensions.padding = EdgeSizes::uniform(2.0 * scale_factor);
 
         let content_x = offset_x + self.dimensions.padding.left;
         let content_y = offset_y + self.dimensions.padding.top;
 
+        // Calculate default inline height
+        let default_height = 20.0 * scale_factor; // Scale line height
+
+        // Use CSS height if specified, otherwise use default line height
+        let final_height = self.calculate_used_height(container_height, scale_factor, default_height);
+
         self.dimensions.content = Rect::from_xywh(
             content_x,
             content_y,
             container_width - self.dimensions.padding.left - self.dimensions.padding.right,
-            20.0 * scale_factor // Scale line height
+            final_height
         );
 
         // Layout children horizontally
         let mut current_x = content_x;
 
         for child in &mut self.children {
-            child.layout(100.0 * scale_factor, 20.0 * scale_factor, current_x, content_y, scale_factor);
+            child.layout(100.0 * scale_factor, final_height, current_x, content_y, scale_factor);
             current_x += child.dimensions.total_width();
         }
     }
@@ -120,7 +130,7 @@ impl LayoutBox {
     }
 
     /// Layout text nodes with position offset
-    fn layout_text(&mut self, container_width: f32, _container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
+    fn layout_text(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
         if let Some(text) = &self.content {
             // Handle newlines and calculate proper text dimensions - scale for high DPI
             let char_width = 8.0 * scale_factor; // Average character width, scaled
@@ -137,16 +147,21 @@ impl LayoutBox {
                 .min(container_width);
             
             let text_width = if text.trim().is_empty() { 0.0 } else { max_line_width };
-            let text_height = num_lines as f32 * line_height;
+            let auto_text_height = num_lines as f32 * line_height;
+
+            // Use CSS height if specified, otherwise use calculated text height
+            let final_text_height = self.calculate_used_height(container_height, scale_factor, auto_text_height);
 
             self.dimensions.content = Rect::from_xywh(
                 offset_x,
                 offset_y,
                 text_width,
-                text_height
+                final_text_height
             );
         } else {
-            self.dimensions.content = Rect::from_xywh(offset_x, offset_y, 0.0, 0.0);
+            // Empty text node - use CSS height if specified
+            let final_height = self.calculate_used_height(container_height, scale_factor, 0.0);
+            self.dimensions.content = Rect::from_xywh(offset_x, offset_y, 0.0, final_height);
         }
     }
 
@@ -191,6 +206,21 @@ impl LayoutBox {
             container_width - self.dimensions.padding.left - self.dimensions.padding.right
                 - self.dimensions.border.left - self.dimensions.border.right
                 - self.dimensions.margin.left - self.dimensions.margin.right
+        }
+    }
+
+    /// Calculate the actual height this box should use, respecting CSS height values
+    fn calculate_used_height(&self, container_height: f32, scale_factor: f32, content_height: f32) -> f32 {
+        if let Some(css_height) = &self.css_height {
+            // Use the CSS-specified height, converting to pixels and scaling
+            css_height.to_px(16.0, container_height) * scale_factor
+        } else {
+            // Use auto height (content-based height or minimum height for empty blocks)
+            if content_height > 0.0 {
+                content_height
+            } else {
+                20.0 * scale_factor // Minimum height for empty blocks, scaled
+            }
         }
     }
 
