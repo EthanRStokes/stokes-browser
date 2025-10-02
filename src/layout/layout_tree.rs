@@ -56,12 +56,23 @@ impl LayoutBox {
         // Scale margins, padding, and borders for high DPI
         self.scale_edge_sizes(scale_factor);
 
-        // Calculate content area with proper offset positioning
-        let content_x = offset_x + self.dimensions.margin.left + self.dimensions.border.left + self.dimensions.padding.left;
-        let content_y = offset_y + self.dimensions.margin.top + self.dimensions.border.top + self.dimensions.padding.top;
-
         // Use CSS width if specified, otherwise use available container width
         let content_width = self.calculate_used_width(container_width, scale_factor);
+
+        // Calculate content area with proper offset positioning and centering
+        let base_content_x = offset_x + self.dimensions.margin.left + self.dimensions.border.left + self.dimensions.padding.left;
+        let content_y = offset_y + self.dimensions.margin.top + self.dimensions.border.top + self.dimensions.padding.top;
+
+        // Center horizontally if CSS width is specified
+        let content_x = if self.css_width.is_some() {
+            let available_width = container_width - self.dimensions.margin.left - self.dimensions.margin.right
+                - self.dimensions.border.left - self.dimensions.border.right
+                - self.dimensions.padding.left - self.dimensions.padding.right;
+            let centering_offset = (available_width - content_width) / 2.0;
+            base_content_x + centering_offset.max(0.0)
+        } else {
+            base_content_x
+        };
 
         self.dimensions.content = Rect::from_xywh(content_x, content_y, content_width, 0.0);
 
@@ -84,10 +95,21 @@ impl LayoutBox {
         // Use CSS height if specified, otherwise use auto height
         let final_content_height = self.calculate_used_height(container_height, scale_factor, auto_content_height);
 
-        // Update our content dimensions with the final height
+        // Center vertically if CSS height is specified
+        let final_content_y = if self.css_height.is_some() {
+            let available_height = container_height - self.dimensions.margin.top - self.dimensions.margin.bottom
+                - self.dimensions.border.top - self.dimensions.border.bottom
+                - self.dimensions.padding.top - self.dimensions.padding.bottom;
+            let centering_offset = (available_height - final_content_height) / 2.0;
+            content_y + centering_offset.max(0.0)
+        } else {
+            content_y
+        };
+
+        // Update our content dimensions with the final height and position
         self.dimensions.content = Rect::from_xywh(
             content_x,
-            content_y,
+            final_content_y,
             content_width,
             final_content_height
         );
@@ -98,27 +120,53 @@ impl LayoutBox {
         // Scale padding for high DPI
         self.dimensions.padding = EdgeSizes::uniform(2.0 * scale_factor);
 
-        let content_x = offset_x + self.dimensions.padding.left;
-        let content_y = offset_y + self.dimensions.padding.top;
+        let base_content_x = offset_x + self.dimensions.padding.left;
+        let base_content_y = offset_y + self.dimensions.padding.top;
 
-        // Calculate default inline height
+        // Calculate default inline height and width
         let default_height = 20.0 * scale_factor; // Scale line height
+        let default_width = container_width - self.dimensions.padding.left - self.dimensions.padding.right;
 
-        // Use CSS height if specified, otherwise use default line height
+        // Use CSS dimensions if specified
+        let content_width = if let Some(css_width) = &self.css_width {
+            css_width.to_px(16.0, container_width) * scale_factor
+        } else {
+            default_width
+        };
+
         let final_height = self.calculate_used_height(container_height, scale_factor, default_height);
+
+        // Center horizontally if CSS width is specified
+        let content_x = if self.css_width.is_some() {
+            let centering_offset = (default_width - content_width) / 2.0;
+            base_content_x + centering_offset.max(0.0)
+        } else {
+            base_content_x
+        };
+
+        // Center vertically if CSS height is specified
+        let content_y = if self.css_height.is_some() {
+            let available_height = container_height - self.dimensions.padding.top - self.dimensions.padding.bottom;
+            let centering_offset = (available_height - final_height) / 2.0;
+            base_content_y + centering_offset.max(0.0)
+        } else {
+            base_content_y
+        };
 
         self.dimensions.content = Rect::from_xywh(
             content_x,
             content_y,
-            container_width - self.dimensions.padding.left - self.dimensions.padding.right,
+            content_width,
             final_height
         );
 
         // Layout children horizontally
         let mut current_x = content_x;
+        let child_count = self.children.len().max(1);
+        let child_width = content_width / child_count as f32;
 
         for child in &mut self.children {
-            child.layout(100.0 * scale_factor, final_height, current_x, content_y, scale_factor);
+            child.layout(child_width, final_height, current_x, content_y, scale_factor);
             current_x += child.dimensions.total_width();
         }
     }
@@ -146,34 +194,90 @@ impl LayoutBox {
                 .fold(0.0, f32::max)
                 .min(container_width);
             
-            let text_width = if text.trim().is_empty() { 0.0 } else { max_line_width };
+            let auto_text_width = if text.trim().is_empty() { 0.0 } else { max_line_width };
             let auto_text_height = num_lines as f32 * line_height;
 
-            // Use CSS height if specified, otherwise use calculated text height
+            // Use CSS dimensions if specified, otherwise use calculated dimensions
+            let final_text_width = if let Some(css_width) = &self.css_width {
+                css_width.to_px(16.0, container_width) * scale_factor
+            } else {
+                auto_text_width
+            };
+
             let final_text_height = self.calculate_used_height(container_height, scale_factor, auto_text_height);
 
+            // Center horizontally if CSS width is specified
+            let final_x = if self.css_width.is_some() {
+                let centering_offset = (container_width - final_text_width) / 2.0;
+                offset_x + centering_offset.max(0.0)
+            } else {
+                offset_x
+            };
+
+            // Center vertically if CSS height is specified
+            let final_y = if self.css_height.is_some() {
+                let centering_offset = (container_height - final_text_height) / 2.0;
+                offset_y + centering_offset.max(0.0)
+            } else {
+                offset_y
+            };
+
             self.dimensions.content = Rect::from_xywh(
-                offset_x,
-                offset_y,
-                text_width,
+                final_x,
+                final_y,
+                final_text_width,
                 final_text_height
             );
         } else {
-            // Empty text node - use CSS height if specified
+            // Empty text node - use CSS dimensions if specified
+            let final_width = if let Some(css_width) = &self.css_width {
+                css_width.to_px(16.0, container_width) * scale_factor
+            } else {
+                0.0
+            };
             let final_height = self.calculate_used_height(container_height, scale_factor, 0.0);
-            self.dimensions.content = Rect::from_xywh(offset_x, offset_y, 0.0, final_height);
+
+            // Center if CSS dimensions are specified
+            let final_x = if self.css_width.is_some() {
+                let centering_offset = (container_width - final_width) / 2.0;
+                offset_x + centering_offset.max(0.0)
+            } else {
+                offset_x
+            };
+
+            let final_y = if self.css_height.is_some() {
+                let centering_offset = (container_height - final_height) / 2.0;
+                offset_y + centering_offset.max(0.0)
+            } else {
+                offset_y
+            };
+
+            self.dimensions.content = Rect::from_xywh(final_x, final_y, final_width, final_height);
         }
     }
 
     /// Layout image nodes with position offset
-    fn layout_image(&mut self, data: ImageData, container_width: f32, _container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
+    fn layout_image(&mut self, data: ImageData, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
         // Default image dimensions
         let default_width = 150;
         let default_height = 100;
 
-        // Use specified dimensions from HTML attributes if available
-        let image_width = data.width.unwrap_or(default_width) as f32 * scale_factor;
-        let image_height = data.height.unwrap_or(default_height) as f32 * scale_factor;
+        // Use specified dimensions from HTML attributes if available, or CSS if specified
+        let base_image_width = data.width.unwrap_or(default_width) as f32;
+        let base_image_height = data.height.unwrap_or(default_height) as f32;
+
+        // Apply CSS dimensions if specified, otherwise use HTML attributes or defaults
+        let final_image_width = if let Some(css_width) = &self.css_width {
+            css_width.to_px(16.0, container_width) * scale_factor
+        } else {
+            base_image_width * scale_factor
+        };
+
+        let final_image_height = if let Some(css_height) = &self.css_height {
+            css_height.to_px(16.0, container_height) * scale_factor
+        } else {
+            base_image_height * scale_factor
+        };
 
         // Set margins for inline-block behavior - scale for high DPI
         self.dimensions.margin = EdgeSizes::new(
@@ -184,15 +288,33 @@ impl LayoutBox {
         );
         self.dimensions.padding = EdgeSizes::new(0.0, 0.0, 0.0, 0.0);
 
-        // Calculate final position with margins
-        let final_x = offset_x + self.dimensions.margin.left;
-        let final_y = offset_y + self.dimensions.margin.top;
+        // Calculate base position with margins
+        let base_x = offset_x + self.dimensions.margin.left;
+        let base_y = offset_y + self.dimensions.margin.top;
+
+        // Center horizontally if CSS width is specified
+        let final_x = if self.css_width.is_some() {
+            let available_width = container_width - self.dimensions.margin.left - self.dimensions.margin.right;
+            let centering_offset = (available_width - final_image_width) / 2.0;
+            base_x + centering_offset.max(0.0)
+        } else {
+            base_x
+        };
+
+        // Center vertically if CSS height is specified
+        let final_y = if self.css_height.is_some() {
+            let available_height = container_height - self.dimensions.margin.top - self.dimensions.margin.bottom;
+            let centering_offset = (available_height - final_image_height) / 2.0;
+            base_y + centering_offset.max(0.0)
+        } else {
+            base_y
+        };
 
         self.dimensions.content = Rect::from_xywh(
             final_x,
             final_y,
-            image_width,
-            image_height
+            final_image_width,
+            final_image_height
         );
     }
 
