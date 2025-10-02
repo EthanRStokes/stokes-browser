@@ -38,10 +38,10 @@ struct Tab {
 }
 
 impl Tab {
-    fn new(id: &str, config: EngineConfig) -> Self {
+    fn new(id: &str, config: EngineConfig, scale_factor: f64) -> Self {
         Self {
             id: id.to_string(),
-            engine: Engine::new(config),
+            engine: Engine::new(config, scale_factor),
         }
     }
 }
@@ -185,9 +185,6 @@ impl BrowserApp {
 
         let surface = Self::create_surface(&window, fb_info, &mut gr_context, num_samples, stencil_size);
 
-        // Get initial scale factor from the window
-        let scale_factor = window.scale_factor();
-
         let env = Env {
             surface,
             gl_surface,
@@ -196,13 +193,18 @@ impl BrowserApp {
             window
         };
 
+        // Get initial scale factor from the window
+        let scale_factor = env.window.scale_factor();
+
         // Initialize UI
         let mut ui = BrowserUI::new(&gr_context);
         ui.initialize_renderer();
 
         // Create initial tab
         let config = EngineConfig::default();
-        let initial_tab = Tab::new("tab1", config.clone());
+
+        // Create initial tab with scale-aware layout
+        let initial_tab = Tab::new("tab1", config, scale_factor);
 
         // Add the initial tab to the UI
         ui.add_tab("tab1", "New Tab");
@@ -293,7 +295,7 @@ impl BrowserApp {
     fn add_tab(&mut self) {
         let tab_id = format!("tab{}", self.tabs.len() + 1);
         let config = EngineConfig::default();
-        let new_tab = Tab::new(&tab_id, config);
+        let new_tab = Tab::new(&tab_id, config, self.scale_factor);
 
         // Add to tabs list
         self.tabs.push(new_tab);
@@ -483,6 +485,11 @@ impl ApplicationHandler for BrowserApp {
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 // Update the stored scale factor when DPI changes
                 self.scale_factor = scale_factor;
+
+                let engine = &mut self.active_tab_mut().engine;
+                engine.scale_factor = scale_factor;
+                // Recalculate layout with new scale factor
+                engine.recalculate_layout();
 
                 // Force a redraw to apply the new scaling
                 self.env.window.request_redraw();

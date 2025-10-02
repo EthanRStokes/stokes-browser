@@ -35,7 +35,7 @@ impl LayoutEngine {
     }
 
     /// Compute layout for a DOM tree
-    pub fn compute_layout(&mut self, root: &Rc<RefCell<DomNode>>) -> LayoutBox {
+    pub fn compute_layout(&mut self, root: &Rc<RefCell<DomNode>>, scale_factor: f64) -> LayoutBox {
         // Clear previous layout
         self.node_map.clear();
         self.style_map.clear();
@@ -49,12 +49,12 @@ impl LayoutEngine {
         let mut layout_root = self.build_layout_tree(root);
 
         // Reserve space for browser UI at the top (address bar, tabs, etc.)
-        let ui_height = 80.0; // Approximate height for browser chrome
+        let ui_height = 0.0;
         let content_start_y = ui_height;
         let available_height = self.viewport_height - ui_height;
 
-        // Compute layout dimensions with proper viewport offset using the new position-aware method
-        layout_root.layout_with_position(self.viewport_width, available_height, 0.0, content_start_y);
+        // Compute layout dimensions with scaled viewport
+        layout_root.layout(self.viewport_width, available_height, 0.0, content_start_y);
 
         layout_root
     }

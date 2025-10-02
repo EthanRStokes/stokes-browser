@@ -99,7 +99,7 @@ impl HtmlRenderer {
 
             match &dom_node.node_type {
                 NodeType::Element(element_data) => {
-                    self.render_element_with_styles(canvas, layout_box, element_data, computed_styles);
+                    self.render_element(canvas, layout_box, element_data, computed_styles, scale_factor);
                 },
                 NodeType::Text(_) => {
                     // Check if text node is inside a non-visual element
@@ -108,7 +108,7 @@ impl HtmlRenderer {
                     }
                 },
                 NodeType::Image(image_data) => {
-                    self.render_image_node(canvas, layout_box, image_data);
+                    self.render_image_node(canvas, layout_box, image_data, scale_factor);
                 },
                 NodeType::Document => {
                     // Just render children for document
@@ -131,12 +131,13 @@ impl HtmlRenderer {
     }
 
     /// Render an element with CSS styles applied
-    fn render_element_with_styles(
+    fn render_element(
         &self,
         canvas: &Canvas,
         layout_box: &LayoutBox,
         element_data: &ElementData,
         computed_styles: Option<&ComputedValues>,
+        scale_factor: f64,
     ) {
         let border_box = layout_box.dimensions.border_box();
 
@@ -165,18 +166,21 @@ impl HtmlRenderer {
             if styles.border.top > 0.0 || styles.border.right > 0.0 || 
                styles.border.bottom > 0.0 || styles.border.left > 0.0 {
                 should_draw_border = true;
-                // Use average border width for simplicity
-                let avg_border_width = (styles.border.top + styles.border.right + 
+                // Use average border width for simplicity and apply scale factor
+                let avg_border_width = (styles.border.top + styles.border.right +
                                       styles.border.bottom + styles.border.left) / 4.0;
-                border_paint.set_stroke_width(avg_border_width);
+                let scaled_border_width = avg_border_width * scale_factor as f32;
+                border_paint.set_stroke_width(scaled_border_width);
             }
         }
 
-        // Default border for certain elements
+        // Default border for certain elements with scaling
         if !should_draw_border {
             match element_data.tag_name.as_str() {
                 "div" | "section" | "article" | "header" | "footer" => {
                     should_draw_border = true;
+                    let scaled_border_width = 1.0 * scale_factor as f32;
+                    border_paint.set_stroke_width(scaled_border_width);
                 },
                 _ => {}
             }
@@ -186,12 +190,13 @@ impl HtmlRenderer {
             canvas.draw_rect(border_box, &border_paint);
         }
 
-        // Add visual indicators for headings
+        // Add visual indicators for headings with scaled border width
         if element_data.tag_name.starts_with('h') {
             let mut heading_paint = Paint::default();
             heading_paint.set_color(Color::from_rgb(50, 50, 150));
             heading_paint.set_stroke(true);
-            heading_paint.set_stroke_width(2.0);
+            let scaled_heading_border = 2.0 * scale_factor as f32;
+            heading_paint.set_stroke_width(scaled_heading_border);
             canvas.draw_rect(border_box, &heading_paint);
         }
     }
@@ -229,8 +234,9 @@ impl HtmlRenderer {
 
             // Create text blob
             if let Some(text_blob) = TextBlob::new(text, &font) {
-                // Position text within the content area
-                let x = content_rect.left + 2.0; // Small padding
+                // Position text within the content area with scaled padding
+                let scaled_padding = 2.0 * scale_factor as f32;
+                let x = content_rect.left + scaled_padding; // Scaled padding
                 let y = content_rect.top + scaled_font_size; // Baseline position adjusted for scaled font
 
                 canvas.draw_text_blob(&text_blob, (x, y), &text_paint);
@@ -285,7 +291,7 @@ impl HtmlRenderer {
     }
 
     /// Render image content
-    fn render_image_node(&self, canvas: &Canvas, layout_box: &LayoutBox, image_data: &ImageData) {
+    fn render_image_node(&self, canvas: &Canvas, layout_box: &LayoutBox, image_data: &ImageData, scale_factor: f64) {
         let content_rect = layout_box.dimensions.content;
 
         match &image_data.loading_state {
@@ -305,16 +311,16 @@ impl HtmlRenderer {
                     );
                 } else {
                     // No cached image available, show placeholder indicating decoding issue
-                    self.render_image_placeholder(canvas, &content_rect, "Image decoding failed");
+                    self.render_image_placeholder(canvas, &content_rect, "Image decoding failed", scale_factor);
                 }
             },
             ImageLoadingState::Loading => {
                 // Show loading placeholder
-                self.render_image_placeholder(canvas, &content_rect, "Loading...");
+                self.render_image_placeholder(canvas, &content_rect, "Loading...", scale_factor);
             },
             ImageLoadingState::Failed(error) => {
                 // Show error placeholder
-                self.render_image_placeholder(canvas, &content_rect, &format!("Error: {}", error));
+                self.render_image_placeholder(canvas, &content_rect, &format!("Error: {}", error), scale_factor);
             },
             ImageLoadingState::NotLoaded => {
                 // Show placeholder with alt text or src
@@ -323,23 +329,24 @@ impl HtmlRenderer {
                 } else {
                     &image_data.src
                 };
-                self.render_image_placeholder(canvas, &content_rect, placeholder_text);
+                self.render_image_placeholder(canvas, &content_rect, placeholder_text, scale_factor);
             }
         }
     }
 
     /// Render a placeholder for images (when not loaded, loading, or failed)
-    fn render_image_placeholder(&self, canvas: &Canvas, rect: &Rect, text: &str) {
+    fn render_image_placeholder(&self, canvas: &Canvas, rect: &Rect, text: &str, scale_factor: f64) {
         // Draw a light gray background
         let mut bg_paint = Paint::default();
         bg_paint.set_color(Color::from_rgb(240, 240, 240));
         canvas.draw_rect(*rect, &bg_paint);
 
-        // Draw a border
+        // Draw a border with scaled width
         let mut border_paint = Paint::default();
         border_paint.set_color(Color::from_rgb(180, 180, 180));
         border_paint.set_stroke(true);
-        border_paint.set_stroke_width(1.0);
+        let scaled_border_width = 1.0 * scale_factor as f32;
+        border_paint.set_stroke_width(scaled_border_width);
         canvas.draw_rect(*rect, &border_paint);
 
         // Draw placeholder text
@@ -355,7 +362,11 @@ impl HtmlRenderer {
                 text.to_string()
             };
 
-            if let Some(text_blob) = TextBlob::new(&display_text, &self.default_font) {
+            // Scale the font size for placeholder text
+            let scaled_font_size = 12.0 * scale_factor as f32;
+            let placeholder_font = self.get_font_for_size(scaled_font_size);
+
+            if let Some(text_blob) = TextBlob::new(&display_text, &placeholder_font) {
                 let text_bounds = text_blob.bounds();
 
                 // Center the text in the placeholder
@@ -371,12 +382,13 @@ impl HtmlRenderer {
             let mut icon_paint = Paint::default();
             icon_paint.set_color(Color::from_rgb(150, 150, 150));
             icon_paint.set_stroke(true);
-            icon_paint.set_stroke_width(2.0);
+            let scaled_icon_stroke = 2.0 * scale_factor as f32;
+            icon_paint.set_stroke_width(scaled_icon_stroke);
 
-            let icon_size = 16.0;
-            let icon_x = rect.left + (rect.width() - icon_size) / 2.0;
-            let icon_y = rect.top + 8.0;
-            let icon_rect = Rect::from_xywh(icon_x, icon_y, icon_size, icon_size);
+            let scaled_icon_size = 16.0 * scale_factor as f32;
+            let icon_x = rect.left + (rect.width() - scaled_icon_size) / 2.0;
+            let icon_y = rect.top + 8.0 * scale_factor as f32;
+            let icon_rect = Rect::from_xywh(icon_x, icon_y, scaled_icon_size, scaled_icon_size);
 
             // Draw a simple square with an X
             canvas.draw_rect(icon_rect, &icon_paint);

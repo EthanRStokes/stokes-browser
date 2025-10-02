@@ -34,10 +34,11 @@ pub struct Engine {
     content_width: f32,
     viewport_height: f32,
     viewport_width: f32,
+    pub(crate) scale_factor: f64,
 }
 
 impl Engine {
-    pub fn new(config: EngineConfig) -> Self {
+    pub fn new(config: EngineConfig, scale_factor: f64) -> Self {
         Self {
             config,
             http_client: HttpClient::new(),
@@ -57,6 +58,7 @@ impl Engine {
             content_width: 0.0,
             viewport_height: 600.0,
             viewport_width: 800.0,
+            scale_factor,
         }
     }
 
@@ -226,11 +228,12 @@ impl Engine {
         }
     }
 
+
     /// Recalculate layout with current DOM and styles
     pub fn recalculate_layout(&mut self) {
         if let Some(dom) = &self.dom {
             let root = dom.get_root();
-            self.layout = Some(self.layout_engine.compute_layout(&root));
+            self.layout = Some(self.layout_engine.compute_layout(&root, self.scale_factor));
 
             // Update node map from layout engine
             self.node_map = self.layout_engine.get_node_map().clone();
