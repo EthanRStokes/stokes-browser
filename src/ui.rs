@@ -383,9 +383,15 @@ impl BrowserUI {
 
         let mut paint = Paint::default();
         let font_mgr = skia_safe::FontMgr::new();
-        let typeface = font_mgr.legacy_make_typeface(None, FontStyle::default())
-            .expect("Failed to create default typeface");
-        
+
+        // Try to create a font that supports Unicode symbols
+        let typeface = font_mgr.match_family_style("DejaVu Sans", FontStyle::default())
+            .or_else(|| font_mgr.match_family_style("Noto Sans", FontStyle::default()))
+            .or_else(|| font_mgr.match_family_style("Arial Unicode MS", FontStyle::default()))
+            .or_else(|| font_mgr.match_family_style("Segoe UI Symbol", FontStyle::default()))
+            .or_else(|| font_mgr.legacy_make_typeface(None, FontStyle::default()))
+            .expect("Failed to create any typeface");
+
         // Apply scale factor to font size for proper DPI scaling
         let base_font_size = 18.0;
         let scaled_font_size = base_font_size * self.scale_factor as f32;
