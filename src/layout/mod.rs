@@ -117,7 +117,8 @@ impl LayoutEngine {
             // Override box type based on display property
             match computed_styles.display {
                 crate::css::computed::DisplayType::Block => {
-                    layout_box.box_type = BoxType::Block;
+                    // TODO: reconsider this
+                    // layout_box.box_type = BoxType::Block;
                 },
                 crate::css::computed::DisplayType::Inline => {
                     layout_box.box_type = BoxType::Inline;
