@@ -31,6 +31,14 @@ use skia_safe::gpu::gl::{Format, FramebufferInfo, Interface};
 use skia_safe::gpu::surfaces::wrap_backend_render_target;
 use winit::raw_window_handle::HasWindowHandle;
 
+/// Result of closing a tab
+#[derive(Debug, PartialEq)]
+enum TabCloseResult {
+    Closed,    // Tab was closed successfully
+    QuitApp,   // Last tab was closed, application should quit
+    NoAction,  // Tab could not be closed (invalid index, etc.)
+}
+
 /// Tab structure representing a browser tab
 struct Tab {
     id: String,
@@ -306,10 +314,10 @@ impl BrowserApp {
     }
 
     // Close a tab
-    fn close_tab(&mut self, tab_index: usize) -> bool {
+    fn close_tab(&mut self, tab_index: usize) -> TabCloseResult {
         if self.tabs.len() <= 1 {
-            // Don't close the last tab
-            return false;
+            // Close the last tab - signal to quit the application
+            return TabCloseResult::QuitApp;
         }
 
         if tab_index < self.tabs.len() {
@@ -338,9 +346,9 @@ impl BrowserApp {
             self.ui.update_address_bar(&url);
             self.env.window.set_title(&format!("{} - Web Browser", title));
 
-            return true;
+            return TabCloseResult::Closed;
         }
-        false
+        TabCloseResult::NoAction
     }
 
     // Switch to a tab by index
@@ -487,8 +495,6 @@ impl ApplicationHandler for BrowserApp {
                 self.scale_factor = scale_factor;
 
                 // Update UI scale factor for proper text scaling
-                self.ui.set_scale_factor(scale_factor);
-
                 let engine = &mut self.active_tab_mut().engine;
                 engine.scale_factor = scale_factor;
                 // Recalculate layout with new scale factor
@@ -552,7 +558,9 @@ impl ApplicationHandler for BrowserApp {
                                     "w" => {
                                         // Ctrl+W: Close current tab
                                         println!("Close tab shortcut (Ctrl+W)");
-                                        if self.close_tab(self.active_tab_index) {
+                                        if self.close_tab(self.active_tab_index) == TabCloseResult::QuitApp {
+                                            event_loop.exit();
+                                        } else {
                                             self.env.window.request_redraw();
                                         }
                                         return;
