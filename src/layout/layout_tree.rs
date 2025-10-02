@@ -185,8 +185,7 @@ impl LayoutBox {
     fn calculate_used_width(&self, container_width: f32, scale_factor: f32) -> f32 {
         if let Some(css_width) = &self.css_width {
             // Use the CSS-specified width, converting to pixels and scaling
-            let parent_font_size = 16.0 * scale_factor; // Default font size scaled for length calculations
-            css_width.to_px(parent_font_size, container_width)
+            css_width.to_px(16.0, container_width) * scale_factor
         } else {
             // Use auto width (full container width minus margins, borders, padding)
             container_width - self.dimensions.padding.left - self.dimensions.padding.right
