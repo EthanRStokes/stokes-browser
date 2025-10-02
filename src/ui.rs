@@ -108,10 +108,11 @@ impl UiComponent {
 /// Represents the browser UI (chrome)
 pub struct BrowserUI {
     pub components: Vec<UiComponent>,
+    pub scale_factor: f64,
 }
 
 impl BrowserUI {
-    pub fn new(_skia_context: &skia_safe::gpu::DirectContext) -> Self {
+    pub fn new(_skia_context: &skia_safe::gpu::DirectContext, scale_factor: f64) -> Self {
         Self {
             components: vec![
                 UiComponent::navigation_button("back", "<", 0.01),
@@ -120,6 +121,7 @@ impl BrowserUI {
                 UiComponent::navigation_button("new_tab", "+", 0.87), // Add new tab button
                 UiComponent::address_bar("")
             ],
+            scale_factor,
         }
     }
 
@@ -349,6 +351,11 @@ impl BrowserUI {
         None
     }
 
+    /// Update scale factor for DPI changes
+    pub fn set_scale_factor(&mut self, scale_factor: f64) {
+        self.scale_factor = scale_factor;
+    }
+
     /// Clear focus from all components
     pub fn clear_focus(&mut self) {
         for comp in &mut self.components {
@@ -378,7 +385,18 @@ impl BrowserUI {
         let font_mgr = skia_safe::FontMgr::new();
         let typeface = font_mgr.legacy_make_typeface(None, FontStyle::default())
             .expect("Failed to create default typeface");
-        let font = Font::new(typeface, 18.0);
+        
+        // Apply scale factor to font size for proper DPI scaling
+        let base_font_size = 18.0;
+        let scaled_font_size = base_font_size * self.scale_factor as f32;
+        let font = Font::new(typeface, scaled_font_size);
+
+        // Scale other text rendering properties
+        let text_padding = 5.0 * self.scale_factor as f32;
+        let button_text_padding = 3.0 * self.scale_factor as f32;
+        let text_offset_from_bottom = 5.0 * self.scale_factor as f32;
+        let cursor_margin = 3.0 * self.scale_factor as f32;
+        let cursor_stroke_width = 1.0 * self.scale_factor as f32;
 
         for comp in &self.components {
             match comp {
@@ -396,10 +414,10 @@ impl BrowserUI {
                     ));
                     canvas.draw_rect(rect, &paint);
 
-                    // Draw button text in black
+                    // Draw button text in black with scaled padding
                     paint.set_color(Color::BLACK);
                     if let Some(blob) = TextBlob::new(label, &font) {
-                        canvas.draw_text_blob(&blob, (rect.left() + 3.0, rect.bottom() - 5.0), &paint);
+                        canvas.draw_text_blob(&blob, (rect.left() + button_text_padding, rect.bottom() - text_offset_from_bottom), &paint);
                     }
                 }
                 UiComponent::TextField { text, position, size, color, border_color, has_focus, cursor_position, .. } => {
@@ -419,7 +437,7 @@ impl BrowserUI {
                     paint.set_color(bg_color);
                     canvas.draw_rect(rect, &paint);
 
-                    // Draw field border (blue when focused)
+                    // Draw field border (blue when focused) with scaled stroke width
                     let border_color = if *has_focus {
                         Color::from_rgb(100, 150, 255)
                     } else {
@@ -431,14 +449,14 @@ impl BrowserUI {
                     };
                     paint.set_color(border_color);
                     paint.set_stroke(true);
-                    paint.set_stroke_width(if *has_focus { 2.0 } else { 1.0 });
+                    paint.set_stroke_width(if *has_focus { 2.0 * self.scale_factor as f32 } else { 1.0 * self.scale_factor as f32 });
                     canvas.draw_rect(rect, &paint);
                     paint.set_stroke(false);
 
-                    // Draw text content
+                    // Draw text content with scaled padding
                     paint.set_color(Color::BLACK);
                     if let Some(blob) = TextBlob::new(text, &font) {
-                        canvas.draw_text_blob(&blob, (rect.left() + 5.0, rect.bottom() - 5.0), &paint);
+                        canvas.draw_text_blob(&blob, (rect.left() + text_padding, rect.bottom() - text_offset_from_bottom), &paint);
                     }
 
                     // Draw cursor if focused
@@ -450,18 +468,18 @@ impl BrowserUI {
                             ""
                         };
                         let cursor_x = if let Some(text_blob) = TextBlob::new(text_before_cursor, &font) {
-                            rect.left() + 5.0 + text_blob.bounds().width()
+                            rect.left() + text_padding + text_blob.bounds().width()
                         } else {
-                            rect.left() + 5.0
+                            rect.left() + text_padding
                         };
 
-                        // Draw cursor line
+                        // Draw cursor line with scaled stroke width and margins
                         paint.set_color(Color::BLACK);
                         paint.set_stroke(true);
-                        paint.set_stroke_width(1.0);
+                        paint.set_stroke_width(cursor_stroke_width);
                         canvas.draw_line(
-                            (cursor_x, rect.top() + 3.0),
-                            (cursor_x, rect.bottom() - 3.0),
+                            (cursor_x, rect.top() + cursor_margin),
+                            (cursor_x, rect.bottom() - cursor_margin),
                             &paint
                         );
                         paint.set_stroke(false);
@@ -481,10 +499,10 @@ impl BrowserUI {
                     ));
                     canvas.draw_rect(rect, &paint);
 
-                    // Draw tab text
+                    // Draw tab text with scaled padding
                     paint.set_color(Color::BLACK);
                     if let Some(blob) = TextBlob::new(title, &font) {
-                        canvas.draw_text_blob(&blob, (rect.left() + 5.0, rect.bottom() - 5.0), &paint);
+                        canvas.draw_text_blob(&blob, (rect.left() + text_padding, rect.bottom() - text_offset_from_bottom), &paint);
                     }
                 }
             }

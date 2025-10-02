@@ -197,7 +197,7 @@ impl BrowserApp {
         let scale_factor = env.window.scale_factor();
 
         // Initialize UI
-        let mut ui = BrowserUI::new(&gr_context);
+        let mut ui = BrowserUI::new(&gr_context, scale_factor);
         ui.initialize_renderer();
 
         // Create initial tab
@@ -485,6 +485,9 @@ impl ApplicationHandler for BrowserApp {
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 // Update the stored scale factor when DPI changes
                 self.scale_factor = scale_factor;
+
+                // Update UI scale factor for proper text scaling
+                self.ui.set_scale_factor(scale_factor);
 
                 let engine = &mut self.active_tab_mut().engine;
                 engine.scale_factor = scale_factor;
