@@ -1,5 +1,5 @@
 // Computed CSS values and style resolution
-use super::{PropertyName, CssValue, Stylesheet, Declaration, Selector, BorderRadius};
+use super::{PropertyName, CssValue, Stylesheet, Declaration, Selector, BorderRadius, BoxShadow};
 use crate::dom::{DomNode, NodeType, ElementData};
 use crate::layout::box_model::EdgeSizes;
 
@@ -18,6 +18,7 @@ pub struct ComputedValues {
     pub padding: EdgeSizes,
     pub border: EdgeSizes,
     pub border_radius: BorderRadius,
+    pub box_shadow: Vec<BoxShadow>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +44,7 @@ impl Default for ComputedValues {
             padding: EdgeSizes::default(),
             border: EdgeSizes::default(),
             border_radius: BorderRadius::default(),
+            box_shadow: Vec::new(),
         }
     }
 }
@@ -315,6 +317,22 @@ impl StyleResolver {
             PropertyName::BorderBottomRightRadius => {
                 if let CssValue::Length(length) = &declaration.value {
                     computed.border_radius.bottom_right = length.clone();
+                }
+            }
+            PropertyName::BoxShadow => {
+                if let CssValue::String(shadow_str) = &declaration.value {
+                    if let Some(shadows) = BoxShadow::parse(shadow_str) {
+                        computed.box_shadow = shadows;
+                    }
+                } else if let CssValue::Keyword(keyword) = &declaration.value {
+                    if keyword == "none" {
+                        computed.box_shadow.clear();
+                    } else {
+                        // Try to parse the keyword as a shadow value
+                        if let Some(shadows) = BoxShadow::parse(keyword) {
+                            computed.box_shadow = shadows;
+                        }
+                    }
                 }
             }
             _ => {

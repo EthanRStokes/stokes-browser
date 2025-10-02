@@ -141,6 +141,11 @@ impl HtmlRenderer {
     ) {
         let border_box = layout_box.dimensions.border_box();
 
+        // Render box shadows first (behind the element)
+        if let Some(styles) = computed_styles {
+            self.render_box_shadows(canvas, &border_box, styles, scale_factor);
+        }
+
         // Create background paint with CSS colors
         let mut bg_paint = Paint::default();
         if let Some(styles) = computed_styles {
@@ -527,6 +532,90 @@ impl HtmlRenderer {
                 false
             },
             _ => false
+        }
+    }
+
+    /// Render box shadows for an element
+    fn render_box_shadows(
+        &self,
+        canvas: &Canvas,
+        rect: &Rect,
+        styles: &ComputedValues,
+        scale_factor: f64,
+    ) {
+        // Render each box shadow
+        for shadow in &styles.box_shadow {
+            // Convert shadow to pixel values
+            let shadow_px = shadow.to_px(styles.font_size, 400.0);
+
+            // Skip if no visible shadow
+            if !shadow_px.has_shadow() {
+                continue;
+            }
+
+            // Apply scale factor to shadow properties
+            let scaled_offset_x = shadow_px.offset_x * scale_factor as f32;
+            let scaled_offset_y = shadow_px.offset_y * scale_factor as f32;
+            let scaled_blur_radius = shadow_px.blur_radius * scale_factor as f32;
+            let scaled_spread_radius = shadow_px.spread_radius * scale_factor as f32;
+
+            // Create shadow paint
+            let mut shadow_paint = Paint::default();
+            shadow_paint.set_color(shadow_px.color.to_skia_color());
+            shadow_paint.set_anti_alias(true);
+
+            // Calculate shadow rectangle
+            let shadow_rect = if shadow_px.inset {
+                // Inset shadows are drawn inside the element
+                Rect::from_xywh(
+                    rect.left + scaled_offset_x + scaled_spread_radius,
+                    rect.top + scaled_offset_y + scaled_spread_radius,
+                    rect.width() - 2.0 * scaled_spread_radius,
+                    rect.height() - 2.0 * scaled_spread_radius,
+                )
+            } else {
+                // Outset shadows are drawn outside the element
+                Rect::from_xywh(
+                    rect.left + scaled_offset_x - scaled_spread_radius,
+                    rect.top + scaled_offset_y - scaled_spread_radius,
+                    rect.width() + 2.0 * scaled_spread_radius,
+                    rect.height() + 2.0 * scaled_spread_radius,
+                )
+            };
+
+            // For now, render a simple shadow without proper blur
+            // In a full implementation, you'd use image filters for blur
+            if scaled_blur_radius > 0.0 {
+                // Simulate blur by drawing multiple offset rectangles with reduced opacity
+                let blur_steps = (scaled_blur_radius / 2.0).max(1.0) as i32;
+                let step_alpha = 1.0 / blur_steps as f32;
+
+                for i in 0..blur_steps {
+                    let blur_offset = i as f32 * 2.0;
+                    let blur_rect = Rect::from_xywh(
+                        shadow_rect.left - blur_offset,
+                        shadow_rect.top - blur_offset,
+                        shadow_rect.width() + 2.0 * blur_offset,
+                        shadow_rect.height() + 2.0 * blur_offset,
+                    );
+
+                    // Reduce alpha for blur effect
+                    let mut blur_paint = shadow_paint.clone();
+                    let original_color = shadow_px.color.to_skia_color();
+                    let alpha = (original_color.a() as f32 * step_alpha * 0.3) as u8;
+                    blur_paint.set_color(skia_safe::Color::from_argb(
+                        alpha,
+                        original_color.r(),
+                        original_color.g(),
+                        original_color.b(),
+                    ));
+
+                    canvas.draw_rect(blur_rect, &blur_paint);
+                }
+            } else {
+                // No blur, just draw the shadow directly
+                canvas.draw_rect(shadow_rect, &shadow_paint);
+            }
         }
     }
 }
