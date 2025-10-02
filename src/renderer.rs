@@ -52,8 +52,8 @@ impl HtmlRenderer {
         }
     }
 
-    /// Render a layout tree to the canvas with CSS styling support
-    pub fn render_with_styles(
+    /// Render a layout tree to the canvas
+    pub fn render(
         &self,
         canvas: &Canvas,
         layout: &LayoutBox,
@@ -61,6 +61,7 @@ impl HtmlRenderer {
         style_map: &HashMap<usize, ComputedValues>,
         scroll_x: f32,
         scroll_y: f32,
+        scale_factor: f64,
     ) {
         // Save the current canvas state
         canvas.save();
@@ -68,20 +69,21 @@ impl HtmlRenderer {
         // Apply scroll offset by translating the canvas
         canvas.translate((-scroll_x, -scroll_y));
 
-        // Render the layout tree with styles
-        self.render_box_with_styles(canvas, layout, node_map, style_map);
+        // Render the layout tree with styles and scale factor
+        self.render_box(canvas, layout, node_map, style_map, scale_factor);
 
         // Restore the canvas state
         canvas.restore();
     }
 
-    /// Render a single layout box with CSS styles
-    fn render_box_with_styles(
+    /// Render a single layout box with CSS styles and scale factor
+    fn render_box(
         &self,
         canvas: &Canvas,
         layout_box: &LayoutBox,
         node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
         style_map: &HashMap<usize, ComputedValues>,
+        scale_factor: f64,
     ) {
         // Get computed styles for this node
         let computed_styles = style_map.get(&layout_box.node_id);
@@ -102,7 +104,7 @@ impl HtmlRenderer {
                 NodeType::Text(_) => {
                     // Check if text node is inside a non-visual element
                     if !self.is_inside_non_visual_element(&dom_node) {
-                        self.render_text_node_with_styles(canvas, layout_box, computed_styles);
+                        self.render_text_node(canvas, layout_box, computed_styles, scale_factor);
                     }
                 },
                 NodeType::Image(image_data) => {
@@ -122,7 +124,7 @@ impl HtmlRenderer {
             let dom_node = dom_node_rc.borrow();
             if !self.should_skip_rendering(&dom_node) {
                 for child in &layout_box.children {
-                    self.render_box_with_styles(canvas, child, node_map, style_map);
+                    self.render_box(canvas, child, node_map, style_map, scale_factor);
                 }
             }
         }
@@ -194,12 +196,13 @@ impl HtmlRenderer {
         }
     }
 
-    /// Render text with CSS styles applied
-    fn render_text_node_with_styles(
+    /// Render text with CSS styles applied and DPI scale factor
+    fn render_text_node(
         &self,
         canvas: &Canvas,
         layout_box: &LayoutBox,
         computed_styles: Option<&ComputedValues>,
+        scale_factor: f64,
     ) {
         if let Some(text) = &layout_box.content {
             let content_rect = layout_box.dimensions.content;
@@ -218,14 +221,17 @@ impl HtmlRenderer {
                 font_size = styles.font_size;
             }
 
-            // Get or create font with the specified size
-            let font = self.get_font_for_size(font_size);
+            // Apply DPI scaling to font size
+            let scaled_font_size = font_size * scale_factor as f32;
+
+            // Get or create font with the scaled size
+            let font = self.get_font_for_size(scaled_font_size);
 
             // Create text blob
             if let Some(text_blob) = TextBlob::new(text, &font) {
                 // Position text within the content area
                 let x = content_rect.left + 2.0; // Small padding
-                let y = content_rect.top + font_size; // Baseline position
+                let y = content_rect.top + scaled_font_size; // Baseline position adjusted for scaled font
 
                 canvas.draw_text_blob(&text_blob, (x, y), &text_paint);
             }

@@ -61,6 +61,7 @@ struct BrowserApp {
     size: winit::dpi::PhysicalSize<u32>,
     skia_context: gpu::DirectContext,
     cursor_position: (f64, f64), // Track cursor position
+    scale_factor: f64, // Track DPI scale factor
 }
 
 struct Env {
@@ -184,6 +185,9 @@ impl BrowserApp {
 
         let surface = Self::create_surface(&window, fb_info, &mut gr_context, num_samples, stencil_size);
 
+        // Get initial scale factor from the window
+        let scale_factor = window.scale_factor();
+
         let env = Env {
             surface,
             gl_surface,
@@ -217,6 +221,7 @@ impl BrowserApp {
             size,
             skia_context: gr_context,
             cursor_position: (0.0, 0.0), // Initialize cursor position
+            scale_factor, // Initialize with actual scale factor from window
         }
     }
 
@@ -406,10 +411,10 @@ impl BrowserApp {
         let canvas = self.env.surface.canvas();
         canvas.clear(Color::WHITE);
 
-        // Render the active tab's web content using mutable reference
+        // Render the active tab's web content using mutable reference with scale factor
         let active_tab_index = self.active_tab_index;
         let engine = &mut self.tabs[active_tab_index].engine;
-        engine.render(canvas);
+        engine.render(canvas, self.scale_factor);
 
         // Render UI on top of web content
         self.ui.render(canvas);
@@ -474,6 +479,13 @@ impl ApplicationHandler for BrowserApp {
 
                 // Update engine viewport size
                 self.active_tab_mut().engine.resize(width as f32, height as f32);
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                // Update the stored scale factor when DPI changes
+                self.scale_factor = scale_factor;
+
+                // Force a redraw to apply the new scaling
+                self.env.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
                 draw_frame = true;

@@ -131,7 +131,7 @@ impl BrowserUI {
     /// Add a new tab
     pub fn add_tab(&mut self, id: &str, title: &str) {
         let tab_count = self.components.iter().filter(|c| matches!(c, UiComponent::TabButton { .. })).count();
-        
+
         // Set all existing tabs to inactive
         for comp in &mut self.components {
             if let UiComponent::TabButton { is_active, color, .. } = comp {
@@ -139,7 +139,7 @@ impl BrowserUI {
                 *color = [0.8, 0.8, 0.8]; // Inactive color
             }
         }
-        
+
         // Add the new tab as active
         let new_tab = UiComponent::tab(id, title, tab_count, true);
         self.components.push(new_tab);
@@ -170,7 +170,7 @@ impl BrowserUI {
                 true
             }
         });
-        
+
         // Reposition remaining tabs
         let mut tab_index = 0;
         for comp in &mut self.components {
@@ -179,7 +179,7 @@ impl BrowserUI {
                 tab_index += 1;
             }
         }
-        
+
         self.components.len() < initial_count
     }
 

@@ -272,9 +272,9 @@ impl Engine {
         // Update content dimensions after layout recalculation
         self.update_content_dimensions();
     }
-    
+
     /// Render the current page to a canvas
-    pub fn render(&mut self, canvas: &Canvas) {
+    pub fn render(&mut self, canvas: &Canvas, scale_factor: f64) {
         if let Some(layout) = &self.layout {
             // Update style map only if it's dirty
             if self.style_map_dirty {
@@ -287,8 +287,8 @@ impl Engine {
                 self.style_map_dirty = false;
             }
 
-            // Use the cached renderer and style map
-            self.renderer.render_with_styles(canvas, layout, &self.node_map, &self.cached_style_map, self.scroll_x, self.scroll_y);
+            // Use the cached renderer and style map with scale factor
+            self.renderer.render(canvas, layout, &self.node_map, &self.cached_style_map, self.scroll_x, self.scroll_y, scale_factor);
         }
     }
 
@@ -311,22 +311,6 @@ impl Engine {
         let css_content = String::from_utf8(css_content).expect("Failed to decode CSS content as UTF-8");
         self.add_stylesheet(&css_content);
         Ok(())
-    }
-
-    /// Render the current page to a canvas with CSS styling
-    pub fn render_with_styles(&self, canvas: &Canvas) {
-        if let Some(layout) = &self.layout {
-            // Get computed styles from the layout engine
-            let style_map: HashMap<usize, ComputedValues> = self.node_map.keys()
-                .filter_map(|&node_id| {
-                    self.layout_engine.get_computed_styles(node_id)
-                        .map(|styles| (node_id, styles.clone()))
-                })
-                .collect();
-
-            // Render the layout with CSS styles and scroll offset
-            self.renderer.render_with_styles(canvas, layout, &self.node_map, &style_map, self.scroll_x, self.scroll_y);
-        }
     }
 
     /// Extract and parse CSS from <style> tags and <link> tags in the current DOM
