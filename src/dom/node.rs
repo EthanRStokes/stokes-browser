@@ -135,33 +135,74 @@ impl ImageData {
         }
 
         // Check the first few bytes to identify the image format for debugging
-        if image_bytes.len() >= 4 {
-            let header = &image_bytes[0..4];
+        let format_name = if image_bytes.len() >= 12 {
+            let header = &image_bytes[0..12];
             match header {
-                [0xFF, 0xD8, 0xFF, ..] => println!("Decoding JPEG image format"),
-                [0x89, 0x50, 0x4E, 0x47] => println!("Decoding PNG image format"),
-                [0x47, 0x49, 0x46, 0x38] => println!("Decoding GIF image format"),
-                [0x42, 0x4D, ..] => println!("Decoding BMP image format"),
-                [0x52, 0x49, 0x46, 0x46] => println!("Decoding WebP image format"),
-                _ => println!("Decoding unknown image format, header: {:02X} {:02X} {:02X} {:02X}",
-                            header[0], header[1], header[2], header[3]),
+                [0xFF, 0xD8, 0xFF, ..] => "JPEG",
+                [0x89, 0x50, 0x4E, 0x47, ..] => "PNG",
+                [0x47, 0x49, 0x46, 0x38, ..] => "GIF",
+                [0x42, 0x4D, ..] => "BMP",
+                [0x52, 0x49, 0x46, 0x46, _, _, _, _, 0x57, 0x45, 0x42, 0x50] => "WebP",
+                _ => "Unknown",
             }
-        }
+        } else {
+            "Unknown"
+        };
 
-        // Create Skia Data object and decode
+        println!("Decoding {} image format", format_name);
+
+        // Try Skia first
         let skia_data = skia_safe::Data::new_copy(image_bytes);
-        if skia_data.is_empty() {
+        if !skia_data.is_empty() {
+            match skia_safe::Image::from_encoded(skia_data) {
+                Some(image) => {
+                    println!("Successfully decoded image with Skia: {}x{}", image.width(), image.height());
+                    return Some(image);
+                }
+                None => {
+                    println!("Skia failed to decode image, trying fallback...");
+                }
+            }
+        } else {
             println!("Error: Failed to create Skia Data object");
-            return None;
         }
 
-        match skia_safe::Image::from_encoded(skia_data) {
-            Some(image) => {
-                println!("Successfully decoded image: {}x{}", image.width(), image.height());
-                Some(image)
+        // Fallback to image crate for formats Skia doesn't support (especially WebP)
+        match image::load_from_memory(image_bytes) {
+            Ok(dynamic_image) => {
+                println!("Successfully decoded image with image crate: {}x{}",
+                        dynamic_image.width(), dynamic_image.height());
+
+                // Convert to RGBA8 format
+                let rgba_image = dynamic_image.to_rgba8();
+                let (width, height) = rgba_image.dimensions();
+                let rgba_data = rgba_image.into_raw();
+
+                // Create Skia image from RGBA data
+                let image_info = skia_safe::ImageInfo::new(
+                    skia_safe::ISize::new(width as i32, height as i32),
+                    skia_safe::ColorType::RGBA8888,
+                    skia_safe::AlphaType::Unpremul,
+                    None,
+                );
+
+                match skia_safe::images::raster_from_data(
+                    &image_info,
+                    skia_safe::Data::new_copy(&rgba_data),
+                    (width * 4) as usize,
+                ) {
+                    Some(skia_image) => {
+                        println!("Successfully converted image crate result to Skia image");
+                        Some(skia_image)
+                    }
+                    None => {
+                        println!("Error: Failed to convert image crate result to Skia image");
+                        None
+                    }
+                }
             }
-            None => {
-                println!("Error: Skia failed to decode image data");
+            Err(e) => {
+                println!("Error: Both Skia and image crate failed to decode image: {}", e);
                 None
             }
         }
