@@ -413,15 +413,6 @@ impl HtmlRenderer {
         font
     }
 
-    /// Update colors based on element attributes (simplified styling)
-    fn get_element_colors(&self, element_data: &ElementData) -> (Color, Color) {
-        // This method is now deprecated - colors should come from CSS computed styles
-        // Keeping for backward compatibility but returning neutral defaults
-        let bg_color = Color::WHITE;
-        let text_color = Color::BLACK;
-        (bg_color, text_color)
-    }
-
     /// Render image content
     fn render_image_node(&self, canvas: &Canvas, layout_box: &LayoutBox, image_data: &ImageData, scale_factor: f64) {
         let content_rect = layout_box.dimensions.content;
