@@ -280,6 +280,10 @@ impl BrowserUI {
         for comp in &mut self.components {
             if let UiComponent::TextField { has_focus: true, text: field_text, cursor_position, .. } = comp {
                 // Insert text at cursor position
+                if cursor_position >= &mut field_text.len() {
+                    *cursor_position = field_text.len() - 1;
+                    println!("Warning: Cursor position out of bounds, adjusting to end of text.");
+                }
                 field_text.insert_str(*cursor_position, text);
                 *cursor_position += text.len();
                 break;
