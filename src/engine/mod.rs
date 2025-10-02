@@ -335,7 +335,7 @@ impl Engine {
             let link_elements = dom.query_selector("link");
             for link_element in link_elements {
                 let link_node = link_element.borrow();
-                if let crate::dom::NodeType::Element(element_data) = &link_node.node_type {
+                if let NodeType::Element(element_data) = &link_node.node_type {
                     if let (Some(rel), Some(href)) = (
                         element_data.attributes.get("rel"),
                         element_data.attributes.get("href")

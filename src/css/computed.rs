@@ -1,5 +1,5 @@
 // Computed CSS values and style resolution
-use super::{PropertyName, CssValue, Stylesheet, Declaration, Selector, BorderRadius, BoxShadow};
+use super::{PropertyName, CssValue, Stylesheet, Declaration, Selector, BorderRadius, BoxShadow, TextDecoration};
 use crate::dom::{DomNode, NodeType, ElementData};
 use crate::layout::box_model::EdgeSizes;
 
@@ -11,6 +11,7 @@ pub struct ComputedValues {
     pub font_size: f32,
     pub font_family: String,
     pub font_weight: String,
+    pub text_decoration: TextDecoration,
     pub display: DisplayType,
     pub width: Option<super::values::Length>,
     pub height: Option<super::values::Length>,
@@ -37,6 +38,7 @@ impl Default for ComputedValues {
             font_size: 16.0,
             font_family: "Arial".to_string(),
             font_weight: "normal".to_string(),
+            text_decoration: TextDecoration::default(),
             display: DisplayType::Block,
             width: None,
             height: None,
@@ -198,6 +200,13 @@ impl StyleResolver {
             PropertyName::FontWeight => {
                 if let CssValue::Keyword(weight) = &declaration.value {
                     computed.font_weight = weight.clone();
+                }
+            }
+            PropertyName::TextDecoration => {
+                if let CssValue::Keyword(decoration) = &declaration.value {
+                    computed.text_decoration = TextDecoration::parse(decoration);
+                } else if let CssValue::String(decoration) = &declaration.value {
+                    computed.text_decoration = TextDecoration::parse(decoration);
                 }
             }
             PropertyName::Display => {

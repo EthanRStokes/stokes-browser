@@ -494,3 +494,96 @@ impl BoxShadowPx {
         self.offset_x != 0.0 || self.offset_y != 0.0
     }
 }
+
+/// CSS text decoration types
+#[derive(Debug, Clone, PartialEq)]
+pub enum TextDecoration {
+    None,
+    Underline,
+    Overline,
+    LineThrough,
+    Multiple(Vec<TextDecorationType>),
+}
+
+/// Individual text decoration types for multiple decorations
+#[derive(Debug, Clone, PartialEq)]
+pub enum TextDecorationType {
+    Underline,
+    Overline,
+    LineThrough,
+}
+
+impl TextDecoration {
+    /// Parse text-decoration value from string
+    pub fn parse(value: &str) -> Self {
+        let value = value.trim().to_lowercase();
+
+        match value.as_str() {
+            "none" => TextDecoration::None,
+            "underline" => TextDecoration::Underline,
+            "overline" => TextDecoration::Overline,
+            "line-through" => TextDecoration::LineThrough,
+            _ => {
+                // Handle multiple values (e.g., "underline overline")
+                let parts: Vec<&str> = value.split_whitespace().collect();
+                if parts.len() > 1 {
+                    let mut decorations = Vec::new();
+                    for part in parts {
+                        match part {
+                            "underline" => decorations.push(TextDecorationType::Underline),
+                            "overline" => decorations.push(TextDecorationType::Overline),
+                            "line-through" => decorations.push(TextDecorationType::LineThrough),
+                            _ => {} // Ignore unknown values
+                        }
+                    }
+                    if !decorations.is_empty() {
+                        TextDecoration::Multiple(decorations)
+                    } else {
+                        TextDecoration::None
+                    }
+                } else {
+                    TextDecoration::None
+                }
+            }
+        }
+    }
+
+    /// Check if decoration has underline
+    pub fn has_underline(&self) -> bool {
+        match self {
+            TextDecoration::Underline => true,
+            TextDecoration::Multiple(decorations) => {
+                decorations.contains(&TextDecorationType::Underline)
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if decoration has overline
+    pub fn has_overline(&self) -> bool {
+        match self {
+            TextDecoration::Overline => true,
+            TextDecoration::Multiple(decorations) => {
+                decorations.contains(&TextDecorationType::Overline)
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if decoration has line-through
+    pub fn has_line_through(&self) -> bool {
+        match self {
+            TextDecoration::LineThrough => true,
+            TextDecoration::Multiple(decorations) => {
+                decorations.contains(&TextDecorationType::LineThrough)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Default for TextDecoration {
+    fn default() -> Self {
+        TextDecoration::None
+    }
+}

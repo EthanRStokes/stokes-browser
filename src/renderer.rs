@@ -5,7 +5,7 @@ use std::cell::{RefCell, Cell};
 use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob, FontStyle, Typeface};
 use crate::dom::{DomNode, NodeType, ElementData, ImageData, ImageLoadingState};
 use crate::layout::{LayoutBox, BoxType};
-use crate::css::{ComputedValues, BorderRadiusPx};
+use crate::css::{ComputedValues, BorderRadiusPx, TextDecoration};
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer {
@@ -319,9 +319,79 @@ impl HtmlRenderer {
             for line in lines {
                 if let Some(text_blob) = TextBlob::new(line, &font) {
                     canvas.draw_text_blob(&text_blob, (start_x, current_y), &text_paint);
+
+                    // Render text decorations if specified
+                    if let Some(styles) = computed_styles {
+                        self.render_text_decorations(
+                            canvas,
+                            &text_blob,
+                            (start_x, current_y),
+                            &styles.text_decoration,
+                            &text_paint,
+                            scaled_font_size,
+                            scale_factor,
+                        );
+                    }
                 }
                 current_y += line_height; // Move to next line
             }
+        }
+    }
+
+    /// Render text decorations (underline, overline, line-through)
+    fn render_text_decorations(
+        &self,
+        canvas: &Canvas,
+        text_blob: &TextBlob,
+        text_position: (f32, f32),
+        text_decoration: &TextDecoration,
+        text_paint: &Paint,
+        font_size: f32,
+        scale_factor: f64,
+    ) {
+        // Skip if no decorations
+        if matches!(text_decoration, TextDecoration::None) {
+            return;
+        }
+
+        let text_bounds = text_blob.bounds();
+        let text_width = text_bounds.width();
+        let (text_x, text_y) = text_position;
+
+        // Create decoration paint based on text paint
+        let mut decoration_paint = text_paint.clone();
+        decoration_paint.set_stroke(true);
+        let decoration_thickness = (font_size / 16.0).max(1.0) * scale_factor as f32;
+        decoration_paint.set_stroke_width(decoration_thickness);
+
+        // Render underline
+        if text_decoration.has_underline() {
+            let underline_y = text_y + font_size * 0.1; // Position below baseline
+            canvas.draw_line(
+                (text_x, underline_y),
+                (text_x + text_width, underline_y),
+                &decoration_paint,
+            );
+        }
+
+        // Render overline
+        if text_decoration.has_overline() {
+            let overline_y = text_y - font_size * 0.8; // Position above text
+            canvas.draw_line(
+                (text_x, overline_y),
+                (text_x + text_width, overline_y),
+                &decoration_paint,
+            );
+        }
+
+        // Render line-through (strikethrough)
+        if text_decoration.has_line_through() {
+            let line_through_y = text_y - font_size * 0.3; // Position through middle of text
+            canvas.draw_line(
+                (text_x, line_through_y),
+                (text_x + text_width, line_through_y),
+                &decoration_paint,
+            );
         }
     }
 

@@ -6,7 +6,7 @@ mod stylesheet;
 pub(crate) mod computed;
 
 pub use self::parser::CssParser;
-pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx};
+pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType};
 pub use self::selector::{Selector, SelectorType};
 pub use self::stylesheet::{Stylesheet, Rule, Declaration};
 pub use self::computed::{ComputedValues, StyleResolver};
@@ -42,6 +42,7 @@ pub enum PropertyName {
     FontSize,
     FontFamily,
     FontWeight,
+    TextDecoration,
     Display,
     Position,
     Top,
@@ -82,6 +83,7 @@ impl From<&str> for PropertyName {
             "font-size" => PropertyName::FontSize,
             "font-family" => PropertyName::FontFamily,
             "font-weight" => PropertyName::FontWeight,
+            "text-decoration" => PropertyName::TextDecoration,
             "display" => PropertyName::Display,
             "position" => PropertyName::Position,
             "top" => PropertyName::Top,
