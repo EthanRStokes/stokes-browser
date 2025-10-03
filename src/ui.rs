@@ -1,4 +1,4 @@
-use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob, Vector, FontStyle};
+use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob, FontStyle};
 use winit::window::Window;
 use std::sync::Arc;
 
@@ -8,8 +8,10 @@ pub enum UiComponent {
     Button {
         id: String,
         label: String,
-        position: [f32; 2],
-        size: [f32; 2],
+        x: f32,  // Absolute pixel position
+        y: f32,
+        width: f32,  // Fixed pixel width
+        height: f32,  // Fixed pixel height
         color: [f32; 3],
         hover_color: [f32; 3],
         is_hover: bool,
@@ -18,20 +20,25 @@ pub enum UiComponent {
     TextField {
         id: String,
         text: String,
-        position: [f32; 2],
-        size: [f32; 2],
+        x: f32,  // Absolute pixel position
+        y: f32,
+        width: f32,  // Can be adjusted based on window size
+        height: f32,  // Fixed pixel height
         color: [f32; 3],
         border_color: [f32; 3],
         has_focus: bool,
         cursor_position: usize,
         selection_start: Option<usize>,
         selection_end: Option<usize>,
+        is_flexible: bool,  // Whether width adjusts to available space
     },
     TabButton {
         id: String,
         title: String,
-        position: [f32; 2],
-        size: [f32; 2],
+        x: f32,  // Absolute pixel position
+        y: f32,
+        width: f32,  // Fixed pixel width
+        height: f32,  // Fixed pixel height
         color: [f32; 3],
         is_active: bool,
     }
@@ -39,12 +46,14 @@ pub enum UiComponent {
 
 impl UiComponent {
     /// Create a navigation button (back, forward, refresh)
-    pub fn navigation_button(id: &str, label: &str, x_pos: f32) -> Self {
+    pub fn navigation_button(id: &str, label: &str, x: f32) -> Self {
         UiComponent::Button {
             id: id.to_string(),
             label: label.to_string(),
-            position: [x_pos, 0.01], // Move to top of window
-            size: [0.03, 0.025],     // Smaller buttons for top bar
+            x,
+            y: 8.0,
+            width: 32.0,
+            height: 32.0,
             color: [0.8, 0.8, 0.8],
             hover_color: [0.9, 0.9, 1.0],
             is_hover: false,
@@ -53,44 +62,47 @@ impl UiComponent {
     }
 
     /// Create an address bar
-    pub fn address_bar(url: &str) -> Self {
+    pub fn address_bar(url: &str, x: f32, width: f32) -> Self {
         UiComponent::TextField {
             id: "address_bar".to_string(),
             text: url.to_string(),
-            position: [0.15, 0.01], // Move to top of window
-            size: [0.7, 0.025],     // Smaller height for top bar
+            x,
+            y: 8.0,
+            width,
+            height: 32.0,
             color: [1.0, 1.0, 1.0],
             border_color: [0.7, 0.7, 0.7],
             has_focus: false,
             cursor_position: 0,
             selection_start: None,
             selection_end: None,
+            is_flexible: true,
         }
     }
 
     /// Create a tab button
-    pub fn tab(id: &str, title: &str, index: usize, is_active: bool) -> Self {
-        let x_pos = 0.05 + (index as f32 * 0.12); // Better spacing from left edge
+    pub fn tab(id: &str, title: &str, x: f32) -> Self {
         UiComponent::TabButton {
             id: id.to_string(),
             title: title.to_string(),
-            position: [x_pos, 0.04], // Position in the chrome bar
-            size: [0.11, 0.03],
-            color: if is_active { [0.95, 0.95, 0.95] } else { [0.8, 0.8, 0.8] },
-            is_active,
+            x,
+            y: 48.0,
+            width: 150.0,
+            height: 32.0,
+            color: if title == "New Tab" { [0.95, 0.95, 0.95] } else { [0.8, 0.8, 0.8] },
+            is_active: title == "New Tab",
         }
     }
 
     /// Check if a point is inside this component
     pub fn contains_point(&self, x: f32, y: f32) -> bool {
         match self {
-            UiComponent::Button { position, size, .. } |
-            UiComponent::TextField { position, size, .. } |
-            UiComponent::TabButton { position, size, .. } => {
-                x >= position[0] - size[0] / 2.0 &&
-                x <= position[0] + size[0] / 2.0 &&
-                y >= position[1] - size[1] / 2.0 &&
-                y <= position[1] + size[1] / 2.0
+            UiComponent::Button { x: bx, y: by, width, height, .. } |
+            UiComponent::TabButton { x: bx, y: by, width, height, .. } => {
+                x >= *bx && x <= *bx + *width && y >= *by && y <= *by + *height
+            }
+            UiComponent::TextField { x: bx, y: by, width, height, .. } => {
+                x >= *bx && x <= *bx + *width && y >= *by && y <= *by + *height
             }
         }
     }
@@ -109,20 +121,64 @@ impl UiComponent {
 pub struct BrowserUI {
     pub components: Vec<UiComponent>,
     pub scale_factor: f64,
+    window_width: f32,
 }
 
 impl BrowserUI {
+    // UI layout constants
+    const CHROME_HEIGHT: f32 = 88.0;
+    const BUTTON_SIZE: f32 = 32.0;
+    const BUTTON_MARGIN: f32 = 8.0;
+    const ADDRESS_BAR_HEIGHT: f32 = 32.0;
+    const ADDRESS_BAR_MARGIN: f32 = 8.0;
+    const MIN_ADDRESS_BAR_WIDTH: f32 = 200.0;
+
     pub fn new(_skia_context: &skia_safe::gpu::DirectContext, scale_factor: f64) -> Self {
+        // Default window width, will be updated on first resize
+        let window_width = 1024.0;
+
         Self {
             components: vec![
-                UiComponent::navigation_button("back", "<", 0.01),
-                UiComponent::navigation_button("forward", ">", 0.05),
-                UiComponent::navigation_button("refresh", "⟳", 0.09),
-                UiComponent::navigation_button("new_tab", "+", 0.87), // Add new tab button
-                UiComponent::address_bar("")
+                UiComponent::navigation_button("back", "<", Self::BUTTON_MARGIN),
+                UiComponent::navigation_button("forward", ">", Self::BUTTON_MARGIN * 2.0 + Self::BUTTON_SIZE),
+                UiComponent::navigation_button("refresh", "⟳", Self::BUTTON_MARGIN * 3.0 + Self::BUTTON_SIZE * 2.0),
+                UiComponent::navigation_button("new_tab", "+", window_width - Self::BUTTON_MARGIN - Self::BUTTON_SIZE),
+                UiComponent::address_bar("",
+                    Self::BUTTON_MARGIN * 4.0 + Self::BUTTON_SIZE * 3.0,
+                    window_width - (Self::BUTTON_MARGIN * 6.0 + Self::BUTTON_SIZE * 4.0))
             ],
             scale_factor,
+            window_width,
         }
+    }
+
+    /// Update UI layout when window is resized
+    pub fn update_layout(&mut self, window_width: f32, window_height: f32) {
+        self.window_width = window_width;
+
+        // Update new tab button position (always on the right)
+        for comp in &mut self.components {
+            if let UiComponent::Button { id, x, .. } = comp {
+                if id == "new_tab" {
+                    *x = window_width - Self::BUTTON_MARGIN - Self::BUTTON_SIZE;
+                }
+            }
+        }
+
+        // Update address bar width
+        for comp in &mut self.components {
+            if let UiComponent::TextField { id, width, is_flexible: true, .. } = comp {
+                if id == "address_bar" {
+                    let available_width = window_width - (Self::BUTTON_MARGIN * 6.0 + Self::BUTTON_SIZE * 4.0);
+                    *width = available_width.max(Self::MIN_ADDRESS_BAR_WIDTH);
+                }
+            }
+        }
+    }
+
+    /// Get the height of the chrome bar
+    pub fn chrome_height(&self) -> f32 {
+        Self::CHROME_HEIGHT
     }
 
     /// Initialize rendering resources
@@ -143,7 +199,12 @@ impl BrowserUI {
         }
 
         // Add the new tab as active
-        let new_tab = UiComponent::tab(id, title, tab_count, true);
+        let x = Self::BUTTON_MARGIN + (tab_count as f32 * 158.0); // 150 width + 8 spacing
+        let mut new_tab = UiComponent::tab(id, title, x);
+        if let UiComponent::TabButton { is_active, color, .. } = &mut new_tab {
+            *is_active = true;
+            *color = [0.95, 0.95, 0.95];
+        }
         self.components.push(new_tab);
     }
 
@@ -176,8 +237,8 @@ impl BrowserUI {
         // Reposition remaining tabs
         let mut tab_index = 0;
         for comp in &mut self.components {
-            if let UiComponent::TabButton { position, .. } = comp {
-                position[0] = 0.05 + (tab_index as f32 * 0.12);
+            if let UiComponent::TabButton { x, .. } = comp {
+                *x = Self::BUTTON_MARGIN + (tab_index as f32 * 158.0);
                 tab_index += 1;
             }
         }
@@ -233,26 +294,8 @@ impl BrowserUI {
     /// Handle mouse click
     pub fn handle_click(&mut self, x: f32, y: f32) -> Option<String> {
         for comp in &self.components {
-            match comp {
-                UiComponent::Button { id, position, size, .. } |
-                UiComponent::TabButton { id, position, size, .. } => {
-                    let px = position[0];
-                    let py = position[1];
-                    let sx = size[0];
-                    let sy = size[1];
-                    if x >= px && x <= px + sx && y >= py && y <= py + sy {
-                        return Some(id.clone());
-                    }
-                }
-                UiComponent::TextField { id, position, size, .. } => {
-                    let px = position[0];
-                    let py = position[1];
-                    let sx = size[0];
-                    let sy = size[1];
-                    if x >= px && x <= px + sx && y >= py && y <= py + sy {
-                        return Some(id.clone());
-                    }
-                }
+            if comp.contains_point(x, y) {
+                return Some(comp.id().to_string());
             }
         }
         None
@@ -373,12 +416,12 @@ impl BrowserUI {
         // Draw browser chrome background bar at the top
         let mut chrome_paint = Paint::default();
         chrome_paint.set_color(Color::from_rgb(240, 240, 240)); // Light gray background
-        let chrome_rect = Rect::from_xywh(0.0, 0.0, canvas_width, canvas_height * 0.08);
+        let chrome_rect = Rect::from_xywh(0.0, 0.0, canvas_width, Self::CHROME_HEIGHT);
         canvas.draw_rect(chrome_rect, &chrome_paint);
 
         // Draw a bottom border for the chrome
         chrome_paint.set_color(Color::from_rgb(200, 200, 200));
-        let border_rect = Rect::from_xywh(0.0, canvas_height * 0.08 - 1.0, canvas_width, 1.0);
+        let border_rect = Rect::from_xywh(0.0, Self::CHROME_HEIGHT - 1.0, canvas_width, 1.0);
         canvas.draw_rect(border_rect, &chrome_paint);
 
         let mut paint = Paint::default();
@@ -393,26 +436,21 @@ impl BrowserUI {
             .expect("Failed to create any typeface");
 
         // Apply scale factor to font size for proper DPI scaling
-        let base_font_size = 18.0;
+        let base_font_size = 16.0;
         let scaled_font_size = base_font_size * self.scale_factor as f32;
         let font = Font::new(typeface, scaled_font_size);
 
         // Scale other text rendering properties
         let text_padding = 5.0 * self.scale_factor as f32;
-        let button_text_padding = 3.0 * self.scale_factor as f32;
-        let text_offset_from_bottom = 5.0 * self.scale_factor as f32;
-        let cursor_margin = 3.0 * self.scale_factor as f32;
-        let cursor_stroke_width = 1.0 * self.scale_factor as f32;
+        let button_text_padding = 8.0 * self.scale_factor as f32;
+        let text_offset_from_bottom = 8.0 * self.scale_factor as f32;
+        let cursor_margin = 6.0 * self.scale_factor as f32;
+        let cursor_stroke_width = 1.5 * self.scale_factor as f32;
 
         for comp in &self.components {
             match comp {
-                UiComponent::Button { label, position, size, color, .. } => {
-                    let rect = Rect::from_xywh(
-                        position[0] * canvas_width,
-                        position[1] * canvas_height,
-                        size[0] * canvas_width,
-                        size[1] * canvas_height,
-                    );
+                UiComponent::Button { label, x, y, width, height, color, .. } => {
+                    let rect = Rect::from_xywh(*x, *y, *width, *height);
                     paint.set_color(Color::from_rgb(
                         (color[0] * 255.0) as u8,
                         (color[1] * 255.0) as u8,
@@ -426,13 +464,8 @@ impl BrowserUI {
                         canvas.draw_text_blob(&blob, (rect.left() + button_text_padding, rect.bottom() - text_offset_from_bottom), &paint);
                     }
                 }
-                UiComponent::TextField { text, position, size, color, border_color, has_focus, cursor_position, .. } => {
-                    let rect = Rect::from_xywh(
-                        position[0] * canvas_width,
-                        position[1] * canvas_height,
-                        size[0] * canvas_width,
-                        size[1] * canvas_height,
-                    );
+                UiComponent::TextField { text, x, y, width, height, color, border_color, has_focus, cursor_position, .. } => {
+                    let rect = Rect::from_xywh(*x, *y, *width, *height);
 
                     // Draw field background (brighter when focused)
                     let bg_color = if *has_focus {
@@ -491,13 +524,8 @@ impl BrowserUI {
                         paint.set_stroke(false);
                     }
                 }
-                UiComponent::TabButton { title, position, size, color, .. } => {
-                    let rect = Rect::from_xywh(
-                        position[0] * canvas_width,
-                        position[1] * canvas_height,
-                        size[0] * canvas_width,
-                        size[1] * canvas_height,
-                    );
+                UiComponent::TabButton { title, x, y, width, height, color, .. } => {
+                    let rect = Rect::from_xywh(*x, *y, *width, *height);
                     paint.set_color(Color::from_rgb(
                         (color[0] * 255.0) as u8,
                         (color[1] * 255.0) as u8,

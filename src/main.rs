@@ -93,6 +93,7 @@ impl BrowserApp {
         let window_attrs = WindowAttributes::default()
             .with_title("Web Browser")
             .with_inner_size(LogicalSize::new(1024, 768))
+            .with_min_inner_size(LogicalSize::new(500, 0))  // Set minimum window size
             .with_window_icon(Some(icon));
 
         let template = ConfigTemplateBuilder::new()
@@ -376,12 +377,8 @@ impl BrowserApp {
 
     // Handle mouse click
     fn handle_click(&mut self, x: f32, y: f32) {
-        // Convert window coordinates to normalized coordinates for UI
-        let norm_x = x / self.size.width as f32;
-        let norm_y = y / self.size.height as f32;
-
-        // Check for UI interaction
-        if let Some(component_id) = self.ui.handle_click(norm_x, norm_y) {
+        // UI now uses pixel coordinates directly
+        if let Some(component_id) = self.ui.handle_click(x, y) {
             // Handle based on component
             if component_id == "back" {
                 println!("Back button clicked");
@@ -486,6 +483,9 @@ impl ApplicationHandler for BrowserApp {
                     NonZeroU32::new(width.max(1)).unwrap(),
                     NonZeroU32::new(height.max(1)).unwrap()
                 );
+
+                // Update UI layout with new window size
+                self.ui.update_layout(width as f32, height as f32);
 
                 // Update engine viewport size
                 self.active_tab_mut().engine.resize(width as f32, height as f32);
