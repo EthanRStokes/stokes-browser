@@ -442,8 +442,6 @@ impl BrowserUI {
 
         // Scale other text rendering properties
         let text_padding = 5.0 * self.scale_factor as f32;
-        let button_text_padding = 8.0 * self.scale_factor as f32;
-        let text_offset_from_bottom = 8.0 * self.scale_factor as f32;
         let cursor_margin = 6.0 * self.scale_factor as f32;
         let cursor_stroke_width = 1.5 * self.scale_factor as f32;
 
@@ -458,10 +456,15 @@ impl BrowserUI {
                     ));
                     canvas.draw_rect(rect, &paint);
 
-                    // Draw button text in black with scaled padding
+                    // Draw button text in black, centered both vertically and horizontally
                     paint.set_color(Color::BLACK);
                     if let Some(blob) = TextBlob::new(label, &font) {
-                        canvas.draw_text_blob(&blob, (rect.left() + button_text_padding, rect.bottom() - text_offset_from_bottom), &paint);
+                        let text_bounds = blob.bounds();
+                        // Center horizontally
+                        let text_x = rect.left() + (rect.width() - text_bounds.width()) / 2.0 - text_bounds.left;
+                        // Center vertically
+                        let text_y = rect.top() + (rect.height() / 2.0) - (text_bounds.top + text_bounds.height() / 2.0);
+                        canvas.draw_text_blob(&blob, (text_x, text_y), &paint);
                     }
                 }
                 UiComponent::TextField { text, x, y, width, height, color, border_color, has_focus, cursor_position, .. } => {
@@ -492,10 +495,13 @@ impl BrowserUI {
                     canvas.draw_rect(rect, &paint);
                     paint.set_stroke(false);
 
-                    // Draw text content with scaled padding
+                    // Draw text content with scaled padding, centered vertically
                     paint.set_color(Color::BLACK);
                     if let Some(blob) = TextBlob::new(text, &font) {
-                        canvas.draw_text_blob(&blob, (rect.left() + text_padding, rect.bottom() - text_offset_from_bottom), &paint);
+                        let text_bounds = blob.bounds();
+                        // Center the text vertically in the field
+                        let text_y = rect.top() + (rect.height() / 2.0) - (text_bounds.top + text_bounds.height() / 2.0);
+                        canvas.draw_text_blob(&blob, (rect.left() + text_padding, text_y), &paint);
                     }
 
                     // Draw cursor if focused
@@ -533,10 +539,13 @@ impl BrowserUI {
                     ));
                     canvas.draw_rect(rect, &paint);
 
-                    // Draw tab text with scaled padding
+                    // Draw tab text with scaled padding, centered vertically
                     paint.set_color(Color::BLACK);
                     if let Some(blob) = TextBlob::new(title, &font) {
-                        canvas.draw_text_blob(&blob, (rect.left() + text_padding, rect.bottom() - text_offset_from_bottom), &paint);
+                        let text_bounds = blob.bounds();
+                        // Center the text vertically in the tab
+                        let text_y = rect.top() + (rect.height() / 2.0) - (text_bounds.top + text_bounds.height() / 2.0);
+                        canvas.draw_text_blob(&blob, (rect.left() + text_padding, text_y), &paint);
                     }
                 }
             }
