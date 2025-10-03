@@ -725,8 +725,11 @@ impl BrowserUI {
         let mut clicked_id = None;
 
         for comp in &mut self.components {
-            if let UiComponent::Button { is_pressed, id, .. } = comp {
-                if *is_pressed && comp.contains_point(x, y) {
+            if let UiComponent::Button { is_pressed, id, x: bx, y: by, width, height, .. } = comp {
+                let was_pressed = *is_pressed;
+                let contains_point = x >= *bx && x <= *bx + *width && y >= *by && y <= *by + *height;
+
+                if was_pressed && contains_point {
                     clicked_id = Some(id.clone());
                 }
                 *is_pressed = false;
