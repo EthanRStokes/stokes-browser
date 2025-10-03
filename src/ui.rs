@@ -1,6 +1,25 @@
-use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob, FontStyle};
-use winit::window::Window;
-use std::sync::Arc;
+use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob, FontStyle, Path};
+use std::time::{Duration, Instant};
+
+/// Tooltip information
+#[derive(Debug, Clone)]
+pub struct Tooltip {
+    pub text: String,
+    pub show_after: Duration,
+    pub hover_start: Option<Instant>,
+    pub is_visible: bool,
+}
+
+impl Tooltip {
+    pub fn new(text: &str) -> Self {
+        Self {
+            text: text.to_string(),
+            show_after: Duration::from_millis(500), // Show after 500ms
+            hover_start: None,
+            is_visible: false,
+        }
+    }
+}
 
 /// Represents a UI component in the browser chrome
 #[derive(Debug, Clone)]
@@ -14,8 +33,12 @@ pub enum UiComponent {
         height: f32,  // Fixed pixel height
         color: [f32; 3],
         hover_color: [f32; 3],
+        pressed_color: [f32; 3],
         is_hover: bool,
+        is_pressed: bool,
         is_active: bool,
+        tooltip: Tooltip,
+        icon_type: IconType,
     },
     TextField {
         id: String,
@@ -40,13 +63,26 @@ pub enum UiComponent {
         width: f32,  // Fixed pixel width
         height: f32,  // Fixed pixel height
         color: [f32; 3],
+        hover_color: [f32; 3],
         is_active: bool,
+        is_hover: bool,
+        tooltip: Tooltip,
     }
+}
+
+/// Icon types for buttons
+#[derive(Debug, Clone)]
+pub enum IconType {
+    Back,
+    Forward,
+    Refresh,
+    NewTab,
+    Close,
 }
 
 impl UiComponent {
     /// Create a navigation button (back, forward, refresh)
-    pub fn navigation_button(id: &str, label: &str, x: f32) -> Self {
+    pub fn navigation_button(id: &str, label: &str, x: f32, icon_type: IconType, tooltip_text: &str) -> Self {
         UiComponent::Button {
             id: id.to_string(),
             label: label.to_string(),
@@ -54,10 +90,14 @@ impl UiComponent {
             y: 8.0,
             width: 32.0,
             height: 32.0,
-            color: [0.8, 0.8, 0.8],
-            hover_color: [0.9, 0.9, 1.0],
+            color: [0.95, 0.95, 0.95],
+            hover_color: [0.85, 0.9, 1.0],
+            pressed_color: [0.75, 0.8, 0.95],
             is_hover: false,
+            is_pressed: false,
             is_active: false,
+            tooltip: Tooltip::new(tooltip_text),
+            icon_type,
         }
     }
 
@@ -90,7 +130,10 @@ impl UiComponent {
             width: 150.0,
             height: 32.0,
             color: if title == "New Tab" { [0.95, 0.95, 0.95] } else { [0.8, 0.8, 0.8] },
+            hover_color: [0.85, 0.9, 1.0],
             is_active: title == "New Tab",
+            is_hover: false,
+            tooltip: Tooltip::new(&format!("Switch to {}", title)),
         }
     }
 
@@ -139,10 +182,10 @@ impl BrowserUI {
 
         Self {
             components: vec![
-                UiComponent::navigation_button("back", "<", Self::BUTTON_MARGIN),
-                UiComponent::navigation_button("forward", ">", Self::BUTTON_MARGIN * 2.0 + Self::BUTTON_SIZE),
-                UiComponent::navigation_button("refresh", "⟳", Self::BUTTON_MARGIN * 3.0 + Self::BUTTON_SIZE * 2.0),
-                UiComponent::navigation_button("new_tab", "+", window_width - Self::BUTTON_MARGIN - Self::BUTTON_SIZE),
+                UiComponent::navigation_button("back", "<", Self::BUTTON_MARGIN, IconType::Back, "Back"),
+                UiComponent::navigation_button("forward", ">", Self::BUTTON_MARGIN * 2.0 + Self::BUTTON_SIZE, IconType::Forward, "Forward"),
+                UiComponent::navigation_button("refresh", "⟳", Self::BUTTON_MARGIN * 3.0 + Self::BUTTON_SIZE * 2.0, IconType::Refresh, "Refresh"),
+                UiComponent::navigation_button("new_tab", "+", window_width - Self::BUTTON_MARGIN - Self::BUTTON_SIZE, IconType::NewTab, "New Tab"),
                 UiComponent::address_bar("",
                     Self::BUTTON_MARGIN * 4.0 + Self::BUTTON_SIZE * 3.0,
                     window_width - (Self::BUTTON_MARGIN * 6.0 + Self::BUTTON_SIZE * 4.0))
@@ -436,7 +479,7 @@ impl BrowserUI {
             .expect("Failed to create any typeface");
 
         // Apply scale factor to font size for proper DPI scaling
-        let base_font_size = 16.0;
+        let base_font_size = 14.0;
         let scaled_font_size = base_font_size * self.scale_factor as f32;
         let font = Font::new(typeface, scaled_font_size);
 
@@ -444,31 +487,61 @@ impl BrowserUI {
         let text_padding = 5.0 * self.scale_factor as f32;
         let cursor_margin = 6.0 * self.scale_factor as f32;
         let cursor_stroke_width = 1.5 * self.scale_factor as f32;
+        let shadow_offset = 2.0 * self.scale_factor as f32;
 
         for comp in &self.components {
             match comp {
-                UiComponent::Button { label, x, y, width, height, color, .. } => {
+                UiComponent::Button { x, y, width, height, color, hover_color, pressed_color, is_pressed, is_hover, tooltip, icon_type, .. } => {
                     let rect = Rect::from_xywh(*x, *y, *width, *height);
-                    paint.set_color(Color::from_rgb(
-                        (color[0] * 255.0) as u8,
-                        (color[1] * 255.0) as u8,
-                        (color[2] * 255.0) as u8,
-                    ));
-                    canvas.draw_rect(rect, &paint);
 
-                    // Draw button text in black, centered both vertically and horizontally
-                    paint.set_color(Color::BLACK);
-                    if let Some(blob) = TextBlob::new(label, &font) {
-                        let text_bounds = blob.bounds();
-                        // Center horizontally
-                        let text_x = rect.left() + (rect.width() - text_bounds.width()) / 2.0 - text_bounds.left;
-                        // Center vertically
-                        let text_y = rect.top() + (rect.height() / 2.0) - (text_bounds.top + text_bounds.height() / 2.0);
-                        canvas.draw_text_blob(&blob, (text_x, text_y), &paint);
+                    // Draw button shadow for depth
+                    let shadow_rect = Rect::from_xywh(*x + shadow_offset, *y + shadow_offset, *width, *height);
+                    paint.set_color(Color::from_argb(50, 0, 0, 0)); // Semi-transparent shadow
+                    canvas.draw_round_rect(shadow_rect, 4.0, 4.0, &paint);
+
+                    // Choose color based on state
+                    let current_color = if *is_pressed {
+                        pressed_color
+                    } else if *is_hover {
+                        hover_color
+                    } else {
+                        color
+                    };
+
+                    // Draw button background with rounded corners
+                    paint.set_color(Color::from_rgb(
+                        (current_color[0] * 255.0) as u8,
+                        (current_color[1] * 255.0) as u8,
+                        (current_color[2] * 255.0) as u8,
+                    ));
+                    canvas.draw_round_rect(rect, 4.0, 4.0, &paint);
+
+                    // Draw button border
+                    paint.set_color(if *is_hover {
+                        Color::from_rgb(100, 150, 255)
+                    } else {
+                        Color::from_rgb(180, 180, 180)
+                    });
+                    paint.set_stroke(true);
+                    paint.set_stroke_width(1.0 * self.scale_factor as f32);
+                    canvas.draw_round_rect(rect, 4.0, 4.0, &paint);
+                    paint.set_stroke(false);
+
+                    // Draw custom icon instead of text
+                    Self::draw_icon(canvas, icon_type, rect, self.scale_factor);
+
+                    // Draw tooltip if visible
+                    if tooltip.is_visible {
+                        Self::draw_tooltip(canvas, tooltip, *x, *y, &font, self.scale_factor);
                     }
                 }
                 UiComponent::TextField { text, x, y, width, height, color, border_color, has_focus, cursor_position, .. } => {
                     let rect = Rect::from_xywh(*x, *y, *width, *height);
+
+                    // Draw field shadow
+                    let shadow_rect = Rect::from_xywh(*x + 1.0, *y + 1.0, *width, *height);
+                    paint.set_color(Color::from_argb(30, 0, 0, 0));
+                    canvas.draw_round_rect(shadow_rect, 2.0, 2.0, &paint);
 
                     // Draw field background (brighter when focused)
                     let bg_color = if *has_focus {
@@ -477,7 +550,7 @@ impl BrowserUI {
                         Color::from_rgb(250, 250, 250)
                     };
                     paint.set_color(bg_color);
-                    canvas.draw_rect(rect, &paint);
+                    canvas.draw_round_rect(rect, 2.0, 2.0, &paint);
 
                     // Draw field border (blue when focused) with scaled stroke width
                     let border_color = if *has_focus {
@@ -492,7 +565,7 @@ impl BrowserUI {
                     paint.set_color(border_color);
                     paint.set_stroke(true);
                     paint.set_stroke_width(if *has_focus { 2.0 * self.scale_factor as f32 } else { 1.0 * self.scale_factor as f32 });
-                    canvas.draw_rect(rect, &paint);
+                    canvas.draw_round_rect(rect, 2.0, 2.0, &paint);
                     paint.set_stroke(false);
 
                     // Draw text content with scaled padding, centered vertically
@@ -530,14 +603,40 @@ impl BrowserUI {
                         paint.set_stroke(false);
                     }
                 }
-                UiComponent::TabButton { title, x, y, width, height, color, .. } => {
+                UiComponent::TabButton { title, x, y, width, height, color, hover_color, is_active, is_hover, tooltip, .. } => {
                     let rect = Rect::from_xywh(*x, *y, *width, *height);
+
+                    // Draw tab shadow
+                    let shadow_rect = Rect::from_xywh(*x + 1.0, *y + 1.0, *width, *height);
+                    paint.set_color(Color::from_argb(30, 0, 0, 0));
+                    canvas.draw_round_rect(shadow_rect, 4.0, 4.0, &paint);
+
+                    // Choose color based on state
+                    let current_color = if *is_hover {
+                        hover_color
+                    } else {
+                        color
+                    };
+
                     paint.set_color(Color::from_rgb(
-                        (color[0] * 255.0) as u8,
-                        (color[1] * 255.0) as u8,
-                        (color[2] * 255.0) as u8,
+                        (current_color[0] * 255.0) as u8,
+                        (current_color[1] * 255.0) as u8,
+                        (current_color[2] * 255.0) as u8,
                     ));
-                    canvas.draw_rect(rect, &paint);
+                    canvas.draw_round_rect(rect, 4.0, 4.0, &paint);
+
+                    // Draw tab border (different for active tab)
+                    paint.set_color(if *is_active {
+                        Color::from_rgb(100, 150, 255)
+                    } else if *is_hover {
+                        Color::from_rgb(150, 180, 255)
+                    } else {
+                        Color::from_rgb(180, 180, 180)
+                    });
+                    paint.set_stroke(true);
+                    paint.set_stroke_width(if *is_active { 2.0 * self.scale_factor as f32 } else { 1.0 * self.scale_factor as f32 });
+                    canvas.draw_round_rect(rect, 4.0, 4.0, &paint);
+                    paint.set_stroke(false);
 
                     // Draw tab text with scaled padding, centered vertically
                     paint.set_color(Color::BLACK);
@@ -547,8 +646,213 @@ impl BrowserUI {
                         let text_y = rect.top() + (rect.height() / 2.0) - (text_bounds.top + text_bounds.height() / 2.0);
                         canvas.draw_text_blob(&blob, (rect.left() + text_padding, text_y), &paint);
                     }
+
+                    // Draw tooltip if visible
+                    if tooltip.is_visible {
+                        Self::draw_tooltip(canvas, tooltip, *x, *y, &font, self.scale_factor);
+                    }
                 }
             }
+        }
+    }
+
+    /// Update mouse hover state and handle tooltips
+    pub fn update_mouse_hover(&mut self, x: f32, y: f32, current_time: Instant) {
+        for comp in &mut self.components {
+            let is_hovering = comp.contains_point(x, y);
+
+            match comp {
+                UiComponent::Button { is_hover, tooltip, .. } => {
+                    if is_hovering && !*is_hover {
+                        // Just started hovering
+                        *is_hover = true;
+                        tooltip.hover_start = Some(current_time);
+                        tooltip.is_visible = false;
+                    } else if !is_hovering && *is_hover {
+                        // Stopped hovering
+                        *is_hover = false;
+                        tooltip.hover_start = None;
+                        tooltip.is_visible = false;
+                    } else if is_hovering && *is_hover {
+                        // Continue hovering - check if tooltip should be shown
+                        if let Some(hover_start) = tooltip.hover_start {
+                            if current_time.duration_since(hover_start) >= tooltip.show_after {
+                                tooltip.is_visible = true;
+                            }
+                        }
+                    }
+                }
+                UiComponent::TabButton { is_hover, tooltip, .. } => {
+                    if is_hovering && !*is_hover {
+                        // Just started hovering
+                        *is_hover = true;
+                        tooltip.hover_start = Some(current_time);
+                        tooltip.is_visible = false;
+                    } else if !is_hovering && *is_hover {
+                        // Stopped hovering
+                        *is_hover = false;
+                        tooltip.hover_start = None;
+                        tooltip.is_visible = false;
+                    } else if is_hovering && *is_hover {
+                        // Continue hovering - check if tooltip should be shown
+                        if let Some(hover_start) = tooltip.hover_start {
+                            if current_time.duration_since(hover_start) >= tooltip.show_after {
+                                tooltip.is_visible = true;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Handle mouse press
+    pub fn handle_mouse_press(&mut self, x: f32, y: f32) -> Option<String> {
+        for comp in &mut self.components {
+            if comp.contains_point(x, y) {
+                if let UiComponent::Button { is_pressed, .. } = comp {
+                    *is_pressed = true;
+                }
+                return Some(comp.id().to_string());
+            }
+        }
+        None
+    }
+
+    /// Handle mouse release
+    pub fn handle_mouse_release(&mut self, x: f32, y: f32) -> Option<String> {
+        let mut clicked_id = None;
+
+        for comp in &mut self.components {
+            if let UiComponent::Button { is_pressed, id, .. } = comp {
+                if *is_pressed && comp.contains_point(x, y) {
+                    clicked_id = Some(id.clone());
+                }
+                *is_pressed = false;
+            }
+        }
+
+        clicked_id
+    }
+
+    /// Draw a custom icon based on icon type
+    fn draw_icon(canvas: &Canvas, icon_type: &IconType, rect: Rect, scale_factor: f64) {
+        let mut paint = Paint::default();
+        paint.set_color(Color::from_rgb(60, 60, 60)); // Dark gray for icons
+        paint.set_stroke(true);
+        paint.set_stroke_width(2.0 * scale_factor as f32);
+        paint.set_style(skia_safe::PaintStyle::Stroke);
+        paint.set_stroke_cap(skia_safe::paint::Cap::Round);
+        paint.set_stroke_join(skia_safe::paint::Join::Round);
+
+        let center_x = rect.center_x();
+        let center_y = rect.center_y();
+        let icon_size = rect.width().min(rect.height()) * 0.6;
+        let half_size = icon_size / 2.0;
+
+        match icon_type {
+            IconType::Back => {
+                // Draw left-pointing arrow
+                let mut path = Path::new();
+                path.move_to((center_x + half_size * 0.3, center_y - half_size * 0.6));
+                path.line_to((center_x - half_size * 0.3, center_y));
+                path.line_to((center_x + half_size * 0.3, center_y + half_size * 0.6));
+                canvas.draw_path(&path, &paint);
+            }
+            IconType::Forward => {
+                // Draw right-pointing arrow
+                let mut path = Path::new();
+                path.move_to((center_x - half_size * 0.3, center_y - half_size * 0.6));
+                path.line_to((center_x + half_size * 0.3, center_y));
+                path.line_to((center_x - half_size * 0.3, center_y + half_size * 0.6));
+                canvas.draw_path(&path, &paint);
+            }
+            IconType::Refresh => {
+                // Draw circular arrow
+                let radius = half_size * 0.7;
+                let mut path = Path::new();
+                path.add_arc(Rect::from_xywh(center_x - radius, center_y - radius, radius * 2.0, radius * 2.0),
+                           45.0, 270.0);
+                canvas.draw_path(&path, &paint);
+
+                // Draw arrow head
+                let arrow_x = center_x + radius * 0.7;
+                let arrow_y = center_y - radius * 0.7;
+                let mut arrow_path = Path::new();
+                arrow_path.move_to((arrow_x - 4.0, arrow_y - 4.0));
+                arrow_path.line_to((arrow_x, arrow_y));
+                arrow_path.line_to((arrow_x + 4.0, arrow_y - 4.0));
+                canvas.draw_path(&arrow_path, &paint);
+            }
+            IconType::NewTab => {
+                // Draw plus sign
+                canvas.draw_line(
+                    (center_x - half_size * 0.6, center_y),
+                    (center_x + half_size * 0.6, center_y),
+                    &paint
+                );
+                canvas.draw_line(
+                    (center_x, center_y - half_size * 0.6),
+                    (center_x, center_y + half_size * 0.6),
+                    &paint
+                );
+            }
+            IconType::Close => {
+                // Draw X
+                canvas.draw_line(
+                    (center_x - half_size * 0.5, center_y - half_size * 0.5),
+                    (center_x + half_size * 0.5, center_y + half_size * 0.5),
+                    &paint
+                );
+                canvas.draw_line(
+                    (center_x + half_size * 0.5, center_y - half_size * 0.5),
+                    (center_x - half_size * 0.5, center_y + half_size * 0.5),
+                    &paint
+                );
+            }
+        }
+    }
+
+    /// Draw a tooltip
+    fn draw_tooltip(canvas: &Canvas, tooltip: &Tooltip, x: f32, y: f32, font: &Font, scale_factor: f64) {
+        if !tooltip.is_visible {
+            return;
+        }
+
+        let mut paint = Paint::default();
+        let padding = 8.0 * scale_factor as f32;
+
+        // Measure text
+        if let Some(text_blob) = TextBlob::new(&tooltip.text, font) {
+            let text_bounds = text_blob.bounds();
+            let tooltip_width = text_bounds.width() + padding * 2.0;
+            let tooltip_height = text_bounds.height() + padding * 2.0;
+
+            // Position tooltip above the component
+            let tooltip_x = x;
+            let tooltip_y = y - tooltip_height - 5.0;
+
+            // Draw tooltip background with shadow
+            let shadow_rect = Rect::from_xywh(tooltip_x + 2.0, tooltip_y + 2.0, tooltip_width, tooltip_height);
+            paint.set_color(Color::from_argb(100, 0, 0, 0)); // Semi-transparent black shadow
+            canvas.draw_round_rect(shadow_rect, 4.0, 4.0, &paint);
+
+            // Draw tooltip background
+            let tooltip_rect = Rect::from_xywh(tooltip_x, tooltip_y, tooltip_width, tooltip_height);
+            paint.set_color(Color::from_rgb(255, 255, 220)); // Light yellow background
+            canvas.draw_round_rect(tooltip_rect, 4.0, 4.0, &paint);
+
+            // Draw tooltip border
+            paint.set_color(Color::from_rgb(180, 180, 140));
+            paint.set_stroke(true);
+            paint.set_stroke_width(1.0 * scale_factor as f32);
+            canvas.draw_round_rect(tooltip_rect, 4.0, 4.0, &paint);
+            paint.set_stroke(false);
+
+            // Draw tooltip text
+            paint.set_color(Color::BLACK);
+            canvas.draw_text_blob(&text_blob, (tooltip_x + padding, tooltip_y + padding - text_bounds.top), &paint);
         }
     }
 }
