@@ -258,18 +258,22 @@ impl BrowserUI {
             .count();
 
         if tab_count == 0 {
-            return Self::MAX_TAB_WIDTH;
+            return Self::MAX_TAB_WIDTH * self.scale_factor as f32;
         }
 
-        // Available width for tabs
-        let available_width = self.window_width - (Self::BUTTON_MARGIN * 2.0);
+        // Available width for tabs (use scaled margin)
+        let scaled_margin = Self::BUTTON_MARGIN * self.scale_factor as f32;
+        let available_width = self.window_width - (scaled_margin * 2.0);
 
-        // Calculate width that would fit all tabs
-        let total_spacing = (tab_count - 1) as f32 * Self::TAB_SPACING;
+        // Calculate width that would fit all tabs (use scaled spacing)
+        let scaled_spacing = Self::TAB_SPACING * self.scale_factor as f32;
+        let total_spacing = (tab_count - 1) as f32 * scaled_spacing;
         let width_per_tab = (available_width - total_spacing) / tab_count as f32;
 
-        // Clamp between MIN and MAX, if it goes below MIN we'll use scrolling
-        width_per_tab.max(Self::MIN_TAB_WIDTH).min(Self::MAX_TAB_WIDTH)
+        // Clamp between MIN and MAX (scaled), if it goes below MIN we'll use scrolling
+        let scaled_min = Self::MIN_TAB_WIDTH * self.scale_factor as f32;
+        let scaled_max = Self::MAX_TAB_WIDTH * self.scale_factor as f32;
+        width_per_tab.max(scaled_min).min(scaled_max)
     }
 
     /// Update all tab positions and widths based on current state
@@ -279,21 +283,23 @@ impl BrowserUI {
             .filter(|c| matches!(c, UiComponent::TabButton { .. }))
             .count();
 
-        // Calculate total width needed for all tabs
+        // Calculate total width needed for all tabs (use scaled spacing)
+        let scaled_spacing = Self::TAB_SPACING * self.scale_factor as f32;
         let total_tab_width = tab_count as f32 * tab_width +
-                              (tab_count.saturating_sub(1)) as f32 * Self::TAB_SPACING;
+                              (tab_count.saturating_sub(1)) as f32 * scaled_spacing;
 
-        // Update scroll offset bounds
-        let max_scroll = (total_tab_width - self.window_width + Self::BUTTON_MARGIN * 2.0).max(0.0);
+        // Update scroll offset bounds (use scaled margin)
+        let scaled_margin = Self::BUTTON_MARGIN * self.scale_factor as f32;
+        let max_scroll = (total_tab_width - self.window_width + scaled_margin * 2.0).max(0.0);
         self.tab_scroll_offset = self.tab_scroll_offset.min(max_scroll).max(0.0);
 
         // Update each tab's position and width
-        let mut tab_x = Self::BUTTON_MARGIN - self.tab_scroll_offset;
+        let mut tab_x = scaled_margin - self.tab_scroll_offset;
         for comp in &mut self.components {
             if let UiComponent::TabButton { x, width, .. } = comp {
                 *x = tab_x;
                 *width = tab_width;
-                tab_x += tab_width + Self::TAB_SPACING;
+                tab_x += tab_width + scaled_spacing;
             }
         }
     }
@@ -309,17 +315,19 @@ impl BrowserUI {
         }
 
         let tab_width = self.calculate_tab_width();
+        let scaled_spacing = Self::TAB_SPACING * self.scale_factor as f32;
         let total_tab_width = tab_count as f32 * tab_width +
-                              (tab_count.saturating_sub(1)) as f32 * Self::TAB_SPACING;
+                              (tab_count.saturating_sub(1)) as f32 * scaled_spacing;
 
-        // Only allow scrolling if tabs overflow
-        if total_tab_width > self.window_width - Self::BUTTON_MARGIN * 2.0 {
+        // Only allow scrolling if tabs overflow (use scaled margin)
+        let scaled_margin = Self::BUTTON_MARGIN * self.scale_factor as f32;
+        if total_tab_width > self.window_width - scaled_margin * 2.0 {
             // Scroll by a portion of a tab width
             let scroll_amount = delta_y * 30.0; // Adjust sensitivity
             self.tab_scroll_offset += scroll_amount;
 
             // Clamp scroll offset
-            let max_scroll = total_tab_width - self.window_width + Self::BUTTON_MARGIN * 2.0;
+            let max_scroll = total_tab_width - self.window_width + scaled_margin * 2.0;
             self.tab_scroll_offset = self.tab_scroll_offset.clamp(0.0, max_scroll);
 
             // Update tab positions
