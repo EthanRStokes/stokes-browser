@@ -158,6 +158,15 @@ impl UiComponent {
             UiComponent::TabButton { id, .. } => id,
         }
     }
+
+    /// Get component width
+    fn width(&self) -> f32 {
+        match self {
+            UiComponent::Button { width, .. } |
+            UiComponent::TextField { width, .. } |
+            UiComponent::TabButton { width, .. } => *width,
+        }
+    }
 }
 
 /// Represents the browser UI (chrome)
@@ -165,6 +174,7 @@ pub struct BrowserUI {
     pub components: Vec<UiComponent>,
     pub scale_factor: f64,
     window_width: f32,
+    tab_scroll_offset: f32,  // Horizontal scroll offset for tabs
 }
 
 impl BrowserUI {
@@ -175,6 +185,9 @@ impl BrowserUI {
     const ADDRESS_BAR_HEIGHT: f32 = 32.0;
     const ADDRESS_BAR_MARGIN: f32 = 8.0;
     const MIN_ADDRESS_BAR_WIDTH: f32 = 200.0;
+    const MAX_TAB_WIDTH: f32 = 200.0;  // Maximum width for a tab
+    const MIN_TAB_WIDTH: f32 = 80.0;   // Minimum width before scrolling kicks in
+    const TAB_SPACING: f32 = 4.0;       // Spacing between tabs
 
     pub fn new(_skia_context: &skia_safe::gpu::DirectContext, scale_factor: f64) -> Self {
         // Default window width, will be updated on first resize
@@ -192,6 +205,7 @@ impl BrowserUI {
             ],
             scale_factor,
             window_width,
+            tab_scroll_offset: 0.0,
         }
     }
 
@@ -217,6 +231,9 @@ impl BrowserUI {
                 }
             }
         }
+
+        // Update tab layout with dynamic sizing
+        self.update_tab_layout();
     }
 
     /// Get the height of the chrome bar
@@ -229,6 +246,134 @@ impl BrowserUI {
         // No-op for Skia
     }
 
+    /// Calculate the appropriate width for each tab based on the number of tabs
+    fn calculate_tab_width(&self) -> f32 {
+        let tab_count = self.components.iter()
+            .filter(|c| matches!(c, UiComponent::TabButton { .. }))
+            .count();
+
+        if tab_count == 0 {
+            return Self::MAX_TAB_WIDTH;
+        }
+
+        // Available width for tabs
+        let available_width = self.window_width - (Self::BUTTON_MARGIN * 2.0);
+
+        // Calculate width that would fit all tabs
+        let total_spacing = (tab_count - 1) as f32 * Self::TAB_SPACING;
+        let width_per_tab = (available_width - total_spacing) / tab_count as f32;
+
+        // Clamp between MIN and MAX, if it goes below MIN we'll use scrolling
+        width_per_tab.max(Self::MIN_TAB_WIDTH).min(Self::MAX_TAB_WIDTH)
+    }
+
+    /// Update all tab positions and widths based on current state
+    fn update_tab_layout(&mut self) {
+        let tab_width = self.calculate_tab_width();
+        let tab_count = self.components.iter()
+            .filter(|c| matches!(c, UiComponent::TabButton { .. }))
+            .count();
+
+        // Calculate total width needed for all tabs
+        let total_tab_width = tab_count as f32 * tab_width +
+                              (tab_count.saturating_sub(1)) as f32 * Self::TAB_SPACING;
+
+        // Update scroll offset bounds
+        let max_scroll = (total_tab_width - self.window_width + Self::BUTTON_MARGIN * 2.0).max(0.0);
+        self.tab_scroll_offset = self.tab_scroll_offset.min(max_scroll).max(0.0);
+
+        // Update each tab's position and width
+        let mut tab_x = Self::BUTTON_MARGIN - self.tab_scroll_offset;
+        for comp in &mut self.components {
+            if let UiComponent::TabButton { x, width, .. } = comp {
+                *x = tab_x;
+                *width = tab_width;
+                tab_x += tab_width + Self::TAB_SPACING;
+            }
+        }
+    }
+
+    /// Handle mouse wheel scrolling for tabs
+    pub fn handle_scroll(&mut self, delta_y: f32) {
+        let tab_count = self.components.iter()
+            .filter(|c| matches!(c, UiComponent::TabButton { .. }))
+            .count();
+
+        if tab_count == 0 {
+            return;
+        }
+
+        let tab_width = self.calculate_tab_width();
+        let total_tab_width = tab_count as f32 * tab_width +
+                              (tab_count.saturating_sub(1)) as f32 * Self::TAB_SPACING;
+
+        // Only allow scrolling if tabs overflow
+        if total_tab_width > self.window_width - Self::BUTTON_MARGIN * 2.0 {
+            // Scroll by a portion of a tab width
+            let scroll_amount = delta_y * 30.0; // Adjust sensitivity
+            self.tab_scroll_offset += scroll_amount;
+
+            // Clamp scroll offset
+            let max_scroll = total_tab_width - self.window_width + Self::BUTTON_MARGIN * 2.0;
+            self.tab_scroll_offset = self.tab_scroll_offset.clamp(0.0, max_scroll);
+
+            // Update tab positions
+            self.update_tab_layout();
+        }
+    }
+
+    /// Truncate text with ellipsis to fit within a given width
+    fn truncate_text_to_width(text: &str, max_width: f32, font: &Font) -> String {
+        if text.is_empty() {
+            return String::new();
+        }
+
+        // Measure full text
+        if let Some(blob) = TextBlob::new(text, font) {
+            if blob.bounds().width() <= max_width {
+                return text.to_string();
+            }
+        }
+
+        // Binary search for the right length
+        let ellipsis = "...";
+        let ellipsis_width = TextBlob::new(ellipsis, font)
+            .map(|b| b.bounds().width())
+            .unwrap_or(20.0);
+
+        let available_width = max_width - ellipsis_width;
+
+        let mut low = 0;
+        let mut high = text.len();
+        let mut best_len = 0;
+
+        while low <= high {
+            let mid = (low + high) / 2;
+            let substr = &text[..mid.min(text.len())];
+
+            if let Some(blob) = TextBlob::new(substr, font) {
+                if blob.bounds().width() <= available_width {
+                    best_len = mid;
+                    low = mid + 1;
+                } else {
+                    high = mid.saturating_sub(1);
+                }
+            } else {
+                break;
+            }
+        }
+
+        // Make sure we don't cut in the middle of a UTF-8 character
+        let mut truncate_at = best_len.min(text.len());
+        while truncate_at > 0 && !text.is_char_boundary(truncate_at) {
+            truncate_at -= 1;
+        }
+
+        format!("{}{}", &text[..truncate_at], ellipsis)
+    }
+}
+
+impl BrowserUI {
     /// Add a new tab
     pub fn add_tab(&mut self, id: &str, title: &str) {
         let tab_count = self.components.iter().filter(|c| matches!(c, UiComponent::TabButton { .. })).count();
@@ -249,6 +394,9 @@ impl BrowserUI {
             *color = [0.95, 0.95, 0.95];
         }
         self.components.push(new_tab);
+
+        // Update tab layout after adding
+        self.update_tab_layout();
     }
 
     /// Set active tab
@@ -277,16 +425,14 @@ impl BrowserUI {
             }
         });
 
-        // Reposition remaining tabs
-        let mut tab_index = 0;
-        for comp in &mut self.components {
-            if let UiComponent::TabButton { x, .. } = comp {
-                *x = Self::BUTTON_MARGIN + (tab_index as f32 * 158.0);
-                tab_index += 1;
-            }
+        let removed = self.components.len() < initial_count;
+
+        if removed {
+            // Update tab layout after removing
+            self.update_tab_layout();
         }
 
-        self.components.len() < initial_count
+        removed
     }
 
     /// Get all tab IDs
@@ -638,9 +784,13 @@ impl BrowserUI {
                     canvas.draw_round_rect(rect, 4.0, 4.0, &paint);
                     paint.set_stroke(false);
 
+                    // Truncate tab text to fit within the tab width
+                    let max_text_width = *width - (text_padding * 2.0);
+                    let display_text = Self::truncate_text_to_width(title, max_text_width, &font);
+
                     // Draw tab text with scaled padding, centered vertically
                     paint.set_color(Color::BLACK);
-                    if let Some(blob) = TextBlob::new(title, &font) {
+                    if let Some(blob) = TextBlob::new(&display_text, &font) {
                         let text_bounds = blob.bounds();
                         // Center the text vertically in the tab
                         let text_y = rect.top() + (rect.height() / 2.0) - (text_bounds.top + text_bounds.height() / 2.0);

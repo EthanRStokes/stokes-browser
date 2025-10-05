@@ -523,19 +523,37 @@ impl ApplicationHandler for BrowserApp {
                 // No need to handle click on cursor move - only track position
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                // Handle mouse wheel scrolling
-                let scroll_speed = 50.0;
-                match delta {
-                    MouseScrollDelta::LineDelta(_x, y) => {
-                        // Vertical scrolling (most common)
-                        self.active_tab_mut().engine.scroll_vertical(-y * scroll_speed);
-                        self.env.window.request_redraw();
+                // Check if mouse is over the tab bar (y < chrome height)
+                let chrome_height = self.ui.chrome_height() as f64;
+                let is_over_tabs = self.cursor_position.1 >= 48.0 && self.cursor_position.1 < chrome_height;
+
+                if is_over_tabs {
+                    // Handle tab scrolling
+                    match delta {
+                        MouseScrollDelta::LineDelta(_x, y) => {
+                            self.ui.handle_scroll(y);
+                            self.env.window.request_redraw();
+                        }
+                        MouseScrollDelta::PixelDelta(pos) => {
+                            self.ui.handle_scroll(pos.y as f32 / 30.0);
+                            self.env.window.request_redraw();
+                        }
                     }
-                    MouseScrollDelta::PixelDelta(pos) => {
-                        // Pixel-precise scrolling (trackpad)
-                        self.active_tab_mut().engine.scroll_vertical(-pos.y as f32);
-                        self.active_tab_mut().engine.scroll_horizontal(-pos.x as f32);
-                        self.env.window.request_redraw();
+                } else {
+                    // Handle page content scrolling
+                    let scroll_speed = 50.0;
+                    match delta {
+                        MouseScrollDelta::LineDelta(_x, y) => {
+                            // Vertical scrolling (most common)
+                            self.active_tab_mut().engine.scroll_vertical(-y * scroll_speed);
+                            self.env.window.request_redraw();
+                        }
+                        MouseScrollDelta::PixelDelta(pos) => {
+                            // Pixel-precise scrolling (trackpad)
+                            self.active_tab_mut().engine.scroll_vertical(-pos.y as f32);
+                            self.active_tab_mut().engine.scroll_horizontal(-pos.x as f32);
+                            self.env.window.request_redraw();
+                        }
                     }
                 }
             }
