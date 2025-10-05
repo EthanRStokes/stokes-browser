@@ -308,10 +308,13 @@ impl BrowserApp {
 
         // Add to tabs list
         self.tabs.push(new_tab);
-        self.active_tab_index = self.tabs.len() - 1;
 
-        // Update UI
+        // Add to UI
         self.ui.add_tab(&tab_id, "New Tab");
+
+        // Switch to the new tab
+        let new_tab_index = self.tabs.len() - 1;
+        self.switch_to_tab(new_tab_index);
     }
 
     // Close a tab
@@ -365,6 +368,9 @@ impl BrowserApp {
             let title = self.tabs[index].engine.page_title().to_string();
             self.ui.update_address_bar(&url);
             self.env.window.set_title(&format!("{} - Web Browser", title));
+
+            // Clear focus from address bar when switching tabs
+            self.ui.clear_focus();
         }
     }
 

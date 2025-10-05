@@ -525,6 +525,9 @@ impl BrowserUI {
         for comp in &mut self.components {
             if let UiComponent::TextField { has_focus: true, text: field_text, cursor_position, .. } = comp {
                 // Insert text at cursor position
+                if *cursor_position > field_text.len() {
+                    println!("Error: cursor pos {} out of bounds for text length {}", cursor_position, field_text.len());
+                }
                 field_text.insert_str(*cursor_position, text);
                 *cursor_position += text.len();
                 break;
