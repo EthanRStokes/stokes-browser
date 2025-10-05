@@ -361,8 +361,19 @@ impl BrowserUI {
         let mut best_len = 0;
 
         while low <= high {
-            let mid = (low + high) / 2;
-            let substr = &text[..mid.min(text.len())];
+            let mut mid = (low + high) / 2;
+
+            // Ensure mid is at a valid UTF-8 character boundary
+            while mid > 0 && mid < text.len() && !text.is_char_boundary(mid) {
+                mid -= 1;
+            }
+
+            if mid == 0 && low > 0 {
+                // Can't make progress, break out
+                break;
+            }
+
+            let substr = &text[..mid];
 
             if let Some(blob) = TextBlob::new(substr, font) {
                 if blob.bounds().width() <= available_width {
