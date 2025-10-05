@@ -799,11 +799,17 @@ impl BrowserUI {
                         } else {
                             ""
                         };
-                        let cursor_x = if let Some(text_blob) = TextBlob::new(text_before_cursor, &font) {
-                            rect.left() + text_padding + text_blob.bounds().width()
+
+                        // Measure the actual width of text before cursor
+                        let text_width = if text_before_cursor.is_empty() {
+                            0.0
                         } else {
-                            rect.left() + text_padding
+                            // Use font.measure_text to get the actual advance width
+                            let (width, _) = font.measure_str(text_before_cursor, None);
+                            width
                         };
+
+                        let cursor_x = rect.left() + text_padding + text_width;
 
                         // Draw cursor line with scaled stroke width and margins
                         paint.set_color(Color::BLACK);
