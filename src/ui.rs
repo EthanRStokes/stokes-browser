@@ -324,7 +324,7 @@ impl BrowserUI {
         if total_tab_width > self.window_width - scaled_margin * 2.0 {
             // Scroll by a portion of a tab width
             let scroll_amount = delta_y * 30.0; // Adjust sensitivity
-            self.tab_scroll_offset += scroll_amount;
+            self.tab_scroll_offset -= scroll_amount;
 
             // Clamp scroll offset
             let max_scroll = total_tab_width - self.window_width + scaled_margin * 2.0;
