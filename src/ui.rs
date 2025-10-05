@@ -590,7 +590,37 @@ impl BrowserUI {
 
     /// Update scale factor for DPI changes
     pub fn set_scale_factor(&mut self, scale_factor: f64) {
+        let old_scale = self.scale_factor;
         self.scale_factor = scale_factor;
+
+        // Rescale all components
+        let scale_ratio = scale_factor / old_scale;
+
+        for comp in &mut self.components {
+            match comp {
+                UiComponent::Button { x, y, width, height, .. } => {
+                    *x *= scale_ratio as f32;
+                    *y *= scale_ratio as f32;
+                    *width *= scale_ratio as f32;
+                    *height *= scale_ratio as f32;
+                }
+                UiComponent::TextField { x, y, width, height, .. } => {
+                    *x *= scale_ratio as f32;
+                    *y *= scale_ratio as f32;
+                    *width *= scale_ratio as f32;
+                    *height *= scale_ratio as f32;
+                }
+                UiComponent::TabButton { x, y, width, height, .. } => {
+                    *x *= scale_ratio as f32;
+                    *y *= scale_ratio as f32;
+                    *width *= scale_ratio as f32;
+                    *height *= scale_ratio as f32;
+                }
+            }
+        }
+
+        // Update layout to recalculate positions properly
+        self.update_layout(self.window_width, 0.0);
     }
 
     /// Clear focus from all components
