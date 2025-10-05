@@ -315,6 +315,9 @@ impl BrowserApp {
         // Switch to the new tab
         let new_tab_index = self.tabs.len() - 1;
         self.switch_to_tab(new_tab_index);
+
+        // Automatically focus the address bar for the new tab
+        self.ui.set_focus("address_bar");
     }
 
     // Close a tab
