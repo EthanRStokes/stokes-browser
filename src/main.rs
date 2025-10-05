@@ -497,7 +497,6 @@ impl ApplicationHandler for BrowserApp {
         self.env.window.request_redraw();
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
-        let mut draw_frame = false;
         let frame_start = Instant::now();
 
         match event {
@@ -543,7 +542,6 @@ impl ApplicationHandler for BrowserApp {
                 self.env.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                draw_frame = true;
                 match self.render() {
                     Ok(_) => {}
                     Err(e) => {
