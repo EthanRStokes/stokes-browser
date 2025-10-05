@@ -494,6 +494,8 @@ impl ApplicationHandler for BrowserApp {
                 // Update the stored scale factor when DPI changes
                 self.scale_factor = scale_factor;
 
+                self.ui.set_scale_factor(scale_factor);
+
                 // Update UI scale factor for proper text scaling
                 let engine = &mut self.active_tab_mut().engine;
                 engine.scale_factor = scale_factor;

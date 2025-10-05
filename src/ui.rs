@@ -82,14 +82,15 @@ pub enum IconType {
 
 impl UiComponent {
     /// Create a navigation button (back, forward, refresh)
-    pub fn navigation_button(id: &str, label: &str, x: f32, icon_type: IconType, tooltip_text: &str) -> Self {
+    pub fn navigation_button(id: &str, label: &str, x: f32, icon_type: IconType, tooltip_text: &str, scale_factor: f64) -> Self {
+        let scaled = |v: f32| v * scale_factor as f32;
         UiComponent::Button {
             id: id.to_string(),
             label: label.to_string(),
             x,
-            y: 8.0,
-            width: 32.0,
-            height: 32.0,
+            y: scaled(8.0),
+            width: scaled(32.0),
+            height: scaled(32.0),
             color: [0.95, 0.95, 0.95],
             hover_color: [0.85, 0.9, 1.0],
             pressed_color: [0.75, 0.8, 0.95],
@@ -102,14 +103,15 @@ impl UiComponent {
     }
 
     /// Create an address bar
-    pub fn address_bar(url: &str, x: f32, width: f32) -> Self {
+    pub fn address_bar(url: &str, x: f32, width: f32, scale_factor: f64) -> Self {
+        let scaled = |v: f32| v * scale_factor as f32;
         UiComponent::TextField {
             id: "address_bar".to_string(),
             text: url.to_string(),
             x,
-            y: 8.0,
+            y: scaled(8.0),
             width,
-            height: 32.0,
+            height: scaled(32.0),
             color: [1.0, 1.0, 1.0],
             border_color: [0.7, 0.7, 0.7],
             has_focus: false,
@@ -121,14 +123,15 @@ impl UiComponent {
     }
 
     /// Create a tab button
-    pub fn tab(id: &str, title: &str, x: f32) -> Self {
+    pub fn tab(id: &str, title: &str, x: f32, scale_factor: f64) -> Self {
+        let scaled = |v: f32| v * scale_factor as f32;
         UiComponent::TabButton {
             id: id.to_string(),
             title: title.to_string(),
             x,
-            y: 48.0,
-            width: 150.0,
-            height: 32.0,
+            y: scaled(48.0),
+            width: scaled(150.0),
+            height: scaled(32.0),
             color: if title == "New Tab" { [0.95, 0.95, 0.95] } else { [0.8, 0.8, 0.8] },
             hover_color: [0.85, 0.9, 1.0],
             is_active: title == "New Tab",
@@ -192,16 +195,17 @@ impl BrowserUI {
     pub fn new(_skia_context: &skia_safe::gpu::DirectContext, scale_factor: f64) -> Self {
         // Default window width, will be updated on first resize
         let window_width = 1024.0;
+        let scaled = |v: f32| v * scale_factor as f32;
 
         Self {
             components: vec![
-                UiComponent::navigation_button("back", "<", Self::BUTTON_MARGIN, IconType::Back, "Back"),
-                UiComponent::navigation_button("forward", ">", Self::BUTTON_MARGIN * 2.0 + Self::BUTTON_SIZE, IconType::Forward, "Forward"),
-                UiComponent::navigation_button("refresh", "⟳", Self::BUTTON_MARGIN * 3.0 + Self::BUTTON_SIZE * 2.0, IconType::Refresh, "Refresh"),
-                UiComponent::navigation_button("new_tab", "+", window_width - Self::BUTTON_MARGIN - Self::BUTTON_SIZE, IconType::NewTab, "New Tab"),
+                UiComponent::navigation_button("back", "<", scaled(Self::BUTTON_MARGIN), IconType::Back, "Back", scale_factor),
+                UiComponent::navigation_button("forward", ">", scaled(Self::BUTTON_MARGIN * 2.0 + Self::BUTTON_SIZE), IconType::Forward, "Forward", scale_factor),
+                UiComponent::navigation_button("refresh", "⟳", scaled(Self::BUTTON_MARGIN * 3.0 + Self::BUTTON_SIZE * 2.0), IconType::Refresh, "Refresh", scale_factor),
+                UiComponent::navigation_button("new_tab", "+", window_width - scaled(Self::BUTTON_MARGIN + Self::BUTTON_SIZE), IconType::NewTab, "New Tab", scale_factor),
                 UiComponent::address_bar("",
-                    Self::BUTTON_MARGIN * 4.0 + Self::BUTTON_SIZE * 3.0,
-                    window_width - (Self::BUTTON_MARGIN * 6.0 + Self::BUTTON_SIZE * 4.0))
+                    scaled(Self::BUTTON_MARGIN * 4.0 + Self::BUTTON_SIZE * 3.0),
+                    window_width - scaled(Self::BUTTON_MARGIN * 6.0 + Self::BUTTON_SIZE * 4.0), scale_factor)
             ],
             scale_factor,
             window_width,
@@ -212,12 +216,13 @@ impl BrowserUI {
     /// Update UI layout when window is resized
     pub fn update_layout(&mut self, window_width: f32, window_height: f32) {
         self.window_width = window_width;
+        let scaled = |v: f32| v * self.scale_factor as f32;
 
         // Update new tab button position (always on the right)
         for comp in &mut self.components {
             if let UiComponent::Button { id, x, .. } = comp {
                 if id == "new_tab" {
-                    *x = window_width - Self::BUTTON_MARGIN - Self::BUTTON_SIZE;
+                    *x = window_width - scaled(Self::BUTTON_MARGIN + Self::BUTTON_SIZE);
                 }
             }
         }
@@ -226,8 +231,8 @@ impl BrowserUI {
         for comp in &mut self.components {
             if let UiComponent::TextField { id, width, is_flexible: true, .. } = comp {
                 if id == "address_bar" {
-                    let available_width = window_width - (Self::BUTTON_MARGIN * 6.0 + Self::BUTTON_SIZE * 4.0);
-                    *width = available_width.max(Self::MIN_ADDRESS_BAR_WIDTH);
+                    let available_width = window_width - scaled(Self::BUTTON_MARGIN * 6.0 + Self::BUTTON_SIZE * 4.0);
+                    *width = available_width.max(scaled(Self::MIN_ADDRESS_BAR_WIDTH));
                 }
             }
         }
@@ -238,7 +243,7 @@ impl BrowserUI {
 
     /// Get the height of the chrome bar
     pub fn chrome_height(&self) -> f32 {
-        Self::CHROME_HEIGHT
+        Self::CHROME_HEIGHT * self.scale_factor as f32
     }
 
     /// Initialize rendering resources
@@ -388,7 +393,7 @@ impl BrowserUI {
 
         // Add the new tab as active
         let x = Self::BUTTON_MARGIN + (tab_count as f32 * 158.0); // 150 width + 8 spacing
-        let mut new_tab = UiComponent::tab(id, title, x);
+        let mut new_tab = UiComponent::tab(id, title, x, self.scale_factor);
         if let UiComponent::TabButton { is_active, color, .. } = &mut new_tab {
             *is_active = true;
             *color = [0.95, 0.95, 0.95];
@@ -601,16 +606,17 @@ impl BrowserUI {
     pub fn render(&self, canvas: &Canvas) {
         let canvas_width = canvas.image_info().width() as f32;
         let canvas_height = canvas.image_info().height() as f32;
+        let chrome_height = self.chrome_height();
 
         // Draw browser chrome background bar at the top
         let mut chrome_paint = Paint::default();
         chrome_paint.set_color(Color::from_rgb(240, 240, 240)); // Light gray background
-        let chrome_rect = Rect::from_xywh(0.0, 0.0, canvas_width, Self::CHROME_HEIGHT);
+        let chrome_rect = Rect::from_xywh(0.0, 0.0, canvas_width, chrome_height);
         canvas.draw_rect(chrome_rect, &chrome_paint);
 
         // Draw a bottom border for the chrome
         chrome_paint.set_color(Color::from_rgb(200, 200, 200));
-        let border_rect = Rect::from_xywh(0.0, Self::CHROME_HEIGHT - 1.0, canvas_width, 1.0);
+        let border_rect = Rect::from_xywh(0.0, chrome_height - 1.0, canvas_width, 1.0);
         canvas.draw_rect(border_rect, &chrome_paint);
 
         let mut paint = Paint::default();
