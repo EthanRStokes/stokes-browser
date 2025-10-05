@@ -88,7 +88,7 @@ impl UiComponent {
             id: id.to_string(),
             label: label.to_string(),
             x,
-            y: scaled(8.0),
+            y: scaled(48.0),  // Move to second row
             width: scaled(32.0),
             height: scaled(32.0),
             color: [0.95, 0.95, 0.95],
@@ -109,7 +109,7 @@ impl UiComponent {
             id: "address_bar".to_string(),
             text: url.to_string(),
             x,
-            y: scaled(8.0),
+            y: scaled(48.0),  // Move to second row
             width,
             height: scaled(32.0),
             color: [1.0, 1.0, 1.0],
@@ -129,7 +129,7 @@ impl UiComponent {
             id: id.to_string(),
             title: title.to_string(),
             x,
-            y: scaled(48.0),
+            y: scaled(8.0),  // Move to first row
             width: scaled(150.0),
             height: scaled(32.0),
             color: if title == "New Tab" { [0.95, 0.95, 0.95] } else { [0.8, 0.8, 0.8] },
