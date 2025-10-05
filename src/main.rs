@@ -385,7 +385,19 @@ impl BrowserApp {
     }
 
     // Handle mouse click
-    fn handle_click(&mut self, x: f32, y: f32) {
+    fn handle_click(&mut self, x: f32, y: f32, event_loop: &ActiveEventLoop) {
+        // Check if close button was clicked first
+        if let Some(tab_id) = self.ui.check_close_button_click(x, y) {
+            println!("Close button clicked for tab: {}", tab_id);
+            if let Some(tab_index) = self.tabs.iter().position(|tab| tab.id == tab_id) {
+                if self.close_tab(tab_index) == TabCloseResult::QuitApp {
+                    event_loop.exit();
+                }
+            }
+            self.env.window.request_redraw();
+            return;
+        }
+
         // UI now uses pixel coordinates directly
         if let Some(component_id) = self.ui.handle_click(x, y) {
             // Handle based on component
@@ -541,7 +553,7 @@ impl ApplicationHandler for BrowserApp {
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 // Use the stored cursor position for click handling
-                self.handle_click(self.cursor_position.0 as f32, self.cursor_position.1 as f32);
+                self.handle_click(self.cursor_position.0 as f32, self.cursor_position.1 as f32, event_loop);
                 self.env.window.request_redraw();
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Middle, .. } => {

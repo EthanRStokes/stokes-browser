@@ -503,6 +503,27 @@ impl BrowserUI {
         None
     }
 
+    /// Check if click is on close button of active tab, returns tab ID if so
+    pub fn check_close_button_click(&self, x: f32, y: f32) -> Option<String> {
+        for comp in &self.components {
+            if let UiComponent::TabButton { id, x: tab_x, y: tab_y, width, height, is_active, .. } = comp {
+                if *is_active {
+                    // Calculate close button bounds
+                    let close_button_size = 16.0 * self.scale_factor as f32;
+                    let close_button_x = tab_x + width - close_button_size - (4.0 * self.scale_factor as f32);
+                    let close_button_y = tab_y + (height / 2.0) - (close_button_size / 2.0);
+
+                    // Check if click is within close button
+                    if x >= close_button_x && x <= close_button_x + close_button_size &&
+                       y >= close_button_y && y <= close_button_y + close_button_size {
+                        return Some(id.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Set focus to a specific component
     pub fn set_focus(&mut self, component_id: &str) {
         for comp in &mut self.components {
@@ -831,8 +852,11 @@ impl BrowserUI {
                     canvas.draw_round_rect(rect, 4.0, 4.0, &paint);
                     paint.set_stroke(false);
 
-                    // Truncate tab text to fit within the tab width
-                    let max_text_width = *width - (text_padding * 2.0);
+                    // Calculate space needed for close button if active
+                    let close_button_space = if *is_active { 20.0 * self.scale_factor as f32 } else { 0.0 };
+
+                    // Truncate tab text to fit within the tab width (leaving space for close button)
+                    let max_text_width = *width - (text_padding * 2.0) - close_button_space;
                     let display_text = Self::truncate_text_to_width(title, max_text_width, &font);
 
                     // Draw tab text with scaled padding, centered vertically
@@ -842,6 +866,21 @@ impl BrowserUI {
                         // Center the text vertically in the tab
                         let text_y = rect.top() + (rect.height() / 2.0) - (text_bounds.top + text_bounds.height() / 2.0);
                         canvas.draw_text_blob(&blob, (rect.left() + text_padding, text_y), &paint);
+                    }
+
+                    // Draw close button for active tab
+                    if *is_active {
+                        let close_button_size = 16.0 * self.scale_factor as f32;
+                        let close_button_x = rect.right() - close_button_size - (4.0 * self.scale_factor as f32);
+                        let close_button_y = rect.center_y() - (close_button_size / 2.0);
+                        let close_button_rect = Rect::from_xywh(close_button_x, close_button_y, close_button_size, close_button_size);
+
+                        // Draw close button background (subtle)
+                        paint.set_color(Color::from_argb(20, 0, 0, 0));
+                        canvas.draw_round_rect(close_button_rect, 2.0, 2.0, &paint);
+
+                        // Draw X icon
+                        Self::draw_icon(canvas, &IconType::Close, close_button_rect, self.scale_factor);
                     }
 
                     // Draw tooltip if visible
