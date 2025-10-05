@@ -662,6 +662,11 @@ impl ApplicationHandler for BrowserApp {
 
                     // Handle text input and navigation keys
                     match event.logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            // Clear focus from address bar when Escape is pressed
+                            self.ui.clear_focus();
+                            self.env.window.request_redraw();
+                        }
                         Key::Named(NamedKey::Backspace) => {
                             self.ui.handle_key_input("Backspace");
                             self.env.window.request_redraw();
