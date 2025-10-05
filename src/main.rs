@@ -412,6 +412,22 @@ impl BrowserApp {
         }
     }
 
+    // Handle middle-click on tabs to close them
+    fn handle_middle_click(&mut self, x: f32, y: f32, event_loop: &ActiveEventLoop) {
+        // Check if a tab was clicked
+        if let Some(component_id) = self.ui.handle_click(x, y) {
+            if component_id.starts_with("tab") {
+                // Find the tab index by ID
+                if let Some(tab_index) = self.tabs.iter().position(|tab| tab.id == component_id) {
+                    println!("Middle-click closing tab: {}", component_id);
+                    if self.close_tab(tab_index) == TabCloseResult::QuitApp {
+                        event_loop.exit();
+                    }
+                }
+            }
+        }
+    }
+
     // Check if any text field currently has focus
     fn has_focused_text_field(&self) -> bool {
         self.ui.components.iter().any(|comp| {
@@ -523,6 +539,11 @@ impl ApplicationHandler for BrowserApp {
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 // Use the stored cursor position for click handling
                 self.handle_click(self.cursor_position.0 as f32, self.cursor_position.1 as f32);
+                self.env.window.request_redraw();
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Middle, .. } => {
+                // Handle middle-click to close tabs
+                self.handle_middle_click(self.cursor_position.0 as f32, self.cursor_position.1 as f32, event_loop);
                 self.env.window.request_redraw();
             }
             WindowEvent::CursorMoved { position, .. } => {
