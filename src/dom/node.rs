@@ -143,13 +143,29 @@ impl ImageData {
                 [0x47, 0x49, 0x46, 0x38, ..] => "GIF",
                 [0x42, 0x4D, ..] => "BMP",
                 [0x52, 0x49, 0x46, 0x46, _, _, _, _, 0x57, 0x45, 0x42, 0x50] => "WebP",
-                _ => "Unknown",
+                _ => {
+                    // Check if it's SVG (starts with <svg or <?xml)
+                    if let Ok(text) = std::str::from_utf8(&image_bytes[0..image_bytes.len().min(100)]) {
+                        if text.trim_start().starts_with("<svg") || text.trim_start().starts_with("<?xml") {
+                            "SVG"
+                        } else {
+                            "Unknown"
+                        }
+                    } else {
+                        "Unknown"
+                    }
+                }
             }
         } else {
             "Unknown"
         };
 
         println!("Decoding {} image format", format_name);
+
+        // Handle SVG separately
+        if format_name == "SVG" {
+            return Self::decode_svg_data(image_bytes);
+        }
 
         // Try Skia first
         let skia_data = skia_safe::Data::new_copy(image_bytes);
@@ -203,6 +219,76 @@ impl ImageData {
             }
             Err(e) => {
                 println!("Error: Both Skia and image crate failed to decode image: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Decode SVG data into a Skia image
+    fn decode_svg_data(svg_bytes: &[u8]) -> Option<skia_safe::Image> {
+        // Convert bytes to string
+        let svg_str = match std::str::from_utf8(svg_bytes) {
+            Ok(s) => s,
+            Err(e) => {
+                println!("Error: SVG data is not valid UTF-8: {}", e);
+                return None;
+            }
+        };
+
+        // Parse the SVG using usvg
+        let options = usvg::Options::default();
+        let tree = match usvg::Tree::from_str(svg_str, &options) {
+            Ok(tree) => tree,
+            Err(e) => {
+                println!("Error: Failed to parse SVG: {}", e);
+                return None;
+            }
+        };
+
+        // Get the SVG size
+        let size = tree.size();
+        let width = size.width() as i32;
+        let height = size.height() as i32;
+
+        if width == 0 || height == 0 {
+            println!("Error: SVG has zero dimensions");
+            return None;
+        }
+
+        println!("Rendering SVG: {}x{}", width, height);
+
+        // Create a pixmap to render into
+        let mut pixmap = match tiny_skia::Pixmap::new(width as u32, height as u32) {
+            Some(pixmap) => pixmap,
+            None => {
+                println!("Error: Failed to create pixmap for SVG rendering");
+                return None;
+            }
+        };
+
+        // Render the SVG
+        resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
+
+        // Convert the pixmap to a Skia image
+        let rgba_data = pixmap.data();
+        let image_info = skia_safe::ImageInfo::new(
+            skia_safe::ISize::new(width, height),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Unpremul,
+            None,
+        );
+
+        match skia_safe::images::raster_from_data(
+            &image_info,
+            skia_safe::Data::new_copy(rgba_data),
+            (width * 4) as usize,
+        ) {
+            Some(image) => {
+                println!("Successfully decoded SVG image");
+                Some(image)
+            }
+            None => {
+                println!("Error: Failed to convert SVG pixmap to Skia image");
                 None
             }
         }

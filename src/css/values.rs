@@ -547,6 +547,47 @@ pub enum TextDecorationType {
     LineThrough,
 }
 
+/// CSS background image
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackgroundImage {
+    None,
+    Url(String),
+}
+
+impl BackgroundImage {
+    /// Parse background-image from CSS string
+    pub fn parse(value: &str) -> Self {
+        let value = value.trim();
+
+        // Check for "none"
+        if value.to_lowercase() == "none" {
+            return BackgroundImage::None;
+        }
+
+        // Check for url() format
+        if value.starts_with("url(") && value.ends_with(')') {
+            let url_content = &value[4..value.len()-1].trim();
+            // Remove quotes if present
+            let url = if (url_content.starts_with('"') && url_content.ends_with('"')) ||
+                         (url_content.starts_with('\'') && url_content.ends_with('\'')) {
+                url_content[1..url_content.len()-1].to_string()
+            } else {
+                url_content.to_string()
+            };
+            return BackgroundImage::Url(url);
+        }
+
+        // Default to None if parsing fails
+        BackgroundImage::None
+    }
+}
+
+impl Default for BackgroundImage {
+    fn default() -> Self {
+        BackgroundImage::None
+    }
+}
+
 impl TextDecoration {
     /// Parse text-decoration value from string
     pub fn parse(value: &str) -> Self {

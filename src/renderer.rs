@@ -17,6 +17,8 @@ pub struct HtmlRenderer {
     // Add font cache for different sizes - wrapped in RefCell for interior mutability
     font_cache: RefCell<HashMap<u32, Font>>, // key is font size as u32 (rounded)
     typeface: Typeface,
+    // Cache for loaded background images
+    background_image_cache: RefCell<HashMap<String, Option<skia_safe::Image>>>,
 }
 
 impl HtmlRenderer {
@@ -49,6 +51,7 @@ impl HtmlRenderer {
             border_paint,
             font_cache: RefCell::new(HashMap::new()),
             typeface,
+            background_image_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -161,6 +164,11 @@ impl HtmlRenderer {
 
         // Draw background
         canvas.draw_rect(border_box, &bg_paint);
+
+        // Render background image if specified
+        if let Some(styles) = computed_styles {
+            self.render_background_image(canvas, &border_box, styles, scale_factor);
+        }
 
         // Draw border if specified in styles or default for certain elements
         let mut should_draw_border = false;
@@ -657,6 +665,85 @@ impl HtmlRenderer {
             } else {
                 // No blur, just draw the shadow directly
                 canvas.draw_rect(shadow_rect, &shadow_paint);
+            }
+        }
+    }
+
+    /// Render background image for an element
+    fn render_background_image(
+        &self,
+        canvas: &Canvas,
+        rect: &Rect,
+        styles: &ComputedValues,
+        scale_factor: f64,
+    ) {
+        use crate::css::BackgroundImage;
+
+        // Check if background-image is specified
+        match &styles.background_image {
+            BackgroundImage::None => {
+                // No background image, nothing to do
+                return;
+            }
+            BackgroundImage::Url(url) => {
+                // Try to load and render the background image
+                let image_opt = self.load_background_image(url);
+
+                if let Some(image) = image_opt {
+                    let mut paint = Paint::default();
+                    paint.set_anti_alias(true);
+
+                    // Draw the background image to cover the entire rect
+                    // For now, we'll use a simple "cover" behavior
+                    canvas.draw_image_rect(
+                        &image,
+                        None, // Use entire source image
+                        *rect,
+                        &paint
+                    );
+                }
+            }
+        }
+    }
+
+    /// Load a background image from URL (with caching)
+    fn load_background_image(&self, url: &str) -> Option<skia_safe::Image> {
+        // Check cache first
+        {
+            let cache = self.background_image_cache.borrow();
+            if let Some(cached) = cache.get(url) {
+                return cached.clone();
+            }
+        }
+
+        // Try to load the image from file system
+        let image_opt = self.load_image_from_path(url);
+
+        // Cache the result (even if None)
+        self.background_image_cache.borrow_mut().insert(url.to_string(), image_opt.clone());
+
+        image_opt
+    }
+
+    /// Load an image from a file path
+    fn load_image_from_path(&self, path: &str) -> Option<skia_safe::Image> {
+        use std::fs;
+
+        // Try to read the file
+        match fs::read(path) {
+            Ok(data) => {
+                // Try to decode the image data
+                match skia_safe::Image::from_encoded(skia_safe::Data::new_copy(&data)) {
+                    Some(image) => Some(image),
+                    None => {
+                        println!("Failed to decode background image: {}", path);
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                println!("Failed to load background image {}: {}", path, e);
+                None
             }
         }
     }

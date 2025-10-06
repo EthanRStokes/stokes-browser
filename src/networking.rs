@@ -152,7 +152,7 @@ impl HttpClient {
                     let content_type = content_type.trim();
                     println!("Resource content type: {}", content_type);
 
-                    if !content_type.starts_with("image/") {
+                    if !content_type.starts_with("image/") && !content_type.contains("svg") {
                         println!("Warning: Expected image content type, got: {}", content_type);
                     }
                 }

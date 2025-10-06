@@ -6,7 +6,7 @@ mod stylesheet;
 pub(crate) mod computed;
 
 pub use self::parser::CssParser;
-pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType};
+pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType, BackgroundImage};
 pub use self::selector::{Selector, SelectorType, PseudoClass};
 pub use self::stylesheet::{Stylesheet, Rule, Declaration};
 pub use self::computed::{ComputedValues, StyleResolver};
@@ -16,6 +16,7 @@ pub use self::computed::{ComputedValues, StyleResolver};
 pub enum PropertyName {
     Color,
     BackgroundColor,
+    BackgroundImage,
     Width,
     Height,
     Margin,
@@ -57,6 +58,7 @@ impl From<&str> for PropertyName {
         match s.to_lowercase().as_str() {
             "color" => PropertyName::Color,
             "background-color" => PropertyName::BackgroundColor,
+            "background-image" => PropertyName::BackgroundImage,
             "width" => PropertyName::Width,
             "height" => PropertyName::Height,
             "margin" => PropertyName::Margin,

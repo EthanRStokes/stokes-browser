@@ -8,6 +8,7 @@ use crate::layout::box_model::EdgeSizes;
 pub struct ComputedValues {
     pub color: Option<super::values::Color>,
     pub background_color: Option<super::values::Color>,
+    pub background_image: super::BackgroundImage,
     pub font_size: f32,
     pub font_family: String,
     pub font_weight: String,
@@ -35,6 +36,7 @@ impl Default for ComputedValues {
         Self {
             color: Some(super::values::Color::Named("black".to_string())),
             background_color: Some(super::values::Color::Named("white".to_string())),
+            background_image: super::BackgroundImage::None,
             font_size: 16.0,
             font_family: "Arial".to_string(),
             font_weight: "normal".to_string(),
@@ -182,6 +184,23 @@ impl StyleResolver {
             PropertyName::BackgroundColor => {
                 if let CssValue::Color(color) = &declaration.value {
                     computed.background_color = Some(color.clone());
+                }
+            }
+            PropertyName::BackgroundImage => {
+                // Parse background-image value
+                match &declaration.value {
+                    CssValue::String(url_str) => {
+                        computed.background_image = super::BackgroundImage::parse(url_str);
+                    }
+                    CssValue::Keyword(keyword) => {
+                        if keyword == "none" {
+                            computed.background_image = super::BackgroundImage::None;
+                        } else {
+                            // Try to parse as url() format
+                            computed.background_image = super::BackgroundImage::parse(keyword);
+                        }
+                    }
+                    _ => {}
                 }
             }
             PropertyName::FontSize => {
