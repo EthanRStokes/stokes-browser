@@ -15,6 +15,7 @@ pub use self::computed::{ComputedValues, StyleResolver};
 #[derive(Debug, Clone, PartialEq, Hash)]
 pub enum PropertyName {
     Color,
+    Background,
     BackgroundColor,
     BackgroundImage,
     Width,
@@ -59,6 +60,7 @@ impl From<&str> for PropertyName {
     fn from(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "color" => PropertyName::Color,
+            "background" => PropertyName::Background,
             "background-color" => PropertyName::BackgroundColor,
             "background-image" => PropertyName::BackgroundImage,
             "width" => PropertyName::Width,

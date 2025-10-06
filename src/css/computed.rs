@@ -185,6 +185,12 @@ impl StyleResolver {
                     computed.color = Some(color.clone());
                 }
             }
+            PropertyName::Background => {
+                // Parse background shorthand property
+                // This can contain: color, image, position, size, repeat, origin, clip, attachment
+                // For now, we'll handle color and image (url)
+                self.parse_background_shorthand(computed, &declaration.value);
+            }
             PropertyName::BackgroundColor => {
                 if let CssValue::Color(color) = &declaration.value {
                     computed.background_color = Some(color.clone());
@@ -483,6 +489,144 @@ impl StyleResolver {
             }
             _ => {
                 // Handle other properties as needed
+            }
+        }
+    }
+
+    /// Parse background shorthand property
+    /// Handles: background: [color] [image] [position] [size] [repeat] [origin] [clip] [attachment]
+    /// Examples:
+    ///   background: red;
+    ///   background: url(image.jpg);
+    ///   background: #ff0000 url(image.jpg);
+    ///   background: linear-gradient(...);
+    fn parse_background_shorthand(&self, computed: &mut ComputedValues, value: &CssValue) {
+        // Reset background properties to defaults when using shorthand
+        computed.background_color = None;
+        computed.background_image = super::BackgroundImage::None;
+
+        match value {
+            CssValue::Keyword(keyword) => {
+                let keyword_lower = keyword.to_lowercase();
+
+                // Check if it's a named color or "none"
+                if keyword_lower == "none" {
+                    // Everything stays at defaults (already set above)
+                    return;
+                }
+
+                // Try to parse as color
+                let color_value = CssValue::parse(keyword);
+                if let CssValue::Color(color) = color_value {
+                    computed.background_color = Some(color);
+                } else if keyword.starts_with("url(") {
+                    // It's a background image
+                    computed.background_image = super::BackgroundImage::parse(keyword);
+                }
+            }
+            CssValue::String(s) => {
+                // Could be a color, image URL, or complex value
+                let s_lower = s.to_lowercase();
+
+                if s_lower == "none" {
+                    return;
+                }
+
+                // Try to parse as color first
+                let color_value = CssValue::parse(s);
+                if let CssValue::Color(color) = color_value {
+                    computed.background_color = Some(color);
+                } else if s.starts_with("url(") {
+                    computed.background_image = super::BackgroundImage::parse(s);
+                } else {
+                    // Try parsing the entire string for multiple values
+                    self.parse_complex_background(computed, s);
+                }
+            }
+            CssValue::Color(color) => {
+                computed.background_color = Some(color.clone());
+            }
+            CssValue::MultipleValues(values) => {
+                // Parse multiple space-separated values
+                // Could be: "red url(image.jpg)" or similar combinations
+                for val in values {
+                    match val {
+                        CssValue::Color(color) => {
+                            computed.background_color = Some(color.clone());
+                        }
+                        CssValue::Keyword(keyword) => {
+                            if keyword.starts_with("url(") {
+                                computed.background_image = super::BackgroundImage::parse(keyword);
+                            } else {
+                                // Try to parse as color
+                                let color_value = CssValue::parse(keyword);
+                                if let CssValue::Color(color) = color_value {
+                                    computed.background_color = Some(color);
+                                }
+                            }
+                        }
+                        CssValue::String(s) => {
+                            if s.starts_with("url(") {
+                                computed.background_image = super::BackgroundImage::parse(s);
+                            } else {
+                                // Try to parse as color
+                                let color_value = CssValue::parse(s);
+                                if let CssValue::Color(color) = color_value {
+                                    computed.background_color = Some(color);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Parse complex background string with multiple values
+    fn parse_complex_background(&self, computed: &mut ComputedValues, value: &str) {
+        // Split by spaces but respect url() parentheses
+        let mut parts = Vec::new();
+        let mut current = String::new();
+        let mut paren_depth = 0;
+
+        for ch in value.chars() {
+            match ch {
+                '(' => {
+                    paren_depth += 1;
+                    current.push(ch);
+                }
+                ')' => {
+                    paren_depth -= 1;
+                    current.push(ch);
+                }
+                ' ' if paren_depth == 0 => {
+                    if !current.is_empty() {
+                        parts.push(current.trim().to_string());
+                        current.clear();
+                    }
+                }
+                _ => {
+                    current.push(ch);
+                }
+            }
+        }
+
+        if !current.is_empty() {
+            parts.push(current.trim().to_string());
+        }
+
+        // Parse each part
+        for part in parts {
+            if part.starts_with("url(") {
+                computed.background_image = super::BackgroundImage::parse(&part);
+            } else {
+                // Try to parse as color
+                let color_value = CssValue::parse(&part);
+                if let CssValue::Color(color) = color_value {
+                    computed.background_color = Some(color);
+                }
             }
         }
     }
