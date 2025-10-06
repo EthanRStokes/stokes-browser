@@ -295,6 +295,7 @@ impl HtmlRenderer {
             // Create text paint with CSS colors and font properties
             let mut text_paint = self.text_paint.clone();
             let mut font_size = 14.0; // Default font size
+            let mut text_align = crate::css::TextAlign::Left; // Default alignment
 
             if let Some(styles) = computed_styles {
                 // Apply CSS color
@@ -304,6 +305,9 @@ impl HtmlRenderer {
 
                 // Apply CSS font size
                 font_size = styles.font_size;
+
+                // Apply CSS text-align
+                text_align = styles.text_align.clone();
             }
 
             // Apply DPI scaling to font size
@@ -320,12 +324,26 @@ impl HtmlRenderer {
 
             // Position text within the content area with scaled padding
             let scaled_padding = 2.0 * scale_factor as f32;
-            let start_x = content_rect.left + scaled_padding;
             let mut current_y = content_rect.top + scaled_font_size; // Start at baseline position
 
             // Render each line separately
             for line in lines {
                 if let Some(text_blob) = TextBlob::new(line, &font) {
+                    let text_bounds = text_blob.bounds();
+                    let text_width = text_bounds.width();
+
+                    // Calculate x position based on text-align
+                    let start_x = match text_align {
+                        crate::css::TextAlign::Left => content_rect.left + scaled_padding,
+                        crate::css::TextAlign::Right => content_rect.right - text_width - scaled_padding,
+                        crate::css::TextAlign::Center => content_rect.left + (content_rect.width() - text_width) / 2.0,
+                        crate::css::TextAlign::Justify => {
+                            // For now, justify is treated as left-align
+                            // Full justify implementation would require word spacing adjustments
+                            content_rect.left + scaled_padding
+                        }
+                    };
+
                     canvas.draw_text_blob(&text_blob, (start_x, current_y), &text_paint);
 
                     // Render text decorations if specified

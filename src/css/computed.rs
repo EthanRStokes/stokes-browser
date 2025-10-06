@@ -13,6 +13,7 @@ pub struct ComputedValues {
     pub font_family: String,
     pub font_weight: String,
     pub text_decoration: TextDecoration,
+    pub text_align: super::TextAlign,
     pub display: DisplayType,
     pub width: Option<super::values::Length>,
     pub height: Option<super::values::Length>,
@@ -41,6 +42,7 @@ impl Default for ComputedValues {
             font_family: "Arial".to_string(),
             font_weight: "normal".to_string(),
             text_decoration: TextDecoration::default(),
+            text_align: super::TextAlign::default(),
             display: DisplayType::Block,
             width: None,
             height: None,
@@ -232,6 +234,13 @@ impl StyleResolver {
                     computed.text_decoration = TextDecoration::parse(decoration);
                 } else if let CssValue::String(decoration) = &declaration.value {
                     computed.text_decoration = TextDecoration::parse(decoration);
+                }
+            }
+            PropertyName::TextAlign => {
+                if let CssValue::Keyword(align) = &declaration.value {
+                    computed.text_align = super::TextAlign::parse(align);
+                } else if let CssValue::String(align) = &declaration.value {
+                    computed.text_align = super::TextAlign::parse(align);
                 }
             }
             PropertyName::Display => {

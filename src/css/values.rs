@@ -662,3 +662,31 @@ impl Default for TextDecoration {
         TextDecoration::None
     }
 }
+
+/// CSS text-align property
+#[derive(Debug, Clone, PartialEq)]
+pub enum TextAlign {
+    Left,
+    Right,
+    Center,
+    Justify,
+}
+
+impl TextAlign {
+    /// Parse text-align value from string
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_lowercase().as_str() {
+            "left" => TextAlign::Left,
+            "right" => TextAlign::Right,
+            "center" => TextAlign::Center,
+            "justify" => TextAlign::Justify,
+            _ => TextAlign::Left, // Default to left
+        }
+    }
+}
+
+impl Default for TextAlign {
+    fn default() -> Self {
+        TextAlign::Left
+    }
+}
