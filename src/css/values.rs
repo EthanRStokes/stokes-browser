@@ -690,3 +690,31 @@ impl Default for TextAlign {
         TextAlign::Left
     }
 }
+
+/// CSS clear property
+#[derive(Debug, Clone, PartialEq)]
+pub enum Clear {
+    None,
+    Left,
+    Right,
+    Both,
+}
+
+impl Clear {
+    /// Parse clear value from string
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_lowercase().as_str() {
+            "none" => Clear::None,
+            "left" => Clear::Left,
+            "right" => Clear::Right,
+            "both" => Clear::Both,
+            _ => Clear::None, // Default to none
+        }
+    }
+}
+
+impl Default for Clear {
+    fn default() -> Self {
+        Clear::None
+    }
+}

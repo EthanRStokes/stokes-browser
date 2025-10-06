@@ -14,6 +14,7 @@ pub struct ComputedValues {
     pub font_weight: String,
     pub text_decoration: TextDecoration,
     pub text_align: super::TextAlign,
+    pub clear: super::Clear,
     pub display: DisplayType,
     pub width: Option<super::values::Length>,
     pub height: Option<super::values::Length>,
@@ -43,6 +44,7 @@ impl Default for ComputedValues {
             font_weight: "normal".to_string(),
             text_decoration: TextDecoration::default(),
             text_align: super::TextAlign::default(),
+            clear: super::Clear::None,
             display: DisplayType::Block,
             width: None,
             height: None,
@@ -241,6 +243,13 @@ impl StyleResolver {
                     computed.text_align = super::TextAlign::parse(align);
                 } else if let CssValue::String(align) = &declaration.value {
                     computed.text_align = super::TextAlign::parse(align);
+                }
+            }
+            PropertyName::Clear => {
+                if let CssValue::Keyword(clear_value) = &declaration.value {
+                    computed.clear = super::Clear::parse(clear_value);
+                } else if let CssValue::String(clear_value) = &declaration.value {
+                    computed.clear = super::Clear::parse(clear_value);
                 }
             }
             PropertyName::Display => {
