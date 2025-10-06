@@ -6,7 +6,7 @@ mod stylesheet;
 pub(crate) mod computed;
 
 pub use self::parser::CssParser;
-pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear};
+pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Overflow};
 pub use self::selector::{Selector, SelectorType, PseudoClass};
 pub use self::stylesheet::{Stylesheet, Rule, Declaration};
 pub use self::computed::{ComputedValues, StyleResolver};
@@ -47,6 +47,7 @@ pub enum PropertyName {
     TextDecoration,
     TextAlign,
     Clear,
+    Overflow,
     Display,
     Position,
     Top,
@@ -92,6 +93,7 @@ impl From<&str> for PropertyName {
             "text-decoration" => PropertyName::TextDecoration,
             "text-align" => PropertyName::TextAlign,
             "clear" => PropertyName::Clear,
+            "overflow" => PropertyName::Overflow,
             "display" => PropertyName::Display,
             "position" => PropertyName::Position,
             "top" => PropertyName::Top,

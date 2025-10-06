@@ -718,3 +718,31 @@ impl Default for Clear {
         Clear::None
     }
 }
+
+/// CSS overflow property
+#[derive(Debug, Clone, PartialEq)]
+pub enum Overflow {
+    Visible,
+    Hidden,
+    Scroll,
+    Auto,
+}
+
+impl Overflow {
+    /// Parse overflow value from string
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_lowercase().as_str() {
+            "visible" => Overflow::Visible,
+            "hidden" => Overflow::Hidden,
+            "scroll" => Overflow::Scroll,
+            "auto" => Overflow::Auto,
+            _ => Overflow::Visible, // Default to visible
+        }
+    }
+}
+
+impl Default for Overflow {
+    fn default() -> Self {
+        Overflow::Visible
+    }
+}
