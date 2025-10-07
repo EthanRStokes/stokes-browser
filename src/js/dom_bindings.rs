@@ -179,6 +179,11 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
     context.register_global_property(JsString::from("window"), window, boa_engine::property::Attribute::all())
         .map_err(|e| format!("Failed to register window object: {}", e))?;
 
+    // Initialize dataLayer as an empty array (for Google Analytics/Tag Manager compatibility)
+    let data_layer = JsArray::new(context);
+    context.register_global_property(JsString::from("dataLayer"), data_layer, boa_engine::property::Attribute::all())
+        .map_err(|e| format!("Failed to register dataLayer: {}", e))?;
+
     println!("[JS] DOM bindings initialized");
     Ok(())
 }
