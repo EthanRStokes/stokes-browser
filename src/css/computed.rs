@@ -41,6 +41,7 @@ pub struct ComputedValues {
     pub z_index: i32,
     pub opacity: f32,
     pub transition: super::TransitionSpec,
+    pub list_style_type: super::ListStyleType,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -89,6 +90,7 @@ impl Default for ComputedValues {
             z_index: 0,
             opacity: 1.0,
             transition: super::TransitionSpec::default(),
+            list_style_type: super::ListStyleType::None,
         }
     }
 }
@@ -116,6 +118,18 @@ impl ComputedValues {
             "h4" => values.font_size = 16.0,
             "h5" => values.font_size = 13.28,
             "h6" => values.font_size = 10.72,
+            _ => {}
+        }
+
+        // Set default list-style-type for list elements
+        match tag_name {
+            "ul" => values.list_style_type = super::ListStyleType::Disc,
+            "ol" => values.list_style_type = super::ListStyleType::Decimal,
+            "li" => {
+                // li elements inherit from their parent list (ul or ol)
+                // For now, default to disc, but this will be overridden by CSS cascade
+                values.list_style_type = super::ListStyleType::Disc;
+            }
             _ => {}
         }
 
@@ -681,6 +695,13 @@ impl StyleResolver {
                     if keyword == "none" {
                         computed.transition = super::TransitionSpec::default();
                     }
+                }
+            }
+            PropertyName::ListStyleType => {
+                if let CssValue::Keyword(list_style) = &declaration.value {
+                    computed.list_style_type = super::ListStyleType::parse(list_style);
+                } else if let CssValue::String(list_style) = &declaration.value {
+                    computed.list_style_type = super::ListStyleType::parse(list_style);
                 }
             }
             _ => {
