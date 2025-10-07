@@ -1193,6 +1193,32 @@ impl Default for Cursor {
     }
 }
 
+/// CSS visibility property
+#[derive(Debug, Clone, PartialEq)]
+pub enum Visibility {
+    Visible,
+    Hidden,
+    Collapse,
+}
+
+impl Visibility {
+    /// Parse visibility value from string
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_lowercase().as_str() {
+            "visible" => Visibility::Visible,
+            "hidden" => Visibility::Hidden,
+            "collapse" => Visibility::Collapse,
+            _ => Visibility::Visible, // Default to visible
+        }
+    }
+}
+
+impl Default for Visibility {
+    fn default() -> Self {
+        Visibility::Visible
+    }
+}
+
 /// CSS text-transform property
 #[derive(Debug, Clone, PartialEq)]
 pub enum TextTransform {

@@ -115,6 +115,11 @@ impl HtmlRenderer {
             base_styles.cloned()
         };
 
+        // Check visibility - if hidden, skip rendering visual aspects but still render children
+        let is_visible = computed_styles.as_ref()
+            .map(|styles| matches!(styles.visibility, crate::css::Visibility::Visible))
+            .unwrap_or(true);
+
         // Get the DOM node for this layout box
         if let Some(dom_node_rc) = node_map.get(&layout_box.node_id) {
             let dom_node = dom_node_rc.borrow();
@@ -124,29 +129,32 @@ impl HtmlRenderer {
                 return; // Skip rendering this node and its children
             }
 
-            match &dom_node.node_type {
-                NodeType::Element(element_data) => {
-                    self.render_element(canvas, layout_box, element_data, computed_styles.as_ref(), scale_factor);
-                },
-                NodeType::Text(_) => {
-                    // Check if text node is inside a non-visual element
-                    if !self.is_inside_non_visual_element(&dom_node) {
-                        self.render_text_node(canvas, layout_box, computed_styles.as_ref(), scale_factor);
+            // Only render visual aspects if visible
+            if is_visible {
+                match &dom_node.node_type {
+                    NodeType::Element(element_data) => {
+                        self.render_element(canvas, layout_box, element_data, computed_styles.as_ref(), scale_factor);
+                    },
+                    NodeType::Text(_) => {
+                        // Check if text node is inside a non-visual element
+                        if !self.is_inside_non_visual_element(&dom_node) {
+                            self.render_text_node(canvas, layout_box, computed_styles.as_ref(), scale_factor);
+                        }
+                    },
+                    NodeType::Image(image_data) => {
+                        self.render_image_node(canvas, layout_box, image_data, scale_factor);
+                    },
+                    NodeType::Document => {
+                        // Just render children for document
+                    },
+                    _ => {
+                        // Skip other node types
                     }
-                },
-                NodeType::Image(image_data) => {
-                    self.render_image_node(canvas, layout_box, image_data, scale_factor);
-                },
-                NodeType::Document => {
-                    // Just render children for document
-                },
-                _ => {
-                    // Skip other node types
                 }
             }
         }
 
-        // Render children only if this node should be rendered
+        // Render children regardless of visibility (they may have their own visibility settings)
         if let Some(dom_node_rc) = node_map.get(&layout_box.node_id) {
             let dom_node = dom_node_rc.borrow();
             if !self.should_skip_rendering(&dom_node) {

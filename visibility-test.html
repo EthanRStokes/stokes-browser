@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSS Visibility Test</title>
+    <style>
+        body {
+            font-family: Arial;
+            padding: 20px;
+        }
+
+        h1 {
+            color: #333;
+        }
+
+        .visible {
+            visibility: visible;
+            background-color: lightblue;
+            padding: 10px;
+            margin: 10px 0;
+        }
+
+        .hidden {
+            visibility: hidden;
+            background-color: lightcoral;
+            padding: 10px;
+            margin: 10px 0;
+        }
+
+        .display-none {
+            display: none;
+            background-color: lightgreen;
+            padding: 10px;
+            margin: 10px 0;
+        }
+
+        .container {
+            border: 2px solid #333;
+            padding: 10px;
+            margin: 20px 0;
+        }
+
+        .box {
+            width: 200px;
+            height: 50px;
+            background-color: orange;
+            margin: 5px;
+            padding: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>CSS Visibility Property Test</h1>
+
+    <h2>Test 1: visibility: visible (default)</h2>
+    <div class="visible">
+        This element is visible (default behavior).
+    </div>
+
+    <h2>Test 2: visibility: hidden</h2>
+    <p>The element below is hidden but still takes up space:</p>
+    <div class="container">
+        <div class="box">Box 1</div>
+        <div class="box hidden">Box 2 (hidden - still takes space)</div>
+        <div class="box">Box 3</div>
+    </div>
+
+    <h2>Test 3: display: none (for comparison)</h2>
+    <p>The element below is removed from layout:</p>
+    <div class="container">
+        <div class="box">Box 1</div>
+        <div class="box display-none">Box 2 (display: none - no space)</div>
+        <div class="box">Box 3</div>
+    </div>
+
+    <h2>Test 4: Inline styles</h2>
+    <div style="visibility: visible; background-color: yellow; padding: 10px;">
+        Visible with inline style
+    </div>
+    <div style="visibility: hidden; background-color: pink; padding: 10px;">
+        Hidden with inline style (takes up space)
+    </div>
+
+    <h2>Test 5: Child elements with different visibility</h2>
+    <div class="container">
+        <p>Parent container (visible):</p>
+        <div class="visible">
+            Visible parent
+            <div class="hidden">Hidden child (but parent is visible)</div>
+            <div class="visible">Visible child</div>
+        </div>
+    </div>
+
+    <h2>Summary</h2>
+    <ul>
+        <li><strong>visibility: visible</strong> - Element is shown (default)</li>
+        <li><strong>visibility: hidden</strong> - Element is hidden but space is preserved</li>
+        <li><strong>display: none</strong> - Element is removed from layout entirely</li>
+    </ul>
+</body>
+</html>
+

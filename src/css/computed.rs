@@ -24,6 +24,7 @@ pub struct ComputedValues {
     pub float: super::Float,
     pub overflow: super::Overflow,
     pub display: DisplayType,
+    pub visibility: super::Visibility,
     pub width: Option<super::values::Length>,
     pub height: Option<super::values::Length>,
     pub max_width: Option<super::values::Length>,
@@ -70,6 +71,7 @@ impl Default for ComputedValues {
             float: super::Float::None,
             overflow: super::Overflow::default(),
             display: DisplayType::Block,
+            visibility: super::Visibility::Visible,
             width: None,
             height: None,
             max_width: None,
@@ -371,6 +373,13 @@ impl StyleResolver {
                         "none" => DisplayType::None,
                         _ => computed.display.clone(),
                     };
+                }
+            }
+            PropertyName::Visibility => {
+                if let CssValue::Keyword(visibility) = &declaration.value {
+                    computed.visibility = super::Visibility::parse(visibility);
+                } else if let CssValue::String(visibility) = &declaration.value {
+                    computed.visibility = super::Visibility::parse(visibility);
                 }
             }
             PropertyName::Width => {
