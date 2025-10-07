@@ -571,10 +571,10 @@ impl Engine {
 
         // Collect script contents first to avoid borrow issues
         let mut script_contents = Vec::new();
-        
+
         if let Some(dom) = &self.dom {
             let script_elements = dom.query_selector("script");
-            
+
             for script_element in script_elements {
                 let script_node = script_element.borrow();
                 if let NodeType::Element(element_data) = &script_node.node_type {
@@ -583,7 +583,7 @@ impl Engine {
                         println!("Skipping external script: {:?}", element_data.attributes.get("src"));
                         continue;
                     }
-                    
+
                     // Get inline script content
                     let script_content = script_node.text_content();
                     if !script_content.trim().is_empty() {
@@ -598,5 +598,83 @@ impl Engine {
             println!("Executing inline script ({} bytes)", script_content.len());
             self.execute_javascript(&script_content);
         }
+    }
+
+    /// Handle a click at the given position (viewport coordinates)
+    /// Returns the href of the clicked link, if any
+    pub fn handle_click(&self, x: f32, y: f32) -> Option<String> {
+        // Adjust position for scroll offset
+        let adjusted_x = x + self.scroll_x;
+        let adjusted_y = y + self.scroll_y;
+
+        // Find the element at this position
+        if let Some(layout) = &self.layout {
+            if let Some(node_id) = self.find_element_at_position(layout, adjusted_x, adjusted_y) {
+                // Check if this element or any parent is an anchor tag
+                return self.find_link_href(node_id);
+            }
+        }
+
+        None
+    }
+
+    /// Find the href of a link element by checking the node and its ancestors
+    fn find_link_href(&self, node_id: usize) -> Option<String> {
+        // Walk up the DOM tree to find an anchor element
+        let mut visited = std::collections::HashSet::new();
+        let mut current_id = node_id;
+
+        // Limit depth to prevent infinite loops
+        let max_depth = 50;
+        let mut depth = 0;
+
+        loop {
+            if depth >= max_depth || visited.contains(&current_id) {
+                break;
+            }
+            visited.insert(current_id);
+            depth += 1;
+
+            if let Some(node_rc) = self.node_map.get(&current_id) {
+                if let Ok(node) = node_rc.try_borrow() {
+                    // Check if this is an anchor element with an href attribute
+                    if let NodeType::Element(element_data) = &node.node_type {
+                        if element_data.tag_name == "a" {
+                            if let Some(href) = element_data.attributes.get("href") {
+                                return Some(href.clone());
+                            }
+                        }
+                    }
+
+                    // Move to parent
+                    if let Some(parent_weak) = &node.parent {
+                        if let Some(parent_rc) = parent_weak.upgrade() {
+                            // Find the parent's id in node_map
+                            let mut found = false;
+                            for (&pid, pnode_rc) in &self.node_map {
+                                if Rc::ptr_eq(pnode_rc, &parent_rc) {
+                                    current_id = pid;
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if !found {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        None
     }
 }

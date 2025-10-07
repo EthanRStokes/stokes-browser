@@ -302,6 +302,16 @@ impl BrowserApp {
         }
     }
 
+    // Navigate to a URL synchronously (for event handlers)
+    fn navigate_to_url(&mut self, url: &str) {
+        let url = url.to_string();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                self.navigate(&url).await;
+            })
+        });
+    }
+
     // Add a new tab
     fn add_tab(&mut self) {
         let tab_id = format!("tab{}", self.tabs.len() + 1);
@@ -425,6 +435,23 @@ impl BrowserApp {
                 // Tab switching by clicking
                 self.switch_to_tab_by_id(&component_id);
                 self.env.window.request_redraw();
+            }
+            return;
+        }
+
+        // Check if a hyperlink was clicked on the page content
+        // Adjust y coordinate to account for the chrome (UI bar)
+        let chrome_height = self.ui.chrome_height();
+        if y >= chrome_height as f32 {
+            let content_y = y - chrome_height as f32;
+
+            // Check if the click hit a hyperlink
+            if let Some(href) = self.active_tab().engine.handle_click(x, content_y) {
+                println!("Hyperlink clicked: {}", href);
+
+                // Navigate to the clicked link
+                let url = href.clone();
+                self.navigate_to_url(&url);
             }
         }
     }
