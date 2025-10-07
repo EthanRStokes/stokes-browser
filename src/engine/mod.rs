@@ -175,7 +175,7 @@ impl Engine {
     /// Resolve a potentially relative URL against the current page URL
     fn resolve_url(&self, url: &str) -> Result<String, NetworkError> {
         // If the URL is already absolute, return it as-is
-        if url.starts_with("http://") || url.starts_with("https://") {
+        if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://") {
             return Ok(url.to_string());
         }
 
@@ -193,6 +193,37 @@ impl Engine {
         // For relative URLs, we need to resolve them against the current page URL
         if self.current_url.is_empty() {
             return Err(NetworkError::Curl("Cannot resolve relative URL: no current page URL".to_string()));
+        }
+
+        // Handle local file paths
+        if self.current_url.starts_with("file://") || self.current_url.starts_with('/') ||
+           (self.current_url.len() >= 3 && self.current_url.chars().nth(1) == Some(':')) {
+            // Current URL is a local file path
+            use std::path::Path;
+
+            let current_path = if self.current_url.starts_with("file://") {
+                &self.current_url[7..]
+            } else {
+                &self.current_url
+            };
+
+            // Get the directory of the current file
+            let base_path = Path::new(current_path);
+            let base_dir = base_path.parent().unwrap_or(Path::new("."));
+
+            // Resolve the relative path
+            let resolved_path = if url.starts_with('/') {
+                // Absolute path on the file system
+                Path::new(url).to_path_buf()
+            } else {
+                // Relative path
+                base_dir.join(url)
+            };
+
+            // Convert to string and normalize
+            return resolved_path.to_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| NetworkError::FileRead("Invalid path encoding".to_string()));
         }
 
         // Parse the current URL to get the base domain

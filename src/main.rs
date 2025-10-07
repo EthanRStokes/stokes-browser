@@ -860,7 +860,7 @@ impl ApplicationHandler for BrowserApp {
                         Key::Named(NamedKey::Enter) => {
                             if let Some(url) = self.ui.handle_key_input("Enter") {
                                 // Navigate to the URL from the address bar
-                                let url_to_navigate = if url.starts_with("http://") || url.starts_with("https://") {
+                                let url_to_navigate = if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://") || url.starts_with('/') || url.ends_with(".html") || url.ends_with(".htm") {
                                     url
                                 } else {
                                     format!("https://{}", url)
