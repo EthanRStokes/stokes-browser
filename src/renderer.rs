@@ -440,8 +440,11 @@ impl HtmlRenderer {
             // Get or create font with the scaled size, family, weight, and style
             let font = self.get_font(&font_family, scaled_font_size, &font_weight, &font_style);
 
-            // Wrap text based on actual font metrics, container width, and white-space property
-            let wrapped_lines = self.wrap_text_with_font(&transformed_text, &font, content_rect.width(), &white_space);
+            // TODO: Wrap text based on actual font metrics, container width, and white-space property
+            //let wrapped_lines = self.wrap_text_with_font(&transformed_text, &font, content_rect.width(), &white_space);
+            let wrapped_lines: Vec<&str> = transformed_text.split('\n')
+                .map(|line| line.trim_start()) // Remove leading whitespace from each line
+                .collect();
 
             // Position text within the content area with scaled padding
             let scaled_padding = 2.0 * scale_factor as f32;
