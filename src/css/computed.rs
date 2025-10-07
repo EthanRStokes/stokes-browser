@@ -18,6 +18,7 @@ pub struct ComputedValues {
     pub text_decoration: TextDecoration,
     pub text_align: super::TextAlign,
     pub text_transform: super::TextTransform,
+    pub white_space: super::WhiteSpace,
     pub vertical_align: super::VerticalAlign,
     pub content: super::ContentValue,
     pub clear: super::Clear,
@@ -70,6 +71,7 @@ impl Default for ComputedValues {
             text_decoration: TextDecoration::default(),
             text_align: super::TextAlign::default(),
             text_transform: super::TextTransform::default(),
+            white_space: super::WhiteSpace::Normal,
             vertical_align: super::VerticalAlign::default(),
             content: super::ContentValue::Normal,
             clear: super::Clear::None,
@@ -347,6 +349,13 @@ impl StyleResolver {
                     computed.text_transform = super::TextTransform::parse(transform);
                 } else if let CssValue::String(transform) = &declaration.value {
                     computed.text_transform = super::TextTransform::parse(transform);
+                }
+            }
+            PropertyName::WhiteSpace => {
+                if let CssValue::Keyword(white_space) = &declaration.value {
+                    computed.white_space = super::WhiteSpace::parse(white_space);
+                } else if let CssValue::String(white_space) = &declaration.value {
+                    computed.white_space = super::WhiteSpace::parse(white_space);
                 }
             }
             PropertyName::VerticalAlign => {

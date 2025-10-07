@@ -302,12 +302,12 @@ impl LayoutBox {
             let char_width = 8.0 * scale_factor; // Average character width, scaled
             let line_height = 16.0 * scale_factor; // Line height, scaled
 
-            // Split text by newlines to handle line breaks properly
-            let lines: Vec<&str> = text.split('\n').collect();
-            let num_lines = lines.len().max(1);
-            
-            // Calculate width based on the longest line
-            let max_line_width = lines.iter()
+            // Wrap text to fit within container width
+            let wrapped_lines = self.wrap_text(text, container_width, char_width);
+            let num_lines = wrapped_lines.len().max(1);
+
+            // Calculate width based on the longest wrapped line
+            let max_line_width = wrapped_lines.iter()
                 .map(|line| line.len() as f32 * char_width)
                 .fold(0.0, f32::max)
                 .min(container_width);
@@ -372,6 +372,83 @@ impl LayoutBox {
 
             self.dimensions.content = Rect::from_xywh(final_x, final_y, final_width, final_height);
         }
+    }
+
+    /// Helper function to wrap text into lines that fit within a given width
+    fn wrap_text(&self, text: &str, max_width: f32, char_width: f32) -> Vec<String> {
+        let mut wrapped_lines = Vec::new();
+
+        // Split by explicit newlines first
+        let paragraphs: Vec<&str> = text.split('\n').collect();
+
+        for paragraph in paragraphs {
+            if paragraph.is_empty() {
+                wrapped_lines.push(String::new());
+                continue;
+            }
+
+            // Calculate max characters per line
+            let max_chars = (max_width / char_width).floor() as usize;
+
+            if max_chars == 0 {
+                // If width is too small, just add the paragraph as-is
+                wrapped_lines.push(paragraph.to_string());
+                continue;
+            }
+
+            // Split paragraph into words
+            let words: Vec<&str> = paragraph.split_whitespace().collect();
+
+            if words.is_empty() {
+                wrapped_lines.push(String::new());
+                continue;
+            }
+
+            let mut current_line = String::new();
+
+            for word in words {
+                // Check if adding this word would exceed the line width
+                let test_line = if current_line.is_empty() {
+                    word.to_string()
+                } else {
+                    format!("{} {}", current_line, word)
+                };
+
+                if test_line.len() <= max_chars {
+                    current_line = test_line;
+                } else {
+                    // If current line is not empty, save it and start a new line
+                    if !current_line.is_empty() {
+                        wrapped_lines.push(current_line);
+                        current_line = word.to_string();
+                    } else {
+                        // Word is longer than max_chars, break it up
+                        if word.len() > max_chars {
+                            let mut remaining = word;
+                            while remaining.len() > max_chars {
+                                wrapped_lines.push(remaining[..max_chars].to_string());
+                                remaining = &remaining[max_chars..];
+                            }
+                            current_line = remaining.to_string();
+                        } else {
+                            current_line = word.to_string();
+                        }
+                    }
+                }
+            }
+
+            // Add the last line if it's not empty
+            if !current_line.is_empty() {
+                wrapped_lines.push(current_line);
+            }
+        }
+
+        // Return at least one empty line if everything was empty
+        if wrapped_lines.is_empty() {
+            wrapped_lines.push(String::new());
+        }
+
+        wrapped_lines
     }
 
     /// Layout image nodes with position offset
@@ -443,12 +520,12 @@ impl LayoutBox {
             crate::css::FlexBasis::Length(length) => {
                 // flex-basis with explicit length takes precedence
                 let specified_width = length.to_px(16.0, container_width) * scale_factor;
-                
+
                 // Apply box-sizing logic
                 match self.box_sizing {
                     crate::css::BoxSizing::ContentBox => specified_width,
                     crate::css::BoxSizing::BorderBox => {
-                        specified_width 
+                        specified_width
                             - self.dimensions.padding.left - self.dimensions.padding.right
                             - self.dimensions.border.left - self.dimensions.border.right
                     }
@@ -458,12 +535,12 @@ impl LayoutBox {
                 // When flex-basis is auto, fall back to width property
                 if let Some(css_width) = &self.css_width {
                     let specified_width = css_width.to_px(16.0, container_width) * scale_factor;
-                    
+
                     // Apply box-sizing logic
                     match self.box_sizing {
                         crate::css::BoxSizing::ContentBox => specified_width,
                         crate::css::BoxSizing::BorderBox => {
-                            specified_width 
+                            specified_width
                                 - self.dimensions.padding.left - self.dimensions.padding.right
                                 - self.dimensions.border.left - self.dimensions.border.right
                         }
@@ -483,7 +560,7 @@ impl LayoutBox {
                     match self.box_sizing {
                         crate::css::BoxSizing::ContentBox => specified_width,
                         crate::css::BoxSizing::BorderBox => {
-                            specified_width 
+                            specified_width
                                 - self.dimensions.padding.left - self.dimensions.padding.right
                                 - self.dimensions.border.left - self.dimensions.border.right
                         }
@@ -533,7 +610,7 @@ impl LayoutBox {
         // Note: flex-basis primarily affects the main axis in flex containers
         // For vertical flex containers, flex-basis would control height
         // For now, we support it but height property takes precedence in non-flex contexts
-        
+
         let mut height = if let Some(css_height) = &self.css_height {
             // Use the CSS-specified height, converting to pixels and scaling
             let specified_height = css_height.to_px(16.0, container_height) * scale_factor;

@@ -7,7 +7,7 @@ pub(crate) mod computed;
 pub mod transition_manager;
 
 pub use self::parser::CssParser;
-pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Float, Overflow, FontStyle, FontVariant, LineHeight, VerticalAlign, ContentValue, BoxSizing, Cursor, Visibility, TextTransform, ListStyleType, TimingFunction, StepPosition, Duration, Transition, TransitionProperty, TransitionSpec, Outline, OutlineStyle, FlexBasis};
+pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Float, Overflow, FontStyle, FontVariant, LineHeight, VerticalAlign, ContentValue, BoxSizing, Cursor, Visibility, TextTransform, ListStyleType, TimingFunction, StepPosition, Duration, Transition, TransitionProperty, TransitionSpec, Outline, OutlineStyle, FlexBasis, WhiteSpace};
 pub use self::selector::{Selector, SelectorType, PseudoClass, PseudoElement};
 pub use self::stylesheet::{Stylesheet, Rule, Declaration};
 pub use self::computed::{ComputedValues, StyleResolver};
@@ -57,6 +57,7 @@ pub enum PropertyName {
     TextDecoration,
     TextAlign,
     TextTransform,
+    WhiteSpace,
     VerticalAlign,
     Content,
     Clear,
@@ -132,6 +133,7 @@ impl From<&str> for PropertyName {
             "text-decoration" => PropertyName::TextDecoration,
             "text-align" => PropertyName::TextAlign,
             "text-transform" => PropertyName::TextTransform,
+            "white-space" => PropertyName::WhiteSpace,
             "vertical-align" => PropertyName::VerticalAlign,
             "content" => PropertyName::Content,
             "clear" => PropertyName::Clear,

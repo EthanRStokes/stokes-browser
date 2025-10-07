@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>White-Space Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+
+        .container {
+            width: 300px;
+            border: 2px solid #333;
+            margin-bottom: 20px;
+            padding: 10px;
+        }
+
+        .normal {
+            white-space: normal;
+            background-color: #e0f7fa;
+        }
+
+        .nowrap {
+            white-space: nowrap;
+            background-color: #fff3e0;
+        }
+
+        .pre {
+            white-space: pre;
+            background-color: #f3e5f5;
+        }
+
+        .pre-wrap {
+            white-space: pre-wrap;
+            background-color: #e8f5e9;
+        }
+
+        .pre-line {
+            white-space: pre-line;
+            background-color: #fce4ec;
+        }
+
+        h2 {
+            margin-top: 0;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <h1>CSS white-space Property Test</h1>
+
+    <div class="container">
+        <h2>white-space: normal (default)</h2>
+        <div class="normal">
+            This is a very long line of text that should wrap automatically when it reaches the edge of the container because white-space is set to normal.
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>white-space: nowrap</h2>
+        <div class="nowrap">
+            This is a very long line of text that should NOT wrap even when it reaches the edge of the container.
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>white-space: pre</h2>
+        <div class="pre">Line 1 with    spaces
+Line 2 with    more   spaces
+Line 3</div>
+    </div>
+
+    <div class="container">
+        <h2>white-space: pre-wrap</h2>
+        <div class="pre-wrap">This is a very long line that preserves    spaces    but also wraps when it reaches the edge of the container element.
+Second line here.</div>
+    </div>
+
+    <div class="container">
+        <h2>white-space: pre-line</h2>
+        <div class="pre-line">This line    collapses    spaces but preserves newlines
+and wraps when needed if the text is very long and reaches the edge of the container.</div>
+    </div>
+</body>
+</html>
+

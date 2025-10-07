@@ -707,6 +707,46 @@ impl Default for TextAlign {
     }
 }
 
+/// CSS white-space property - controls text wrapping and whitespace handling
+#[derive(Debug, Clone, PartialEq)]
+pub enum WhiteSpace {
+    Normal,    // Collapse whitespace, wrap text
+    Nowrap,    // Collapse whitespace, don't wrap text
+    Pre,       // Preserve whitespace, don't wrap text
+    PreWrap,   // Preserve whitespace, wrap text
+    PreLine,   // Collapse whitespace except newlines, wrap text
+}
+
+impl WhiteSpace {
+    /// Parse white-space value from string
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_lowercase().as_str() {
+            "normal" => WhiteSpace::Normal,
+            "nowrap" => WhiteSpace::Nowrap,
+            "pre" => WhiteSpace::Pre,
+            "pre-wrap" => WhiteSpace::PreWrap,
+            "pre-line" => WhiteSpace::PreLine,
+            _ => WhiteSpace::Normal, // Default to normal
+        }
+    }
+
+    /// Returns true if text should wrap
+    pub fn should_wrap(&self) -> bool {
+        matches!(self, WhiteSpace::Normal | WhiteSpace::PreWrap | WhiteSpace::PreLine)
+    }
+
+    /// Returns true if whitespace should be preserved
+    pub fn preserve_whitespace(&self) -> bool {
+        matches!(self, WhiteSpace::Pre | WhiteSpace::PreWrap | WhiteSpace::PreLine)
+    }
+}
+
+impl Default for WhiteSpace {
+    fn default() -> Self {
+        WhiteSpace::Normal
+    }
+}
+
 /// CSS clear property
 #[derive(Debug, Clone, PartialEq)]
 pub enum Clear {

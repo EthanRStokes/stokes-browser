@@ -386,6 +386,7 @@ impl HtmlRenderer {
             let mut vertical_align = crate::css::VerticalAlign::Baseline; // Default vertical alignment
             let mut text_transform = crate::css::TextTransform::None; // Default text transform
             let mut opacity = 1.0; // Default opacity
+            let mut white_space = crate::css::WhiteSpace::Normal; // Default white-space
 
             if let Some(styles) = computed_styles {
                 // Apply CSS color
@@ -420,8 +421,8 @@ impl HtmlRenderer {
                 // Apply CSS text-transform
                 text_transform = styles.text_transform.clone();
 
-                // Get opacity for text decorations
-                opacity = styles.opacity;
+                // Apply CSS white-space
+                white_space = styles.white_space.clone();
             }
 
             // Apply text transformation to the content
@@ -439,18 +440,16 @@ impl HtmlRenderer {
             // Get or create font with the scaled size, family, weight, and style
             let font = self.get_font(&font_family, scaled_font_size, &font_weight, &font_style);
 
-            // Split text by newlines to handle line breaks properly
-            let lines: Vec<&str> = transformed_text.split('\n')
-                .map(|line| line.trim_start()) // Remove leading whitespace from each line
-                .collect();
+            // Wrap text based on actual font metrics, container width, and white-space property
+            let wrapped_lines = self.wrap_text_with_font(&transformed_text, &font, content_rect.width(), &white_space);
 
             // Position text within the content area with scaled padding
             let scaled_padding = 2.0 * scale_factor as f32;
             let mut current_y = content_rect.top + scaled_font_size; // Start at baseline position
 
             // Render each line separately
-            for line in lines {
-                if let Some(text_blob) = TextBlob::new(line, &font) {
+            for line in wrapped_lines {
+                if let Some(text_blob) = TextBlob::new(&line, &font) {
                     let text_bounds = text_blob.bounds();
                     let text_width = text_bounds.width();
 
@@ -489,6 +488,108 @@ impl HtmlRenderer {
                 current_y += line_height; // Move to next line using computed line height
             }
         }
+    }
+
+    /// Wrap text based on actual font metrics and available width
+    fn wrap_text_with_font(&self, text: &str, font: &Font, max_width: f32, white_space: &crate::css::WhiteSpace) -> Vec<String> {
+        let mut wrapped_lines = Vec::new();
+
+        // If white-space is nowrap or pre, don't wrap at all
+        if !white_space.should_wrap() {
+            // Split by explicit newlines only (for pre modes)
+            if white_space.preserve_whitespace() {
+                // For pre/pre-wrap modes, preserve all whitespace including newlines
+                return text.lines().map(|s| s.to_string()).collect();
+            } else {
+                // For nowrap, collapse whitespace but don't wrap
+                let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                return vec![collapsed];
+            }
+        }
+
+        // Split by explicit newlines first
+        let paragraphs: Vec<&str> = text.split('\n').collect();
+
+        for paragraph in paragraphs {
+            if paragraph.is_empty() {
+                wrapped_lines.push(String::new());
+                continue;
+            }
+
+            // Split paragraph into words
+            let words: Vec<&str> = paragraph.split_whitespace().collect();
+
+            if words.is_empty() {
+                wrapped_lines.push(String::new());
+                continue;
+            }
+
+            let mut current_line = String::new();
+
+            for word in words {
+                // Check if adding this word would exceed the line width
+                let test_line = if current_line.is_empty() {
+                    word.to_string()
+                } else {
+                    format!("{} {}", current_line, word)
+                };
+
+                // Measure the actual width of the test line using the font
+                if let Some(text_blob) = TextBlob::new(&test_line, font) {
+                    let text_bounds = text_blob.bounds();
+                    let text_width = text_bounds.width();
+
+                    if text_width <= max_width {
+                        current_line = test_line;
+                    } else {
+                        // If current line is not empty, save it and start a new line
+                        if !current_line.is_empty() {
+                            wrapped_lines.push(current_line);
+                            current_line = word.to_string();
+                        } else {
+                            // Word itself is too long, need to break it up
+                            // Check if the word fits on its own line
+                            if let Some(word_blob) = TextBlob::new(word, font) {
+                                let word_width = word_blob.bounds().width();
+                                if word_width > max_width {
+                                    // Word is too long, break it character by character
+                                    let mut char_line = String::new();
+                                    for ch in word.chars() {
+                                        let test_char_line = format!("{}{}", char_line, ch);
+                                        if let Some(char_blob) = TextBlob::new(&test_char_line, font) {
+                                            let char_width = char_blob.bounds().width();
+                                            if char_width <= max_width {
+                                                char_line = test_char_line;
+                                            } else {
+                                                if !char_line.is_empty() {
+                                                    wrapped_lines.push(char_line);
+                                                }
+                                                char_line = ch.to_string();
+                                            }
+                                        }
+                                    }
+                                    current_line = char_line;
+                                } else {
+                                    current_line = word.to_string();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Add the last line if it's not empty
+            if !current_line.is_empty() {
+                wrapped_lines.push(current_line);
+            }
+        }
+
+        // Return at least one empty line if everything was empty
+        if wrapped_lines.is_empty() {
+            wrapped_lines.push(String::new());
+        }
+
+        wrapped_lines
     }
 
     /// Render text decorations (underline, overline, line-through)
