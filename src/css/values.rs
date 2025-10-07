@@ -1166,3 +1166,70 @@ impl Default for Cursor {
         Cursor::Auto
     }
 }
+
+/// CSS text-transform property
+#[derive(Debug, Clone, PartialEq)]
+pub enum TextTransform {
+    None,
+    Capitalize,
+    Uppercase,
+    Lowercase,
+    FullWidth,
+}
+
+impl TextTransform {
+    /// Parse text-transform value from string
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_lowercase().as_str() {
+            "none" => TextTransform::None,
+            "capitalize" => TextTransform::Capitalize,
+            "uppercase" => TextTransform::Uppercase,
+            "lowercase" => TextTransform::Lowercase,
+            "full-width" => TextTransform::FullWidth,
+            _ => TextTransform::None, // Default to none
+        }
+    }
+
+    /// Apply the text transformation to a string
+    pub fn apply(&self, text: &str) -> String {
+        match self {
+            TextTransform::None => text.to_string(),
+            TextTransform::Uppercase => text.to_uppercase(),
+            TextTransform::Lowercase => text.to_lowercase(),
+            TextTransform::Capitalize => {
+                // Capitalize the first letter of each word
+                text.split_whitespace()
+                    .map(|word| {
+                        let mut chars = word.chars();
+                        match chars.next() {
+                            None => String::new(),
+                            Some(first) => {
+                                first.to_uppercase().collect::<String>() + chars.as_str()
+                            }
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+            TextTransform::FullWidth => {
+                // Convert characters to their full-width variants
+                // For now, this is a simplified implementation
+                text.chars()
+                    .map(|c| match c {
+                        'A'..='Z' | 'a'..='z' | '0'..='9' => {
+                            // Convert to full-width character
+                            char::from_u32(0xFF00 + c as u32 - 0x20).unwrap_or(c)
+                        }
+                        _ => c,
+                    })
+                    .collect()
+            }
+        }
+    }
+}
+
+impl Default for TextTransform {
+    fn default() -> Self {
+        TextTransform::None
+    }
+}

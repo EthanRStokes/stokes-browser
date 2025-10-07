@@ -323,6 +323,7 @@ impl HtmlRenderer {
             let mut font_style = crate::css::FontStyle::Normal; // Default font style
             let mut line_height_value = crate::css::LineHeight::Normal; // Default line height
             let mut vertical_align = crate::css::VerticalAlign::Baseline; // Default vertical alignment
+            let mut text_transform = crate::css::TextTransform::None; // Default text transform
 
             if let Some(styles) = computed_styles {
                 // Apply CSS color
@@ -344,7 +345,13 @@ impl HtmlRenderer {
 
                 // Apply CSS vertical-align
                 vertical_align = styles.vertical_align.clone();
+
+                // Apply CSS text-transform
+                text_transform = styles.text_transform.clone();
             }
+
+            // Apply text transformation to the content
+            let transformed_text = text_transform.apply(text);
 
             // Apply DPI scaling to font size
             let scaled_font_size = font_size * scale_factor as f32;
@@ -359,7 +366,7 @@ impl HtmlRenderer {
             let font = self.get_font_for_size_and_style(scaled_font_size, &font_style);
 
             // Split text by newlines to handle line breaks properly
-            let lines: Vec<&str> = text.split('\n')
+            let lines: Vec<&str> = transformed_text.split('\n')
                 .map(|line| line.trim_start()) // Remove leading whitespace from each line
                 .collect();
 

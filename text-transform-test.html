@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Text Transform Test</title>
+    <style>
+        body {
+            font-family: Arial;
+            padding: 20px;
+        }
+
+        h1 {
+            color: #333;
+            text-transform: uppercase;
+        }
+
+        .none {
+            text-transform: none;
+            background-color: #f0f0f0;
+            padding: 10px;
+            margin: 10px 0;
+        }
+
+        .uppercase {
+            text-transform: uppercase;
+            background-color: #ffcccc;
+            padding: 10px;
+            margin: 10px 0;
+        }
+
+        .lowercase {
+            text-transform: lowercase;
+            background-color: #ccffcc;
+            padding: 10px;
+            margin: 10px 0;
+        }
+
+        .capitalize {
+            text-transform: capitalize;
+            background-color: #ccccff;
+            padding: 10px;
+            margin: 10px 0;
+        }
+
+        .full-width {
+            text-transform: full-width;
+            background-color: #ffffcc;
+            padding: 10px;
+            margin: 10px 0;
+        }
+
+        p {
+            font-size: 16px;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+    <h1>CSS text-transform Property Test</h1>
+
+    <p class="none">
+        This is text with text-transform: none. The Original Text Casing Is Preserved.
+    </p>
+
+    <p class="uppercase">
+        This is text with text-transform: uppercase. all text becomes uppercase!
+    </p>
+
+    <p class="lowercase">
+        This is text with TEXT-TRANSFORM: LOWERCASE. ALL TEXT BECOMES LOWERCASE!
+    </p>
+
+    <p class="capitalize">
+        this is text with text-transform: capitalize. the first letter of each word becomes uppercase.
+    </p>
+
+    <p class="full-width">
+        Full-Width: ABC123 becomes full-width characters.
+    </p>
+
+    <div style="margin-top: 30px; padding: 15px; border: 2px solid #333;">
+        <h2 style="text-transform: lowercase;">This Heading Should Be Lowercase</h2>
+        <p style="text-transform: uppercase;">inline style: this text should be uppercase</p>
+    </div>
+</body>
+</html>
+
