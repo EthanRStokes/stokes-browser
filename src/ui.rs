@@ -717,6 +717,95 @@ impl BrowserUI {
         }
     }
 
+    /// Select all text in the focused text field
+    pub fn select_all(&mut self) {
+        for comp in &mut self.components {
+            if let UiComponent::TextField { has_focus: true, text, selection_start, selection_end, cursor_position, .. } = comp {
+                if !text.is_empty() {
+                    *selection_start = Some(0);
+                    *selection_end = Some(text.len());
+                    *cursor_position = text.len();
+                }
+                break;
+            }
+        }
+    }
+
+    /// Get selected text from the focused text field
+    pub fn get_selected_text(&self) -> Option<String> {
+        for comp in &self.components {
+            if let UiComponent::TextField { has_focus: true, text, selection_start, selection_end, .. } = comp {
+                if let (Some(&start), Some(&end)) = (selection_start.as_ref(), selection_end.as_ref()) {
+                    let start = start.min(end);
+                    let end = start.max(end);
+                    if start < end && end <= text.len() {
+                        return Some(text[start..end].to_string());
+                    }
+                }
+                break;
+            }
+        }
+        None
+    }
+
+    /// Delete selected text in the focused text field
+    pub fn delete_selection(&mut self) -> bool {
+        for comp in &mut self.components {
+            if let UiComponent::TextField { has_focus: true, text, selection_start, selection_end, cursor_position, .. } = comp {
+                if let (Some(&start), Some(&end)) = (selection_start.as_ref(), selection_end.as_ref()) {
+                    let start = start.min(end);
+                    let end = start.max(end);
+                    if start < end && end <= text.len() {
+                        text.replace_range(start..end, "");
+                        *cursor_position = start;
+                        *selection_start = None;
+                        *selection_end = None;
+                        return true;
+                    }
+                }
+                break;
+            }
+        }
+        false
+    }
+
+    /// Insert text at cursor position (replacing selection if any)
+    pub fn insert_text_at_cursor(&mut self, insert_text: &str) {
+        for comp in &mut self.components {
+            if let UiComponent::TextField { has_focus: true, text, selection_start, selection_end, cursor_position, .. } = comp {
+                // Delete selection if any
+                if let (Some(&start), Some(&end)) = (selection_start.as_ref(), selection_end.as_ref()) {
+                    let start = start.min(end);
+                    let end = start.max(end);
+                    if start < end && end <= text.len() {
+                        text.replace_range(start..end, "");
+                        *cursor_position = start;
+                        *selection_start = None;
+                        *selection_end = None;
+                    }
+                }
+
+                // Insert text at cursor position
+                if *cursor_position <= text.len() {
+                    text.insert_str(*cursor_position, insert_text);
+                    *cursor_position += insert_text.len();
+                }
+                break;
+            }
+        }
+    }
+
+    /// Clear selection in the focused text field
+    pub fn clear_selection(&mut self) {
+        for comp in &mut self.components {
+            if let UiComponent::TextField { has_focus: true, selection_start, selection_end, .. } = comp {
+                *selection_start = None;
+                *selection_end = None;
+                break;
+            }
+        }
+    }
+
     /// Render the UI
     pub fn render(&self, canvas: &Canvas) {
         let canvas_width = canvas.image_info().width() as f32;

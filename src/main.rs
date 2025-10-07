@@ -22,6 +22,7 @@ use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent, MouseScrollDelta, DeviceEvent, KeyEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
+use arboard::Clipboard;
 
 use crate::engine::{Engine, EngineConfig};
 use crate::ui::BrowserUI;
@@ -637,6 +638,67 @@ impl ApplicationHandler for BrowserApp {
                         match event.logical_key {
                             Key::Character(ref text) => {
                                 match text.as_str() {
+                                    "a" => {
+                                        // Ctrl+A: Select all text in address bar
+                                        if self.has_focused_text_field() {
+                                            println!("Select all shortcut (Ctrl+A)");
+                                            self.ui.select_all();
+                                            self.env.window.request_redraw();
+                                            return;
+                                        }
+                                    }
+                                    "c" => {
+                                        // Ctrl+C: Copy selected text to clipboard
+                                        if self.has_focused_text_field() {
+                                            if let Some(selected_text) = self.ui.get_selected_text() {
+                                                if !selected_text.is_empty() {
+                                                    println!("Copy shortcut (Ctrl+C): {}", selected_text);
+                                                    if let Ok(mut clipboard) = Clipboard::new() {
+                                                        if let Err(e) = clipboard.set_text(&selected_text) {
+                                                            eprintln!("Failed to copy to clipboard: {}", e);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            self.env.window.request_redraw();
+                                            return;
+                                        }
+                                    }
+                                    "v" => {
+                                        // Ctrl+V: Paste text from clipboard
+                                        if self.has_focused_text_field() {
+                                            println!("Paste shortcut (Ctrl+V)");
+                                            if let Ok(mut clipboard) = Clipboard::new() {
+                                                if let Ok(clipboard_text) = clipboard.get_text() {
+                                                    self.ui.insert_text_at_cursor(&clipboard_text);
+                                                } else {
+                                                    eprintln!("Failed to read from clipboard");
+                                                }
+                                            }
+                                            self.env.window.request_redraw();
+                                            return;
+                                        }
+                                    }
+                                    "x" => {
+                                        // Ctrl+X: Cut selected text to clipboard
+                                        if self.has_focused_text_field() {
+                                            if let Some(selected_text) = self.ui.get_selected_text() {
+                                                if !selected_text.is_empty() {
+                                                    println!("Cut shortcut (Ctrl+X): {}", selected_text);
+                                                    if let Ok(mut clipboard) = Clipboard::new() {
+                                                        if let Err(e) = clipboard.set_text(&selected_text) {
+                                                            eprintln!("Failed to copy to clipboard: {}", e);
+                                                        } else {
+                                                            // Delete the selected text after copying
+                                                            self.ui.delete_selection();
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            self.env.window.request_redraw();
+                                            return;
+                                        }
+                                    }
                                     "t" => {
                                         // Ctrl+T: New tab
                                         println!("New tab shortcut (Ctrl+T)");
