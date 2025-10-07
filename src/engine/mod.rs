@@ -11,6 +11,7 @@ use crate::layout::{LayoutEngine, LayoutBox};
 use crate::renderer::HtmlRenderer;
 use crate::css::{CssParser, Stylesheet, ComputedValues};
 use crate::css::transition_manager::TransitionManager;
+use crate::js::JsRuntime;
 
 pub use self::config::EngineConfig;
 
@@ -40,6 +41,8 @@ pub struct Engine {
     transition_manager: TransitionManager,
     // Store previous style map to detect changes for transitions
     previous_style_map: HashMap<usize, ComputedValues>,
+    // JavaScript runtime
+    js_runtime: Option<JsRuntime>,
 }
 
 impl Engine {
@@ -66,6 +69,7 @@ impl Engine {
             scale_factor,
             transition_manager: TransitionManager::new(),
             previous_style_map: HashMap::new(),
+            js_runtime: None,
         }
     }
 
@@ -95,6 +99,9 @@ impl Engine {
         
         // Start loading images after layout is calculated
         self.start_image_loading().await;
+
+        // Execute JavaScript in the page after everything is loaded
+        self.execute_document_scripts();
 
         self.is_loading = false;
         Ok(())
@@ -526,5 +533,70 @@ impl Engine {
     /// Check if there are active transitions that require continuous rendering
     pub fn has_active_transitions(&self) -> bool {
         self.transition_manager.has_active_transitions()
+    }
+
+    /// Initialize JavaScript runtime for the current document
+    pub fn initialize_js_runtime(&mut self) {
+        if let Some(dom) = &self.dom {
+            let root = dom.get_root();
+            match JsRuntime::new(root) {
+                Ok(runtime) => {
+                    println!("JavaScript runtime initialized successfully");
+                    self.js_runtime = Some(runtime);
+                }
+                Err(e) => {
+                    eprintln!("Failed to initialize JavaScript runtime: {}", e);
+                }
+            }
+        }
+    }
+
+    /// Execute JavaScript code in the current context
+    pub fn execute_javascript(&mut self, code: &str) {
+        if let Some(runtime) = &mut self.js_runtime {
+            if let Err(e) = runtime.execute_script(code) {
+                eprintln!("JavaScript execution error: {}", e);
+            }
+        } else {
+            eprintln!("JavaScript runtime not initialized");
+        }
+    }
+
+    /// Extract and execute JavaScript from <script> tags in the current DOM
+    pub fn execute_document_scripts(&mut self) {
+        // Initialize JS runtime if not already done
+        if self.js_runtime.is_none() {
+            self.initialize_js_runtime();
+        }
+
+        // Collect script contents first to avoid borrow issues
+        let mut script_contents = Vec::new();
+        
+        if let Some(dom) = &self.dom {
+            let script_elements = dom.query_selector("script");
+            
+            for script_element in script_elements {
+                let script_node = script_element.borrow();
+                if let NodeType::Element(element_data) = &script_node.node_type {
+                    // Skip external scripts for now (would need async loading)
+                    if element_data.attributes.contains_key("src") {
+                        println!("Skipping external script: {:?}", element_data.attributes.get("src"));
+                        continue;
+                    }
+                    
+                    // Get inline script content
+                    let script_content = script_node.text_content();
+                    if !script_content.trim().is_empty() {
+                        script_contents.push(script_content);
+                    }
+                }
+            }
+        }
+
+        // Execute collected scripts
+        for script_content in script_contents {
+            println!("Executing inline script ({} bytes)", script_content.len());
+            self.execute_javascript(&script_content);
+        }
     }
 }
