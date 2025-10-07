@@ -17,7 +17,7 @@ markup5ever_rcdom = "0.35.0+unofficial"
 resvg = "0.44.0"
 usvg = "0.44.0"
 tiny-skia = "0.11.4"
-arboard = "3.4"
+arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 
 [dependencies.winit]
 git = "https://github.com/Treetrain1/winit.git"

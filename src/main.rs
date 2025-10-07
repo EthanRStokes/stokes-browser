@@ -668,11 +668,19 @@ impl ApplicationHandler for BrowserApp {
                                         // Ctrl+V: Paste text from clipboard
                                         if self.has_focused_text_field() {
                                             println!("Paste shortcut (Ctrl+V)");
-                                            if let Ok(mut clipboard) = Clipboard::new() {
-                                                if let Ok(clipboard_text) = clipboard.get_text() {
-                                                    self.ui.insert_text_at_cursor(&clipboard_text);
-                                                } else {
-                                                    eprintln!("Failed to read from clipboard");
+                                            match Clipboard::new() {
+                                                Ok(mut clipboard) => {
+                                                    match clipboard.get_text() {
+                                                        Ok(clipboard_text) => {
+                                                            println!("Pasted text: {}", clipboard_text);
+                                                            self.ui.insert_text_at_cursor(&clipboard_text);
+                                                        }
+                                                        Err(e) => {
+                                                            eprintln!("Failed to read from clipboard: {:?}", e);
+                                                        }
+                                                    }
+                                                }
+                                                Err(e) => {
                                                 }
                                             }
                                             self.env.window.request_redraw();
