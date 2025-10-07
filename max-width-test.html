@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Max-Width Test</title>
+    <style>
+        body {
+            padding: 20px;
+        }
+
+        .container {
+            background-color: #f0f0f0;
+            padding: 10px;
+            margin-bottom: 20px;
+        }
+
+        .box1 {
+            width: 800px;
+            max-width: 400px;
+            background-color: lightblue;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+
+        .box2 {
+            width: 200px;
+            max-width: 400px;
+            background-color: lightgreen;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+
+        .box3 {
+            max-width: 300px;
+            background-color: lightcoral;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+
+        .box4 {
+            width: 500px;
+            min-width: 200px;
+            max-width: 350px;
+            background-color: lightyellow;
+            padding: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>CSS max-width Property Test</h1>
+
+    <div class="container">
+        <h2>Box 1: width=800px, max-width=400px</h2>
+        <div class="box1">
+            This box has width set to 800px but max-width set to 400px.
+            The max-width constraint should limit it to 400px.
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Box 2: width=200px, max-width=400px</h2>
+        <div class="box2">
+            This box has width set to 200px and max-width set to 400px.
+            Since 200px < 400px, it should be 200px wide.
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Box 3: max-width=300px (no explicit width)</h2>
+        <div class="box3">
+            This box has no explicit width but max-width is set to 300px.
+            It should not exceed 300px even though it would normally fill the container.
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Box 4: width=500px, min-width=200px, max-width=350px</h2>
+        <div class="box4">
+            This box has width=500px, min-width=200px, and max-width=350px.
+            The max-width should constrain it to 350px (overriding the width property).
+        </div>
+    </div>
+</body>
+</html>
+

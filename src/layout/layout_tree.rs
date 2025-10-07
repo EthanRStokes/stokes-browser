@@ -23,6 +23,10 @@ pub struct LayoutBox {
     pub content: Option<String>, // For text nodes
     pub css_width: Option<crate::css::Length>, // CSS specified width
     pub css_height: Option<crate::css::Length>, // CSS specified height
+    pub css_max_width: Option<crate::css::Length>, // CSS specified max-width
+    pub css_min_width: Option<crate::css::Length>, // CSS specified min-width
+    pub css_max_height: Option<crate::css::Length>, // CSS specified max-height
+    pub css_min_height: Option<crate::css::Length>, // CSS specified min-height
     pub box_sizing: crate::css::BoxSizing, // CSS box-sizing property
 }
 
@@ -36,6 +40,10 @@ impl LayoutBox {
             content: None,
             css_width: None,
             css_height: None,
+            css_max_width: None,
+            css_min_width: None,
+            css_max_height: None,
+            css_min_height: None,
             box_sizing: crate::css::BoxSizing::ContentBox, // Default value
         }
     }
@@ -322,7 +330,7 @@ impl LayoutBox {
 
     /// Calculate the actual width this box should use, respecting CSS width values and box-sizing
     fn calculate_used_width(&self, container_width: f32, scale_factor: f32) -> f32 {
-        if let Some(css_width) = &self.css_width {
+        let mut width = if let Some(css_width) = &self.css_width {
             // Use the CSS-specified width, converting to pixels and scaling
             let specified_width = css_width.to_px(16.0, container_width) * scale_factor;
             
@@ -344,12 +352,42 @@ impl LayoutBox {
             container_width - self.dimensions.padding.left - self.dimensions.padding.right
                 - self.dimensions.border.left - self.dimensions.border.right
                 - self.dimensions.margin.left - self.dimensions.margin.right
+        };
+
+        // Apply max-width constraint if specified
+        if let Some(css_max_width) = &self.css_max_width {
+            let max_width = css_max_width.to_px(16.0, container_width) * scale_factor;
+            let max_width_content = match self.box_sizing {
+                crate::css::BoxSizing::ContentBox => max_width,
+                crate::css::BoxSizing::BorderBox => {
+                    max_width
+                        - self.dimensions.padding.left - self.dimensions.padding.right
+                        - self.dimensions.border.left - self.dimensions.border.right
+                }
+            };
+            width = width.min(max_width_content);
         }
+
+        // Apply min-width constraint if specified
+        if let Some(css_min_width) = &self.css_min_width {
+            let min_width = css_min_width.to_px(16.0, container_width) * scale_factor;
+            let min_width_content = match self.box_sizing {
+                crate::css::BoxSizing::ContentBox => min_width,
+                crate::css::BoxSizing::BorderBox => {
+                    min_width
+                        - self.dimensions.padding.left - self.dimensions.padding.right
+                        - self.dimensions.border.left - self.dimensions.border.right
+                }
+            };
+            width = width.max(min_width_content);
+        }
+
+        width
     }
 
     /// Calculate the actual height this box should use, respecting CSS height values and box-sizing
     fn calculate_used_height(&self, container_height: f32, scale_factor: f32, content_height: f32) -> f32 {
-        if let Some(css_height) = &self.css_height {
+        let mut height = if let Some(css_height) = &self.css_height {
             // Use the CSS-specified height, converting to pixels and scaling
             let specified_height = css_height.to_px(16.0, container_height) * scale_factor;
             
@@ -373,7 +411,37 @@ impl LayoutBox {
             } else {
                 20.0 * scale_factor // Minimum height for empty blocks, scaled
             }
+        };
+
+        // Apply max-height constraint if specified
+        if let Some(css_max_height) = &self.css_max_height {
+            let max_height = css_max_height.to_px(16.0, container_height) * scale_factor;
+            let max_height_content = match self.box_sizing {
+                crate::css::BoxSizing::ContentBox => max_height,
+                crate::css::BoxSizing::BorderBox => {
+                    max_height
+                        - self.dimensions.padding.top - self.dimensions.padding.bottom
+                        - self.dimensions.border.top - self.dimensions.border.bottom
+                }
+            };
+            height = height.min(max_height_content);
         }
+
+        // Apply min-height constraint if specified
+        if let Some(css_min_height) = &self.css_min_height {
+            let min_height = css_min_height.to_px(16.0, container_height) * scale_factor;
+            let min_height_content = match self.box_sizing {
+                crate::css::BoxSizing::ContentBox => min_height,
+                crate::css::BoxSizing::BorderBox => {
+                    min_height
+                        - self.dimensions.padding.top - self.dimensions.padding.bottom
+                        - self.dimensions.border.top - self.dimensions.border.bottom
+                }
+            };
+            height = height.max(min_height_content);
+        }
+
+        height
     }
 
     /// Scale edge sizes (margins, padding, borders) for high DPI displays
@@ -419,6 +487,13 @@ impl LayoutBox {
         // Store CSS width and height values
         self.css_width = styles.width.clone();
         self.css_height = styles.height.clone();
+        self.css_max_width = styles.max_width.clone();
+        self.css_min_width = styles.min_width.clone();
+        self.css_max_height = styles.max_height.clone();
+        self.css_min_height = styles.min_height.clone();
+
+        // Store box-sizing value
+        self.box_sizing = styles.box_sizing.clone();
 
         // Note: Other style properties like colors, fonts are handled in the renderer
         // Scale factor will be applied during layout phase

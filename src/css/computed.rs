@@ -24,6 +24,10 @@ pub struct ComputedValues {
     pub display: DisplayType,
     pub width: Option<super::values::Length>,
     pub height: Option<super::values::Length>,
+    pub max_width: Option<super::values::Length>,
+    pub min_width: Option<super::values::Length>,
+    pub max_height: Option<super::values::Length>,
+    pub min_height: Option<super::values::Length>,
     pub margin: EdgeSizes,
     pub padding: EdgeSizes,
     pub border: EdgeSizes,
@@ -62,6 +66,10 @@ impl Default for ComputedValues {
             display: DisplayType::Block,
             width: None,
             height: None,
+            max_width: None,
+            min_width: None,
+            max_height: None,
+            min_height: None,
             margin: EdgeSizes::default(),
             padding: EdgeSizes::default(),
             border: EdgeSizes::default(),
@@ -355,6 +363,34 @@ impl StyleResolver {
                     computed.height = Some(length.clone());
                 } else if let CssValue::Auto = &declaration.value {
                     computed.height = None; // Auto height
+                }
+            }
+            PropertyName::MaxWidth => {
+                if let CssValue::Length(length) = &declaration.value {
+                    computed.max_width = Some(length.clone());
+                } else if let CssValue::Auto = &declaration.value {
+                    computed.max_width = None; // Auto max-width
+                }
+            }
+            PropertyName::MinWidth => {
+                if let CssValue::Length(length) = &declaration.value {
+                    computed.min_width = Some(length.clone());
+                } else if let CssValue::Auto = &declaration.value {
+                    computed.min_width = None; // Auto min-width
+                }
+            }
+            PropertyName::MaxHeight => {
+                if let CssValue::Length(length) = &declaration.value {
+                    computed.max_height = Some(length.clone());
+                } else if let CssValue::Auto = &declaration.value {
+                    computed.max_height = None; // Auto max-height
+                }
+            }
+            PropertyName::MinHeight => {
+                if let CssValue::Length(length) = &declaration.value {
+                    computed.min_height = Some(length.clone());
+                } else if let CssValue::Auto = &declaration.value {
+                    computed.min_height = None; // Auto min-height
                 }
             }
             PropertyName::Margin => {
