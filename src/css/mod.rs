@@ -6,7 +6,7 @@ mod stylesheet;
 pub(crate) mod computed;
 
 pub use self::parser::CssParser;
-pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Overflow};
+pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Overflow, FontStyle, FontVariant, LineHeight};
 pub use self::selector::{Selector, SelectorType, PseudoClass};
 pub use self::stylesheet::{Stylesheet, Rule, Declaration};
 pub use self::computed::{ComputedValues, StyleResolver};
@@ -41,9 +41,13 @@ pub enum PropertyName {
     BorderBottomLeftRadius,
     BorderBottomRightRadius,
     BoxShadow,
+    Font,
     FontSize,
     FontFamily,
     FontWeight,
+    FontStyle,
+    FontVariant,
+    LineHeight,
     TextDecoration,
     TextAlign,
     Clear,
@@ -87,9 +91,13 @@ impl From<&str> for PropertyName {
             "border-bottom-left-radius" => PropertyName::BorderBottomLeftRadius,
             "border-bottom-right-radius" => PropertyName::BorderBottomRightRadius,
             "box-shadow" => PropertyName::BoxShadow,
+            "font" => PropertyName::Font,
             "font-size" => PropertyName::FontSize,
             "font-family" => PropertyName::FontFamily,
             "font-weight" => PropertyName::FontWeight,
+            "font-style" => PropertyName::FontStyle,
+            "font-variant" => PropertyName::FontVariant,
+            "line-height" => PropertyName::LineHeight,
             "text-decoration" => PropertyName::TextDecoration,
             "text-align" => PropertyName::TextAlign,
             "clear" => PropertyName::Clear,

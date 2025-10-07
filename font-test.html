@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Font Property Test</title>
+    <style>
+        .test1 {
+            font: 20px Arial;
+        }
+
+        .test2 {
+            font: italic bold 24px Georgia;
+        }
+
+        .test3 {
+            font: small-caps 18px "Times New Roman";
+        }
+
+        .test4 {
+            font: oblique 700 16px/1.5 Verdana;
+        }
+
+        .test5 {
+            font: 14px/2 monospace;
+        }
+
+        .individual {
+            font-size: 22px;
+            font-family: Courier;
+            font-style: italic;
+            font-weight: bold;
+            line-height: 1.8;
+        }
+    </style>
+</head>
+<body>
+    <h1>Font CSS Property Test</h1>
+
+    <div class="test1">
+        <p>Test 1: font: 20px Arial</p>
+        <p>This uses the basic font shorthand with just size and family.</p>
+    </div>
+
+    <div class="test2">
+        <p>Test 2: font: italic bold 24px Georgia</p>
+        <p>This includes font-style and font-weight.</p>
+    </div>
+
+    <div class="test3">
+        <p>Test 3: font: small-caps 18px "Times New Roman"</p>
+        <p>This uses font-variant (small-caps).</p>
+    </div>
+
+    <div class="test4">
+        <p>Test 4: font: oblique 700 16px/1.5 Verdana</p>
+        <p>This includes oblique style, numeric weight, and line-height.</p>
+    </div>
+
+    <div class="test5">
+        <p>Test 5: font: 14px/2 monospace</p>
+        <p>This uses line-height without other properties.</p>
+    </div>
+
+    <div class="individual">
+        <p>Individual Properties Test</p>
+        <p>This uses individual font properties instead of the shorthand.</p>
+    </div>
+</body>
+</html>
+

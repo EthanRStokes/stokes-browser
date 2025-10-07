@@ -16,7 +16,11 @@ pub struct HtmlRenderer {
     border_paint: Paint,
     // Add font cache for different sizes - wrapped in RefCell for interior mutability
     font_cache: RefCell<HashMap<u32, Font>>, // key is font size as u32 (rounded)
+    // Cache for styled fonts: (size, style) -> Font
+    styled_font_cache: RefCell<HashMap<(u32, u8), Font>>, // u8: 0=normal, 1=italic, 2=oblique
     typeface: Typeface,
+    italic_typeface: Typeface,
+    font_mgr: skia_safe::FontMgr,
     // Cache for loaded background images
     background_image_cache: RefCell<HashMap<String, Option<skia_safe::Image>>>,
 }
@@ -27,6 +31,11 @@ impl HtmlRenderer {
         let font_mgr = skia_safe::FontMgr::new();
         let typeface = font_mgr.legacy_make_typeface(None, FontStyle::default())
             .expect("Failed to create default typeface");
+
+        // Create italic typeface for styled text
+        let italic_typeface = font_mgr.legacy_make_typeface(None, FontStyle::italic())
+            .unwrap_or_else(|| typeface.clone());
+
         let default_font = Font::new(typeface.clone(), 14.0);
         let heading_font = Font::new(typeface.clone(), 18.0);
 
@@ -50,7 +59,10 @@ impl HtmlRenderer {
             background_paint,
             border_paint,
             font_cache: RefCell::new(HashMap::new()),
+            styled_font_cache: RefCell::new(HashMap::new()),
             typeface,
+            italic_typeface,
+            font_mgr,
             background_image_cache: RefCell::new(HashMap::new()),
         }
     }
@@ -296,6 +308,8 @@ impl HtmlRenderer {
             let mut text_paint = self.text_paint.clone();
             let mut font_size = 14.0; // Default font size
             let mut text_align = crate::css::TextAlign::Left; // Default alignment
+            let mut font_style = crate::css::FontStyle::Normal; // Default font style
+            let mut line_height_value = crate::css::LineHeight::Normal; // Default line height
 
             if let Some(styles) = computed_styles {
                 // Apply CSS color
@@ -308,14 +322,22 @@ impl HtmlRenderer {
 
                 // Apply CSS text-align
                 text_align = styles.text_align.clone();
+
+                // Apply CSS font-style
+                font_style = styles.font_style.clone();
+
+                // Apply CSS line-height
+                line_height_value = styles.line_height.clone();
             }
 
             // Apply DPI scaling to font size
             let scaled_font_size = font_size * scale_factor as f32;
-            let line_height = scaled_font_size * 1.0; // 1.2x line height for better readability
 
-            // Get or create font with the scaled size
-            let font = self.get_font_for_size(scaled_font_size);
+            // Calculate line height based on CSS line-height property
+            let line_height = line_height_value.to_px(scaled_font_size);
+
+            // Get or create font with the scaled size and style
+            let font = self.get_font_for_size_and_style(scaled_font_size, &font_style);
 
             // Split text by newlines to handle line breaks properly
             let lines: Vec<&str> = text.split('\n')
@@ -359,7 +381,7 @@ impl HtmlRenderer {
                         );
                     }
                 }
-                current_y += line_height; // Move to next line
+                current_y += line_height; // Move to next line using computed line height
             }
         }
     }
@@ -436,6 +458,49 @@ impl HtmlRenderer {
         // Create new font and cache it
         let font = Font::new(self.typeface.clone(), size);
         self.font_cache.borrow_mut().insert(size_key, font.clone());
+        font
+    }
+
+    /// Get or create a font for the specified size and style
+    fn get_font_for_size_and_style(&self, size: f32, css_font_style: &crate::css::FontStyle) -> Font {
+        let size_key = size.round() as u32;
+
+        // Determine style key: 0=normal, 1=italic, 2=oblique
+        let style_key = match css_font_style {
+            crate::css::FontStyle::Normal => 0,
+            crate::css::FontStyle::Italic => 1,
+            crate::css::FontStyle::Oblique => 2,
+        };
+
+        // Check cache first
+        {
+            let cache = self.styled_font_cache.borrow();
+            if let Some(font) = cache.get(&(size_key, style_key)) {
+                return font.clone();
+            }
+        }
+
+        // For now, we'll use the same typeface regardless of style
+        // In a full implementation, you would create different typefaces for italic/oblique
+        // using FontMgr to match the font style
+
+        // Convert CSS font style to Skia FontStyle
+        let skia_style = match css_font_style {
+            crate::css::FontStyle::Normal => FontStyle::normal(),
+            crate::css::FontStyle::Italic => FontStyle::italic(),
+            crate::css::FontStyle::Oblique => FontStyle::italic(), // Skia doesn't have oblique, use italic
+        };
+
+        // Try to get a typeface with the appropriate style
+        let typeface = self.font_mgr.legacy_make_typeface(None, skia_style)
+            .unwrap_or_else(|| self.typeface.clone());
+
+        // Create font with the typeface and size (no caching for styled fonts for simplicity)
+        let font = Font::new(typeface, size);
+
+        // Cache the styled font
+        self.styled_font_cache.borrow_mut().insert((size_key, style_key), font.clone());
+
         font
     }
 
