@@ -18,6 +18,7 @@ pub struct ComputedValues {
     pub text_decoration: TextDecoration,
     pub text_align: super::TextAlign,
     pub vertical_align: super::VerticalAlign,
+    pub content: super::ContentValue,
     pub clear: super::Clear,
     pub overflow: super::Overflow,
     pub display: DisplayType,
@@ -53,6 +54,7 @@ impl Default for ComputedValues {
             text_decoration: TextDecoration::default(),
             text_align: super::TextAlign::default(),
             vertical_align: super::VerticalAlign::default(),
+            content: super::ContentValue::Normal,
             clear: super::Clear::None,
             overflow: super::Overflow::default(),
             display: DisplayType::Block,
@@ -303,6 +305,13 @@ impl StyleResolver {
                     computed.vertical_align = super::VerticalAlign::parse(align);
                 } else if let CssValue::Length(length) = &declaration.value {
                     computed.vertical_align = super::VerticalAlign::Length(length.clone());
+                }
+            }
+            PropertyName::Content => {
+                if let CssValue::String(content) = &declaration.value {
+                    computed.content = super::ContentValue::String(content.clone());
+                } else if let CssValue::Keyword(keyword) = &declaration.value {
+                    computed.content = super::ContentValue::parse(keyword);
                 }
             }
             PropertyName::Clear => {

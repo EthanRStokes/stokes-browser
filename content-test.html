@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSS Content Property Test</title>
+    <style>
+        body {
+            font-family: Arial;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+        }
+
+        .test-section {
+            background: white;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 2px solid #333;
+        }
+
+        .test-section h2 {
+            margin-top: 0;
+            color: #666;
+            font-size: 18px;
+        }
+
+        /* Simple string content */
+        .string-before::before {
+            content: "→ ";
+            color: blue;
+            font-weight: bold;
+        }
+
+        .string-after::after {
+            content: " ✓";
+            color: green;
+            font-weight: bold;
+        }
+
+        /* Quote marks */
+        .quotes::before {
+            content: open-quote;
+            color: #666;
+        }
+
+        .quotes::after {
+            content: close-quote;
+            color: #666;
+        }
+
+        /* Attribute content */
+        .attr-content::before {
+            content: "[" attr(data-label) "] ";
+            color: purple;
+            font-style: italic;
+        }
+
+        /* Multiple values */
+        .multi-content::before {
+            content: "★ " attr(title) " - ";
+            color: orange;
+        }
+
+        /* None and normal */
+        .no-content::before {
+            content: none;
+        }
+
+        .normal-content::before {
+            content: normal;
+        }
+
+        /* Decorative elements */
+        .box::before {
+            content: "📦 ";
+            font-size: 20px;
+        }
+
+        .box::after {
+            content: " 📦";
+            font-size: 20px;
+        }
+
+        /* List styling */
+        .custom-list li::before {
+            content: "▸ ";
+            color: #007bff;
+            font-weight: bold;
+        }
+
+        /* Links with icons */
+        .external-link::after {
+            content: " 🔗";
+            font-size: 12px;
+        }
+
+        /* Numbered items */
+        .item {
+            margin: 10px 0;
+        }
+
+        .item::before {
+            content: "Item: ";
+            color: #666;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h1>CSS Content Property Test</h1>
+
+    <div class="test-section">
+        <h2>String Content</h2>
+        <p class="string-before">This has content before</p>
+        <p class="string-after">This has content after</p>
+    </div>
+
+    <div class="test-section">
+        <h2>Quotes</h2>
+        <p class="quotes">This text has quotes around it</p>
+    </div>
+
+    <div class="test-section">
+        <h2>Attribute Content</h2>
+        <p class="attr-content" data-label="Note">This uses the data-label attribute</p>
+        <p class="attr-content" data-label="Warning">Another attribute example</p>
+    </div>
+
+    <div class="test-section">
+        <h2>Multiple Values</h2>
+        <p class="multi-content" title="Important">This combines string and attribute</p>
+    </div>
+
+    <div class="test-section">
+        <h2>None and Normal</h2>
+        <p class="no-content">This should have no content (none)</p>
+        <p class="normal-content">This should have normal content</p>
+    </div>
+
+    <div class="test-section">
+        <h2>Decorative Elements</h2>
+        <p class="box">This text is in a box</p>
+    </div>
+
+    <div class="test-section">
+        <h2>Custom List Styling</h2>
+        <ul class="custom-list">
+            <li>First item</li>
+            <li>Second item</li>
+            <li>Third item</li>
+        </ul>
+    </div>
+
+    <div class="test-section">
+        <h2>External Link Example</h2>
+        <a href="https://example.com" class="external-link">Example Website</a>
+    </div>
+
+    <div class="test-section">
+        <h2>Generated Items</h2>
+        <div class="item">First</div>
+        <div class="item">Second</div>
+        <div class="item">Third</div>
+    </div>
+</body>
+</html>
+

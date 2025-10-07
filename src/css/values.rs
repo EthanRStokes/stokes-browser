@@ -912,3 +912,104 @@ impl Default for VerticalAlign {
         VerticalAlign::Baseline
     }
 }
+
+/// CSS content property value
+#[derive(Debug, Clone, PartialEq)]
+pub enum ContentValue {
+    None,
+    Normal,
+    String(String),
+    Attr(String), // attr(attribute-name)
+    Counter(String), // counter(name)
+    OpenQuote,
+    CloseQuote,
+    NoOpenQuote,
+    NoCloseQuote,
+    Multiple(Vec<ContentValue>), // Multiple values concatenated
+}
+
+impl ContentValue {
+    /// Parse content value from string
+    pub fn parse(value: &str) -> Self {
+        let value = value.trim();
+
+        match value.to_lowercase().as_str() {
+            "none" => ContentValue::None,
+            "normal" => ContentValue::Normal,
+            "open-quote" => ContentValue::OpenQuote,
+            "close-quote" => ContentValue::CloseQuote,
+            "no-open-quote" => ContentValue::NoOpenQuote,
+            "no-close-quote" => ContentValue::NoCloseQuote,
+            _ => {
+                // Check for quoted string
+                if (value.starts_with('"') && value.ends_with('"')) ||
+                   (value.starts_with('\'') && value.ends_with('\'')) {
+                    let unquoted = &value[1..value.len() - 1];
+                    return ContentValue::String(unquoted.to_string());
+                }
+
+                // Check for attr() function
+                if value.starts_with("attr(") && value.ends_with(')') {
+                    let attr_name = &value[5..value.len() - 1].trim();
+                    return ContentValue::Attr(attr_name.to_string());
+                }
+
+                // Check for counter() function
+                if value.starts_with("counter(") && value.ends_with(')') {
+                    let counter_name = &value[8..value.len() - 1].trim();
+                    return ContentValue::Counter(counter_name.to_string());
+                }
+
+                // Try to parse as multiple values
+                if value.contains(' ') {
+                    let parts: Vec<&str> = value.split_whitespace().collect();
+                    if parts.len() > 1 {
+                        let mut values = Vec::new();
+                        for part in parts {
+                            values.push(Self::parse(part));
+                        }
+                        return ContentValue::Multiple(values);
+                    }
+                }
+
+                // Default to treating as a string (without quotes)
+                ContentValue::String(value.to_string())
+            }
+        }
+    }
+
+    /// Convert content value to display string
+    pub fn to_display_string(&self, element_attributes: Option<&std::collections::HashMap<String, String>>) -> String {
+        match self {
+            ContentValue::None | ContentValue::Normal => String::new(),
+            ContentValue::String(s) => s.clone(),
+            ContentValue::Attr(attr_name) => {
+                if let Some(attrs) = element_attributes {
+                    attrs.get(attr_name).cloned().unwrap_or_default()
+                } else {
+                    String::new()
+                }
+            }
+            ContentValue::Counter(_) => {
+                // Counter implementation would require maintaining counter state
+                // For now, return empty string
+                String::new()
+            }
+            ContentValue::OpenQuote => "\"".to_string(),
+            ContentValue::CloseQuote => "\"".to_string(),
+            ContentValue::NoOpenQuote | ContentValue::NoCloseQuote => String::new(),
+            ContentValue::Multiple(values) => {
+                values.iter()
+                    .map(|v| v.to_display_string(element_attributes))
+                    .collect::<Vec<_>>()
+                    .join("")
+            }
+        }
+    }
+}
+
+impl Default for ContentValue {
+    fn default() -> Self {
+        ContentValue::Normal
+    }
+}

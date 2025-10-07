@@ -13,6 +13,13 @@ pub enum PseudoClass {
     Focus,
 }
 
+/// CSS pseudo-element types
+#[derive(Debug, Clone, PartialEq, Hash, Eq)]
+pub enum PseudoElement {
+    Before,
+    After,
+}
+
 /// CSS selector types
 #[derive(Debug, Clone, PartialEq)]
 pub enum SelectorType {
