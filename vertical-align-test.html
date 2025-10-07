@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Vertical Align Test</title>
+    <style>
+        body {
+            font-family: Arial;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+        }
+
+        .container {
+            border: 2px solid #333;
+            padding: 20px;
+            margin-bottom: 30px;
+            line-height: 3;
+            background-color: white;
+            font-size: 18px;
+        }
+
+        .label {
+            display: inline-block;
+            width: 150px;
+            color: #666;
+            font-weight: bold;
+        }
+
+        .baseline {
+            vertical-align: baseline;
+            background-color: lightblue;
+            padding: 5px;
+            font-size: 16px;
+        }
+
+        .sub {
+            vertical-align: sub;
+            background-color: lightgreen;
+            padding: 5px;
+            font-size: 14px;
+        }
+
+        .super {
+            vertical-align: super;
+            background-color: lightyellow;
+            padding: 5px;
+            font-size: 14px;
+        }
+
+        .top {
+            vertical-align: top;
+            background-color: lightpink;
+            padding: 5px;
+            font-size: 16px;
+        }
+
+        .middle {
+            vertical-align: middle;
+            background-color: lightcoral;
+            padding: 5px;
+            font-size: 16px;
+        }
+
+        .bottom {
+            vertical-align: bottom;
+            background-color: lightgray;
+            padding: 5px;
+            font-size: 16px;
+        }
+
+        .text-top {
+            vertical-align: text-top;
+            background-color: orange;
+            padding: 5px;
+            font-size: 16px;
+        }
+
+        .text-bottom {
+            vertical-align: text-bottom;
+            background-color: cyan;
+            padding: 5px;
+            font-size: 16px;
+        }
+
+        .length-px-10 {
+            vertical-align: 10px;
+            background-color: violet;
+            padding: 5px;
+            font-size: 16px;
+        }
+
+        .length-px-neg5 {
+            vertical-align: -5px;
+            background-color: gold;
+            padding: 5px;
+            font-size: 16px;
+        }
+
+        .percent-50 {
+            vertical-align: 50%;
+            background-color: lime;
+            padding: 5px;
+            font-size: 16px;
+        }
+
+        .large-text {
+            font-size: 32px;
+            background-color: #ffeedd;
+            padding: 5px;
+        }
+
+        .small-text {
+            font-size: 12px;
+            background-color: #eeffdd;
+            padding: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>CSS vertical-align Property Test</h1>
+
+    <div class="container">
+        <span class="label">baseline:</span>
+        <span>Normal text</span>
+        <span class="baseline">baseline</span>
+        <span>more text</span>
+    </div>
+
+    <div class="container">
+        <span class="label">sub:</span>
+        <span>H</span><span class="sub">2</span><span>O - Water formula</span>
+    </div>
+
+    <div class="container">
+        <span class="label">super:</span>
+        <span>E = mc</span><span class="super">2</span><span> - Einstein's equation</span>
+    </div>
+
+    <div class="container">
+        <span class="label">top:</span>
+        <span>Normal text</span>
+        <span class="top">top aligned</span>
+        <span>more text</span>
+    </div>
+
+    <div class="container">
+        <span class="label">middle:</span>
+        <span>Normal text</span>
+        <span class="middle">middle aligned</span>
+        <span>more text</span>
+    </div>
+
+    <div class="container">
+        <span class="label">bottom:</span>
+        <span>Normal text</span>
+        <span class="bottom">bottom aligned</span>
+        <span>more text</span>
+    </div>
+
+    <div class="container">
+        <span class="label">text-top:</span>
+        <span>Normal text</span>
+        <span class="text-top">text-top</span>
+        <span>more text</span>
+    </div>
+
+    <div class="container">
+        <span class="label">text-bottom:</span>
+        <span>Normal text</span>
+        <span class="text-bottom">text-bottom</span>
+        <span>more text</span>
+    </div>
+
+    <div class="container">
+        <span class="label">10px:</span>
+        <span>Normal text</span>
+        <span class="length-px-10">raised 10px</span>
+        <span>more text</span>
+    </div>
+
+    <div class="container">
+        <span class="label">-5px:</span>
+        <span>Normal text</span>
+        <span class="length-px-neg5">lowered 5px</span>
+        <span>more text</span>
+    </div>
+
+    <div class="container">
+        <span class="label">50%:</span>
+        <span>Normal text</span>
+        <span class="percent-50">raised 50%</span>
+        <span>more text</span>
+    </div>
+
+    <div class="container">
+        <span class="label">Mixed sizes:</span>
+        <span class="small-text">small</span>
+        <span>normal</span>
+        <span class="large-text">LARGE</span>
+        <span class="super">superscript</span>
+    </div>
+</body>
+</html>
+

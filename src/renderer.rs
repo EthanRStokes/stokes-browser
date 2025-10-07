@@ -310,6 +310,7 @@ impl HtmlRenderer {
             let mut text_align = crate::css::TextAlign::Left; // Default alignment
             let mut font_style = crate::css::FontStyle::Normal; // Default font style
             let mut line_height_value = crate::css::LineHeight::Normal; // Default line height
+            let mut vertical_align = crate::css::VerticalAlign::Baseline; // Default vertical alignment
 
             if let Some(styles) = computed_styles {
                 // Apply CSS color
@@ -328,6 +329,9 @@ impl HtmlRenderer {
 
                 // Apply CSS line-height
                 line_height_value = styles.line_height.clone();
+                
+                // Apply CSS vertical-align
+                vertical_align = styles.vertical_align.clone();
             }
 
             // Apply DPI scaling to font size
@@ -335,6 +339,9 @@ impl HtmlRenderer {
 
             // Calculate line height based on CSS line-height property
             let line_height = line_height_value.to_px(scaled_font_size);
+            
+            // Calculate vertical alignment offset
+            let vertical_align_offset = vertical_align.to_px(scaled_font_size, line_height) * scale_factor as f32;
 
             // Get or create font with the scaled size and style
             let font = self.get_font_for_size_and_style(scaled_font_size, &font_style);
@@ -365,15 +372,18 @@ impl HtmlRenderer {
                             content_rect.left + scaled_padding
                         }
                     };
+                    
+                    // Apply vertical alignment offset to the y position
+                    let adjusted_y = current_y + vertical_align_offset;
 
-                    canvas.draw_text_blob(&text_blob, (start_x, current_y), &text_paint);
+                    canvas.draw_text_blob(&text_blob, (start_x, adjusted_y), &text_paint);
 
                     // Render text decorations if specified
                     if let Some(styles) = computed_styles {
                         self.render_text_decorations(
                             canvas,
                             &text_blob,
-                            (start_x, current_y),
+                            (start_x, adjusted_y),
                             &styles.text_decoration,
                             &text_paint,
                             scaled_font_size,

@@ -17,6 +17,7 @@ pub struct ComputedValues {
     pub line_height: super::LineHeight,
     pub text_decoration: TextDecoration,
     pub text_align: super::TextAlign,
+    pub vertical_align: super::VerticalAlign,
     pub clear: super::Clear,
     pub overflow: super::Overflow,
     pub display: DisplayType,
@@ -51,6 +52,7 @@ impl Default for ComputedValues {
             line_height: super::LineHeight::Normal,
             text_decoration: TextDecoration::default(),
             text_align: super::TextAlign::default(),
+            vertical_align: super::VerticalAlign::default(),
             clear: super::Clear::None,
             overflow: super::Overflow::default(),
             display: DisplayType::Block,
@@ -292,6 +294,15 @@ impl StyleResolver {
                     computed.text_align = super::TextAlign::parse(align);
                 } else if let CssValue::String(align) = &declaration.value {
                     computed.text_align = super::TextAlign::parse(align);
+                }
+            }
+            PropertyName::VerticalAlign => {
+                if let CssValue::Keyword(align) = &declaration.value {
+                    computed.vertical_align = super::VerticalAlign::parse(align);
+                } else if let CssValue::String(align) = &declaration.value {
+                    computed.vertical_align = super::VerticalAlign::parse(align);
+                } else if let CssValue::Length(length) = &declaration.value {
+                    computed.vertical_align = super::VerticalAlign::Length(length.clone());
                 }
             }
             PropertyName::Clear => {
@@ -694,7 +705,7 @@ impl StyleResolver {
         computed.font_variant = super::FontVariant::Normal;
         computed.font_weight = "normal".to_string();
         computed.line_height = super::LineHeight::Normal;
-        
+
         // Extract the string value to parse
         let font_str = match value {
             CssValue::String(s) => s.clone(),
@@ -715,46 +726,46 @@ impl StyleResolver {
             }
             _ => return, // Invalid value type for font shorthand
         };
-        
+
         // Split by spaces but respect quoted strings
         let parts = self.split_font_value(&font_str);
-        
+
         if parts.is_empty() {
             return;
         }
-        
+
         // Parse font properties
         let mut i = 0;
         let mut font_size_found = false;
         let mut font_family_parts = Vec::new();
-        
+
         while i < parts.len() {
             let part = &parts[i];
             let part_lower = part.to_lowercase();
-            
+
             // Check for font-style (must come before font-size)
             if !font_size_found && matches!(part_lower.as_str(), "normal" | "italic" | "oblique") {
                 computed.font_style = super::FontStyle::parse(part);
                 i += 1;
                 continue;
             }
-            
+
             // Check for font-variant (must come before font-size)
             if !font_size_found && part_lower == "small-caps" {
                 computed.font_variant = super::FontVariant::parse(part);
                 i += 1;
                 continue;
             }
-            
+
             // Check for font-weight (must come before font-size)
-            if !font_size_found && matches!(part_lower.as_str(), 
-                "normal" | "bold" | "bolder" | "lighter" | 
+            if !font_size_found && matches!(part_lower.as_str(),
+                "normal" | "bold" | "bolder" | "lighter" |
                 "100" | "200" | "300" | "400" | "500" | "600" | "700" | "800" | "900") {
                 computed.font_weight = part.clone();
                 i += 1;
                 continue;
             }
-            
+
             // Check for font-size (with optional line-height)
             if !font_size_found {
                 // Check if this contains line-height (e.g., "16px/1.5")
@@ -771,14 +782,14 @@ impl StyleResolver {
                             computed.font_size = num;
                             font_size_found = true;
                         }
-                        
+
                         // Parse line-height
                         computed.line_height = super::LineHeight::parse(size_height[1]);
                         i += 1;
                         continue;
                     }
                 }
-                
+
                 // Try to parse as font-size without line-height
                 let size_value = CssValue::parse(part);
                 if let CssValue::Length(length) = size_value {
@@ -794,15 +805,15 @@ impl StyleResolver {
                     continue;
                 }
             }
-            
+
             // Everything after font-size is font-family
             if font_size_found {
                 font_family_parts.push(part.clone());
             }
-            
+
             i += 1;
         }
-        
+
         // Join font-family parts (removing quotes if present)
         if !font_family_parts.is_empty() {
             let family = font_family_parts.join(" ");
@@ -815,14 +826,14 @@ impl StyleResolver {
             };
         }
     }
-    
+
     /// Split font value respecting quoted strings
     fn split_font_value(&self, value: &str) -> Vec<String> {
         let mut parts = Vec::new();
         let mut current = String::new();
         let mut in_quotes = false;
         let mut quote_char = ' ';
-        
+
         for ch in value.chars() {
             match ch {
                 '"' | '\'' => {
@@ -855,11 +866,11 @@ impl StyleResolver {
                 }
             }
         }
-        
+
         if !current.is_empty() {
             parts.push(current.trim().to_string());
         }
-        
+
         parts
     }
 }

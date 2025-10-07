@@ -809,24 +809,24 @@ impl LineHeight {
     /// Parse line-height value from string
     pub fn parse(value: &str) -> Self {
         let value = value.trim();
-        
+
         if value == "normal" {
             return LineHeight::Normal;
         }
-        
+
         // Try to parse as a pure number (unitless multiplier)
         if let Ok(num) = value.parse::<f32>() {
             return LineHeight::Number(num);
         }
-        
+
         // Try to parse as a length
         if let Some(length) = CssValue::parse_length(value) {
             return LineHeight::Length(length);
         }
-        
+
         LineHeight::Normal
     }
-    
+
     /// Convert to pixels given font size
     pub fn to_px(&self, font_size: f32) -> f32 {
         match self {
@@ -840,5 +840,75 @@ impl LineHeight {
 impl Default for LineHeight {
     fn default() -> Self {
         LineHeight::Normal
+    }
+}
+
+/// CSS vertical-align property
+#[derive(Debug, Clone, PartialEq)]
+pub enum VerticalAlign {
+    Baseline,
+    Sub,
+    Super,
+    Top,
+    TextTop,
+    Middle,
+    Bottom,
+    TextBottom,
+    Length(Length),
+    Percent(f32),
+}
+
+impl VerticalAlign {
+    /// Parse vertical-align value from string
+    pub fn parse(value: &str) -> Self {
+        let value = value.trim();
+
+        match value.to_lowercase().as_str() {
+            "baseline" => VerticalAlign::Baseline,
+            "sub" => VerticalAlign::Sub,
+            "super" => VerticalAlign::Super,
+            "top" => VerticalAlign::Top,
+            "text-top" => VerticalAlign::TextTop,
+            "middle" => VerticalAlign::Middle,
+            "bottom" => VerticalAlign::Bottom,
+            "text-bottom" => VerticalAlign::TextBottom,
+            _ => {
+                // Try to parse as a length or percentage
+                if value.ends_with('%') {
+                    if let Ok(num) = value.trim_end_matches('%').parse::<f32>() {
+                        return VerticalAlign::Percent(num);
+                    }
+                }
+
+                // Try to parse as a length
+                if let Some(length) = CssValue::parse_length(value) {
+                    return VerticalAlign::Length(length);
+                }
+
+                VerticalAlign::Baseline // Default to baseline
+            }
+        }
+    }
+
+    /// Convert to pixels given font size and line height
+    pub fn to_px(&self, font_size: f32, line_height: f32) -> f32 {
+        match self {
+            VerticalAlign::Baseline => 0.0,
+            VerticalAlign::Sub => -font_size * 0.2, // Lower by 20% of font size
+            VerticalAlign::Super => font_size * 0.4, // Raise by 40% of font size
+            VerticalAlign::Top => line_height * 0.5, // Align with top of line box
+            VerticalAlign::TextTop => font_size * 0.8, // Align with top of font
+            VerticalAlign::Middle => font_size * 0.3, // Align middle of element with baseline + x-height/2
+            VerticalAlign::Bottom => -line_height * 0.5, // Align with bottom of line box
+            VerticalAlign::TextBottom => -font_size * 0.2, // Align with bottom of font
+            VerticalAlign::Length(length) => length.to_px(font_size, font_size),
+            VerticalAlign::Percent(percent) => (percent / 100.0) * line_height,
+        }
+    }
+}
+
+impl Default for VerticalAlign {
+    fn default() -> Self {
+        VerticalAlign::Baseline
     }
 }
