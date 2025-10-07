@@ -541,6 +541,21 @@ impl BrowserUI {
         false
     }
 
+    /// Check if the mouse is over a text field (for cursor display)
+    pub fn is_mouse_over_text_field(&self, x: f64, y: f64) -> bool {
+        let x = x as f32;
+        let y = y as f32;
+
+        for comp in &self.components {
+            if let UiComponent::TextField { x: fx, y: fy, width, height, .. } = comp {
+                if x >= *fx && x <= fx + width && y >= *fy && y <= fy + height {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Check if click is on close button of active tab, returns tab ID if so
     pub fn check_close_button_click(&self, x: f32, y: f32) -> Option<String> {
         for comp in &self.components {

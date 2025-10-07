@@ -495,9 +495,12 @@ impl BrowserApp {
     fn update_cursor_for_position(&self) {
         let (x, y) = self.cursor_position;
 
-        // Check if the mouse is over any interactive UI element first (UI takes priority)
-        if self.ui.is_mouse_over_interactive_element(x, y) {
-            // Change cursor to pointer (hand) when over links or buttons
+        // Check if the mouse is over a text field first (UI takes priority)
+        if self.ui.is_mouse_over_text_field(x, y) {
+            // Change cursor to I-beam when over text fields
+            self.env.window.set_cursor_icon(winit::window::CursorIcon::Text);
+        } else if self.ui.is_mouse_over_interactive_element(x, y) {
+            // Change cursor to pointer (hand) when over other interactive elements like buttons
             self.env.window.set_cursor_icon(winit::window::CursorIcon::Pointer);
         } else {
             // Check if the mouse is over page content
