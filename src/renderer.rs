@@ -291,6 +291,11 @@ impl HtmlRenderer {
             canvas.draw_rect(border_box, &heading_paint);
         }
 
+        // Render outline if specified
+        if let Some(styles) = computed_styles {
+            self.render_outline(canvas, &border_box, styles, opacity, scale_factor);
+        }
+
         // Render rounded corners if border radius is specified
         if let Some(styles) = computed_styles {
             let border_radius_px = styles.border_radius.to_px(styles.font_size, 400.0);
@@ -1007,6 +1012,105 @@ impl HtmlRenderer {
                 scale_factor,
             );
         }
+    }
+
+    /// Render outline for an element
+    fn render_outline(
+        &self,
+        canvas: &Canvas,
+        rect: &Rect,
+        styles: &ComputedValues,
+        opacity: f32,
+        scale_factor: f64,
+    ) {
+        use crate::css::OutlineStyle;
+
+        // Check if outline is visible
+        if !styles.outline.is_visible() {
+            return;
+        }
+
+        // Get outline width in pixels
+        let outline_width_px = styles.outline.width.to_px(styles.font_size, 400.0);
+        if outline_width_px <= 0.0 {
+            return;
+        }
+
+        // Get outline offset in pixels
+        let outline_offset_px = styles.outline_offset.to_px(styles.font_size, 400.0);
+
+        // Apply scale factor
+        let scaled_outline_width = outline_width_px * scale_factor as f32;
+        let scaled_outline_offset = outline_offset_px * scale_factor as f32;
+
+        // Calculate outline rectangle (outside the border box, with offset)
+        let outline_rect = Rect::from_xywh(
+            rect.left - scaled_outline_offset - scaled_outline_width / 2.0,
+            rect.top - scaled_outline_offset - scaled_outline_width / 2.0,
+            rect.width() + 2.0 * (scaled_outline_offset + scaled_outline_width / 2.0),
+            rect.height() + 2.0 * (scaled_outline_offset + scaled_outline_width / 2.0),
+        );
+
+        // Create outline paint
+        let mut outline_paint = Paint::default();
+        let mut outline_color = styles.outline.color.to_skia_color();
+        outline_color = outline_color.with_a((outline_color.a() as f32 * opacity) as u8);
+        outline_paint.set_color(outline_color);
+        outline_paint.set_stroke(true);
+        outline_paint.set_stroke_width(scaled_outline_width);
+        outline_paint.set_anti_alias(true);
+
+        // Set outline style (dashed, dotted, etc.)
+        match styles.outline.style {
+            OutlineStyle::Solid => {
+                // Default solid line, no path effect needed
+            }
+            OutlineStyle::Dashed => {
+                // Create dashed line effect
+                let intervals = [scaled_outline_width * 3.0, scaled_outline_width * 2.0];
+                if let Some(path_effect) = skia_safe::PathEffect::dash(&intervals, 0.0) {
+                    outline_paint.set_path_effect(path_effect);
+                }
+            }
+            OutlineStyle::Dotted => {
+                // Create dotted line effect
+                let intervals = [scaled_outline_width, scaled_outline_width];
+                if let Some(path_effect) = skia_safe::PathEffect::dash(&intervals, 0.0) {
+                    outline_paint.set_path_effect(path_effect);
+                }
+            }
+            OutlineStyle::Double => {
+                // Draw two outlines (simplified implementation)
+                let inner_width = scaled_outline_width / 3.0;
+                let gap = scaled_outline_width / 3.0;
+
+                // Draw outer outline
+                let mut outer_paint = outline_paint.clone();
+                outer_paint.set_stroke_width(inner_width);
+                canvas.draw_rect(outline_rect, &outer_paint);
+
+                // Draw inner outline
+                let inner_rect = Rect::from_xywh(
+                    outline_rect.left + gap + inner_width,
+                    outline_rect.top + gap + inner_width,
+                    outline_rect.width() - 2.0 * (gap + inner_width),
+                    outline_rect.height() - 2.0 * (gap + inner_width),
+                );
+                canvas.draw_rect(inner_rect, &outer_paint);
+                return; // Skip the main draw below
+            }
+            OutlineStyle::Groove | OutlineStyle::Ridge |
+            OutlineStyle::Inset | OutlineStyle::Outset => {
+                // These styles create 3D effects - simplified to solid for now
+                // A full implementation would draw with different shades
+            }
+            OutlineStyle::None | OutlineStyle::Hidden => {
+                return; // Already checked, but handle explicitly
+            }
+        }
+
+        // Draw the outline
+        canvas.draw_rect(outline_rect, &outline_paint);
     }
 }
 

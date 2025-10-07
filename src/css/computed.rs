@@ -42,6 +42,8 @@ pub struct ComputedValues {
     pub opacity: f32,
     pub transition: super::TransitionSpec,
     pub list_style_type: super::ListStyleType,
+    pub outline: super::Outline,
+    pub outline_offset: super::values::Length,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -91,6 +93,8 @@ impl Default for ComputedValues {
             opacity: 1.0,
             transition: super::TransitionSpec::default(),
             list_style_type: super::ListStyleType::None,
+            outline: super::Outline::none(),
+            outline_offset: super::values::Length::default(),
         }
     }
 }
@@ -702,6 +706,48 @@ impl StyleResolver {
                     computed.list_style_type = super::ListStyleType::parse(list_style);
                 } else if let CssValue::String(list_style) = &declaration.value {
                     computed.list_style_type = super::ListStyleType::parse(list_style);
+                }
+            }
+            PropertyName::Outline => {
+                // Parse outline shorthand (e.g., "2px solid red")
+                match &declaration.value {
+                    CssValue::String(outline_str) => {
+                        computed.outline = super::Outline::parse(outline_str);
+                    }
+                    CssValue::Keyword(keyword) => {
+                        computed.outline = super::Outline::parse(keyword);
+                    }
+                    _ => {}
+                }
+            }
+            PropertyName::OutlineWidth => {
+                if let CssValue::Length(length) = &declaration.value {
+                    computed.outline.width = length.clone();
+                } else if let CssValue::Keyword(keyword) = &declaration.value {
+                    // Handle named width keywords
+                    match keyword.to_lowercase().as_str() {
+                        "thin" => computed.outline.width = super::values::Length::px(1.0),
+                        "medium" => computed.outline.width = super::values::Length::px(3.0),
+                        "thick" => computed.outline.width = super::values::Length::px(5.0),
+                        _ => {}
+                    }
+                }
+            }
+            PropertyName::OutlineStyle => {
+                if let CssValue::Keyword(style) = &declaration.value {
+                    computed.outline.style = super::OutlineStyle::parse(style);
+                } else if let CssValue::String(style) = &declaration.value {
+                    computed.outline.style = super::OutlineStyle::parse(style);
+                }
+            }
+            PropertyName::OutlineColor => {
+                if let CssValue::Color(color) = &declaration.value {
+                    computed.outline.color = color.clone();
+                }
+            }
+            PropertyName::OutlineOffset => {
+                if let CssValue::Length(length) = &declaration.value {
+                    computed.outline_offset = length.clone();
                 }
             }
             _ => {
