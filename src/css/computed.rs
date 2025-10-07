@@ -36,6 +36,7 @@ pub struct ComputedValues {
     pub box_shadow: Vec<BoxShadow>,
     pub box_sizing: super::BoxSizing,
     pub cursor: super::Cursor,
+    pub transition: super::TransitionSpec,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -79,6 +80,7 @@ impl Default for ComputedValues {
             box_shadow: Vec::new(),
             box_sizing: super::BoxSizing::ContentBox,
             cursor: super::Cursor::Auto,
+            transition: super::TransitionSpec::default(),
         }
     }
 }
@@ -618,6 +620,16 @@ impl StyleResolver {
                     computed.cursor = super::Cursor::parse(cursor);
                 } else if let CssValue::String(cursor) = &declaration.value {
                     computed.cursor = super::Cursor::parse(cursor);
+                }
+            }
+            PropertyName::Transition => {
+                // Parse transition property (e.g., "all 0.3s ease")
+                if let CssValue::String(transition_str) = &declaration.value {
+                    computed.transition = super::TransitionSpec::parse(transition_str);
+                } else if let CssValue::Keyword(keyword) = &declaration.value {
+                    if keyword == "none" {
+                        computed.transition = super::TransitionSpec::default();
+                    }
                 }
             }
             _ => {

@@ -6,6 +6,7 @@ use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob, FontStyle, Typeface}
 use crate::dom::{DomNode, NodeType, ElementData, ImageData, ImageLoadingState};
 use crate::layout::{LayoutBox, BoxType};
 use crate::css::{ComputedValues, BorderRadiusPx, TextDecoration};
+use crate::css::transition_manager::TransitionManager;
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer {
@@ -67,13 +68,14 @@ impl HtmlRenderer {
         }
     }
 
-    /// Render a layout tree to the canvas
+    /// Render a layout tree to the canvas with transition support
     pub fn render(
         &self,
         canvas: &Canvas,
         layout: &LayoutBox,
         node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
         style_map: &HashMap<usize, ComputedValues>,
+        transition_manager: Option<&TransitionManager>,
         scroll_x: f32,
         scroll_y: f32,
         scale_factor: f64,
@@ -85,23 +87,32 @@ impl HtmlRenderer {
         canvas.translate((-scroll_x, -scroll_y));
 
         // Render the layout tree with styles and scale factor
-        self.render_box(canvas, layout, node_map, style_map, scale_factor);
+        self.render_box(canvas, layout, node_map, style_map, transition_manager, scale_factor);
 
         // Restore the canvas state
         canvas.restore();
     }
 
-    /// Render a single layout box with CSS styles and scale factor
+    /// Render a single layout box with CSS styles, transitions, and scale factor
     fn render_box(
         &self,
         canvas: &Canvas,
         layout_box: &LayoutBox,
         node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
         style_map: &HashMap<usize, ComputedValues>,
+        transition_manager: Option<&TransitionManager>,
         scale_factor: f64,
     ) {
-        // Get computed styles for this node
-        let computed_styles = style_map.get(&layout_box.node_id);
+        // Get base computed styles for this node
+        let base_styles = style_map.get(&layout_box.node_id);
+
+        // Get interpolated styles if transitions are active
+        let computed_styles = if let (Some(manager), Some(base)) = (transition_manager, base_styles) {
+            let interpolated = manager.get_interpolated_styles(layout_box.node_id, base);
+            Some(interpolated)
+        } else {
+            base_styles.cloned()
+        };
 
         // Get the DOM node for this layout box
         if let Some(dom_node_rc) = node_map.get(&layout_box.node_id) {
@@ -114,12 +125,12 @@ impl HtmlRenderer {
 
             match &dom_node.node_type {
                 NodeType::Element(element_data) => {
-                    self.render_element(canvas, layout_box, element_data, computed_styles, scale_factor);
+                    self.render_element(canvas, layout_box, element_data, computed_styles.as_ref(), scale_factor);
                 },
                 NodeType::Text(_) => {
                     // Check if text node is inside a non-visual element
                     if !self.is_inside_non_visual_element(&dom_node) {
-                        self.render_text_node(canvas, layout_box, computed_styles, scale_factor);
+                        self.render_text_node(canvas, layout_box, computed_styles.as_ref(), scale_factor);
                     }
                 },
                 NodeType::Image(image_data) => {
@@ -139,7 +150,7 @@ impl HtmlRenderer {
             let dom_node = dom_node_rc.borrow();
             if !self.should_skip_rendering(&dom_node) {
                 for child in &layout_box.children {
-                    self.render_box(canvas, child, node_map, style_map, scale_factor);
+                    self.render_box(canvas, child, node_map, style_map, transition_manager, scale_factor);
                 }
             }
         }

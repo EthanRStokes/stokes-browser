@@ -10,6 +10,7 @@ use crate::dom::{Dom, DomNode, NodeType, ImageData, ImageLoadingState};
 use crate::layout::{LayoutEngine, LayoutBox};
 use crate::renderer::HtmlRenderer;
 use crate::css::{CssParser, Stylesheet, ComputedValues};
+use crate::css::transition_manager::TransitionManager;
 
 pub use self::config::EngineConfig;
 
@@ -35,6 +36,10 @@ pub struct Engine {
     viewport_height: f32,
     viewport_width: f32,
     pub(crate) scale_factor: f64,
+    // Add transition manager for CSS animations
+    transition_manager: TransitionManager,
+    // Store previous style map to detect changes for transitions
+    previous_style_map: HashMap<usize, ComputedValues>,
 }
 
 impl Engine {
@@ -59,6 +64,8 @@ impl Engine {
             viewport_height: 600.0,
             viewport_width: 800.0,
             scale_factor,
+            transition_manager: TransitionManager::new(),
+            previous_style_map: HashMap::new(),
         }
     }
 
@@ -276,22 +283,52 @@ impl Engine {
         self.update_content_dimensions();
     }
 
-    /// Render the current page to a canvas
+    /// Render the current page to a canvas with transition support
     pub fn render(&mut self, canvas: &Canvas, scale_factor: f64) {
         if let Some(layout) = &self.layout {
             // Update style map only if it's dirty
             if self.style_map_dirty {
-                self.cached_style_map = self.node_map.keys()
+                let new_style_map: HashMap<usize, ComputedValues> = self.node_map.keys()
                     .filter_map(|&node_id| {
                         self.layout_engine.get_computed_styles(node_id)
                             .map(|styles| (node_id, styles.clone()))
                     })
                     .collect();
+
+                // Check for style changes and update transitions
+                for (node_id, new_styles) in &new_style_map {
+                    if let Some(old_styles) = self.previous_style_map.get(node_id) {
+                        // Update transitions for this element if styles changed
+                        self.transition_manager.update_element_styles(*node_id, old_styles, new_styles);
+                    }
+                }
+
+                // Update the cached style maps
+                self.previous_style_map = self.cached_style_map.clone();
+                self.cached_style_map = new_style_map;
                 self.style_map_dirty = false;
             }
 
-            // Use the cached renderer and style map with scale factor
-            self.renderer.render(canvas, layout, &self.node_map, &self.cached_style_map, self.scroll_x, self.scroll_y, scale_factor);
+            // Clean up completed transitions
+            self.transition_manager.cleanup_completed_transitions();
+
+            // Use the renderer with transition support
+            let transition_manager_ref = if self.transition_manager.has_active_transitions() {
+                Some(&self.transition_manager)
+            } else {
+                None
+            };
+
+            self.renderer.render(
+                canvas,
+                layout,
+                &self.node_map,
+                &self.cached_style_map,
+                transition_manager_ref,
+                self.scroll_x,
+                self.scroll_y,
+                scale_factor
+            );
         }
     }
 
@@ -471,7 +508,7 @@ impl Engine {
         // Check if position is within this box
         if x >= border_box.left && x <= border_box.right &&
            y >= border_box.top && y <= border_box.bottom {
-            
+
             // Check children first (they are on top)
             for child in &layout_box.children {
                 if let Some(child_node_id) = self.find_element_at_position(child, x, y) {
@@ -484,5 +521,10 @@ impl Engine {
         }
 
         None
+    }
+
+    /// Check if there are active transitions that require continuous rendering
+    pub fn has_active_transitions(&self) -> bool {
+        self.transition_manager.has_active_transitions()
     }
 }

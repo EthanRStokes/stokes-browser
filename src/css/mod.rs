@@ -4,9 +4,10 @@ mod values;
 mod selector;
 mod stylesheet;
 pub(crate) mod computed;
+pub mod transition_manager;
 
 pub use self::parser::CssParser;
-pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Overflow, FontStyle, FontVariant, LineHeight, VerticalAlign, ContentValue, BoxSizing, Cursor, TextTransform};
+pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Overflow, FontStyle, FontVariant, LineHeight, VerticalAlign, ContentValue, BoxSizing, Cursor, TextTransform, TimingFunction, StepPosition, Duration, Transition, TransitionProperty, TransitionSpec};
 pub use self::selector::{Selector, SelectorType, PseudoClass, PseudoElement};
 pub use self::stylesheet::{Stylesheet, Rule, Declaration};
 pub use self::computed::{ComputedValues, StyleResolver};
@@ -67,6 +68,11 @@ pub enum PropertyName {
     Bottom,
     Left,
     Cursor,
+    Transition,
+    TransitionProperty,
+    TransitionDuration,
+    TransitionTimingFunction,
+    TransitionDelay,
     Unknown(String),
 }
 
@@ -126,6 +132,11 @@ impl From<&str> for PropertyName {
             "bottom" => PropertyName::Bottom,
             "left" => PropertyName::Left,
             "cursor" => PropertyName::Cursor,
+            "transition" => PropertyName::Transition,
+            "transition-property" => PropertyName::TransitionProperty,
+            "transition-duration" => PropertyName::TransitionDuration,
+            "transition-timing-function" => PropertyName::TransitionTimingFunction,
+            "transition-delay" => PropertyName::TransitionDelay,
             _ => {
                 println!("Warning: Unknown CSS property: {}", s);
                 PropertyName::Unknown(s.to_string())
