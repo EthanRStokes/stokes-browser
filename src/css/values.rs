@@ -1013,3 +1013,27 @@ impl Default for ContentValue {
         ContentValue::Normal
     }
 }
+
+/// CSS box-sizing property
+#[derive(Debug, Clone, PartialEq)]
+pub enum BoxSizing {
+    ContentBox,
+    BorderBox,
+}
+
+impl BoxSizing {
+    /// Parse box-sizing value from string
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_lowercase().as_str() {
+            "border-box" => BoxSizing::BorderBox,
+            "content-box" => BoxSizing::ContentBox,
+            _ => BoxSizing::ContentBox, // Default to content-box
+        }
+    }
+}
+
+impl Default for BoxSizing {
+    fn default() -> Self {
+        BoxSizing::ContentBox
+    }
+}

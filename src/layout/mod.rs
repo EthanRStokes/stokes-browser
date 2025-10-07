@@ -98,6 +98,9 @@ impl LayoutEngine {
             layout_box.dimensions.padding = computed_styles.padding.clone();
             layout_box.dimensions.border = computed_styles.border.clone();
 
+            // Apply box-sizing property
+            layout_box.box_sizing = computed_styles.box_sizing.clone();
+
             // Apply width and height constraints
             if let Some(width) = &computed_styles.width {
                 let parent_width = self.viewport_width; // Simplified parent width

@@ -6,7 +6,7 @@ mod stylesheet;
 pub(crate) mod computed;
 
 pub use self::parser::CssParser;
-pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Overflow, FontStyle, FontVariant, LineHeight, VerticalAlign, ContentValue};
+pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Overflow, FontStyle, FontVariant, LineHeight, VerticalAlign, ContentValue, BoxSizing};
 pub use self::selector::{Selector, SelectorType, PseudoClass, PseudoElement};
 pub use self::stylesheet::{Stylesheet, Rule, Declaration};
 pub use self::computed::{ComputedValues, StyleResolver};
@@ -41,6 +41,7 @@ pub enum PropertyName {
     BorderBottomLeftRadius,
     BorderBottomRightRadius,
     BoxShadow,
+    BoxSizing,
     Font,
     FontSize,
     FontFamily,
@@ -93,6 +94,7 @@ impl From<&str> for PropertyName {
             "border-bottom-left-radius" => PropertyName::BorderBottomLeftRadius,
             "border-bottom-right-radius" => PropertyName::BorderBottomRightRadius,
             "box-shadow" => PropertyName::BoxShadow,
+            "box-sizing" => PropertyName::BoxSizing,
             "font" => PropertyName::Font,
             "font-size" => PropertyName::FontSize,
             "font-family" => PropertyName::FontFamily,

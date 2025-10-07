@@ -23,6 +23,7 @@ pub struct LayoutBox {
     pub content: Option<String>, // For text nodes
     pub css_width: Option<crate::css::Length>, // CSS specified width
     pub css_height: Option<crate::css::Length>, // CSS specified height
+    pub box_sizing: crate::css::BoxSizing, // CSS box-sizing property
 }
 
 impl LayoutBox {
@@ -35,6 +36,7 @@ impl LayoutBox {
             content: None,
             css_width: None,
             css_height: None,
+            box_sizing: crate::css::BoxSizing::ContentBox, // Default value
         }
     }
 
@@ -318,11 +320,25 @@ impl LayoutBox {
         );
     }
 
-    /// Calculate the actual width this box should use, respecting CSS width values
+    /// Calculate the actual width this box should use, respecting CSS width values and box-sizing
     fn calculate_used_width(&self, container_width: f32, scale_factor: f32) -> f32 {
         if let Some(css_width) = &self.css_width {
             // Use the CSS-specified width, converting to pixels and scaling
-            css_width.to_px(16.0, container_width) * scale_factor
+            let specified_width = css_width.to_px(16.0, container_width) * scale_factor;
+            
+            // Apply box-sizing logic
+            match self.box_sizing {
+                crate::css::BoxSizing::ContentBox => {
+                    // Default behavior: width applies to content box only
+                    specified_width
+                }
+                crate::css::BoxSizing::BorderBox => {
+                    // Width includes padding and border, so subtract them to get content width
+                    specified_width 
+                        - self.dimensions.padding.left - self.dimensions.padding.right
+                        - self.dimensions.border.left - self.dimensions.border.right
+                }
+            }
         } else {
             // Use auto width (full container width minus margins, borders, padding)
             container_width - self.dimensions.padding.left - self.dimensions.padding.right
@@ -331,11 +347,25 @@ impl LayoutBox {
         }
     }
 
-    /// Calculate the actual height this box should use, respecting CSS height values
+    /// Calculate the actual height this box should use, respecting CSS height values and box-sizing
     fn calculate_used_height(&self, container_height: f32, scale_factor: f32, content_height: f32) -> f32 {
         if let Some(css_height) = &self.css_height {
             // Use the CSS-specified height, converting to pixels and scaling
-            css_height.to_px(16.0, container_height) * scale_factor
+            let specified_height = css_height.to_px(16.0, container_height) * scale_factor;
+            
+            // Apply box-sizing logic
+            match self.box_sizing {
+                crate::css::BoxSizing::ContentBox => {
+                    // Default behavior: height applies to content box only
+                    specified_height
+                }
+                crate::css::BoxSizing::BorderBox => {
+                    // Height includes padding and border, so subtract them to get content height
+                    specified_height
+                        - self.dimensions.padding.top - self.dimensions.padding.bottom
+                        - self.dimensions.border.top - self.dimensions.border.bottom
+                }
+            }
         } else {
             // Use auto height (content-based height or minimum height for empty blocks)
             if content_height > 0.0 {

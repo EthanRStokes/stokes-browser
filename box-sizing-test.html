@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Box-Sizing Test</title>
+    <style>
+        body {
+            margin: 20px;
+            font-family: Arial, sans-serif;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+        }
+
+        .container {
+            margin-bottom: 40px;
+        }
+
+        .box {
+            width: 200px;
+            height: 100px;
+            padding: 20px;
+            border: 5px solid #333;
+            margin: 10px 0;
+            background-color: #e0f0ff;
+        }
+
+        .content-box {
+            box-sizing: content-box;
+        }
+
+        .border-box {
+            box-sizing: border-box;
+        }
+
+        .label {
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: #666;
+        }
+
+        .description {
+            font-size: 14px;
+            color: #888;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Box-Sizing Property Test</h1>
+
+    <div class="container">
+        <div class="label">box-sizing: content-box (default)</div>
+        <div class="box content-box">
+            Content area is 200x100px.
+            Total width = 200 + 40 (padding) + 10 (border) = 250px
+        </div>
+        <div class="description">
+            Width/height applies to content only. Padding and border are added.
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="label">box-sizing: border-box</div>
+        <div class="box border-box">
+            Total box is 200x100px.
+            Content width = 200 - 40 (padding) - 10 (border) = 150px
+        </div>
+        <div class="description">
+            Width/height includes padding and border. Content area is smaller.
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Side-by-Side Comparison</h2>
+        <div style="display: inline-block;">
+            <div class="label">content-box</div>
+            <div class="box content-box" style="width: 150px; height: 80px; display: inline-block;">
+                150x80
+            </div>
+        </div>
+        <div style="display: inline-block; margin-left: 20px;">
+            <div class="label">border-box</div>
+            <div class="box border-box" style="width: 150px; height: 80px; display: inline-block;">
+                150x80
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+
