@@ -7,7 +7,7 @@ pub(crate) mod computed;
 pub mod transition_manager;
 
 pub use self::parser::CssParser;
-pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Overflow, FontStyle, FontVariant, LineHeight, VerticalAlign, ContentValue, BoxSizing, Cursor, TextTransform, TimingFunction, StepPosition, Duration, Transition, TransitionProperty, TransitionSpec};
+pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Float, Overflow, FontStyle, FontVariant, LineHeight, VerticalAlign, ContentValue, BoxSizing, Cursor, TextTransform, TimingFunction, StepPosition, Duration, Transition, TransitionProperty, TransitionSpec};
 pub use self::selector::{Selector, SelectorType, PseudoClass, PseudoElement};
 pub use self::stylesheet::{Stylesheet, Rule, Declaration};
 pub use self::computed::{ComputedValues, StyleResolver};
@@ -60,6 +60,7 @@ pub enum PropertyName {
     VerticalAlign,
     Content,
     Clear,
+    Float,
     Overflow,
     Display,
     Position,
@@ -125,6 +126,7 @@ impl From<&str> for PropertyName {
             "vertical-align" => PropertyName::VerticalAlign,
             "content" => PropertyName::Content,
             "clear" => PropertyName::Clear,
+            "float" => PropertyName::Float,
             "overflow" => PropertyName::Overflow,
             "display" => PropertyName::Display,
             "position" => PropertyName::Position,

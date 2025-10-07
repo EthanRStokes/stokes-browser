@@ -3,6 +3,94 @@ use super::box_model::{Dimensions, EdgeSizes};
 use skia_safe::Rect;
 use crate::dom::ImageData;
 
+/// Tracks active floats in a formatting context
+#[derive(Debug, Clone)]
+struct FloatContext {
+    /// Left-floated boxes with their positions
+    left_floats: Vec<(f32, f32, f32, f32)>, // (x, y, width, height)
+    /// Right-floated boxes with their positions
+    right_floats: Vec<(f32, f32, f32, f32)>, // (x, y, width, height)
+}
+
+impl FloatContext {
+    fn new() -> Self {
+        Self {
+            left_floats: Vec::new(),
+            right_floats: Vec::new(),
+        }
+    }
+
+    /// Get the available width at a given Y position, considering floats
+    fn get_available_width(&self, y: f32, container_width: f32, container_x: f32) -> (f32, f32) {
+        let mut left_edge = container_x;
+        let mut right_edge = container_x + container_width;
+
+        // Check left floats
+        for (fx, fy, fw, fh) in &self.left_floats {
+            if y >= *fy && y < fy + fh {
+                left_edge = left_edge.max(fx + fw);
+            }
+        }
+
+        // Check right floats
+        for (fx, fy, fw, fh) in &self.right_floats {
+            if y >= *fy && y < fy + fh {
+                right_edge = right_edge.min(*fx);
+            }
+        }
+
+        (left_edge, right_edge - left_edge)
+    }
+
+    /// Get the Y position to clear floats
+    fn get_clear_y(&self, clear_type: &crate::css::Clear, current_y: f32) -> f32 {
+        use crate::css::Clear;
+
+        let mut clear_y = current_y;
+
+        match clear_type {
+            Clear::Left => {
+                for (_, fy, _, fh) in &self.left_floats {
+                    clear_y = clear_y.max(fy + fh);
+                }
+            }
+            Clear::Right => {
+                for (_, fy, _, fh) in &self.right_floats {
+                    clear_y = clear_y.max(fy + fh);
+                }
+            }
+            Clear::Both => {
+                for (_, fy, _, fh) in &self.left_floats {
+                    clear_y = clear_y.max(fy + fh);
+                }
+                for (_, fy, _, fh) in &self.right_floats {
+                    clear_y = clear_y.max(fy + fh);
+                }
+            }
+            Clear::None => {}
+        }
+
+        clear_y
+    }
+
+    /// Find the next Y position where content can fit with given width
+    fn find_y_for_width(&self, start_y: f32, required_width: f32, container_width: f32, container_x: f32) -> f32 {
+        let mut y = start_y;
+        let step = 1.0; // Step size for searching
+
+        // Try up to 100 steps to find space
+        for _ in 0..100 {
+            let (_, available_width) = self.get_available_width(y, container_width, container_x);
+            if available_width >= required_width {
+                return y;
+            }
+            y += step;
+        }
+
+        y
+    }
+}
+
 /// Type of layout box
 #[derive(Debug, Clone, PartialEq)]
 pub enum BoxType {
@@ -89,17 +177,35 @@ impl LayoutBox {
         let mut current_y = content_y;
         let available_width = content_width;
 
-        // Layout children vertically
+        // Track floats in this formatting context
+        let mut float_context = FloatContext::new();
+
+        // Layout children vertically, handling floats
         for child in &mut self.children {
+            // Layout the child first to determine its dimensions
             child.layout(available_width, container_height, content_x, current_y, scale_factor);
+
+            // Now position it based on float/clear properties (would need access to style_map)
+            // For now, we'll just stack them vertically
             current_y += child.dimensions.total_height();
         }
 
-        // Calculate auto content height based on children
+        // Calculate auto content height based on children and floats
         let auto_content_height = if self.children.is_empty() {
-            0.0 // No content height for empty blocks initially
+            0.0
         } else {
-            current_y - content_y
+            // Include floats in height calculation
+            let mut max_height = current_y - content_y;
+
+            // Check if any floats extend beyond normal flow
+            for (_, fy, _, fh) in &float_context.left_floats {
+                max_height = max_height.max(fy + fh - content_y);
+            }
+            for (_, fy, _, fh) in &float_context.right_floats {
+                max_height = max_height.max(fy + fh - content_y);
+            }
+
+            max_height
         };
 
         // Use CSS height if specified, otherwise use auto height

@@ -729,6 +729,32 @@ impl Default for Clear {
     }
 }
 
+/// CSS float property
+#[derive(Debug, Clone, PartialEq)]
+pub enum Float {
+    None,
+    Left,
+    Right,
+}
+
+impl Float {
+    /// Parse float value from string
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_lowercase().as_str() {
+            "none" => Float::None,
+            "left" => Float::Left,
+            "right" => Float::Right,
+            _ => Float::None, // Default to none
+        }
+    }
+}
+
+impl Default for Float {
+    fn default() -> Self {
+        Float::None
+    }
+}
+
 /// CSS overflow property
 #[derive(Debug, Clone, PartialEq)]
 pub enum Overflow {

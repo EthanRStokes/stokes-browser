@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSS Float Test</title>
+    <style>
+        .container {
+            width: 600px;
+            background-color: #f0f0f0;
+            padding: 10px;
+        }
+
+        .float-left {
+            float: left;
+            width: 200px;
+            height: 150px;
+            background-color: #ff6b6b;
+            margin: 10px;
+            padding: 10px;
+        }
+
+        .float-right {
+            float: right;
+            width: 200px;
+            height: 150px;
+            background-color: #4ecdc4;
+            margin: 10px;
+            padding: 10px;
+        }
+
+        .no-float {
+            background-color: #ffe66d;
+            padding: 10px;
+            margin: 10px;
+        }
+
+        .clear-both {
+            clear: both;
+            background-color: #95e1d3;
+            padding: 10px;
+            margin: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>CSS Float Property Test</h1>
+
+        <div class="float-left">
+            Float Left Box
+        </div>
+
+        <div class="float-right">
+            Float Right Box
+        </div>
+
+        <div class="no-float">
+            This is normal content that should wrap around the floated elements.
+            This demonstrates how text flows around floated boxes.
+        </div>
+
+        <div class="clear-both">
+            This element has clear: both, so it appears below all floated elements.
+        </div>
+    </div>
+</body>
+</html>
+

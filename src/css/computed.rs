@@ -21,6 +21,7 @@ pub struct ComputedValues {
     pub vertical_align: super::VerticalAlign,
     pub content: super::ContentValue,
     pub clear: super::Clear,
+    pub float: super::Float,
     pub overflow: super::Overflow,
     pub display: DisplayType,
     pub width: Option<super::values::Length>,
@@ -66,6 +67,7 @@ impl Default for ComputedValues {
             vertical_align: super::VerticalAlign::default(),
             content: super::ContentValue::Normal,
             clear: super::Clear::None,
+            float: super::Float::None,
             overflow: super::Overflow::default(),
             display: DisplayType::Block,
             width: None,
@@ -344,6 +346,13 @@ impl StyleResolver {
                     computed.clear = super::Clear::parse(clear_value);
                 } else if let CssValue::String(clear_value) = &declaration.value {
                     computed.clear = super::Clear::parse(clear_value);
+                }
+            }
+            PropertyName::Float => {
+                if let CssValue::Keyword(float_value) = &declaration.value {
+                    computed.float = super::Float::parse(float_value);
+                } else if let CssValue::String(float_value) = &declaration.value {
+                    computed.float = super::Float::parse(float_value);
                 }
             }
             PropertyName::Overflow => {
