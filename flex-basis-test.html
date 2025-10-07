@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Flex-Basis Layout Test - Working Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+        }
+
+        /* Test 1: Different pixel values */
+        .box-200 {
+            flex-basis: 200px;
+            background-color: #e74c3c;
+            color: white;
+            padding: 20px;
+            margin: 10px;
+        }
+
+        .box-300 {
+            flex-basis: 300px;
+            background-color: #3498db;
+            color: white;
+            padding: 20px;
+            margin: 10px;
+        }
+
+        .box-150 {
+            flex-basis: 150px;
+            background-color: #2ecc71;
+            color: white;
+            padding: 20px;
+            margin: 10px;
+        }
+
+        /* Test 2: Percentage values */
+        .box-50pct {
+            flex-basis: 50%;
+            background-color: #9b59b6;
+            color: white;
+            padding: 20px;
+            margin: 10px;
+        }
+
+        .box-30pct {
+            flex-basis: 30%;
+            background-color: #f39c12;
+            color: white;
+            padding: 20px;
+            margin: 10px;
+        }
+
+        /* Test 3: Auto value */
+        .box-auto {
+            flex-basis: auto;
+            width: 250px;
+            background-color: #1abc9c;
+            color: white;
+            padding: 20px;
+            margin: 10px;
+        }
+
+        /* Test 4: Content value */
+        .box-content {
+            flex-basis: content;
+            background-color: #e67e22;
+            color: white;
+            padding: 20px;
+            margin: 10px;
+        }
+
+        /* Test 5: Em units */
+        .box-20em {
+            flex-basis: 20em;
+            background-color: #34495e;
+            color: white;
+            padding: 20px;
+            margin: 10px;
+        }
+
+        /* Test 6: Overriding width with flex-basis */
+        .box-override {
+            flex-basis: 180px;
+            width: 300px;
+            background-color: #c0392b;
+            color: white;
+            padding: 20px;
+            margin: 10px;
+        }
+
+        /* Test 7: With box-sizing */
+        .box-border-box {
+            flex-basis: 250px;
+            box-sizing: border-box;
+            background-color: #8e44ad;
+            color: white;
+            padding: 30px;
+            margin: 10px;
+            border: 5px solid #6c3483;
+        }
+
+        .section {
+            background-color: white;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: bold;
+            color: #2c3e50;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 10px;
+        }
+
+        .description {
+            color: #7f8c8d;
+            font-size: 14px;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Flex-Basis Property - Layout & Rendering Test</h1>
+
+    <div class="section">
+        <div class="section-title">Test 1: Pixel Values</div>
+        <div class="description">
+            Elements with explicit pixel values for flex-basis.
+            The width is determined by flex-basis, not the width property.
+        </div>
+
+        <div class="box-200">
+            flex-basis: 200px
+            <br>This box has a flex-basis of 200 pixels
+        </div>
+
+        <div class="box-300">
+            flex-basis: 300px
+            <br>This box has a flex-basis of 300 pixels
+        </div>
+
+        <div class="box-150">
+            flex-basis: 150px
+            <br>This box has a flex-basis of 150 pixels
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Test 2: Percentage Values</div>
+        <div class="description">
+            Percentage values are relative to the container's width.
+        </div>
+
+        <div class="box-50pct">
+            flex-basis: 50%
+            <br>Takes up 50% of available width
+        </div>
+
+        <div class="box-30pct">
+            flex-basis: 30%
+            <br>Takes up 30% of available width
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Test 3: Auto Value</div>
+        <div class="description">
+            When flex-basis is auto, it falls back to the width property.
+        </div>
+
+        <div class="box-auto">
+            flex-basis: auto; width: 250px
+            <br>Falls back to width property (250px)
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Test 4: Content Value</div>
+        <div class="description">
+            Content-based sizing (currently falls back to auto behavior).
+        </div>
+
+        <div class="box-content">
+            flex-basis: content
+            <br>Size based on content (implementation in progress)
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Test 5: Em Units</div>
+        <div class="description">
+            Em units are relative to the font size.
+        </div>
+
+        <div class="box-20em">
+            flex-basis: 20em
+            <br>20 times the font size
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Test 6: Flex-Basis Overrides Width</div>
+        <div class="description">
+            When both flex-basis and width are specified, flex-basis takes precedence.
+        </div>
+
+        <div class="box-override">
+            flex-basis: 180px; width: 300px
+            <br>Flex-basis (180px) wins over width (300px)
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Test 7: With Box-Sizing Border-Box</div>
+        <div class="description">
+            Flex-basis respects box-sizing property. With border-box, padding and border are included.
+        </div>
+
+        <div class="box-border-box">
+            flex-basis: 250px; box-sizing: border-box
+            <br>Total width is 250px including 30px padding and 5px border
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Implementation Status</div>
+        <div class="description">
+            ✅ <strong>Completed:</strong>
+            <ul style="margin-left: 20px; color: #27ae60;">
+                <li>FlexBasis enum with Auto, Length(px/em/rem/%), and Content variants</li>
+                <li>CSS parsing for all flex-basis values</li>
+                <li>Integration into ComputedValues</li>
+                <li>Layout calculation with flex-basis priority over width</li>
+                <li>Support for box-sizing interaction</li>
+                <li>Min/max width constraints applied correctly</li>
+                <li>High DPI scaling support</li>
+            </ul>
+
+            <strong>How it works:</strong>
+            <ul style="margin-left: 20px; color: #2c3e50;">
+                <li>When flex-basis has a Length value, it takes precedence over width property</li>
+                <li>When flex-basis is Auto, it falls back to width property or auto sizing</li>
+                <li>When flex-basis is Content, it uses content-based sizing (falls back to width/auto)</li>
+                <li>Box-sizing (content-box vs border-box) is properly respected</li>
+                <li>Min-width and max-width constraints are applied after flex-basis calculation</li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>
+

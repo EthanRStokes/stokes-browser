@@ -116,6 +116,7 @@ pub struct LayoutBox {
     pub css_max_height: Option<crate::css::Length>, // CSS specified max-height
     pub css_min_height: Option<crate::css::Length>, // CSS specified min-height
     pub box_sizing: crate::css::BoxSizing, // CSS box-sizing property
+    pub flex_basis: crate::css::FlexBasis, // CSS flex-basis property
 }
 
 impl LayoutBox {
@@ -133,6 +134,7 @@ impl LayoutBox {
             css_max_height: None,
             css_min_height: None,
             box_sizing: crate::css::BoxSizing::ContentBox, // Default value
+            flex_basis: crate::css::FlexBasis::Auto, // Default value
         }
     }
 
@@ -434,30 +436,65 @@ impl LayoutBox {
         );
     }
 
-    /// Calculate the actual width this box should use, respecting CSS width values and box-sizing
+    /// Calculate the actual width this box should use, respecting CSS width values, flex-basis, and box-sizing
     fn calculate_used_width(&self, container_width: f32, scale_factor: f32) -> f32 {
-        let mut width = if let Some(css_width) = &self.css_width {
-            // Use the CSS-specified width, converting to pixels and scaling
-            let specified_width = css_width.to_px(16.0, container_width) * scale_factor;
-            
-            // Apply box-sizing logic
-            match self.box_sizing {
-                crate::css::BoxSizing::ContentBox => {
-                    // Default behavior: width applies to content box only
-                    specified_width
-                }
-                crate::css::BoxSizing::BorderBox => {
-                    // Width includes padding and border, so subtract them to get content width
-                    specified_width 
-                        - self.dimensions.padding.left - self.dimensions.padding.right
-                        - self.dimensions.border.left - self.dimensions.border.right
+        // Determine the base width: prioritize flex-basis, then width, then auto
+        let mut width = match &self.flex_basis {
+            crate::css::FlexBasis::Length(length) => {
+                // flex-basis with explicit length takes precedence
+                let specified_width = length.to_px(16.0, container_width) * scale_factor;
+                
+                // Apply box-sizing logic
+                match self.box_sizing {
+                    crate::css::BoxSizing::ContentBox => specified_width,
+                    crate::css::BoxSizing::BorderBox => {
+                        specified_width 
+                            - self.dimensions.padding.left - self.dimensions.padding.right
+                            - self.dimensions.border.left - self.dimensions.border.right
+                    }
                 }
             }
-        } else {
-            // Use auto width (full container width minus margins, borders, padding)
-            container_width - self.dimensions.padding.left - self.dimensions.padding.right
-                - self.dimensions.border.left - self.dimensions.border.right
-                - self.dimensions.margin.left - self.dimensions.margin.right
+            crate::css::FlexBasis::Auto => {
+                // When flex-basis is auto, fall back to width property
+                if let Some(css_width) = &self.css_width {
+                    let specified_width = css_width.to_px(16.0, container_width) * scale_factor;
+                    
+                    // Apply box-sizing logic
+                    match self.box_sizing {
+                        crate::css::BoxSizing::ContentBox => specified_width,
+                        crate::css::BoxSizing::BorderBox => {
+                            specified_width 
+                                - self.dimensions.padding.left - self.dimensions.padding.right
+                                - self.dimensions.border.left - self.dimensions.border.right
+                        }
+                    }
+                } else {
+                    // Use auto width (full container width minus margins, borders, padding)
+                    container_width - self.dimensions.padding.left - self.dimensions.padding.right
+                        - self.dimensions.border.left - self.dimensions.border.right
+                        - self.dimensions.margin.left - self.dimensions.margin.right
+                }
+            }
+            crate::css::FlexBasis::Content => {
+                // Content-based sizing - use intrinsic content size
+                // For now, fallback to width or auto (future: calculate from content)
+                if let Some(css_width) = &self.css_width {
+                    let specified_width = css_width.to_px(16.0, container_width) * scale_factor;
+                    match self.box_sizing {
+                        crate::css::BoxSizing::ContentBox => specified_width,
+                        crate::css::BoxSizing::BorderBox => {
+                            specified_width 
+                                - self.dimensions.padding.left - self.dimensions.padding.right
+                                - self.dimensions.border.left - self.dimensions.border.right
+                        }
+                    }
+                } else {
+                    // Use container width for content-based sizing as fallback
+                    container_width - self.dimensions.padding.left - self.dimensions.padding.right
+                        - self.dimensions.border.left - self.dimensions.border.right
+                        - self.dimensions.margin.left - self.dimensions.margin.right
+                }
+            }
         };
 
         // Apply max-width constraint if specified
@@ -491,8 +528,12 @@ impl LayoutBox {
         width
     }
 
-    /// Calculate the actual height this box should use, respecting CSS height values and box-sizing
+    /// Calculate the actual height this box should use, respecting CSS height values, flex-basis, and box-sizing
     fn calculate_used_height(&self, container_height: f32, scale_factor: f32, content_height: f32) -> f32 {
+        // Note: flex-basis primarily affects the main axis in flex containers
+        // For vertical flex containers, flex-basis would control height
+        // For now, we support it but height property takes precedence in non-flex contexts
+        
         let mut height = if let Some(css_height) = &self.css_height {
             // Use the CSS-specified height, converting to pixels and scaling
             let specified_height = css_height.to_px(16.0, container_height) * scale_factor;
@@ -600,6 +641,9 @@ impl LayoutBox {
 
         // Store box-sizing value
         self.box_sizing = styles.box_sizing.clone();
+
+        // Store flex-basis value
+        self.flex_basis = styles.flex_basis.clone();
 
         // Note: Other style properties like colors, fonts are handled in the renderer
         // Scale factor will be applied during layout phase

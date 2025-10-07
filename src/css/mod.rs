@@ -7,7 +7,7 @@ pub(crate) mod computed;
 pub mod transition_manager;
 
 pub use self::parser::CssParser;
-pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Float, Overflow, FontStyle, FontVariant, LineHeight, VerticalAlign, ContentValue, BoxSizing, Cursor, Visibility, TextTransform, ListStyleType, TimingFunction, StepPosition, Duration, Transition, TransitionProperty, TransitionSpec, Outline, OutlineStyle};
+pub use self::values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Float, Overflow, FontStyle, FontVariant, LineHeight, VerticalAlign, ContentValue, BoxSizing, Cursor, Visibility, TextTransform, ListStyleType, TimingFunction, StepPosition, Duration, Transition, TransitionProperty, TransitionSpec, Outline, OutlineStyle, FlexBasis};
 pub use self::selector::{Selector, SelectorType, PseudoClass, PseudoElement};
 pub use self::stylesheet::{Stylesheet, Rule, Declaration};
 pub use self::computed::{ComputedValues, StyleResolver};
@@ -83,6 +83,7 @@ pub enum PropertyName {
     OutlineStyle,
     OutlineColor,
     OutlineOffset,
+    FlexBasis,
     Unknown(String),
 }
 
@@ -157,6 +158,7 @@ impl From<&str> for PropertyName {
             "outline-style" => PropertyName::OutlineStyle,
             "outline-color" => PropertyName::OutlineColor,
             "outline-offset" => PropertyName::OutlineOffset,
+            "flex-basis" => PropertyName::FlexBasis,
             _ => {
                 println!("Warning: Unknown CSS property: {}", s);
                 PropertyName::Unknown(s.to_string())

@@ -44,6 +44,7 @@ pub struct ComputedValues {
     pub list_style_type: super::ListStyleType,
     pub outline: super::Outline,
     pub outline_offset: super::values::Length,
+    pub flex_basis: super::FlexBasis,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -95,6 +96,7 @@ impl Default for ComputedValues {
             list_style_type: super::ListStyleType::None,
             outline: super::Outline::none(),
             outline_offset: super::values::Length::default(),
+            flex_basis: super::FlexBasis::default(),
         }
     }
 }
@@ -748,6 +750,23 @@ impl StyleResolver {
             PropertyName::OutlineOffset => {
                 if let CssValue::Length(length) = &declaration.value {
                     computed.outline_offset = length.clone();
+                }
+            }
+            PropertyName::FlexBasis => {
+                match &declaration.value {
+                    CssValue::Length(length) => {
+                        computed.flex_basis = super::FlexBasis::Length(length.clone());
+                    }
+                    CssValue::Auto => {
+                        computed.flex_basis = super::FlexBasis::Auto;
+                    }
+                    CssValue::Keyword(keyword) => {
+                        computed.flex_basis = super::FlexBasis::parse(keyword);
+                    }
+                    CssValue::String(value) => {
+                        computed.flex_basis = super::FlexBasis::parse(value);
+                    }
+                    _ => {}
                 }
             }
             _ => {
