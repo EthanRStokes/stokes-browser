@@ -3009,6 +3009,7 @@ name = "stokes-browser"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "base64",
  "boa_engine",
  "boa_gc",
  "curl",
