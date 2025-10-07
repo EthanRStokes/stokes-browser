@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSS Opacity Test</title>
+    <style>
+        body {
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+
+        .container {
+            background-color: white;
+            padding: 20px;
+            margin: 10px;
+        }
+
+        .box {
+            width: 200px;
+            height: 100px;
+            margin: 20px;
+            padding: 10px;
+            background-color: #3498db;
+            color: white;
+            border: 2px solid #2980b9;
+        }
+
+        .opacity-100 {
+            opacity: 1.0;
+        }
+
+        .opacity-75 {
+            opacity: 0.75;
+        }
+
+        .opacity-50 {
+            opacity: 0.5;
+        }
+
+        .opacity-25 {
+            opacity: 0.25;
+        }
+
+        .opacity-0 {
+            opacity: 0;
+        }
+
+        .red-box {
+            background-color: #e74c3c;
+            border-color: #c0392b;
+        }
+
+        .green-box {
+            background-color: #2ecc71;
+            border-color: #27ae60;
+        }
+
+        .with-transition {
+            transition: opacity 0.5s ease;
+        }
+
+        .with-transition:hover {
+            opacity: 0.3;
+        }
+    </style>
+</head>
+<body>
+    <h1>CSS Opacity Property Test</h1>
+
+    <div class="container">
+        <h2>Basic Opacity Values</h2>
+
+        <div class="box opacity-100">
+            <h3>Opacity: 1.0 (100%)</h3>
+            <p>Fully opaque - default value</p>
+        </div>
+
+        <div class="box opacity-75 red-box">
+            <h3>Opacity: 0.75 (75%)</h3>
+            <p>Slightly transparent</p>
+        </div>
+
+        <div class="box opacity-50 green-box">
+            <h3>Opacity: 0.5 (50%)</h3>
+            <p>Half transparent</p>
+        </div>
+
+        <div class="box opacity-25">
+            <h3>Opacity: 0.25 (25%)</h3>
+            <p>Mostly transparent</p>
+        </div>
+
+        <div class="box opacity-0 red-box">
+            <h3>Opacity: 0 (0%)</h3>
+            <p>Completely transparent (invisible)</p>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Opacity with Transitions</h2>
+        <div class="box with-transition green-box">
+            <h3>Hover Me!</h3>
+            <p>This box has a transition on opacity. Hover to see it fade.</p>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Nested Opacity</h2>
+        <div class="box opacity-50" style="width: 300px; height: 200px;">
+            <h3>Parent (50% opacity)</h3>
+            <div class="box opacity-75 red-box" style="width: 200px; height: 80px; margin: 10px 0;">
+                <p style="font-size: 12px;">Child (75% opacity)<br>Combined: 37.5%</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+

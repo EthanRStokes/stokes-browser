@@ -39,6 +39,7 @@ pub struct ComputedValues {
     pub box_sizing: super::BoxSizing,
     pub cursor: super::Cursor,
     pub z_index: i32,
+    pub opacity: f32,
     pub transition: super::TransitionSpec,
 }
 
@@ -86,6 +87,7 @@ impl Default for ComputedValues {
             box_sizing: super::BoxSizing::ContentBox,
             cursor: super::Cursor::Auto,
             z_index: 0,
+            opacity: 1.0,
             transition: super::TransitionSpec::default(),
         }
     }
@@ -652,6 +654,20 @@ impl StyleResolver {
                             computed.z_index = 0; // Auto z-index defaults to 0
                         } else if let Ok(num) = keyword.parse::<i32>() {
                             computed.z_index = num;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            PropertyName::Opacity => {
+                match &declaration.value {
+                    CssValue::Number(num) => {
+                        // Clamp opacity between 0.0 and 1.0
+                        computed.opacity = num.clamp(0.0, 1.0);
+                    }
+                    CssValue::Keyword(keyword) => {
+                        if let Ok(num) = keyword.parse::<f32>() {
+                            computed.opacity = num.clamp(0.0, 1.0);
                         }
                     }
                     _ => {}

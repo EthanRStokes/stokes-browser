@@ -90,6 +90,16 @@ impl TransitionManager {
             new_styles.font_size,
         );
 
+        // Check opacity property
+        self.check_number_property(
+            "opacity",
+            old_styles.opacity,
+            new_styles.opacity,
+            &new_styles.transition,
+            now,
+            &mut new_transitions,
+        );
+
         // Store active transitions for this element
         if !new_transitions.is_empty() {
             self.active_transitions.insert(node_id, new_transitions);
@@ -165,6 +175,37 @@ impl TransitionManager {
                         });
                     }
                 }
+            }
+        }
+    }
+
+    /// Check if a number property has changed and start transition if needed
+    fn check_number_property(
+        &self,
+        property_name: &str,
+        old_value: f32,
+        new_value: f32,
+        transition_spec: &TransitionSpec,
+        now: Instant,
+        transitions: &mut Vec<ActiveTransition>,
+    ) {
+        // Check if values are different
+        if old_value == new_value {
+            return;
+        }
+
+        // Check if this property should be transitioned
+        if let Some(transition) = transition_spec.get_transition_for_property(property_name) {
+            if transition.duration.as_millis() > 0.0 {
+                transitions.push(ActiveTransition {
+                    property_name: property_name.to_string(),
+                    start_value: TransitionValue::Number(old_value),
+                    end_value: TransitionValue::Number(new_value),
+                    start_time: now,
+                    duration_ms: transition.duration.as_millis(),
+                    delay_ms: transition.delay.as_millis(),
+                    timing_function: transition.timing_function.clone(),
+                });
             }
         }
     }
@@ -304,6 +345,11 @@ impl TransitionManager {
             "height" => {
                 if let TransitionValue::Length(px) = value {
                     styles.height = Some(Length::px(*px));
+                }
+            }
+            "opacity" => {
+                if let TransitionValue::Number(opacity) = value {
+                    styles.opacity = *opacity;
                 }
             }
             _ => {

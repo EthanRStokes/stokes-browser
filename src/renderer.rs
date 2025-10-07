@@ -190,6 +190,9 @@ impl HtmlRenderer {
     ) {
         let border_box = layout_box.dimensions.border_box();
 
+        // Get opacity value (default to 1.0 if no styles)
+        let opacity = computed_styles.map(|s| s.opacity).unwrap_or(1.0);
+
         // Render ::before pseudo-element content
         if let Some(styles) = computed_styles {
             self.render_pseudo_element_content(
@@ -211,13 +214,24 @@ impl HtmlRenderer {
         let mut bg_paint = Paint::default();
         if let Some(styles) = computed_styles {
             if let Some(bg_color) = &styles.background_color {
-                bg_paint.set_color(bg_color.to_skia_color());
+                let mut color = bg_color.to_skia_color();
+                // Apply opacity to background color
+                color = color.with_a((color.a() as f32 * opacity) as u8);
+                bg_paint.set_color(color);
             } else {
                 // Fallback to default background colors
                 self.set_default_background_color(&mut bg_paint, &element_data.tag_name);
+                // Apply opacity
+                let mut color = bg_paint.color();
+                color = color.with_a((color.a() as f32 * opacity) as u8);
+                bg_paint.set_color(color);
             }
         } else {
             self.set_default_background_color(&mut bg_paint, &element_data.tag_name);
+            // Apply opacity
+            let mut color = bg_paint.color();
+            color = color.with_a((color.a() as f32 * opacity) as u8);
+            bg_paint.set_color(color);
         }
 
         // Draw background
@@ -257,14 +271,20 @@ impl HtmlRenderer {
             }
         }
 
+        // Apply opacity to border
         if should_draw_border {
+            let mut border_color = border_paint.color();
+            border_color = border_color.with_a((border_color.a() as f32 * opacity) as u8);
+            border_paint.set_color(border_color);
             canvas.draw_rect(border_box, &border_paint);
         }
 
         // Add visual indicators for headings with scaled border width
         if element_data.tag_name.starts_with('h') {
             let mut heading_paint = Paint::default();
-            heading_paint.set_color(Color::from_rgb(50, 50, 150));
+            let mut heading_color = Color::from_rgb(50, 50, 150);
+            heading_color = heading_color.with_a((255.0 * opacity) as u8);
+            heading_paint.set_color(heading_color);
             heading_paint.set_stroke(true);
             let scaled_heading_border = 2.0 * scale_factor as f32;
             heading_paint.set_stroke_width(scaled_heading_border);
@@ -360,11 +380,15 @@ impl HtmlRenderer {
             let mut line_height_value = crate::css::LineHeight::Normal; // Default line height
             let mut vertical_align = crate::css::VerticalAlign::Baseline; // Default vertical alignment
             let mut text_transform = crate::css::TextTransform::None; // Default text transform
+            let mut opacity = 1.0; // Default opacity
 
             if let Some(styles) = computed_styles {
                 // Apply CSS color
                 if let Some(text_color) = &styles.color {
-                    text_paint.set_color(text_color.to_skia_color());
+                    let mut color = text_color.to_skia_color();
+                    // Apply opacity to text color
+                    color = color.with_a((color.a() as f32 * styles.opacity) as u8);
+                    text_paint.set_color(color);
                 }
 
                 // Apply CSS font size
@@ -390,6 +414,9 @@ impl HtmlRenderer {
 
                 // Apply CSS text-transform
                 text_transform = styles.text_transform.clone();
+
+                // Get opacity for text decorations
+                opacity = styles.opacity;
             }
 
             // Apply text transformation to the content
@@ -439,14 +466,16 @@ impl HtmlRenderer {
 
                     canvas.draw_text_blob(&text_blob, (start_x, adjusted_y), &text_paint);
 
-                    // Render text decorations if specified
+                    // Render text decorations if specified (with opacity applied)
                     if let Some(styles) = computed_styles {
+                        // Create decoration paint with opacity
+                        let mut decoration_paint = text_paint.clone();
                         self.render_text_decorations(
                             canvas,
                             &text_blob,
                             (start_x, adjusted_y),
                             &styles.text_decoration,
-                            &text_paint,
+                            &decoration_paint,
                             scaled_font_size,
                             scale_factor,
                         );
