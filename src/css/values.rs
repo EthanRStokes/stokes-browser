@@ -67,6 +67,7 @@ impl Color {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Unit {
     Px,
+    Pt, // Points (1pt = 1/72 inch, typically 1pt ≈ 1.33px at 96 DPI)
     Em,
     Rem,
     Percent,
@@ -85,6 +86,10 @@ impl Length {
         Self { value, unit: Unit::Px }
     }
 
+    pub fn pt(value: f32) -> Self {
+        Self { value, unit: Unit::Pt }
+    }
+
     pub fn em(value: f32) -> Self {
         Self { value, unit: Unit::Em }
     }
@@ -97,6 +102,7 @@ impl Length {
     pub fn to_px(&self, font_size: f32, parent_size: f32) -> f32 {
         match self.unit {
             Unit::Px => self.value,
+            Unit::Pt => self.value * 4.0 / 3.0, // Convert points to pixels (1pt = 4/3 px at standard 96 DPI)
             Unit::Em => self.value * font_size,
             Unit::Rem => self.value * 16.0, // Default root font size
             Unit::Percent => self.value / 100.0 * parent_size,
@@ -304,6 +310,10 @@ impl CssValue {
         } else if value.ends_with('%') {
             if let Ok(num) = value[..value.len()-1].parse::<f32>() {
                 return Some(Length::percent(num));
+            }
+        } else if value.ends_with("pt") {
+            if let Ok(num) = value[..value.len()-2].parse::<f32>() {
+                return Some(Length::pt(num));
             }
         }
         None
