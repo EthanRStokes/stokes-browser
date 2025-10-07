@@ -387,7 +387,7 @@ impl LayoutBox {
                 continue;
             }
 
-            // Calculate max characters per line
+            // Calculate max characters per line based on actual character count
             let max_chars = (max_width / char_width).floor() as usize;
 
             if max_chars == 0 {
@@ -405,34 +405,56 @@ impl LayoutBox {
             }
 
             let mut current_line = String::new();
+            let mut current_char_count = 0;
 
             for word in words {
-                // Check if adding this word would exceed the line width
-                let test_line = if current_line.is_empty() {
-                    word.to_string()
+                let word_char_count = word.chars().count();
+
+                // Calculate the character count if we add this word
+                let test_char_count = if current_line.is_empty() {
+                    word_char_count
                 } else {
-                    format!("{} {}", current_line, word)
+                    current_char_count + 1 + word_char_count // +1 for space
                 };
 
-                if test_line.len() <= max_chars {
-                    current_line = test_line;
-                } else {
-                    // If current line is not empty, save it and start a new line
-                    if !current_line.is_empty() {
-                        wrapped_lines.push(current_line);
-                        current_line = word.to_string();
+                if test_char_count <= max_chars {
+                    // Add word to current line
+                    if current_line.is_empty() {
+                        current_line.push_str(word);
+                        current_char_count = word_char_count;
                     } else {
-                        // Word is longer than max_chars, break it up
-                        if word.len() > max_chars {
-                            let mut remaining = word;
-                            while remaining.len() > max_chars {
-                                wrapped_lines.push(remaining[..max_chars].to_string());
-                                remaining = &remaining[max_chars..];
-                            }
-                            current_line = remaining.to_string();
-                        } else {
-                            current_line = word.to_string();
+                        current_line.push(' ');
+                        current_line.push_str(word);
+                        current_char_count = test_char_count;
+                    }
+                } else {
+                    // Word doesn't fit on current line
+                    if !current_line.is_empty() {
+                        // Save current line and start new line with this word
+                        wrapped_lines.push(current_line);
+                        current_line = String::new();
+                        current_char_count = 0;
+                    }
+
+                    // Check if word itself is too long and needs to be broken
+                    if word_char_count > max_chars {
+                        // Break the word across multiple lines
+                        let chars: Vec<char> = word.chars().collect();
+                        let mut start = 0;
+
+                        while start < chars.len() {
+                            let end = (start + max_chars).min(chars.len());
+                            let chunk: String = chars[start..end].iter().collect();
+                            wrapped_lines.push(chunk);
+                            start = end;
                         }
+
+                        current_line = String::new();
+                        current_char_count = 0;
+                    } else {
+                        // Word fits within max_chars, start new line with it
+                        current_line.push_str(word);
+                        current_char_count = word_char_count;
                     }
                 }
             }

@@ -5,6 +5,11 @@ use std::cell::RefCell;
 use crate::dom::DomNode;
 use super::{JsResult, initialize_bindings};
 
+// Stack size for growing when needed (16MB to handle very large scripts)
+const STACK_SIZE: usize = 16 * 1024 * 1024;
+// Red zone threshold (32KB)
+const RED_ZONE: usize = 32 * 1024;
+
 /// JavaScript runtime that manages execution context
 pub struct JsRuntime {
     context: Context,
@@ -27,9 +32,13 @@ impl JsRuntime {
 
     /// Execute JavaScript code
     pub fn execute(&mut self, code: &str) -> JsResult<JsValue> {
-        self.context
-            .eval(Source::from_bytes(code))
-            .map_err(|e| format!("JavaScript error: {}", e))
+        // Use stacker::grow to ensure we have enough stack for parsing large scripts
+        // This forces stack growth rather than checking, which is safer for boa's deep recursion
+        stacker::grow(STACK_SIZE, || {
+            self.context
+                .eval(Source::from_bytes(code))
+                .map_err(|e| format!("JavaScript error: {}", e))
+        })
     }
 
     /// Execute JavaScript code from a script tag
@@ -56,4 +65,3 @@ impl JsRuntime {
         Ok(())
     }
 }
-

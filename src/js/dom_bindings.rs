@@ -616,8 +616,22 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
         .map_err(|e| format!("Failed to register document object: {}", e))?;
 
     // Register window object in global scope
-    context.register_global_property(JsString::from("window"), window, boa_engine::property::Attribute::all())
+    context.register_global_property(JsString::from("window"), window.clone(), boa_engine::property::Attribute::all())
         .map_err(|e| format!("Failed to register window object: {}", e))?;
+
+    // Add circular references to window object (window.window, window.self, etc.)
+    // These are expected by many JavaScript libraries including Google Analytics
+    let global_object = context.global_object().clone();
+    global_object.set(JsString::from("window"), window.clone(), true, context)
+        .map_err(|e| format!("Failed to set window.window: {}", e))?;
+    global_object.set(JsString::from("self"), window.clone(), true, context)
+        .map_err(|e| format!("Failed to set window.self: {}", e))?;
+    global_object.set(JsString::from("top"), window.clone(), true, context)
+        .map_err(|e| format!("Failed to set window.top: {}", e))?;
+    global_object.set(JsString::from("parent"), window.clone(), true, context)
+        .map_err(|e| format!("Failed to set window.parent: {}", e))?;
+    global_object.set(JsString::from("globalThis"), window.clone(), true, context)
+        .map_err(|e| format!("Failed to set globalThis: {}", e))?;
 
     // Register navigator object in global scope
     context.register_global_property(JsString::from("navigator"), navigator, boa_engine::property::Attribute::all())

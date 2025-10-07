@@ -14,11 +14,15 @@ use crate::dom::DomNode;
 /// JavaScript execution result
 pub type JsResult<T> = Result<T, String>;
 
+const STACK_SIZE: usize = 16 * 1024 * 1024; // 16MB
+
 /// Execute JavaScript code in a context
 pub fn execute_script(context: &mut Context, code: &str) -> JsResult<JsValue> {
-    context
-        .eval(Source::from_bytes(code))
-        .map_err(|e| format!("JavaScript error: {}", e))
+    stacker::grow(STACK_SIZE, || {
+        context
+            .eval(Source::from_bytes(code))
+            .map_err(|e| format!("JavaScript error: {}", e))
+    })
 }
 
 /// Initialize JavaScript bindings for the browser
@@ -31,4 +35,3 @@ pub fn initialize_bindings(context: &mut Context, document_root: Rc<RefCell<DomN
     
     Ok(())
 }
-

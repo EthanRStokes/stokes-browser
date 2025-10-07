@@ -21,6 +21,7 @@ arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 boa_engine = "0.20.0"
 boa_gc = "0.20.0"
 base64 = "0.22"
+stacker = "0.1"
 
 [dependencies.winit]
 git = "https://github.com/Treetrain1/winit.git"
