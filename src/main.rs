@@ -490,6 +490,30 @@ impl BrowserApp {
             println!("No URL to reload");
         }
     }
+
+    // Update cursor shape based on the position
+    fn update_cursor_for_position(&self) {
+        let (x, y) = self.cursor_position;
+
+        // Check if the mouse is over any interactive UI element first (UI takes priority)
+        if self.ui.is_mouse_over_interactive_element(x, y) {
+            // Change cursor to pointer (hand) when over links or buttons
+            self.env.window.set_cursor_icon(winit::window::CursorIcon::Pointer);
+        } else {
+            // Check if the mouse is over page content
+            let chrome_height = self.ui.chrome_height() as f64;
+            if y > chrome_height {
+                // Mouse is over page content, check CSS cursor property
+                let content_y = (y - chrome_height) as f32;
+                let css_cursor = self.active_tab().engine.get_cursor_at_position(x as f32, content_y);
+                let winit_cursor = css_cursor.to_winit_cursor();
+                self.env.window.set_cursor_icon(winit_cursor);
+            } else {
+                // Mouse is over chrome area but not an interactive element
+                self.env.window.set_cursor_icon(winit::window::CursorIcon::Default);
+            }
+        }
+    }
 }
 
 impl ApplicationHandler for BrowserApp {
@@ -562,7 +586,9 @@ impl ApplicationHandler for BrowserApp {
             WindowEvent::CursorMoved { position, .. } => {
                 // Update cursor position when mouse moves
                 self.cursor_position = (position.x, position.y);
-                // No need to handle click on cursor move - only track position
+
+                // Update cursor based on the element under the mouse
+                self.update_cursor_for_position();
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // Check if mouse is over the tab bar (y < chrome height)

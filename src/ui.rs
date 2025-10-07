@@ -514,6 +514,33 @@ impl BrowserUI {
         None
     }
 
+    /// Check if the mouse is over any interactive UI element
+    pub fn is_mouse_over_interactive_element(&self, x: f64, y: f64) -> bool {
+        let x = x as f32;
+        let y = y as f32;
+
+        for comp in &self.components {
+            match comp {
+                UiComponent::Button { x: bx, y: by, width, height, .. } => {
+                    if x >= *bx && x <= bx + width && y >= *by && y <= by + height {
+                        return true;
+                    }
+                }
+                UiComponent::TextField { x: fx, y: fy, width, height, .. } => {
+                    if x >= *fx && x <= fx + width && y >= *fy && y <= fy + height {
+                        return true;
+                    }
+                }
+                UiComponent::TabButton { x: tx, y: ty, width, height, .. } => {
+                    if x >= *tx && x <= tx + width && y >= *ty && y <= ty + height {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Check if click is on close button of active tab, returns tab ID if so
     pub fn check_close_button_click(&self, x: f32, y: f32) -> Option<String> {
         for comp in &self.components {

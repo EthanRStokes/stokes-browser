@@ -30,6 +30,7 @@ pub struct ComputedValues {
     pub border_radius: BorderRadius,
     pub box_shadow: Vec<BoxShadow>,
     pub box_sizing: super::BoxSizing,
+    pub cursor: super::Cursor,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -67,6 +68,7 @@ impl Default for ComputedValues {
             border_radius: BorderRadius::default(),
             box_shadow: Vec::new(),
             box_sizing: super::BoxSizing::ContentBox,
+            cursor: super::Cursor::Auto,
         }
     }
 }
@@ -564,6 +566,13 @@ impl StyleResolver {
                     computed.box_sizing = super::BoxSizing::parse(sizing);
                 } else if let CssValue::String(sizing) = &declaration.value {
                     computed.box_sizing = super::BoxSizing::parse(sizing);
+                }
+            }
+            PropertyName::Cursor => {
+                if let CssValue::Keyword(cursor) = &declaration.value {
+                    computed.cursor = super::Cursor::parse(cursor);
+                } else if let CssValue::String(cursor) = &declaration.value {
+                    computed.cursor = super::Cursor::parse(cursor);
                 }
             }
             _ => {

@@ -443,4 +443,46 @@ impl Engine {
 
         (max_width, max_height)
     }
+
+    /// Get the cursor style for the element at the given position
+    pub fn get_cursor_at_position(&self, x: f32, y: f32) -> crate::css::Cursor {
+        // Adjust position for scroll offset
+        let adjusted_x = x + self.scroll_x;
+        let adjusted_y = y + self.scroll_y;
+
+        // Find the topmost element at this position
+        if let Some(layout) = &self.layout {
+            if let Some(node_id) = self.find_element_at_position(layout, adjusted_x, adjusted_y) {
+                // Get the computed styles for this element
+                if let Some(styles) = self.cached_style_map.get(&node_id) {
+                    return styles.cursor.clone();
+                }
+            }
+        }
+
+        // Default cursor
+        crate::css::Cursor::Auto
+    }
+
+    /// Recursively find the element at the given position (returns the deepest/topmost element)
+    fn find_element_at_position(&self, layout_box: &LayoutBox, x: f32, y: f32) -> Option<usize> {
+        let border_box = layout_box.dimensions.border_box();
+
+        // Check if position is within this box
+        if x >= border_box.left && x <= border_box.right &&
+           y >= border_box.top && y <= border_box.bottom {
+            
+            // Check children first (they are on top)
+            for child in &layout_box.children {
+                if let Some(child_node_id) = self.find_element_at_position(child, x, y) {
+                    return Some(child_node_id);
+                }
+            }
+
+            // If no child matched, return this node
+            return Some(layout_box.node_id);
+        }
+
+        None
+    }
 }
