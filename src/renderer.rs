@@ -149,7 +149,21 @@ impl HtmlRenderer {
         if let Some(dom_node_rc) = node_map.get(&layout_box.node_id) {
             let dom_node = dom_node_rc.borrow();
             if !self.should_skip_rendering(&dom_node) {
-                for child in &layout_box.children {
+                // Sort children by z-index before rendering
+                let mut children_with_z: Vec<(&LayoutBox, i32)> = layout_box.children.iter()
+                    .map(|child| {
+                        let z_index = style_map.get(&child.node_id)
+                            .map(|styles| styles.z_index)
+                            .unwrap_or(0);
+                        (child, z_index)
+                    })
+                    .collect();
+                
+                // Sort by z-index (lower z-index rendered first, so they appear behind)
+                children_with_z.sort_by_key(|(_, z)| *z);
+                
+                // Render children in z-index order
+                for (child, _) in children_with_z {
                     self.render_box(canvas, child, node_map, style_map, transition_manager, scale_factor);
                 }
             }

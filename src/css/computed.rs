@@ -36,6 +36,7 @@ pub struct ComputedValues {
     pub box_shadow: Vec<BoxShadow>,
     pub box_sizing: super::BoxSizing,
     pub cursor: super::Cursor,
+    pub z_index: i32,
     pub transition: super::TransitionSpec,
 }
 
@@ -80,6 +81,7 @@ impl Default for ComputedValues {
             box_shadow: Vec::new(),
             box_sizing: super::BoxSizing::ContentBox,
             cursor: super::Cursor::Auto,
+            z_index: 0,
             transition: super::TransitionSpec::default(),
         }
     }
@@ -620,6 +622,21 @@ impl StyleResolver {
                     computed.cursor = super::Cursor::parse(cursor);
                 } else if let CssValue::String(cursor) = &declaration.value {
                     computed.cursor = super::Cursor::parse(cursor);
+                }
+            }
+            PropertyName::ZIndex => {
+                match &declaration.value {
+                    CssValue::Number(num) => {
+                        computed.z_index = *num as i32;
+                    }
+                    CssValue::Keyword(keyword) => {
+                        if keyword == "auto" {
+                            computed.z_index = 0; // Auto z-index defaults to 0
+                        } else if let Ok(num) = keyword.parse::<i32>() {
+                            computed.z_index = num;
+                        }
+                    }
+                    _ => {}
                 }
             }
             PropertyName::Transition => {

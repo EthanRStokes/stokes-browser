@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            margin: 20px;
+            font-family: Arial;
+        }
+
+        .container {
+            position: relative;
+            width: 400px;
+            height: 300px;
+            background-color: #f0f0f0;
+            padding: 20px;
+        }
+
+        .box {
+            width: 150px;
+            height: 150px;
+            padding: 10px;
+            position: absolute;
+        }
+
+        .box1 {
+            background-color: rgba(255, 0, 0, 0.7);
+            top: 50px;
+            left: 50px;
+            z-index: 1;
+        }
+
+        .box2 {
+            background-color: rgba(0, 255, 0, 0.7);
+            top: 100px;
+            left: 100px;
+            z-index: 3;
+        }
+
+        .box3 {
+            background-color: rgba(0, 0, 255, 0.7);
+            top: 150px;
+            left: 150px;
+            z-index: 2;
+        }
+
+        h1 {
+            color: #333;
+        }
+
+        p {
+            margin-top: 320px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Z-Index Test</h1>
+
+    <div class="container">
+        <div class="box box1" style="z-index: 1;">
+            Red Box
+            z-index: 1
+        </div>
+        <div class="box box2" style="z-index: 3;">
+            Green Box
+            z-index: 3
+        </div>
+        <div class="box box3" style="z-index: 2;">
+            Blue Box
+            z-index: 2
+        </div>
+    </div>
+
+    <p>The boxes should be stacked with Green (z-index: 3) on top, Blue (z-index: 2) in the middle, and Red (z-index: 1) at the bottom.</p>
+</body>
+</html>
+
