@@ -1,10 +1,11 @@
 // HTML renderer for drawing web content
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::cell::{RefCell, Cell};
+use std::cell::RefCell;
 use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob, FontStyle, Typeface};
+use skia_safe::font_style::Weight;
 use crate::dom::{DomNode, NodeType, ElementData, ImageData, ImageLoadingState};
-use crate::layout::{LayoutBox, BoxType};
+use crate::layout::LayoutBox;
 use crate::css::{ComputedValues, BorderRadiusPx, TextDecoration};
 use crate::css::transition_manager::TransitionManager;
 
@@ -17,8 +18,8 @@ pub struct HtmlRenderer {
     border_paint: Paint,
     // Add font cache for different sizes - wrapped in RefCell for interior mutability
     font_cache: RefCell<HashMap<u32, Font>>, // key is font size as u32 (rounded)
-    // Cache for styled fonts: (size, style) -> Font
-    styled_font_cache: RefCell<HashMap<(u32, u8), Font>>, // u8: 0=normal, 1=italic, 2=oblique
+    // Cache for styled fonts: (family, size, weight, style) -> Font
+    styled_font_cache: RefCell<HashMap<(String, u32, String, u8), Font>>, // u8: 0=normal, 1=italic, 2=oblique
     typeface: Typeface,
     italic_typeface: Typeface,
     font_mgr: skia_safe::FontMgr,
@@ -158,10 +159,10 @@ impl HtmlRenderer {
                         (child, z_index)
                     })
                     .collect();
-                
+
                 // Sort by z-index (lower z-index rendered first, so they appear behind)
                 children_with_z.sort_by_key(|(_, z)| *z);
-                
+
                 // Render children in z-index order
                 for (child, _) in children_with_z {
                     self.render_box(canvas, child, node_map, style_map, transition_manager, scale_factor);
@@ -346,6 +347,8 @@ impl HtmlRenderer {
             let mut font_size = 14.0; // Default font size
             let mut text_align = crate::css::TextAlign::Left; // Default alignment
             let mut font_style = crate::css::FontStyle::Normal; // Default font style
+            let mut font_family = "Arial".to_string(); // Default font family
+            let mut font_weight = "normal".to_string(); // Default font weight
             let mut line_height_value = crate::css::LineHeight::Normal; // Default line height
             let mut vertical_align = crate::css::VerticalAlign::Baseline; // Default vertical alignment
             let mut text_transform = crate::css::TextTransform::None; // Default text transform
@@ -364,6 +367,12 @@ impl HtmlRenderer {
 
                 // Apply CSS font-style
                 font_style = styles.font_style.clone();
+
+                // Apply CSS font-family
+                font_family = styles.font_family.clone();
+
+                // Apply CSS font-weight
+                font_weight = styles.font_weight.clone();
 
                 // Apply CSS line-height
                 line_height_value = styles.line_height.clone();
@@ -387,8 +396,8 @@ impl HtmlRenderer {
             // Calculate vertical alignment offset
             let vertical_align_offset = vertical_align.to_px(scaled_font_size, line_height) * scale_factor as f32;
 
-            // Get or create font with the scaled size and style
-            let font = self.get_font_for_size_and_style(scaled_font_size, &font_style);
+            // Get or create font with the scaled size, family, weight, and style
+            let font = self.get_font(&font_family, scaled_font_size, &font_weight, &font_style);
 
             // Split text by newlines to handle line breaks properly
             let lines: Vec<&str> = transformed_text.split('\n')
@@ -517,6 +526,12 @@ impl HtmlRenderer {
 
     /// Get or create a font for the specified size and style
     fn get_font_for_size_and_style(&self, size: f32, css_font_style: &crate::css::FontStyle) -> Font {
+        // Use default font family and weight
+        self.get_font("Arial", size, "normal", css_font_style)
+    }
+
+    /// Get or create a font with specified family, size, weight, and style
+    fn get_font(&self, family: &str, size: f32, weight: &str, css_font_style: &crate::css::FontStyle) -> Font {
         let size_key = size.round() as u32;
 
         // Determine style key: 0=normal, 1=italic, 2=oblique
@@ -526,34 +541,39 @@ impl HtmlRenderer {
             crate::css::FontStyle::Oblique => 2,
         };
 
+        let cache_key = (family.to_string(), size_key, weight.to_string(), style_key);
+
         // Check cache first
         {
             let cache = self.styled_font_cache.borrow();
-            if let Some(font) = cache.get(&(size_key, style_key)) {
+            if let Some(font) = cache.get(&cache_key) {
                 return font.clone();
             }
         }
 
-        // For now, we'll use the same typeface regardless of style
-        // In a full implementation, you would create different typefaces for italic/oblique
-        // using FontMgr to match the font style
-
-        // Convert CSS font style to Skia FontStyle
-        let skia_style = match css_font_style {
-            crate::css::FontStyle::Normal => FontStyle::normal(),
-            crate::css::FontStyle::Italic => FontStyle::italic(),
-            crate::css::FontStyle::Oblique => FontStyle::italic(), // Skia doesn't have oblique, use italic
+        // Convert CSS font properties to Skia FontStyle
+        let font_weight = parse_font_weight(weight);
+        let font_width = skia_safe::font_style::Width::NORMAL;
+        let font_slant = match css_font_style {
+            crate::css::FontStyle::Normal => skia_safe::font_style::Slant::Upright,
+            crate::css::FontStyle::Italic => skia_safe::font_style::Slant::Italic,
+            crate::css::FontStyle::Oblique => skia_safe::font_style::Slant::Oblique,
         };
 
-        // Try to get a typeface with the appropriate style
-        let typeface = self.font_mgr.legacy_make_typeface(None, skia_style)
+        let skia_style = FontStyle::new(Weight::from(font_weight), font_width, font_slant);
+        // Try to match a typeface with the specified family and style
+        let typeface = self.font_mgr.match_family_style(family, skia_style)
+            .or_else(|| {
+                // Fallback: try without family name (use system default)
+                self.font_mgr.legacy_make_typeface(None, skia_style)
+            })
             .unwrap_or_else(|| self.typeface.clone());
 
-        // Create font with the typeface and size (no caching for styled fonts for simplicity)
+        // Create font with the typeface and size
         let font = Font::new(typeface, size);
 
-        // Cache the styled font
-        self.styled_font_cache.borrow_mut().insert((size_key, style_key), font.clone());
+        // Cache the font
+        self.styled_font_cache.borrow_mut().insert(cache_key, font.clone());
 
         font
     }
@@ -949,6 +969,29 @@ impl HtmlRenderer {
                 scaled_font_size,
                 scale_factor,
             );
+        }
+    }
+}
+
+/// Parse CSS font-weight string to Skia font weight value
+fn parse_font_weight(weight: &str) -> i32 {
+    match weight.to_lowercase().as_str() {
+        "normal" => 400,
+        "bold" => 700,
+        "bolder" => 900,
+        "lighter" => 300,
+        "100" | "thin" => 100,
+        "200" | "extra-light" | "ultra-light" => 200,
+        "300" | "light" => 300,
+        "400" => 400,
+        "500" | "medium" => 500,
+        "600" | "semi-bold" | "demi-bold" => 600,
+        "700" => 700,
+        "800" | "extra-bold" | "ultra-bold" => 800,
+        "900" | "black" | "heavy" => 900,
+        _ => {
+            // Try to parse as a number
+            weight.parse::<i32>().unwrap_or(400).clamp(100, 900)
         }
     }
 }
