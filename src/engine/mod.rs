@@ -101,7 +101,7 @@ impl Engine {
         self.start_image_loading().await;
 
         // Execute JavaScript in the page after everything is loaded
-        self.execute_document_scripts();
+        self.execute_document_scripts().await;
 
         self.is_loading = false;
         Ok(())
@@ -563,14 +563,14 @@ impl Engine {
     }
 
     /// Extract and execute JavaScript from <script> tags in the current DOM
-    pub fn execute_document_scripts(&mut self) {
+    pub async fn execute_document_scripts(&mut self) {
         // Initialize JS runtime if not already done
         if self.js_runtime.is_none() {
             self.initialize_js_runtime();
         }
 
-        // Collect script contents first to avoid borrow issues
-        let mut script_contents = Vec::new();
+        // Collect script contents and external URLs first to avoid borrow issues
+        let mut script_items = Vec::new();
 
         if let Some(dom) = &self.dom {
             let script_elements = dom.query_selector("script");
@@ -578,26 +578,49 @@ impl Engine {
             for script_element in script_elements {
                 let script_node = script_element.borrow();
                 if let NodeType::Element(element_data) = &script_node.node_type {
-                    // Skip external scripts for now (would need async loading)
-                    if element_data.attributes.contains_key("src") {
-                        println!("Skipping external script: {:?}", element_data.attributes.get("src"));
-                        continue;
-                    }
-
-                    // Get inline script content
-                    let script_content = script_node.text_content();
-                    if !script_content.trim().is_empty() {
-                        script_contents.push(script_content);
+                    // Check for external scripts
+                    if let Some(src) = element_data.attributes.get("src") {
+                        println!("Found external script: {}", src);
+                        script_items.push((true, src.clone()));
+                    } else {
+                        // Get inline script content
+                        let script_content = script_node.text_content();
+                        if !script_content.trim().is_empty() {
+                            script_items.push((false, script_content));
+                        }
                     }
                 }
             }
         }
 
-        // Execute collected scripts
-        for script_content in script_contents {
-            println!("Executing inline script ({} bytes)", script_content.len());
-            self.execute_javascript(&script_content);
+        // Execute scripts in order (inline and external)
+        for (is_external, content) in script_items {
+            if is_external {
+                // Fetch external script
+                match self.load_external_script(&content).await {
+                    Ok(script_content) => {
+                        println!("Executing external script from {} ({} bytes)", content, script_content.len());
+                        self.execute_javascript(&script_content);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to load external script {}: {}", content, e);
+                    }
+                }
+            } else {
+                // Execute inline script
+                println!("Executing inline script ({} bytes)", content.len());
+                self.execute_javascript(&content);
+            }
         }
+    }
+
+    /// Load an external JavaScript file from a URL
+    async fn load_external_script(&self, script_url: &str) -> Result<String, NetworkError> {
+        let absolute_url = self.resolve_url(script_url)?;
+        let script_bytes = self.http_client.fetch_resource(&absolute_url).await?;
+        let script_content = String::from_utf8(script_bytes)
+            .map_err(|_| NetworkError::Utf8("Failed to decode script as UTF-8".to_string()))?;
+        Ok(script_content)
     }
 
     /// Handle a click at the given position (viewport coordinates)
