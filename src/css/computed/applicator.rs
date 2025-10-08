@@ -437,6 +437,41 @@ pub fn apply_declaration(computed: &mut ComputedValues, declaration: &Declaratio
                 _ => {}
             }
         }
+        PropertyName::Gap => {
+            match &declaration.value {
+                CssValue::Length(length) => {
+                    // Single value applies to both row and column
+                    computed.gap = crate::css::Gap::uniform(length.clone());
+                }
+                CssValue::MultipleValues(values) => {
+                    // Parse as gap shorthand (row-gap column-gap)
+                    if values.len() >= 2 {
+                        let row = if let CssValue::Length(len) = &values[0] {
+                            len.clone()
+                        } else {
+                            crate::css::Length::default()
+                        };
+                        let column = if let CssValue::Length(len) = &values[1] {
+                            len.clone()
+                        } else {
+                            crate::css::Length::default()
+                        };
+                        computed.gap = crate::css::Gap { row, column };
+                    } else if values.len() == 1 {
+                        if let CssValue::Length(len) = &values[0] {
+                            computed.gap = crate::css::Gap::uniform(len.clone());
+                        }
+                    }
+                }
+                CssValue::String(value) => {
+                    computed.gap = crate::css::Gap::parse(value);
+                }
+                CssValue::Keyword(keyword) => {
+                    computed.gap = crate::css::Gap::parse(keyword);
+                }
+                _ => {}
+            }
+        }
         _ => {
             // Handle other properties as needed
         }

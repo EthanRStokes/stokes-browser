@@ -117,6 +117,7 @@ pub struct LayoutBox {
     pub css_min_height: Option<crate::css::Length>, // CSS specified min-height
     pub box_sizing: crate::css::BoxSizing, // CSS box-sizing property
     pub flex_basis: crate::css::FlexBasis, // CSS flex-basis property
+    pub gap: crate::css::Gap, // CSS gap property (row-gap and column-gap)
 }
 
 impl LayoutBox {
@@ -135,6 +136,7 @@ impl LayoutBox {
             css_min_height: None,
             box_sizing: crate::css::BoxSizing::ContentBox, // Default value
             flex_basis: crate::css::FlexBasis::Auto, // Default value
+            gap: crate::css::Gap::default(), // Default value
         }
     }
 
@@ -182,8 +184,16 @@ impl LayoutBox {
         // Track floats in this formatting context
         let mut float_context = FloatContext::new();
 
-        // Layout children vertically, handling floats
-        for child in &mut self.children {
+        // Calculate gap spacing (row-gap for vertical stacking)
+        let row_gap = self.gap.row.to_px(16.0, container_width) * scale_factor;
+
+        // Layout children vertically, handling floats and gap
+        for (i, child) in self.children.iter_mut().enumerate() {
+            // Add row-gap before each child except the first
+            if i > 0 && row_gap > 0.0 {
+                current_y += row_gap;
+            }
+
             // Layout the child first to determine its dimensions
             child.layout(available_width, container_height, content_x, current_y, scale_factor);
 
@@ -278,12 +288,20 @@ impl LayoutBox {
             final_height
         );
 
-        // Layout children horizontally
+        // Calculate gap spacing (column-gap for horizontal flow)
+        let column_gap = self.gap.column.to_px(16.0, container_width) * scale_factor;
+
+        // Layout children horizontally with column-gap
         let mut current_x = content_x;
         let child_count = self.children.len().max(1);
         let child_width = content_width / child_count as f32;
 
-        for child in &mut self.children {
+        for (i, child) in self.children.iter_mut().enumerate() {
+            // Add column-gap before each child except the first
+            if i > 0 && column_gap > 0.0 {
+                current_x += column_gap;
+            }
+
             child.layout(child_width, final_height, current_x, content_y, scale_factor);
             current_x += child.dimensions.total_width();
         }
@@ -743,6 +761,9 @@ impl LayoutBox {
 
         // Store flex-basis value
         self.flex_basis = styles.flex_basis.clone();
+
+        // Store gap value
+        self.gap = styles.gap.clone();
 
         // Note: Other style properties like colors, fonts are handled in the renderer
         // Scale factor will be applied during layout phase

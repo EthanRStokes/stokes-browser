@@ -45,6 +45,7 @@ pub struct ComputedValues {
     pub outline: crate::css::Outline,
     pub outline_offset: crate::css::values::Length,
     pub flex_basis: crate::css::FlexBasis,
+    pub gap: crate::css::Gap,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -98,6 +99,7 @@ impl Default for ComputedValues {
             outline: crate::css::Outline::none(),
             outline_offset: crate::css::values::Length::default(),
             flex_basis: crate::css::FlexBasis::default(),
+            gap: crate::css::Gap::default(),
         }
     }
 }
@@ -149,4 +151,3 @@ impl ComputedValues {
         values
     }
 }
-

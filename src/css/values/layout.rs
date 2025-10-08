@@ -348,3 +348,66 @@ impl Default for FlexBasis {
         FlexBasis::Auto
     }
 }
+
+/// CSS gap property (row-gap and column-gap)
+#[derive(Debug, Clone, PartialEq)]
+pub struct Gap {
+    pub row: Length,
+    pub column: Length,
+}
+
+impl Gap {
+    /// Parse gap shorthand value from string
+    /// Syntax: gap: <row-gap> <column-gap> | <gap>
+    pub fn parse(value: &str) -> Self {
+        let value = value.trim();
+        let parts: Vec<&str> = value.split_whitespace().collect();
+
+        match parts.len() {
+            1 => {
+                // Single value applies to both row and column
+                let length = if let CssValue::Length(len) = CssValue::parse(parts[0]) {
+                    len
+                } else {
+                    Length::default()
+                };
+                Gap {
+                    row: length.clone(),
+                    column: length,
+                }
+            }
+            2 => {
+                // Two values: row-gap column-gap
+                let row = if let CssValue::Length(len) = CssValue::parse(parts[0]) {
+                    len
+                } else {
+                    Length::default()
+                };
+                let column = if let CssValue::Length(len) = CssValue::parse(parts[1]) {
+                    len
+                } else {
+                    Length::default()
+                };
+                Gap { row, column }
+            }
+            _ => Gap::default(),
+        }
+    }
+
+    /// Create a uniform gap value
+    pub fn uniform(value: Length) -> Self {
+        Gap {
+            row: value.clone(),
+            column: value,
+        }
+    }
+}
+
+impl Default for Gap {
+    fn default() -> Self {
+        Gap {
+            row: Length::default(),
+            column: Length::default(),
+        }
+    }
+}
