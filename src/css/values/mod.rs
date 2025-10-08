@@ -1,5 +1,3 @@
-
-
 // CSS value types and parsing - organized module structure
 
 pub mod color;
@@ -16,15 +14,15 @@ pub mod transition;
 // Re-export commonly used types
 pub use color::Color;
 pub use length::{Length, Unit};
-pub use border::{BorderRadius, BorderRadiusPx};
+pub use border::{BorderRadius, BorderRadiusPx, Outline, OutlineStyle};
 pub use shadow::{BoxShadow, BoxShadowPx};
 pub use text::{TextDecoration, TextDecorationType, TextAlign, TextTransform, WhiteSpace};
-pub use layout::{Clear, Float, Overflow, BoxSizing, Visibility, VerticalAlign, ContentValue};
+pub use layout::{Clear, Float, Overflow, BoxSizing, Visibility, VerticalAlign, ContentValue, FlexBasis};
 pub use font::{FontStyle, FontVariant, LineHeight};
 pub use background::BackgroundImage;
 pub use cursor::Cursor;
 pub use list::ListStyleType;
-pub use transition::{TimingFunction, StepPosition, Duration};
+pub use transition::{TimingFunction, StepPosition, Duration, Transition, TransitionProperty, TransitionSpec};
 
 use std::fmt;
 
@@ -50,6 +48,7 @@ impl CssValue {
         if parts.len() > 1 {
             let parsed_values: Vec<CssValue> = parts.iter()
                 .map(|part| Self::parse_single_value(part))
+                .collect();
             return CssValue::MultipleValues(parsed_values);
         }
 
@@ -195,6 +194,3 @@ impl fmt::Display for CssValue {
         }
     }
 }
-                .collect();
-
-

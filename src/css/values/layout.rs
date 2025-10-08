@@ -306,3 +306,45 @@ impl Default for ContentValue {
     }
 }
 
+/// CSS flex-basis property
+#[derive(Debug, Clone, PartialEq)]
+pub enum FlexBasis {
+    Auto,
+    Length(Length),
+    Content,
+}
+
+impl FlexBasis {
+    /// Parse flex-basis value from string
+    pub fn parse(value: &str) -> Self {
+        let value = value.trim();
+
+        match value.to_lowercase().as_str() {
+            "auto" => FlexBasis::Auto,
+            "content" => FlexBasis::Content,
+            _ => {
+                // Try to parse as a length
+                if let CssValue::Length(length) = CssValue::parse(value) {
+                    FlexBasis::Length(length)
+                } else {
+                    FlexBasis::Auto // Default to auto
+                }
+            }
+        }
+    }
+
+    /// Convert to pixels given a context
+    pub fn to_px(&self, font_size: f32, parent_size: f32) -> Option<f32> {
+        match self {
+            FlexBasis::Auto => None, // Auto should be handled by layout algorithm
+            FlexBasis::Length(length) => Some(length.to_px(font_size, parent_size)),
+            FlexBasis::Content => None, // Content sizing should be handled by layout algorithm
+        }
+    }
+}
+
+impl Default for FlexBasis {
+    fn default() -> Self {
+        FlexBasis::Auto
+    }
+}

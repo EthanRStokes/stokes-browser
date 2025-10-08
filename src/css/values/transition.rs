@@ -210,3 +210,231 @@ impl Default for Duration {
     }
 }
 
+/// Single transition configuration for one property
+#[derive(Debug, Clone, PartialEq)]
+pub struct Transition {
+    pub property: TransitionProperty,
+    pub duration: Duration,
+    pub timing_function: TimingFunction,
+    pub delay: Duration,
+}
+
+impl Transition {
+    /// Create a new transition with default values
+    pub fn new(property: TransitionProperty) -> Self {
+        Self {
+            property,
+            duration: Duration(0.0),
+            timing_function: TimingFunction::Ease,
+            delay: Duration(0.0),
+        }
+    }
+
+    /// Parse a single transition from CSS string
+    /// Format: <property> <duration> <timing-function> <delay>
+    pub fn parse(value: &str) -> Option<Self> {
+        let value = value.trim();
+
+        if value == "none" {
+            return None;
+        }
+
+        let parts: Vec<&str> = value.split_whitespace().collect();
+        if parts.is_empty() {
+            return None;
+        }
+
+        let mut property = TransitionProperty::All;
+        let mut duration = Duration(0.0);
+        let mut timing_function = TimingFunction::Ease;
+        let mut delay = Duration(0.0);
+
+        let mut duration_set = false;
+
+        for part in parts {
+            // Try to parse as property name
+            if !duration_set && TransitionProperty::is_property_name(part) {
+                property = TransitionProperty::parse(part);
+            }
+            // Try to parse as duration
+            else if part.ends_with('s') || part.ends_with("ms") {
+                let parsed_duration = Duration::parse(part);
+                if !duration_set {
+                    duration = parsed_duration;
+                    duration_set = true;
+                } else {
+                    delay = parsed_duration;
+                }
+            }
+            // Try to parse as timing function
+            else if Self::is_timing_function(part) {
+                timing_function = TimingFunction::parse(part);
+            }
+        }
+
+        Some(Transition {
+            property,
+            duration,
+            timing_function,
+            delay,
+        })
+    }
+
+    fn is_timing_function(value: &str) -> bool {
+        matches!(value.to_lowercase().as_str(),
+            "linear" | "ease" | "ease-in" | "ease-out" | "ease-in-out" |
+            "step-start" | "step-end"
+        ) || value.starts_with("cubic-bezier(") || value.starts_with("steps(")
+    }
+}
+
+/// Property that can be transitioned
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransitionProperty {
+    All,
+    BackgroundColor,
+    Color,
+    Opacity,
+    Width,
+    Height,
+    MarginTop,
+    MarginRight,
+    MarginBottom,
+    MarginLeft,
+    PaddingTop,
+    PaddingRight,
+    PaddingBottom,
+    PaddingLeft,
+    BorderTopWidth,
+    BorderRightWidth,
+    BorderBottomWidth,
+    BorderLeftWidth,
+    Transform,
+    Custom(String),
+}
+
+impl TransitionProperty {
+    /// Parse property name from string
+    pub fn parse(value: &str) -> Self {
+        match value.to_lowercase().as_str() {
+            "all" => TransitionProperty::All,
+            "background-color" => TransitionProperty::BackgroundColor,
+            "color" => TransitionProperty::Color,
+            "opacity" => TransitionProperty::Opacity,
+            "width" => TransitionProperty::Width,
+            "height" => TransitionProperty::Height,
+            "margin-top" => TransitionProperty::MarginTop,
+            "margin-right" => TransitionProperty::MarginRight,
+            "margin-bottom" => TransitionProperty::MarginBottom,
+            "margin-left" => TransitionProperty::MarginLeft,
+            "padding-top" => TransitionProperty::PaddingTop,
+            "padding-right" => TransitionProperty::PaddingRight,
+            "padding-bottom" => TransitionProperty::PaddingBottom,
+            "padding-left" => TransitionProperty::PaddingLeft,
+            "border-top-width" => TransitionProperty::BorderTopWidth,
+            "border-right-width" => TransitionProperty::BorderRightWidth,
+            "border-bottom-width" => TransitionProperty::BorderBottomWidth,
+            "border-left-width" => TransitionProperty::BorderLeftWidth,
+            "transform" => TransitionProperty::Transform,
+            _ => TransitionProperty::Custom(value.to_string()),
+        }
+    }
+
+    /// Check if a string is a valid property name for transitions
+    fn is_property_name(value: &str) -> bool {
+        // Common property names
+        matches!(value.to_lowercase().as_str(),
+            "all" | "background-color" | "color" | "opacity" | "width" | "height" |
+            "margin-top" | "margin-right" | "margin-bottom" | "margin-left" |
+            "padding-top" | "padding-right" | "padding-bottom" | "padding-left" |
+            "border-top-width" | "border-right-width" | "border-bottom-width" | "border-left-width" |
+            "transform"
+        )
+    }
+}
+
+/// Complete transition specification (can contain multiple transitions)
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransitionSpec {
+    pub transitions: Vec<Transition>,
+}
+
+impl TransitionSpec {
+    /// Parse transition specification from CSS string
+    /// Format: <property> <duration> <timing-function> <delay>, ...
+    pub fn parse(value: &str) -> Self {
+        let value = value.trim();
+
+        if value == "none" {
+            return TransitionSpec {
+                transitions: Vec::new(),
+            };
+        }
+
+        // Split by commas for multiple transitions
+        let transition_strings: Vec<&str> = value.split(',').map(|s| s.trim()).collect();
+        let mut transitions = Vec::new();
+
+        for transition_str in transition_strings {
+            if let Some(transition) = Transition::parse(transition_str) {
+                transitions.push(transition);
+            }
+        }
+
+        TransitionSpec { transitions }
+    }
+
+    /// Check if any property is being transitioned
+    pub fn has_transitions(&self) -> bool {
+        !self.transitions.is_empty()
+    }
+
+    /// Find transition for a specific property
+    pub fn get_transition_for_property(&self, property_name: &str) -> Option<&Transition> {
+        for transition in &self.transitions {
+            match &transition.property {
+                TransitionProperty::All => return Some(transition),
+                TransitionProperty::Custom(name) if name == property_name => return Some(transition),
+                _ => {
+                    // Check if the property matches
+                    if Self::property_matches(property_name, &transition.property) {
+                        return Some(transition);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn property_matches(property_name: &str, transition_property: &TransitionProperty) -> bool {
+        match transition_property {
+            TransitionProperty::BackgroundColor => property_name == "background-color",
+            TransitionProperty::Color => property_name == "color",
+            TransitionProperty::Opacity => property_name == "opacity",
+            TransitionProperty::Width => property_name == "width",
+            TransitionProperty::Height => property_name == "height",
+            TransitionProperty::MarginTop => property_name == "margin-top",
+            TransitionProperty::MarginRight => property_name == "margin-right",
+            TransitionProperty::MarginBottom => property_name == "margin-bottom",
+            TransitionProperty::MarginLeft => property_name == "margin-left",
+            TransitionProperty::PaddingTop => property_name == "padding-top",
+            TransitionProperty::PaddingRight => property_name == "padding-right",
+            TransitionProperty::PaddingBottom => property_name == "padding-bottom",
+            TransitionProperty::PaddingLeft => property_name == "padding-left",
+            TransitionProperty::BorderTopWidth => property_name == "border-top-width",
+            TransitionProperty::BorderRightWidth => property_name == "border-right-width",
+            TransitionProperty::BorderBottomWidth => property_name == "border-bottom-width",
+            TransitionProperty::BorderLeftWidth => property_name == "border-left-width",
+            TransitionProperty::Transform => property_name == "transform",
+            _ => false,
+        }
+    }
+}
+
+impl Default for TransitionSpec {
+    fn default() -> Self {
+        TransitionSpec {
+            transitions: Vec::new(),
+        }
+    }
+}
