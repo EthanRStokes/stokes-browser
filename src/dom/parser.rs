@@ -105,7 +105,7 @@ impl HtmlParser {
 
             // Create a new child node
             let child_node = DomNode::new(NodeType::Document, None);  // Temporary type
-            
+
             // Add the child to the parent first to get the Rc reference
             let child_rc = target_node.add_child(child_node);
             

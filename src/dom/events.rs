@@ -501,15 +501,39 @@ impl EventDispatcher {
 
     /// Get all ancestors of a node
     fn get_ancestors(node: &Rc<RefCell<DomNode>>) -> Vec<Rc<RefCell<DomNode>>> {
-        let mut ancestors = Vec::new();
-        let node_borrowed = node.borrow();
+        use std::collections::HashSet;
 
-        if let Some(parent_weak) = &node_borrowed.parent {
-            if let Some(parent_rc) = parent_weak.upgrade() {
-                ancestors.push(Rc::clone(&parent_rc));
-                drop(node_borrowed);
-                let mut parent_ancestors = Self::get_ancestors(&parent_rc);
-                ancestors.append(&mut parent_ancestors);
+        let mut ancestors = Vec::new();
+        let mut current = Rc::clone(node);
+        let mut visited = HashSet::new();
+
+        // Track the starting node to prevent infinite loops
+        visited.insert(Rc::as_ptr(&current) as usize);
+
+        loop {
+            let parent_rc = {
+                let node_borrowed = current.borrow();
+                match &node_borrowed.parent {
+                    Some(parent_weak) => parent_weak.upgrade(),
+                    None => None,
+                }
+            };
+
+            match parent_rc {
+                Some(parent) => {
+                    let parent_ptr = Rc::as_ptr(&parent) as usize;
+
+                    // Check for circular reference
+                    if visited.contains(&parent_ptr) {
+                        eprintln!("Warning: Circular reference detected in DOM tree parent chain");
+                        break;
+                    }
+
+                    visited.insert(parent_ptr);
+                    ancestors.push(Rc::clone(&parent));
+                    current = parent;
+                }
+                None => break,
             }
         }
 
