@@ -9,7 +9,6 @@ pub use runtime::JsRuntime;
 pub use console::Console;
 pub use element_bindings::ElementWrapper;
 
-use boa_engine::{Context, JsValue, Source};
 use std::rc::Rc;
 use std::cell::RefCell;
 use crate::dom::DomNode;
@@ -17,27 +16,20 @@ use crate::dom::DomNode;
 /// JavaScript execution result
 pub type JsResult<T> = Result<T, String>;
 
-const STACK_SIZE: usize = 16 * 1024 * 1024; // 16MB
-
-/// Execute JavaScript code in a context
-pub fn execute_script(context: &mut Context, code: &str) -> JsResult<JsValue> {
-    stacker::grow(STACK_SIZE, || {
-        context
-            .eval(Source::from_bytes(code))
-            .map_err(|e| format!("JavaScript error: {}", e))
-    })
-}
-
 /// Initialize JavaScript bindings for the browser
-pub fn initialize_bindings(context: &mut Context, document_root: Rc<RefCell<DomNode>>) -> JsResult<()> {
+pub fn initialize_bindings(
+    scope: &mut v8::PinScope,
+    global: v8::Local<v8::Object>,
+    document_root: Rc<RefCell<DomNode>>
+) -> JsResult<()> {
     // Set up console object
-    console::setup_console(context)?;
-    
+    console::setup_console(scope, global)?;
+
     // Set up DOM bindings
-    dom_bindings::setup_dom_bindings(context, document_root)?;
-    
+    dom_bindings::setup_dom_bindings(scope, global, document_root)?;
+
     // Set up fetch API
-    fetch::setup_fetch(context)?;
+    fetch::setup_fetch(scope, global)?;
 
     Ok(())
 }

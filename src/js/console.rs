@@ -1,25 +1,19 @@
-// Console API implementation for JavaScript
-use boa_engine::{Context, JsResult as BoaResult, JsValue, NativeFunction, object::builtins::JsArray, JsString};
-use boa_gc::{Finalize, Trace};
+// Console API implementation for JavaScript using V8
+use std::rc::Rc;
+use std::cell::RefCell;
 
 /// Console object for JavaScript
-#[derive(Debug, Clone, Trace, Finalize)]
 pub struct Console;
 
 impl Console {
     /// Format arguments for console output
-    fn format_args(args: &[JsValue], context: &mut Context) -> String {
+    fn format_args(scope: &mut v8::HandleScope, args: &[v8::Local<v8::Value>]) -> String {
         args.iter()
             .map(|arg| {
-                if arg.is_string() {
-                    arg.to_string(context)
-                        .map(|s| s.to_std_string_escaped())
-                        .unwrap_or_else(|_| String::from("[Error converting to string]"))
-                } else if arg.is_object() {
-                    // Try to stringify objects
-                    format!("{:?}", arg)
+                if let Some(s) = arg.to_string(scope) {
+                    s.to_rust_string_lossy(scope)
                 } else {
-                    arg.display().to_string()
+                    "[Error converting to string]".to_string()
                 }
             })
             .collect::<Vec<_>>()
@@ -27,56 +21,103 @@ impl Console {
     }
 
     /// console.log implementation
-    fn log(_this: &JsValue, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
-        let message = Self::format_args(args, context);
+    fn log(
+        scope: &mut v8::HandleScope,
+        args: v8::FunctionCallbackArguments,
+        _retval: v8::ReturnValue,
+    ) {
+        let args_vec: Vec<v8::Local<v8::Value>> = (0..args.length())
+            .map(|i| args.get(i))
+            .collect();
+        let message = Self::format_args(scope, &args_vec);
         println!("[JS] {}", message);
-        Ok(JsValue::undefined())
     }
 
     /// console.error implementation
-    fn error(_this: &JsValue, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
-        let message = Self::format_args(args, context);
+    fn error(
+        scope: &mut v8::HandleScope,
+        args: v8::FunctionCallbackArguments,
+        _retval: v8::ReturnValue,
+    ) {
+        let args_vec: Vec<v8::Local<v8::Value>> = (0..args.length())
+            .map(|i| args.get(i))
+            .collect();
+        let message = Self::format_args(scope, &args_vec);
         eprintln!("[JS Error] {}", message);
-        Ok(JsValue::undefined())
     }
 
     /// console.warn implementation
-    fn warn(_this: &JsValue, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
-        let message = Self::format_args(args, context);
+    fn warn(
+        scope: &mut v8::HandleScope,
+        args: v8::FunctionCallbackArguments,
+        _retval: v8::ReturnValue,
+    ) {
+        let args_vec: Vec<v8::Local<v8::Value>> = (0..args.length())
+            .map(|i| args.get(i))
+            .collect();
+        let message = Self::format_args(scope, &args_vec);
         println!("[JS Warning] {}", message);
-        Ok(JsValue::undefined())
     }
 
     /// console.info implementation
-    fn info(_this: &JsValue, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
-        let message = Self::format_args(args, context);
+    fn info(
+        scope: &mut v8::HandleScope,
+        args: v8::FunctionCallbackArguments,
+        _retval: v8::ReturnValue,
+    ) {
+        let args_vec: Vec<v8::Local<v8::Value>> = (0..args.length())
+            .map(|i| args.get(i))
+            .collect();
+        let message = Self::format_args(scope, &args_vec);
         println!("[JS Info] {}", message);
-        Ok(JsValue::undefined())
     }
 
     /// console.debug implementation
-    fn debug(_this: &JsValue, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
-        let message = Self::format_args(args, context);
+    fn debug(
+        scope: &mut v8::HandleScope,
+        args: v8::FunctionCallbackArguments,
+        _retval: v8::ReturnValue,
+    ) {
+        let args_vec: Vec<v8::Local<v8::Value>> = (0..args.length())
+            .map(|i| args.get(i))
+            .collect();
+        let message = Self::format_args(scope, &args_vec);
         println!("[JS Debug] {}", message);
-        Ok(JsValue::undefined())
     }
 }
 
 /// Set up the console object in the JavaScript context
-pub fn setup_console(context: &mut Context) -> Result<(), String> {
-    use boa_engine::object::ObjectInitializer;
+pub fn setup_console(
+    scope: &mut v8::PinScope,
+    global: v8::Local<v8::Object>,
+) -> Result<(), String> {
+    // Create console object
+    let console_obj = v8::Object::new(scope);
 
-    let console = ObjectInitializer::new(context)
-        .function(NativeFunction::from_fn_ptr(Console::log), JsString::from("log"), 0)
-        .function(NativeFunction::from_fn_ptr(Console::error), JsString::from("error"), 0)
-        .function(NativeFunction::from_fn_ptr(Console::warn), JsString::from("warn"), 0)
-        .function(NativeFunction::from_fn_ptr(Console::info), JsString::from("info"), 0)
-        .function(NativeFunction::from_fn_ptr(Console::debug), JsString::from("debug"), 0)
-        .build();
+    // Add console methods
+    let log_name = v8::String::new(scope, "log").unwrap();
+    let log_fn = v8::Function::new(scope, Console::log).unwrap();
+    console_obj.set(scope, log_name.into(), log_fn.into());
 
-    context.register_global_property(JsString::from("console"), console, boa_engine::property::Attribute::all())
-        .map_err(|e| format!("Failed to register console: {}", e))?;
+    let error_name = v8::String::new(scope, "error").unwrap();
+    let error_fn = v8::Function::new(scope, Console::error).unwrap();
+    console_obj.set(scope, error_name.into(), error_fn.into());
+
+    let warn_name = v8::String::new(scope, "warn").unwrap();
+    let warn_fn = v8::Function::new(scope, Console::warn).unwrap();
+    console_obj.set(scope, warn_name.into(), warn_fn.into());
+
+    let info_name = v8::String::new(scope, "info").unwrap();
+    let info_fn = v8::Function::new(scope, Console::info).unwrap();
+    console_obj.set(scope, info_name.into(), info_fn.into());
+
+    let debug_name = v8::String::new(scope, "debug").unwrap();
+    let debug_fn = v8::Function::new(scope, Console::debug).unwrap();
+    console_obj.set(scope, debug_name.into(), debug_fn.into());
+
+    // Set console on global object
+    let console_name = v8::String::new(scope, "console").unwrap();
+    global.set(scope, console_name.into(), console_obj.into());
 
     Ok(())
 }
-

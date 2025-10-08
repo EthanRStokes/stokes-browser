@@ -8,7 +8,6 @@ glutin = "0.32.3"
 glutin-winit = "0.5.0"
 gl = "0.14.0"
 skia-safe = { version = "0.89.0", features = ["gpu", "gl"] }
-#winit = { version = "0.30.12", features = ["wayland"] }
 image = "0.25.8"
 tokio = { version = "1.47.1", features = ["rt", "rt-multi-thread", "macros", "sync"] }
 curl = "0.4"
@@ -18,11 +17,11 @@ resvg = "0.45.1"
 usvg = "0.45.1"
 tiny-skia = "0.11.4"
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
-#boa_engine = "0.20.0"
-#boa_gc = "0.20.0"
 base64 = "0.22"
 stacker = "0.1"
 serde_json = "1.0.145"
+v8 = "140.2.0"
+temporal_rs = "0.1.0"
 
 [dependencies.winit]
 git = "https://github.com/Treetrain1/winit.git"
@@ -30,11 +29,3 @@ default-features = true
 
 [patch.crates-io]
 winit = { git = "https://github.com/Treetrain1/winit.git" }
-
-[dependencies.boa_engine]
-git = "https://github.com/boa-dev/boa.git"
-default-features = true
-
-[dependencies.boa_gc]
-git = "https://github.com/boa-dev/boa.git"
-default-features = true
