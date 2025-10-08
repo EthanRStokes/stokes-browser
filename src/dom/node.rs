@@ -352,6 +352,27 @@ impl DomNode {
         }
     }
 
+    /// Set the text content of this node
+    /// For text nodes, replaces the text content
+    /// For element nodes, removes all children and creates a single text node child
+    pub fn set_text_content(&mut self, text: &str) {
+        match &mut self.node_type {
+            NodeType::Text(content) => {
+                *content = text.to_string();
+            }
+            _ => {
+                // Remove all children
+                self.children.clear();
+                
+                // If text is not empty, add a single text node as child
+                if !text.is_empty() {
+                    let text_node = DomNode::new(NodeType::Text(text.to_string()), None);
+                    self.add_child(text_node);
+                }
+            }
+        }
+    }
+
     /// Enhanced CSS selector matching (still simplified but more comprehensive)
     pub fn query_selector(&self, selector: &str) -> Vec<Rc<RefCell<DomNode>>> {
         self.find_nodes(|node| self.matches_selector(node, selector))

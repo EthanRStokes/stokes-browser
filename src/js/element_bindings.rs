@@ -39,8 +39,33 @@ impl ElementWrapper {
             let node_for_query_selector_all = Rc::clone(element_rc);
             let node_for_add_event_listener = Rc::clone(element_rc);
             let node_for_remove_event_listener = Rc::clone(element_rc);
+            let node_for_text_content_get = Rc::clone(element_rc);
+            let node_for_text_content_set = Rc::clone(element_rc);
             // Store the node reference for child manipulation
             let node_ref_for_storage = Rc::clone(element_rc);
+
+            // Create accessor functions before ObjectInitializer to avoid borrow conflicts
+            let text_content_getter = unsafe {
+                NativeFunction::from_closure(move |_this: &JsValue, _args: &[JsValue], _context: &mut Context| {
+                    let node = node_for_text_content_get.borrow();
+                    let content = node.text_content();
+                    Ok(JsValue::from(JsString::from(content)))
+                }).to_js_function(context.realm())
+            };
+
+            let text_content_setter = unsafe {
+                NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                    let text = args.get(0)
+                        .and_then(|v| v.as_string())
+                        .map(|s| s.to_std_string_escaped())
+                        .unwrap_or_default();
+
+                    let mut node = node_for_text_content_set.borrow_mut();
+                    node.set_text_content(&text);
+                    println!("[JS] element.textContent = '{}'", text);
+                    Ok(JsValue::undefined())
+                }).to_js_function(context.realm())
+            };
 
             let js_element = ObjectInitializer::new(context)
                 .property(
@@ -60,9 +85,10 @@ impl ElementWrapper {
                     )),
                     boa_engine::property::Attribute::all(),
                 )
-                .property(
+                .accessor(
                     JsString::from("textContent"),
-                    JsValue::from(JsString::from(element.text_content())),
+                    Some(text_content_getter),
+                    Some(text_content_setter),
                     boa_engine::property::Attribute::all(),
                 )
                 .property(
@@ -328,7 +354,7 @@ impl ElementWrapper {
 
                             let callback = args.get(1)
                                 .and_then(|v| v.as_object());
-                            ;
+
                             println!("[JS] element.removeEventListener('{}') called", event_type_str);
 
                             if let Some(callback_obj) = callback {
