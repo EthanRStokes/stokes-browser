@@ -44,7 +44,9 @@ impl JsRuntime {
     /// Execute JavaScript code from a script tag
     pub fn execute_script(&mut self, code: &str) -> JsResult<()> {
         match self.execute(code) {
-            Ok(_) => Ok(()),
+            Ok(result) => Ok({
+                println!("{}", result.display())
+            }),
             Err(e) => {
                 eprintln!("Script execution error: {}", e);
                 Err(e)
