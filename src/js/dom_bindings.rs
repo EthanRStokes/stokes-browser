@@ -19,8 +19,9 @@ impl DocumentWrapper {
     }
 
     /// document.getElementById implementation
-    fn get_element_by_id(this: &JsValue, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
-        // Get the id argument
+    fn get_element_by_id(&self, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
+        use boa_engine::object::ObjectInitializer;
+
         let id = args.get(0)
             .and_then(|v| v.as_string())
             .map(|s| s.to_std_string_escaped())
@@ -30,17 +31,57 @@ impl DocumentWrapper {
             return Ok(JsValue::null());
         }
 
-        // Get the document root from the 'this' context
-        // For now, we'll return null as we need to properly store the document reference
-        // TODO: Store document root in a way that's accessible from JavaScript callbacks
         println!("[JS] document.getElementById('{}') called", id);
 
-        // Return null for now - will need to create a proper element object
-        Ok(JsValue::null())
+        // Search the DOM tree for the element
+        let root = self.root.borrow();
+        match root.get_element_by_id(&id) {
+            Some(element_rc) => {
+                // Create a JavaScript object representing this element
+                let element = element_rc.borrow();
+                if let NodeType::Element(ref data) = element.node_type {
+                    let js_element = ObjectInitializer::new(context)
+                        .property(
+                            JsString::from("tagName"),
+                            JsValue::from(JsString::from(data.tag_name.to_uppercase())),
+                            boa_engine::property::Attribute::all(),
+                        )
+                        .property(
+                            JsString::from("id"),
+                            JsValue::from(JsString::from(data.id().unwrap_or(""))),
+                            boa_engine::property::Attribute::all(),
+                        )
+                        .property(
+                            JsString::from("className"),
+                            JsValue::from(JsString::from(
+                                data.attributes.get("class").map(|s| s.as_str()).unwrap_or("")
+                            )),
+                            boa_engine::property::Attribute::all(),
+                        )
+                        .property(
+                            JsString::from("textContent"),
+                            JsValue::from(JsString::from(element.text_content())),
+                            boa_engine::property::Attribute::all(),
+                        )
+                        .build();
+
+                    println!("[JS] Found element with id '{}': <{}>", id, data.tag_name);
+                    Ok(js_element.into())
+                } else {
+                    Ok(JsValue::null())
+                }
+            }
+            None => {
+                println!("[JS] Element with id '{}' not found", id);
+                Ok(JsValue::null())
+            }
+        }
     }
 
     /// document.getElementsByTagName implementation
-    fn get_elements_by_tag_name(_this: &JsValue, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
+    fn get_elements_by_tag_name(&self, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
+        use boa_engine::object::ObjectInitializer;
+
         let tag_name = args.get(0)
             .and_then(|v| v.as_string())
             .map(|s| s.to_std_string_escaped())
@@ -48,24 +89,81 @@ impl DocumentWrapper {
 
         println!("[JS] document.getElementsByTagName('{}') called", tag_name);
 
-        // Return an empty array for now
+        let root = self.root.borrow();
+        let elements = root.get_elements_by_tag_name(&tag_name);
+
         let array = JsArray::new(context);
+        for (i, element_rc) in elements.iter().enumerate() {
+            let element = element_rc.borrow();
+            if let NodeType::Element(ref data) = element.node_type {
+                let js_element = ObjectInitializer::new(context)
+                    .property(
+                        JsString::from("tagName"),
+                        JsValue::from(JsString::from(data.tag_name.to_uppercase())),
+                        boa_engine::property::Attribute::all(),
+                    )
+                    .property(
+                        JsString::from("id"),
+                        JsValue::from(JsString::from(data.id().unwrap_or(""))),
+                        boa_engine::property::Attribute::all(),
+                    )
+                    .build();
+                let _ = array.set(i, js_element, true, context);
+            }
+        }
+
+        println!("[JS] Found {} element(s) with tag '{}'", array.length(context).unwrap_or(0), tag_name);
         Ok(array.into())
     }
 
     /// document.querySelector implementation
-    fn query_selector(_this: &JsValue, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
+    fn query_selector(&self, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
+        use boa_engine::object::ObjectInitializer;
+
         let selector = args.get(0)
             .and_then(|v| v.as_string())
             .map(|s| s.to_std_string_escaped())
             .unwrap_or_default();
 
         println!("[JS] document.querySelector('{}') called", selector);
+
+        let root = self.root.borrow();
+        let elements = root.query_selector(&selector);
+
+        if let Some(element_rc) = elements.first() {
+            let element = element_rc.borrow();
+            if let NodeType::Element(ref data) = element.node_type {
+                let js_element = ObjectInitializer::new(context)
+                    .property(
+                        JsString::from("tagName"),
+                        JsValue::from(JsString::from(data.tag_name.to_uppercase())),
+                        boa_engine::property::Attribute::all(),
+                    )
+                    .property(
+                        JsString::from("id"),
+                        JsValue::from(JsString::from(data.id().unwrap_or(""))),
+                        boa_engine::property::Attribute::all(),
+                    )
+                    .property(
+                        JsString::from("textContent"),
+                        JsValue::from(JsString::from(element.text_content())),
+                        boa_engine::property::Attribute::all(),
+                    )
+                    .build();
+
+                println!("[JS] Found element matching '{}': <{}>", selector, data.tag_name);
+                return Ok(js_element.into());
+            }
+        }
+
+        println!("[JS] No element found matching '{}'", selector);
         Ok(JsValue::null())
     }
 
     /// document.querySelectorAll implementation
-    fn query_selector_all(_this: &JsValue, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
+    fn query_selector_all(&self, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
+        use boa_engine::object::ObjectInitializer;
+
         let selector = args.get(0)
             .and_then(|v| v.as_string())
             .map(|s| s.to_std_string_escaped())
@@ -73,13 +171,40 @@ impl DocumentWrapper {
 
         println!("[JS] document.querySelectorAll('{}') called", selector);
 
-        // Return an empty array for now
+        let root = self.root.borrow();
+        let elements = root.query_selector(&selector);
+
         let array = JsArray::new(context);
+        for (i, element_rc) in elements.iter().enumerate() {
+            let element = element_rc.borrow();
+            if let NodeType::Element(ref data) = element.node_type {
+                let js_element = ObjectInitializer::new(context)
+                    .property(
+                        JsString::from("tagName"),
+                        JsValue::from(JsString::from(data.tag_name.to_uppercase())),
+                        boa_engine::property::Attribute::all(),
+                    )
+                    .property(
+                        JsString::from("id"),
+                        JsValue::from(JsString::from(data.id().unwrap_or(""))),
+                        boa_engine::property::Attribute::all(),
+                    )
+                    .property(
+                        JsString::from("textContent"),
+                        JsValue::from(JsString::from(element.text_content())),
+                        boa_engine::property::Attribute::all(),
+                    )
+                    .build();
+                let _ = array.set(i, js_element, true, context);
+            }
+        }
+
+        println!("[JS] Found {} element(s) matching '{}'", array.length(context).unwrap_or(0), selector);
         Ok(array.into())
     }
 
     /// document.createElement implementation
-    fn create_element(_this: &JsValue, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
+    fn create_element(&self, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
         let tag_name = args.get(0)
             .and_then(|v| v.as_string())
             .map(|s| s.to_std_string_escaped())
@@ -273,192 +398,42 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
         .property(JsString::from("NOTATION_NODE"), 12, boa_engine::property::Attribute::all())
         .build();
 
-    // Create the document object
-    // Clone document_root for use in closures
-    let doc_root_for_get_by_id = document_root.clone();
-    let doc_root_for_get_by_tag = document_root.clone();
-    let doc_root_for_query = document_root.clone();
-    let doc_root_for_query_all = document_root.clone();
+    // Create the DocumentWrapper instance
+    let doc_wrapper = DocumentWrapper::new(document_root);
 
-    // Create closures for document methods that capture the document root
+    // Create closures that use the DocumentWrapper methods
+    let doc_wrapper_for_get_by_id = doc_wrapper.clone();
     let get_element_by_id_fn = unsafe {
         NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
-            let id = args.get(0)
-                .and_then(|v| v.as_string())
-                .map(|s| s.to_std_string_escaped())
-                .unwrap_or_default();
-
-            if id.is_empty() {
-                return Ok(JsValue::null());
-            }
-
-            println!("[JS] document.getElementById('{}') called", id);
-
-            // Search the DOM tree for the element
-            let root = doc_root_for_get_by_id.borrow();
-            match root.get_element_by_id(&id) {
-                Some(element_rc) => {
-                    // Create a JavaScript object representing this element
-                    let element = element_rc.borrow();
-                    if let NodeType::Element(ref data) = element.node_type {
-                        let js_element = ObjectInitializer::new(context)
-                            .property(
-                                JsString::from("tagName"),
-                                JsValue::from(JsString::from(data.tag_name.to_uppercase())),
-                                boa_engine::property::Attribute::all(),
-                            )
-                            .property(
-                                JsString::from("id"),
-                                JsValue::from(JsString::from(data.id().unwrap_or(""))),
-                                boa_engine::property::Attribute::all(),
-                            )
-                            .property(
-                                JsString::from("className"),
-                                JsValue::from(JsString::from(
-                                    data.attributes.get("class").map(|s| s.as_str()).unwrap_or("")
-                                )),
-                                boa_engine::property::Attribute::all(),
-                            )
-                            .property(
-                                JsString::from("textContent"),
-                                JsValue::from(JsString::from(element.text_content())),
-                                boa_engine::property::Attribute::all(),
-                            )
-                            .build();
-
-                        println!("[JS] Found element with id '{}': <{}>", id, data.tag_name);
-                        Ok(js_element.into())
-                    } else {
-                        Ok(JsValue::null())
-                    }
-                }
-                None => {
-                    println!("[JS] Element with id '{}' not found", id);
-                    Ok(JsValue::null())
-                }
-            }
+            doc_wrapper_for_get_by_id.get_element_by_id(args, context)
         })
     };
 
+    let doc_wrapper_for_get_by_tag = doc_wrapper.clone();
     let get_elements_by_tag_name_fn = unsafe {
         NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
-            let tag_name = args.get(0)
-                .and_then(|v| v.as_string())
-                .map(|s| s.to_std_string_escaped())
-                .unwrap_or_default();
-
-            println!("[JS] document.getElementsByTagName('{}') called", tag_name);
-
-            let root = doc_root_for_get_by_tag.borrow();
-            let elements = root.query_selector(&tag_name);
-
-            let array = JsArray::new(context);
-            for (i, element_rc) in elements.iter().enumerate() {
-                let element = element_rc.borrow();
-                if let NodeType::Element(ref data) = element.node_type {
-                    let js_element = ObjectInitializer::new(context)
-                        .property(
-                            JsString::from("tagName"),
-                            JsValue::from(JsString::from(data.tag_name.to_uppercase())),
-                            boa_engine::property::Attribute::all(),
-                        )
-                        .property(
-                            JsString::from("id"),
-                            JsValue::from(JsString::from(data.id().unwrap_or(""))),
-                            boa_engine::property::Attribute::all(),
-                        )
-                        .build();
-                    let _ = array.set(i, js_element, true, context);
-                }
-            }
-
-            println!("[JS] Found {} element(s) with tag '{}'", array.length(context).unwrap_or(0), tag_name);
-            Ok(array.into())
+            doc_wrapper_for_get_by_tag.get_elements_by_tag_name(args, context)
         })
     };
 
+    let doc_wrapper_for_query = doc_wrapper.clone();
     let query_selector_fn = unsafe {
         NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
-            let selector = args.get(0)
-                .and_then(|v| v.as_string())
-                .map(|s| s.to_std_string_escaped())
-                .unwrap_or_default();
-
-            println!("[JS] document.querySelector('{}') called", selector);
-
-            let root = doc_root_for_query.borrow();
-            let elements = root.query_selector(&selector);
-
-            if let Some(element_rc) = elements.first() {
-                let element = element_rc.borrow();
-                if let NodeType::Element(ref data) = element.node_type {
-                    let js_element = ObjectInitializer::new(context)
-                        .property(
-                            JsString::from("tagName"),
-                            JsValue::from(JsString::from(data.tag_name.to_uppercase())),
-                            boa_engine::property::Attribute::all(),
-                        )
-                        .property(
-                            JsString::from("id"),
-                            JsValue::from(JsString::from(data.id().unwrap_or(""))),
-                            boa_engine::property::Attribute::all(),
-                        )
-                        .property(
-                            JsString::from("textContent"),
-                            JsValue::from(JsString::from(element.text_content())),
-                            boa_engine::property::Attribute::all(),
-                        )
-                        .build();
-
-                    println!("[JS] Found element matching '{}': <{}>", selector, data.tag_name);
-                    return Ok(js_element.into());
-                }
-            }
-
-            println!("[JS] No element found matching '{}'", selector);
-            Ok(JsValue::null())
+            doc_wrapper_for_query.query_selector(args, context)
         })
     };
 
+    let doc_wrapper_for_query_all = doc_wrapper.clone();
     let query_selector_all_fn = unsafe {
         NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
-            let selector = args.get(0)
-                .and_then(|v| v.as_string())
-                .map(|s| s.to_std_string_escaped())
-                .unwrap_or_default();
+            doc_wrapper_for_query_all.query_selector_all(args, context)
+        })
+    };
 
-            println!("[JS] document.querySelectorAll('{}') called", selector);
-
-            let root = doc_root_for_query_all.borrow();
-            let elements = root.query_selector(&selector);
-
-            let array = JsArray::new(context);
-            for (i, element_rc) in elements.iter().enumerate() {
-                let element = element_rc.borrow();
-                if let NodeType::Element(ref data) = element.node_type {
-                    let js_element = ObjectInitializer::new(context)
-                        .property(
-                            JsString::from("tagName"),
-                            JsValue::from(JsString::from(data.tag_name.to_uppercase())),
-                            boa_engine::property::Attribute::all(),
-                        )
-                        .property(
-                            JsString::from("id"),
-                            JsValue::from(JsString::from(data.id().unwrap_or(""))),
-                            boa_engine::property::Attribute::all(),
-                        )
-                        .property(
-                            JsString::from("textContent"),
-                            JsValue::from(JsString::from(element.text_content())),
-                            boa_engine::property::Attribute::all(),
-                        )
-                        .build();
-                    let _ = array.set(i, js_element, true, context);
-                }
-            }
-
-            println!("[JS] Found {} element(s) matching '{}'", array.length(context).unwrap_or(0), selector);
-            Ok(array.into())
+    let doc_wrapper_for_create = doc_wrapper.clone();
+    let create_element_fn = unsafe {
+        NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
+            doc_wrapper_for_create.create_element(args, context)
         })
     };
 
@@ -485,7 +460,7 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(DocumentWrapper::create_element),
+            create_element_fn,
             JsString::from("createElement"),
             1,
         )
