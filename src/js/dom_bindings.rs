@@ -96,6 +96,9 @@ impl DocumentWrapper {
         for (i, element_rc) in elements.iter().enumerate() {
             let element = element_rc.borrow();
             if let NodeType::Element(ref data) = element.node_type {
+                // Capture attributes for the closure
+                let attributes = data.attributes.clone();
+
                 let js_element = ObjectInitializer::new(context)
                     .property(
                         JsString::from("tagName"),
@@ -106,6 +109,41 @@ impl DocumentWrapper {
                         JsString::from("id"),
                         JsValue::from(JsString::from(data.id().unwrap_or(""))),
                         boa_engine::property::Attribute::all(),
+                    )
+                    .property(
+                        JsString::from("nodeName"),
+                        JsValue::from(JsString::from(data.tag_name.to_uppercase())),
+                        boa_engine::property::Attribute::all(),
+                    )
+                    .function(
+                        unsafe {
+                            NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                                let attr_name = args.get(0)
+                                    .and_then(|v| v.as_string())
+                                    .map(|s| s.to_std_string_escaped())
+                                    .unwrap_or_default();
+
+                                if let Some(value) = attributes.get(&attr_name) {
+                                    Ok(JsValue::from(JsString::from(value.clone())))
+                                } else {
+                                    Ok(JsValue::null())
+                                }
+                            })
+                        },
+                        JsString::from("getAttribute"),
+                        1,
+                    )
+                    .function(
+                        NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                            let attr_name = args.get(0)
+                                .and_then(|v| v.as_string())
+                                .map(|s| s.to_std_string_escaped())
+                                .unwrap_or_default();
+                            println!("[JS] element.hasAttribute('{}') called", attr_name);
+                            Ok(JsValue::from(false))
+                        }),
+                        JsString::from("hasAttribute"),
+                        1,
                     )
                     .build();
                 let _ = array.set(i, js_element, true, context);
@@ -502,6 +540,10 @@ impl NavigatorObject {
     fn online(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
         Ok(JsValue::from(true))
     }
+
+    fn app_name(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
+        Ok(JsValue::from(JsString::from("Stokes Browser")))
+    }
 }
 
 /// Location object functions
@@ -701,27 +743,38 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
         )
         .build();
 
-    // Create the navigator object
+    // Create the navigator object with proper properties (not functions)
+    let languages_array = JsArray::from_iter([JsValue::from(JsString::from("en-US"))], context);
     let navigator = ObjectInitializer::new(context)
-        .function(
-            NativeFunction::from_fn_ptr(NavigatorObject::user_agent),
+        .property(
             JsString::from("userAgent"),
-            0,
+            JsValue::from(JsString::from("Stokes Browser/1.0")),
+            boa_engine::property::Attribute::all(),
         )
-        .function(
-            NativeFunction::from_fn_ptr(NavigatorObject::language),
+        .property(
             JsString::from("language"),
-            0,
+            JsValue::from(JsString::from("en-US")),
+            boa_engine::property::Attribute::all(),
         )
-        .function(
-            NativeFunction::from_fn_ptr(NavigatorObject::platform),
+        .property(
+            JsString::from("languages"),
+            languages_array,
+            boa_engine::property::Attribute::all(),
+        )
+        .property(
             JsString::from("platform"),
-            0,
+            JsValue::from(JsString::from(std::env::consts::OS)),
+            boa_engine::property::Attribute::all(),
         )
-        .function(
-            NativeFunction::from_fn_ptr(NavigatorObject::online),
+        .property(
             JsString::from("online"),
-            0,
+            JsValue::from(true),
+            boa_engine::property::Attribute::all(),
+        )
+        .property(
+            JsString::from("appName"),
+            JsValue::from(JsString::from("Stokes Browser")),
+            boa_engine::property::Attribute::all(),
         )
         .build();
 
