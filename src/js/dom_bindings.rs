@@ -205,15 +205,196 @@ impl DocumentWrapper {
 
     /// document.createElement implementation
     fn create_element(&self, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
+        use boa_engine::object::ObjectInitializer;
+
         let tag_name = args.get(0)
             .and_then(|v| v.as_string())
             .map(|s| s.to_std_string_escaped())
             .unwrap_or_default();
 
+        if tag_name.is_empty() {
+            println!("[JS] document.createElement called with empty tag name");
+            return Ok(JsValue::null());
+        }
+
         println!("[JS] document.createElement('{}') called", tag_name);
 
-        // TODO: Create an actual element and return it
-        Ok(JsValue::null())
+        // Create a new element node
+        let element_data = ElementData::new(&tag_name);
+        let new_node = DomNode::new(NodeType::Element(element_data.clone()), None);
+        let node_rc = Rc::new(RefCell::new(new_node));
+
+        // Create a JavaScript object representing this element
+        let js_element = ObjectInitializer::new(context)
+            .property(
+                JsString::from("tagName"),
+                JsValue::from(JsString::from(tag_name.to_uppercase())),
+                boa_engine::property::Attribute::all(),
+            )
+            .property(
+                JsString::from("id"),
+                JsValue::from(JsString::from("")),
+                boa_engine::property::Attribute::all(),
+            )
+            .property(
+                JsString::from("className"),
+                JsValue::from(JsString::from("")),
+                boa_engine::property::Attribute::all(),
+            )
+            .property(
+                JsString::from("textContent"),
+                JsValue::from(JsString::from("")),
+                boa_engine::property::Attribute::all(),
+            )
+            .property(
+                JsString::from("innerHTML"),
+                JsValue::from(JsString::from("")),
+                boa_engine::property::Attribute::all(),
+            )
+            .property(
+                JsString::from("outerHTML"),
+                JsValue::from(JsString::from(format!("<{}>", tag_name))),
+                boa_engine::property::Attribute::all(),
+            )
+            .property(
+                JsString::from("nodeType"),
+                JsValue::from(1), // ELEMENT_NODE
+                boa_engine::property::Attribute::all(),
+            )
+            .property(
+                JsString::from("nodeName"),
+                JsValue::from(JsString::from(tag_name.to_uppercase())),
+                boa_engine::property::Attribute::all(),
+            )
+            // Add stub methods for common element operations
+            .function(
+                NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                    let attr_name = args.get(0)
+                        .and_then(|v| v.as_string())
+                        .map(|s| s.to_std_string_escaped())
+                        .unwrap_or_default();
+                    println!("[JS] element.getAttribute('{}') called", attr_name);
+                    Ok(JsValue::null())
+                }),
+                JsString::from("getAttribute"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                    let attr_name = args.get(0)
+                        .and_then(|v| v.as_string())
+                        .map(|s| s.to_std_string_escaped())
+                        .unwrap_or_default();
+                    let attr_value = args.get(1)
+                        .and_then(|v| v.as_string())
+                        .map(|s| s.to_std_string_escaped())
+                        .unwrap_or_default();
+                    println!("[JS] element.setAttribute('{}', '{}') called", attr_name, attr_value);
+                    Ok(JsValue::undefined())
+                }),
+                JsString::from("setAttribute"),
+                2,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                    let attr_name = args.get(0)
+                        .and_then(|v| v.as_string())
+                        .map(|s| s.to_std_string_escaped())
+                        .unwrap_or_default();
+                    println!("[JS] element.removeAttribute('{}') called", attr_name);
+                    Ok(JsValue::undefined())
+                }),
+                JsString::from("removeAttribute"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                    let attr_name = args.get(0)
+                        .and_then(|v| v.as_string())
+                        .map(|s| s.to_std_string_escaped())
+                        .unwrap_or_default();
+                    println!("[JS] element.hasAttribute('{}') called", attr_name);
+                    Ok(JsValue::from(false))
+                }),
+                JsString::from("hasAttribute"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(|_this: &JsValue, _args: &[JsValue], _context: &mut Context| {
+                    println!("[JS] element.appendChild() called");
+                    Ok(JsValue::null())
+                }),
+                JsString::from("appendChild"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(|_this: &JsValue, _args: &[JsValue], _context: &mut Context| {
+                    println!("[JS] element.removeChild() called");
+                    Ok(JsValue::null())
+                }),
+                JsString::from("removeChild"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(|_this: &JsValue, _args: &[JsValue], _context: &mut Context| {
+                    println!("[JS] element.insertBefore() called");
+                    Ok(JsValue::null())
+                }),
+                JsString::from("insertBefore"),
+                2,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                    let event_type = args.get(0)
+                        .and_then(|v| v.as_string())
+                        .map(|s| s.to_std_string_escaped())
+                        .unwrap_or_default();
+                    println!("[JS] element.addEventListener('{}') called", event_type);
+                    Ok(JsValue::undefined())
+                }),
+                JsString::from("addEventListener"),
+                2,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                    let event_type = args.get(0)
+                        .and_then(|v| v.as_string())
+                        .map(|s| s.to_std_string_escaped())
+                        .unwrap_or_default();
+                    println!("[JS] element.removeEventListener('{}') called", event_type);
+                    Ok(JsValue::undefined())
+                }),
+                JsString::from("removeEventListener"),
+                2,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                    let selector = args.get(0)
+                        .and_then(|v| v.as_string())
+                        .map(|s| s.to_std_string_escaped())
+                        .unwrap_or_default();
+                    println!("[JS] element.querySelector('{}') called", selector);
+                    Ok(JsValue::null())
+                }),
+                JsString::from("querySelector"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], context: &mut Context| {
+                    let selector = args.get(0)
+                        .and_then(|v| v.as_string())
+                        .map(|s| s.to_std_string_escaped())
+                        .unwrap_or_default();
+                    println!("[JS] element.querySelectorAll('{}') called", selector);
+                    Ok(JsArray::new(context).into())
+                }),
+                JsString::from("querySelectorAll"),
+                1,
+            )
+            .build();
+
+        println!("[JS] Created new element: <{}>", tag_name);
+        Ok(js_element.into())
     }
 }
 
