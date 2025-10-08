@@ -173,7 +173,7 @@ impl Engine {
     }
 
     /// Resolve a potentially relative URL against the current page URL
-    fn resolve_url(&self, url: &str) -> Result<String, NetworkError> {
+    pub fn resolve_url(&self, url: &str) -> Result<String, NetworkError> {
         // If the URL is already absolute, return it as-is
         if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://") {
             return Ok(url.to_string());

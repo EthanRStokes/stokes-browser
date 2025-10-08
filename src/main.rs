@@ -449,9 +449,18 @@ impl BrowserApp {
             if let Some(href) = self.active_tab().engine.handle_click(x, content_y) {
                 println!("Hyperlink clicked: {}", href);
 
-                // Navigate to the clicked link
-                let url = href.clone();
-                self.navigate_to_url(&url);
+                // Resolve the href against the current page URL before navigating
+                match self.active_tab().engine.resolve_url(&href) {
+                    Ok(resolved_url) => {
+                        println!("Resolved to: {}", resolved_url);
+                        self.navigate_to_url(&resolved_url);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to resolve hyperlink URL '{}': {}", href, e);
+                        // Try navigating with the raw href as fallback
+                        self.navigate_to_url(&href);
+                    }
+                }
             }
         }
     }
@@ -527,10 +536,10 @@ impl BrowserApp {
         // Check if the mouse is over a text field first (UI takes priority)
         if self.ui.is_mouse_over_text_field(x, y) {
             // Change cursor to I-beam when over text fields
-            self.env.window.set_cursor_icon(winit::window::CursorIcon::Text);
+            self.env.window.set_cursor(winit::window::CursorIcon::Text);
         } else if self.ui.is_mouse_over_interactive_element(x, y) {
             // Change cursor to pointer (hand) when over other interactive elements like buttons
-            self.env.window.set_cursor_icon(winit::window::CursorIcon::Pointer);
+            self.env.window.set_cursor(winit::window::CursorIcon::Pointer);
         } else {
             // Check if the mouse is over page content
             let chrome_height = self.ui.chrome_height() as f64;
@@ -539,10 +548,10 @@ impl BrowserApp {
                 let content_y = (y - chrome_height) as f32;
                 let css_cursor = self.active_tab().engine.get_cursor_at_position(x as f32, content_y);
                 let winit_cursor = css_cursor.to_winit_cursor();
-                self.env.window.set_cursor_icon(winit_cursor);
+                self.env.window.set_cursor(winit_cursor);
             } else {
                 // Mouse is over chrome area but not an interactive element
-                self.env.window.set_cursor_icon(winit::window::CursorIcon::Default);
+                self.env.window.set_cursor(winit::window::CursorIcon::Default);
             }
         }
     }
