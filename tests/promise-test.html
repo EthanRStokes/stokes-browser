@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Promise Test</title>
+</head>
+<body>
+    <h1>Promise .then() and .catch() Test</h1>
+    <div id="output"></div>
+
+    <script>
+        const output = document.getElementById('output');
+
+        console.log('Test 1: Basic Promise.resolve with .then()');
+        Promise.resolve('Hello')
+            .then(value => {
+                console.log('Promise resolved with:', value);
+                output.textContent = 'Promise resolved: ' + value;
+            });
+
+        console.log('Test 2: Basic Promise.reject with .catch()');
+        Promise.reject('Error!')
+            .catch(error => {
+                console.log('Promise rejected with:', error);
+            });
+
+        console.log('Test 3: Chained .then()');
+        Promise.resolve(42)
+            .then(value => {
+                console.log('First then:', value);
+                return value * 2;
+            })
+            .then(value => {
+                console.log('Second then:', value);
+                return value + 10;
+            })
+            .then(value => {
+                console.log('Third then:', value);
+            });
+
+        console.log('Test 4: .then() with .catch()');
+        Promise.resolve('start')
+            .then(value => {
+                console.log('Success:', value);
+                throw new Error('Something went wrong');
+            })
+            .catch(error => {
+                console.log('Caught error:', error.message);
+            });
+
+        console.log('All tests initiated');
+    </script>
+</body>
+</html>
+

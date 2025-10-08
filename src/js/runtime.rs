@@ -35,21 +35,51 @@ impl JsRuntime {
         // Use stacker::grow to ensure we have enough stack for parsing large scripts
         // This forces stack growth rather than checking, which is safer for boa's deep recursion
         stacker::grow(STACK_SIZE, || {
-            self.context
+            let result = self.context
                 .eval(Source::from_bytes(code))
-                .map_err(|e| format!("JavaScript error: {}", e))
+                .map_err(|e| format!("JavaScript error: {}", e));
+
+            // Process the job queue to execute Promise callbacks
+            // This is crucial for .then() and .catch() to work
+            if result.is_ok() {
+                self.run_pending_jobs();
+            }
+
+            result
         })
     }
 
     /// Execute JavaScript code from a script tag
     pub fn execute_script(&mut self, code: &str) -> JsResult<()> {
         match self.execute(code) {
-            Ok(result) => Ok({
-                println!("{}", result.display())
-            }),
+            Ok(result) => {
+                // Process any remaining jobs after script execution
+                self.run_pending_jobs();
+                Ok({
+                    println!("{}", result.display())
+                })
+            },
             Err(e) => {
                 eprintln!("Script execution error: {}", e);
                 Err(e)
+            }
+        }
+    }
+
+    /// Run all pending jobs in the job queue (for Promises)
+    fn run_pending_jobs(&mut self) {
+        // Run all pending jobs in the queue
+        // This is necessary for Promise .then() and .catch() handlers to execute
+        // Run jobs multiple times to handle chained promises
+        for _ in 0..100 {
+            match self.context.run_jobs() {
+                Ok(()) => {
+                    // Successfully ran jobs
+                }
+                Err(e) => {
+                    eprintln!("Error running job queue: {}", e);
+                    break;
+                }
             }
         }
     }
