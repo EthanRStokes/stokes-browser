@@ -4,7 +4,8 @@ use boa_gc::{Finalize, Trace};
 use std::rc::Rc;
 use std::cell::RefCell;
 use base64::Engine;
-use crate::dom::{DomNode, NodeType, ElementData};
+use crate::dom::{DomNode, NodeType};
+use super::element_bindings::ElementWrapper;
 
 /// Document object wrapper
 #[derive(Debug, Clone, Trace, Finalize)]
@@ -20,8 +21,6 @@ impl DocumentWrapper {
 
     /// document.getElementById implementation
     fn get_element_by_id(&self, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
-        use boa_engine::object::ObjectInitializer;
-
         let id = args.get(0)
             .and_then(|v| v.as_string())
             .map(|s| s.to_std_string_escaped())
@@ -37,36 +36,12 @@ impl DocumentWrapper {
         let root = self.root.borrow();
         match root.get_element_by_id(&id) {
             Some(element_rc) => {
-                // Create a JavaScript object representing this element
+                drop(root); // Release the borrow before creating JS element
                 let element = element_rc.borrow();
                 if let NodeType::Element(ref data) = element.node_type {
-                    let js_element = ObjectInitializer::new(context)
-                        .property(
-                            JsString::from("tagName"),
-                            JsValue::from(JsString::from(data.tag_name.to_uppercase())),
-                            boa_engine::property::Attribute::all(),
-                        )
-                        .property(
-                            JsString::from("id"),
-                            JsValue::from(JsString::from(data.id().unwrap_or(""))),
-                            boa_engine::property::Attribute::all(),
-                        )
-                        .property(
-                            JsString::from("className"),
-                            JsValue::from(JsString::from(
-                                data.attributes.get("class").map(|s| s.as_str()).unwrap_or("")
-                            )),
-                            boa_engine::property::Attribute::all(),
-                        )
-                        .property(
-                            JsString::from("textContent"),
-                            JsValue::from(JsString::from(element.text_content())),
-                            boa_engine::property::Attribute::all(),
-                        )
-                        .build();
-
                     println!("[JS] Found element with id '{}': <{}>", id, data.tag_name);
-                    Ok(js_element.into())
+                    drop(element);
+                    ElementWrapper::create_js_element(&element_rc, context)
                 } else {
                     Ok(JsValue::null())
                 }
@@ -243,8 +218,6 @@ impl DocumentWrapper {
 
     /// document.createElement implementation
     fn create_element(&self, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
-        use boa_engine::object::ObjectInitializer;
-
         let tag_name = args.get(0)
             .and_then(|v| v.as_string())
             .map(|s| s.to_std_string_escaped())
@@ -257,182 +230,8 @@ impl DocumentWrapper {
 
         println!("[JS] document.createElement('{}') called", tag_name);
 
-        // Create a new element node
-        let element_data = ElementData::new(&tag_name);
-        let new_node = DomNode::new(NodeType::Element(element_data.clone()), None);
-        let node_rc = Rc::new(RefCell::new(new_node));
-
-        // Create a JavaScript object representing this element
-        let js_element = ObjectInitializer::new(context)
-            .property(
-                JsString::from("tagName"),
-                JsValue::from(JsString::from(tag_name.to_uppercase())),
-                boa_engine::property::Attribute::all(),
-            )
-            .property(
-                JsString::from("id"),
-                JsValue::from(JsString::from("")),
-                boa_engine::property::Attribute::all(),
-            )
-            .property(
-                JsString::from("className"),
-                JsValue::from(JsString::from("")),
-                boa_engine::property::Attribute::all(),
-            )
-            .property(
-                JsString::from("textContent"),
-                JsValue::from(JsString::from("")),
-                boa_engine::property::Attribute::all(),
-            )
-            .property(
-                JsString::from("innerHTML"),
-                JsValue::from(JsString::from("")),
-                boa_engine::property::Attribute::all(),
-            )
-            .property(
-                JsString::from("outerHTML"),
-                JsValue::from(JsString::from(format!("<{}>", tag_name))),
-                boa_engine::property::Attribute::all(),
-            )
-            .property(
-                JsString::from("nodeType"),
-                JsValue::from(1), // ELEMENT_NODE
-                boa_engine::property::Attribute::all(),
-            )
-            .property(
-                JsString::from("nodeName"),
-                JsValue::from(JsString::from(tag_name.to_uppercase())),
-                boa_engine::property::Attribute::all(),
-            )
-            // Add stub methods for common element operations
-            .function(
-                NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                    let attr_name = args.get(0)
-                        .and_then(|v| v.as_string())
-                        .map(|s| s.to_std_string_escaped())
-                        .unwrap_or_default();
-                    println!("[JS] element.getAttribute('{}') called", attr_name);
-                    Ok(JsValue::null())
-                }),
-                JsString::from("getAttribute"),
-                1,
-            )
-            .function(
-                NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                    let attr_name = args.get(0)
-                        .and_then(|v| v.as_string())
-                        .map(|s| s.to_std_string_escaped())
-                        .unwrap_or_default();
-                    let attr_value = args.get(1)
-                        .and_then(|v| v.as_string())
-                        .map(|s| s.to_std_string_escaped())
-                        .unwrap_or_default();
-                    println!("[JS] element.setAttribute('{}', '{}') called", attr_name, attr_value);
-                    Ok(JsValue::undefined())
-                }),
-                JsString::from("setAttribute"),
-                2,
-            )
-            .function(
-                NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                    let attr_name = args.get(0)
-                        .and_then(|v| v.as_string())
-                        .map(|s| s.to_std_string_escaped())
-                        .unwrap_or_default();
-                    println!("[JS] element.removeAttribute('{}') called", attr_name);
-                    Ok(JsValue::undefined())
-                }),
-                JsString::from("removeAttribute"),
-                1,
-            )
-            .function(
-                NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                    let attr_name = args.get(0)
-                        .and_then(|v| v.as_string())
-                        .map(|s| s.to_std_string_escaped())
-                        .unwrap_or_default();
-                    println!("[JS] element.hasAttribute('{}') called", attr_name);
-                    Ok(JsValue::from(false))
-                }),
-                JsString::from("hasAttribute"),
-                1,
-            )
-            .function(
-                NativeFunction::from_fn_ptr(|_this: &JsValue, _args: &[JsValue], _context: &mut Context| {
-                    println!("[JS] element.appendChild() called");
-                    Ok(JsValue::null())
-                }),
-                JsString::from("appendChild"),
-                1,
-            )
-            .function(
-                NativeFunction::from_fn_ptr(|_this: &JsValue, _args: &[JsValue], _context: &mut Context| {
-                    println!("[JS] element.removeChild() called");
-                    Ok(JsValue::null())
-                }),
-                JsString::from("removeChild"),
-                1,
-            )
-            .function(
-                NativeFunction::from_fn_ptr(|_this: &JsValue, _args: &[JsValue], _context: &mut Context| {
-                    println!("[JS] element.insertBefore() called");
-                    Ok(JsValue::null())
-                }),
-                JsString::from("insertBefore"),
-                2,
-            )
-            .function(
-                NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                    let event_type = args.get(0)
-                        .and_then(|v| v.as_string())
-                        .map(|s| s.to_std_string_escaped())
-                        .unwrap_or_default();
-                    println!("[JS] element.addEventListener('{}') called", event_type);
-                    Ok(JsValue::undefined())
-                }),
-                JsString::from("addEventListener"),
-                2,
-            )
-            .function(
-                NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                    let event_type = args.get(0)
-                        .and_then(|v| v.as_string())
-                        .map(|s| s.to_std_string_escaped())
-                        .unwrap_or_default();
-                    println!("[JS] element.removeEventListener('{}') called", event_type);
-                    Ok(JsValue::undefined())
-                }),
-                JsString::from("removeEventListener"),
-                2,
-            )
-            .function(
-                NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                    let selector = args.get(0)
-                        .and_then(|v| v.as_string())
-                        .map(|s| s.to_std_string_escaped())
-                        .unwrap_or_default();
-                    println!("[JS] element.querySelector('{}') called", selector);
-                    Ok(JsValue::null())
-                }),
-                JsString::from("querySelector"),
-                1,
-            )
-            .function(
-                NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], context: &mut Context| {
-                    let selector = args.get(0)
-                        .and_then(|v| v.as_string())
-                        .map(|s| s.to_std_string_escaped())
-                        .unwrap_or_default();
-                    println!("[JS] element.querySelectorAll('{}') called", selector);
-                    Ok(JsArray::new(context).into())
-                }),
-                JsString::from("querySelectorAll"),
-                1,
-            )
-            .build();
-
-        println!("[JS] Created new element: <{}>", tag_name);
-        Ok(js_element.into())
+        // Use ElementWrapper to create a proper element with working getAttribute/setAttribute
+        ElementWrapper::create_stub_element(&tag_name, context)
     }
 }
 
@@ -978,7 +777,7 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
         .map_err(|e| format!("Failed to register XMLHttpRequest constructor: {}", e))?;
 
     // Note: fetch API is now registered in the fetch module
-    
+
     // Create atob/btoa functions for base64 encoding/decoding
     let atob_fn = NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
         let encoded = args.get(0)

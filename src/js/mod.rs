@@ -2,10 +2,12 @@
 mod runtime;
 mod console;
 mod dom_bindings;
+mod element_bindings;
 mod fetch;
 
 pub use runtime::JsRuntime;
 pub use console::Console;
+pub use element_bindings::ElementWrapper;
 
 use boa_engine::{Context, JsValue, Source};
 use std::rc::Rc;

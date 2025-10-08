@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>appendChild and removeChild Test</title>
+</head>
+<body>
+    <div id="container">
+        <p id="existing-child">Existing paragraph</p>
+    </div>
+    <script>
+        console.log("=== Testing element.appendChild and element.removeChild ===");
+
+        // Test 1: Get the container element
+        const container = document.getElementById('container');
+        if (container) {
+            console.log("Found container:", container.tagName);
+            console.log("Container has", container.children ? container.children.length : 0, "children");
+
+            // Test 2: Create a new element
+            console.log("\n=== Testing appendChild ===");
+            const newDiv = document.createElement('div');
+            console.log("Created new element:", newDiv.tagName);
+
+            // Set some attributes on the new element
+            newDiv.setAttribute('id', 'new-child');
+            newDiv.setAttribute('class', 'test-class');
+            console.log("Set attributes on new element");
+
+            // Test 3: Append the new element to the container
+            console.log("Appending new element to container...");
+            container.appendChild(newDiv);
+            console.log("appendChild completed");
+
+            // Test 4: Create and append multiple elements
+            console.log("\n=== Testing multiple appendChild ===");
+            const span1 = document.createElement('span');
+            span1.setAttribute('id', 'span1');
+            const span2 = document.createElement('span');
+            span2.setAttribute('id', 'span2');
+
+            container.appendChild(span1);
+            console.log("Appended span1");
+            container.appendChild(span2);
+            console.log("Appended span2");
+
+            // Test 5: removeChild
+            console.log("\n=== Testing removeChild ===");
+            const existingChild = document.getElementById('existing-child');
+            if (existingChild) {
+                console.log("Found existing child:", existingChild.tagName);
+                console.log("Removing existing child from container...");
+                container.removeChild(existingChild);
+                console.log("removeChild completed");
+            }
+
+            // Test 6: Try to remove the newly added element
+            console.log("\n=== Testing removeChild on dynamically added element ===");
+            console.log("Removing newDiv from container...");
+            container.removeChild(newDiv);
+            console.log("removeChild completed");
+
+            console.log("\n=== Test completed ===");
+        } else {
+            console.log("ERROR: Could not find container element");
+        }
+    </script>
+</body>
+</html>
+

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Element getAttribute/setAttribute Test</title>
+</head>
+<body>
+    <div id="test-div" data-value="initial">Test Element</div>
+    <div id="container">
+        <p class="paragraph">First paragraph</p>
+        <p class="paragraph">Second paragraph</p>
+        <span id="nested-span">Nested element</span>
+    </div>
+    <script>
+        console.log("=== Testing element.getAttribute and element.setAttribute ===");
+        
+        // Test 1: getElementById and getAttribute
+        const element = document.getElementById('test-div');
+        if (element) {
+            console.log("Found element:", element.tagName);
+            
+            // Test getAttribute
+            const dataValue = element.getAttribute('data-value');
+            console.log("getAttribute('data-value'):", dataValue);
+            
+            const id = element.getAttribute('id');
+            console.log("getAttribute('id'):", id);
+            
+            // Test setAttribute
+            console.log("Setting new attribute 'data-modified' to 'true'");
+            element.setAttribute('data-modified', 'true');
+            
+            // Verify setAttribute worked
+            const modified = element.getAttribute('data-modified');
+            console.log("getAttribute('data-modified'):", modified);
+            
+            // Test hasAttribute
+            console.log("hasAttribute('data-value'):", element.hasAttribute('data-value'));
+            console.log("hasAttribute('nonexistent'):", element.hasAttribute('nonexistent'));
+            
+            // Test removeAttribute
+            console.log("Removing attribute 'data-value'");
+            element.removeAttribute('data-value');
+            console.log("hasAttribute('data-value') after removal:", element.hasAttribute('data-value'));
+        }
+        
+        // Test 2: createElement with attributes
+        console.log("\n=== Testing document.createElement ===");
+        const newElement = document.createElement('span');
+        console.log("Created element:", newElement.tagName);
+        
+        // Set some attributes
+        newElement.setAttribute('class', 'test-class');
+        newElement.setAttribute('data-custom', 'custom-value');
+        
+        // Get them back
+        console.log("getAttribute('class'):", newElement.getAttribute('class'));
+        console.log("getAttribute('data-custom'):", newElement.getAttribute('data-custom'));
+        
+        // Test 3: querySelector on elements
+        console.log("\n=== Testing element.querySelector ===");
+        const container = document.getElementById('container');
+        if (container) {
+            const firstPara = container.querySelector('.paragraph');
+            if (firstPara) {
+                console.log("Found element with querySelector:", firstPara.tagName);
+                console.log("Class attribute:", firstPara.getAttribute('class'));
+            }
+            
+            const nestedSpan = container.querySelector('#nested-span');
+            if (nestedSpan) {
+                console.log("Found nested span:", nestedSpan.tagName);
+                console.log("ID attribute:", nestedSpan.getAttribute('id'));
+            }
+        }
+        
+        // Test 4: querySelectorAll on elements
+        console.log("\n=== Testing element.querySelectorAll ===");
+        if (container) {
+            const allParas = container.querySelectorAll('.paragraph');
+            console.log("Found", allParas.length, "paragraphs");
+            
+            // Test each paragraph
+            for (let i = 0; i < allParas.length; i++) {
+                const para = allParas[i];
+                console.log("Paragraph", i + 1, ":", para.tagName, "class:", para.getAttribute('class'));
+                
+                // Modify attributes
+                para.setAttribute('data-index', String(i));
+                console.log("Set data-index to:", para.getAttribute('data-index'));
+            }
+        }
+        
+        console.log("\n=== All tests complete ===");
+    </script>
+</body>
+</html>
+
