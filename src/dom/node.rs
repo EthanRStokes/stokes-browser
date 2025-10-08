@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
 use std::cell::RefCell;
+use crate::dom::events::EventListenerRegistry;
 
 /// A map of attribute names to values
 pub type AttributeMap = HashMap<String, String>;
@@ -314,6 +315,8 @@ pub struct DomNode {
     pub parent: Option<Weak<RefCell<DomNode>>>,
     /// Child nodes
     pub children: Vec<Rc<RefCell<DomNode>>>,
+    /// Event listener registry
+    pub event_listeners: EventListenerRegistry,
 }
 
 impl DomNode {
@@ -323,6 +326,7 @@ impl DomNode {
             node_type,
             parent,
             children: Vec::new(),
+            event_listeners: EventListenerRegistry::new(),
         }
     }
 

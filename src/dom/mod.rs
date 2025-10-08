@@ -1,12 +1,14 @@
 // DOM module for parsing and representing HTML content
 mod parser;
 mod node;
+mod events;
 
 use std::rc::Rc;
 use std::cell::RefCell;
 
 pub use self::parser::HtmlParser;
 pub use self::node::{DomNode, NodeType, ElementData, AttributeMap, ImageData, ImageLoadingState};
+pub use self::events::{EventType, EventListener, EventListenerRegistry, Event, EventPhase, EventDispatcher};
 
 /// Represents a DOM tree
 pub struct Dom {

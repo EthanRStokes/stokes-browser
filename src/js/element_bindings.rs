@@ -5,7 +5,7 @@ use boa_engine::property::Attribute;
 use boa_gc::{Finalize, Trace};
 use std::rc::Rc;
 use std::cell::RefCell;
-use crate::dom::{DomNode, NodeType, ElementData};
+use crate::dom::{DomNode, NodeType, ElementData, EventType};
 
 /// Wrapper for a DOM element that can be used in JavaScript
 #[derive(Debug, Clone, Trace, Finalize)]
@@ -37,6 +37,8 @@ impl ElementWrapper {
             let node_for_insert_before = Rc::clone(element_rc);
             let node_for_query_selector = Rc::clone(element_rc);
             let node_for_query_selector_all = Rc::clone(element_rc);
+            let node_for_add_event_listener = Rc::clone(element_rc);
+            let node_for_remove_event_listener = Rc::clone(element_rc);
             // Store the node reference for child manipulation
             let node_ref_for_storage = Rc::clone(element_rc);
 
@@ -176,9 +178,9 @@ impl ElementWrapper {
                     unsafe {
                         NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
                             let child_value = args.get(0).cloned().unwrap_or(JsValue::null());
-                            
+
                             println!("[JS] element.appendChild() called");
-                            
+
                             // Try to extract the child element's node reference
                             if let Some(child_obj) = child_value.as_object() {
                                 // Get the __nodePtr property to identify which node this is
@@ -186,41 +188,41 @@ impl ElementWrapper {
                                 if let Ok(ptr_value) = child_obj.get(node_ptr_key, context) {
                                     if let Some(child_ptr) = ptr_value.as_number() {
                                         println!("[JS] Found child node pointer: {}", child_ptr as i64);
-                                        
+
                                         // We need to find the child node from our parent's children or create it
                                         // Since we can't easily convert the pointer back safely, we'll use a different approach:
                                         // Check if this child is already in the tree somewhere
                                         let parent_node = node_for_append_child.borrow();
-                                        
+
                                         // For now, if the child has a valid pointer, we'll treat it as a valid operation
                                         // In a full implementation, we'd maintain a registry of node pointers
                                         drop(parent_node);
-                                        
+
                                         // Try to get the child's tag name to create a new node
                                         let tag_key = JsString::from("tagName");
                                         if let Ok(tag_value) = child_obj.get(tag_key, context) {
                                             if let Some(tag_str) = tag_value.as_string() {
                                                 let tag_name = tag_str.to_std_string_escaped().to_lowercase();
                                                 println!("[JS] Appending child with tag: {}", tag_name);
-                                                
+
                                                 // Create a new node and add it
                                                 let element_data = ElementData::new(&tag_name);
                                                 let new_child = DomNode::new(NodeType::Element(element_data), None);
-                                                
+
                                                 let mut parent_node = node_for_append_child.borrow_mut();
                                                 let child_rc = parent_node.add_child(new_child);
-                                                
+
                                                 // Update the child's parent reference
                                                 child_rc.borrow_mut().parent = Some(Rc::downgrade(&node_for_append_child));
-                                                
-                                                println!("[JS] Successfully appended child. Parent now has {} children", 
+
+                                                println!("[JS] Successfully appended child. Parent now has {} children",
                                                          parent_node.children.len());
                                             }
                                         }
                                     }
                                 }
                             }
-                            
+
                             Ok(child_value)
                         })
                     },
@@ -232,9 +234,9 @@ impl ElementWrapper {
                     unsafe {
                         NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
                             let child_value = args.get(0).cloned().unwrap_or(JsValue::null());
-                            
+
                             println!("[JS] element.removeChild() called");
-                            
+
                             // Try to extract the child element's node reference
                             if let Some(child_obj) = child_value.as_object() {
                                 // Get the __nodePtr property
@@ -242,18 +244,18 @@ impl ElementWrapper {
                                 if let Ok(ptr_value) = child_obj.get(node_ptr_key, context) {
                                     if let Some(child_ptr) = ptr_value.as_number() {
                                         println!("[JS] Found child node pointer to remove: {}", child_ptr as i64);
-                                        
+
                                         let mut parent_node = node_for_remove_child.borrow_mut();
-                                        
+
                                         // Find and remove the child by pointer comparison
                                         let child_ptr_addr = child_ptr as i64;
                                         let initial_count = parent_node.children.len();
-                                        
+
                                         parent_node.children.retain(|child| {
                                             let child_addr = Rc::as_ptr(child) as i64;
                                             child_addr != child_ptr_addr
                                         });
-                                        
+
                                         let final_count = parent_node.children.len();
                                         if initial_count > final_count {
                                             println!("[JS] Successfully removed child. Parent now has {} children", final_count);
@@ -263,7 +265,7 @@ impl ElementWrapper {
                                     }
                                 }
                             }
-                            
+
                             Ok(child_value)
                         })
                     },
@@ -284,28 +286,67 @@ impl ElementWrapper {
                 )
                 // addEventListener implementation
                 .function(
-                    NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                        let event_type = args.get(0)
-                            .and_then(|v| v.as_string())
-                            .map(|s| s.to_std_string_escaped())
-                            .unwrap_or_default();
-                        println!("[JS] element.addEventListener('{}') called", event_type);
-                        // Note: Event listeners would need a proper event system to implement
-                        Ok(JsValue::undefined())
-                    }),
+                    unsafe {
+                        NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                            let event_type_str = args.get(0)
+                                .and_then(|v| v.as_string())
+                                .map(|s| s.to_std_string_escaped())
+                                .unwrap_or_default();
+
+                            let callback = args.get(1)
+                                .and_then(|v| v.as_object());
+
+                            let use_capture = args.get(2)
+                                .and_then(|v| v.as_boolean())
+                                .unwrap_or(false);
+
+                            println!("[JS] element.addEventListener('{}', callback, {})", event_type_str, use_capture);
+
+                            if let Some(callback_obj) = callback {
+                                let event_type = EventType::from_str(&event_type_str);
+                                let mut node = node_for_add_event_listener.borrow_mut();
+                                let listener_id = node.event_listeners.add_listener(event_type, callback_obj, use_capture);
+                                println!("[JS] Event listener added with ID: {}", listener_id);
+                            } else {
+                                println!("[JS] Warning: addEventListener called without a valid callback function");
+                            }
+
+                            Ok(JsValue::undefined())
+                        })
+                    },
                     JsString::from("addEventListener"),
-                    2,
+                    3,
                 )
                 // removeEventListener implementation
                 .function(
-                    NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                        let event_type = args.get(0)
-                            .and_then(|v| v.as_string())
-                            .map(|s| s.to_std_string_escaped())
-                            .unwrap_or_default();
-                        println!("[JS] element.removeEventListener('{}') called", event_type);
-                        Ok(JsValue::undefined())
-                    }),
+                    unsafe {
+                        NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                            let event_type_str = args.get(0)
+                                .and_then(|v| v.as_string())
+                                .map(|s| s.to_std_string_escaped())
+                                .unwrap_or_default();
+
+                            let callback = args.get(1)
+                                .and_then(|v| v.as_object());
+                            ;
+                            println!("[JS] element.removeEventListener('{}') called", event_type_str);
+
+                            if let Some(callback_obj) = callback {
+                                let event_type = EventType::from_str(&event_type_str);
+                                let mut node = node_for_remove_event_listener.borrow_mut();
+                                let removed = node.event_listeners.remove_listener(&event_type, &callback_obj);
+                                if removed {
+                                    println!("[JS] Event listener removed successfully");
+                                } else {
+                                    println!("[JS] Event listener not found");
+                                }
+                            } else {
+                                println!("[JS] Warning: removeEventListener called without a valid callback function");
+                            }
+
+                            Ok(JsValue::undefined())
+                        })
+                    },
                     JsString::from("removeEventListener"),
                     2,
                 )

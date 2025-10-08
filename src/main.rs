@@ -446,7 +446,7 @@ impl BrowserApp {
             let content_y = y - chrome_height as f32;
 
             // Check if the click hit a hyperlink
-            if let Some(href) = self.active_tab().engine.handle_click(x, content_y) {
+            if let Some(href) = self.active_tab_mut().engine.handle_click(x, content_y) {
                 println!("Hyperlink clicked: {}", href);
 
                 // Resolve the href against the current page URL before navigating

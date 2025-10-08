@@ -12,6 +12,7 @@ use crate::renderer::HtmlRenderer;
 use crate::css::{CssParser, Stylesheet, ComputedValues};
 use crate::css::transition_manager::TransitionManager;
 use crate::js::JsRuntime;
+use crate::dom::{EventType, EventDispatcher};
 
 pub use self::config::EngineConfig;
 
@@ -84,10 +85,10 @@ impl Engine {
 
         // Parse the HTML into our DOM
         let dom = Dom::parse_html(&html);
-        
+
         // Extract page title
         self.page_title = dom.get_title();
-        
+
         // Store the DOM
         self.dom = Some(dom);
 
@@ -96,7 +97,7 @@ impl Engine {
 
         // Calculate layout with CSS styles applied
         self.recalculate_layout();
-        
+
         // Start loading images after layout is calculated
         self.start_image_loading().await;
 
@@ -197,7 +198,7 @@ impl Engine {
 
         // Handle local file paths
         if self.current_url.starts_with("file://") || self.current_url.starts_with('/') ||
-           (self.current_url.len() >= 3 && self.current_url.chars().nth(1) == Some(':')) {
+            (self.current_url.len() >= 3 && self.current_url.chars().nth(1) == Some(':')) {
             // Current URL is a local file path
             use std::path::Path;
 
@@ -545,7 +546,7 @@ impl Engine {
 
         // Check if position is within this box
         if x >= border_box.left && x <= border_box.right &&
-           y >= border_box.top && y <= border_box.bottom {
+            y >= border_box.top && y <= border_box.bottom {
 
             // Check children first (they are on top)
             for child in &layout_box.children {
@@ -656,7 +657,7 @@ impl Engine {
 
     /// Handle a click at the given position (viewport coordinates)
     /// Returns the href of the clicked link, if any
-    pub fn handle_click(&self, x: f32, y: f32) -> Option<String> {
+    pub fn handle_click(&mut self, x: f32, y: f32) -> Option<String> {
         // Adjust position for scroll offset
         let adjusted_x = x + self.scroll_x;
         let adjusted_y = y + self.scroll_y;
@@ -664,12 +665,203 @@ impl Engine {
         // Find the element at this position
         if let Some(layout) = &self.layout {
             if let Some(node_id) = self.find_element_at_position(layout, adjusted_x, adjusted_y) {
+                // Fire click event on the element
+                self.fire_click_event(node_id, x as f64, y as f64);
+
                 // Check if this element or any parent is an anchor tag
                 return self.find_link_href(node_id);
             }
         }
 
         None
+    }
+
+    /// Fire a click event on a DOM node
+    fn fire_click_event(&mut self, node_id: usize, x: f64, y: f64) {
+        if let Some(node_rc) = self.node_map.get(&node_id).cloned() {
+            if let Some(runtime) = &mut self.js_runtime {
+                let context = runtime.context_mut();
+
+                println!("[Event] Firing click event at ({}, {}) on node {}", x, y, node_id);
+
+                if let Err(e) = EventDispatcher::dispatch_mouse_event(
+                    &node_rc,
+                    EventType::Click,
+                    x,
+                    y,
+                    context,
+                ) {
+                    eprintln!("Error dispatching click event: {}", e);
+                }
+            }
+        }
+    }
+
+    /// Handle a mouse move at the given position (viewport coordinates)
+    pub fn handle_mouse_move(&mut self, x: f32, y: f32) {
+        // Adjust position for scroll offset
+        let adjusted_x = x + self.scroll_x;
+        let adjusted_y = y + self.scroll_y;
+
+        // Find the element at this position
+        if let Some(layout) = &self.layout {
+            if let Some(node_id) = self.find_element_at_position(layout, adjusted_x, adjusted_y) {
+                // Fire mouse move event on the element
+                self.fire_mouse_move_event(node_id, x as f64, y as f64);
+            }
+        }
+    }
+
+    /// Fire a mouse move event on a DOM node
+    fn fire_mouse_move_event(&mut self, node_id: usize, x: f64, y: f64) {
+        if let Some(node_rc) = self.node_map.get(&node_id).cloned() {
+            if let Some(runtime) = &mut self.js_runtime {
+                let context = runtime.context_mut();
+
+                if let Err(e) = EventDispatcher::dispatch_mouse_event(
+                    &node_rc,
+                    EventType::MouseMove,
+                    x,
+                    y,
+                    context,
+                ) {
+                    eprintln!("Error dispatching mouse move event: {}", e);
+                }
+            }
+        }
+    }
+
+    /// Handle a mouse down event at the given position
+    pub fn handle_mouse_down(&mut self, x: f32, y: f32) {
+        let adjusted_x = x + self.scroll_x;
+        let adjusted_y = y + self.scroll_y;
+
+        if let Some(layout) = &self.layout {
+            if let Some(node_id) = self.find_element_at_position(layout, adjusted_x, adjusted_y) {
+                self.fire_mouse_event(node_id, EventType::MouseDown, x as f64, y as f64);
+            }
+        }
+    }
+
+    /// Handle a mouse up event at the given position
+    pub fn handle_mouse_up(&mut self, x: f32, y: f32) {
+        let adjusted_x = x + self.scroll_x;
+        let adjusted_y = y + self.scroll_y;
+
+        if let Some(layout) = &self.layout {
+            if let Some(node_id) = self.find_element_at_position(layout, adjusted_x, adjusted_y) {
+                self.fire_mouse_event(node_id, EventType::MouseUp, x as f64, y as f64);
+            }
+        }
+    }
+
+    /// Fire a generic mouse event on a DOM node
+    fn fire_mouse_event(&mut self, node_id: usize, event_type: EventType, x: f64, y: f64) {
+        if let Some(node_rc) = self.node_map.get(&node_id).cloned() {
+            if let Some(runtime) = &mut self.js_runtime {
+                let context = runtime.context_mut();
+
+                println!("[Event] Firing {:?} event at ({}, {}) on node {}", event_type, x, y, node_id);
+
+                if let Err(e) = EventDispatcher::dispatch_mouse_event(
+                    &node_rc,
+                    event_type,
+                    x,
+                    y,
+                    context,
+                ) {
+                    eprintln!("Error dispatching mouse event: {}", e);
+                }
+            }
+        }
+    }
+
+    /// Handle a keyboard event
+    pub fn handle_key_event(&mut self, event_type: EventType, key: String, key_code: u32) {
+        // For keyboard events, we typically fire them on the focused element
+        // For now, we'll fire on the document root
+        if let Some(dom) = &self.dom {
+            let root = dom.get_root();
+
+            if let Some(runtime) = &mut self.js_runtime {
+                let context = runtime.context_mut();
+
+                println!("[Event] Firing {:?} event with key: {} (code: {})", event_type, key, key_code);
+
+                if let Err(e) = EventDispatcher::dispatch_keyboard_event(
+                    &root,
+                    event_type,
+                    key,
+                    key_code,
+                    context,
+                ) {
+                    eprintln!("Error dispatching keyboard event: {}", e);
+                }
+            }
+        }
+    }
+
+    /// Handle a scroll event
+    pub fn handle_scroll_event(&mut self) {
+        if let Some(dom) = &self.dom {
+            let root = dom.get_root();
+
+            if let Some(runtime) = &mut self.js_runtime {
+                let context = runtime.context_mut();
+
+                println!("[Event] Firing scroll event");
+
+                if let Err(e) = EventDispatcher::dispatch_simple_event(
+                    &root,
+                    EventType::Scroll,
+                    context,
+                ) {
+                    eprintln!("Error dispatching scroll event: {}", e);
+                }
+            }
+        }
+    }
+
+    /// Handle a resize event
+    pub fn handle_resize_event(&mut self) {
+        if let Some(dom) = &self.dom {
+            let root = dom.get_root();
+
+            if let Some(runtime) = &mut self.js_runtime {
+                let context = runtime.context_mut();
+
+                println!("[Event] Firing resize event");
+
+                if let Err(e) = EventDispatcher::dispatch_simple_event(
+                    &root,
+                    EventType::Resize,
+                    context,
+                ) {
+                    eprintln!("Error dispatching resize event: {}", e);
+                }
+            }
+        }
+    }
+
+    /// Fire a load event (typically called after page is fully loaded)
+    pub fn fire_load_event(&mut self) {
+        if let Some(dom) = &self.dom {
+            let root = dom.get_root();
+
+            if let Some(runtime) = &mut self.js_runtime {
+                let context = runtime.context_mut();
+
+                println!("[Event] Firing load event");
+
+                if let Err(e) = EventDispatcher::dispatch_simple_event(
+                    &root,
+                    EventType::Load,
+                    context,
+                ) {
+                    eprintln!("Error dispatching load event: {}", e);
+                }
+            }
+        }
     }
 
     /// Find the href of a link element by checking the node and its ancestors

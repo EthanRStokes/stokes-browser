@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Event Listener Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 2px solid #ccc;
+            border-radius: 8px;
+        }
+
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+
+        button:hover {
+            background-color: #45a049;
+        }
+
+        .clickable-box {
+            width: 200px;
+            height: 100px;
+            background-color: #3498db;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 10px 0;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background-color 0.3s;
+        }
+
+        .clickable-box:hover {
+            background-color: #2980b9;
+        }
+
+        #output {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f4f4f4;
+            border-radius: 4px;
+            min-height: 100px;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+
+        .counter {
+            font-size: 24px;
+            font-weight: bold;
+            color: #e74c3c;
+        }
+
+        input {
+            padding: 8px;
+            margin: 5px;
+            font-size: 14px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Event Listener Test Suite</h1>
+
+    <!-- Test 1: Basic Click Event -->
+    <div class="test-section">
+        <h2>Test 1: Basic Click Event</h2>
+        <button id="clickBtn">Click Me!</button>
+        <p>Click count: <span id="clickCount" class="counter">0</span></p>
+    </div>
+
+    <!-- Test 2: Mouse Events -->
+    <div class="test-section">
+        <h2>Test 2: Mouse Events</h2>
+        <div id="mouseBox" class="clickable-box">
+            Move mouse over me!
+        </div>
+        <p>Last event: <span id="mouseEvent">None</span></p>
+    </div>
+
+    <!-- Test 3: Multiple Event Listeners -->
+    <div class="test-section">
+        <h2>Test 3: Multiple Event Listeners</h2>
+        <button id="multiBtn">Button with Multiple Listeners</button>
+        <p id="multiOutput">No events yet</p>
+    </div>
+
+    <!-- Test 4: Event Listener Removal -->
+    <div class="test-section">
+        <h2>Test 4: Event Listener Removal</h2>
+        <button id="toggleBtn">Click Me (listener active)</button>
+        <button id="removeBtn">Remove Listener</button>
+        <button id="addBtn">Add Listener</button>
+        <p>Status: <span id="listenerStatus">Listener active</span></p>
+    </div>
+
+    <!-- Test 5: Keyboard Events -->
+    <div class="test-section">
+        <h2>Test 5: Keyboard Events</h2>
+        <input type="text" id="keyInput" placeholder="Type something...">
+        <p>Last key pressed: <span id="lastKey">None</span></p>
+        <p>Key count: <span id="keyCount" class="counter">0</span></p>
+    </div>
+
+    <!-- Test 6: Form Events -->
+    <div class="test-section">
+        <h2>Test 6: Form Events</h2>
+        <input type="text" id="changeInput" placeholder="Type and blur">
+        <p>Change event fired: <span id="changeOutput">No</span></p>
+        <p>Input event count: <span id="inputCount" class="counter">0</span></p>
+    </div>
+
+    <!-- Output Console -->
+    <div class="test-section">
+        <h2>Event Log</h2>
+        <div id="output">Waiting for events...</div>
+        <button id="clearBtn">Clear Log</button>
+    </div>
+
+    <script>
+        // Helper function to log events
+        function logEvent(message) {
+            const output = document.getElementById('output');
+            const timestamp = new Date().toLocaleTimeString();
+            output.textContent = `[${timestamp}] ${message}\n` + output.textContent;
+            console.log(message);
+        }
+
+        // Test 1: Basic Click Event
+        const clickBtn = document.getElementById('clickBtn');
+        const clickCount = document.getElementById('clickCount');
+        let clicks = 0;
+
+        clickBtn.addEventListener('click', function(event) {
+            clicks++;
+            clickCount.textContent = clicks;
+            logEvent(`Click event fired! Total clicks: ${clicks}`);
+        });
+
+        // Test 2: Mouse Events
+        const mouseBox = document.getElementById('mouseBox');
+        const mouseEvent = document.getElementById('mouseEvent');
+
+        mouseBox.addEventListener('mouseenter', function(event) {
+            mouseEvent.textContent = 'Mouse Enter';
+            logEvent('Mouse entered the box');
+        });
+
+        mouseBox.addEventListener('mouseleave', function(event) {
+            mouseEvent.textContent = 'Mouse Leave';
+            logEvent('Mouse left the box');
+        });
+
+        mouseBox.addEventListener('click', function(event) {
+            mouseEvent.textContent = `Click at (${event.clientX}, ${event.clientY})`;
+            logEvent(`Box clicked at position (${event.clientX}, ${event.clientY})`);
+        });
+
+        // Test 3: Multiple Event Listeners
+        const multiBtn = document.getElementById('multiBtn');
+        const multiOutput = document.getElementById('multiOutput');
+
+        multiBtn.addEventListener('click', function() {
+            logEvent('First listener fired');
+        });
+
+        multiBtn.addEventListener('click', function() {
+            logEvent('Second listener fired');
+        });
+
+        multiBtn.addEventListener('click', function() {
+            multiOutput.textContent = 'All three listeners fired!';
+            logEvent('Third listener fired');
+        });
+
+        // Test 4: Event Listener Removal
+        const toggleBtn = document.getElementById('toggleBtn');
+        const removeBtn = document.getElementById('removeBtn');
+        const addBtn = document.getElementById('addBtn');
+        const listenerStatus = document.getElementById('listenerStatus');
+
+        function toggleHandler() {
+            logEvent('Toggle button clicked (listener is active)');
+        }
+
+        toggleBtn.addEventListener('click', toggleHandler);
+
+        removeBtn.addEventListener('click', function() {
+            toggleBtn.removeEventListener('click', toggleHandler);
+            listenerStatus.textContent = 'Listener removed';
+            toggleBtn.textContent = 'Click Me (listener removed)';
+            logEvent('Event listener removed from toggle button');
+        });
+
+        addBtn.addEventListener('click', function() {
+            toggleBtn.addEventListener('click', toggleHandler);
+            listenerStatus.textContent = 'Listener active';
+            toggleBtn.textContent = 'Click Me (listener active)';
+            logEvent('Event listener added back to toggle button');
+        });
+
+        // Test 5: Keyboard Events
+        const keyInput = document.getElementById('keyInput');
+        const lastKey = document.getElementById('lastKey');
+        const keyCountSpan = document.getElementById('keyCount');
+        let keyPresses = 0;
+
+        keyInput.addEventListener('keydown', function(event) {
+            keyPresses++;
+            lastKey.textContent = event.key;
+            keyCountSpan.textContent = keyPresses;
+            logEvent(`Key pressed: ${event.key} (keyCode: ${event.keyCode})`);
+        });
+
+        keyInput.addEventListener('keyup', function(event) {
+            logEvent(`Key released: ${event.key}`);
+        });
+
+        // Test 6: Form Events
+        const changeInput = document.getElementById('changeInput');
+        const changeOutput = document.getElementById('changeOutput');
+        const inputCountSpan = document.getElementById('inputCount');
+        let inputEvents = 0;
+
+        changeInput.addEventListener('change', function(event) {
+            changeOutput.textContent = `Yes - Value: ${event.target.value}`;
+            logEvent(`Change event: ${event.target.value}`);
+        });
+
+        changeInput.addEventListener('input', function(event) {
+            inputEvents++;
+            inputCountSpan.textContent = inputEvents;
+            logEvent(`Input event (${inputEvents}): ${event.target.value}`);
+        });
+
+        changeInput.addEventListener('focus', function() {
+            logEvent('Input focused');
+        });
+
+        changeInput.addEventListener('blur', function() {
+            logEvent('Input blurred');
+        });
+
+        // Clear button
+        const clearBtn = document.getElementById('clearBtn');
+        clearBtn.addEventListener('click', function() {
+            document.getElementById('output').textContent = 'Log cleared.\n';
+        });
+
+        // Initial log
+        logEvent('Event listener test page loaded successfully!');
+        logEvent('All event listeners have been registered.');
+    </script>
+</body>
+</html>
+
