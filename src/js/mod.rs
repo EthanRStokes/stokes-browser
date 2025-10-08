@@ -2,6 +2,7 @@
 mod runtime;
 mod console;
 mod dom_bindings;
+mod fetch;
 
 pub use runtime::JsRuntime;
 pub use console::Console;
@@ -33,5 +34,8 @@ pub fn initialize_bindings(context: &mut Context, document_root: Rc<RefCell<DomN
     // Set up DOM bindings
     dom_bindings::setup_dom_bindings(context, document_root)?;
     
+    // Set up fetch API
+    fetch::setup_fetch(context)?;
+
     Ok(())
 }

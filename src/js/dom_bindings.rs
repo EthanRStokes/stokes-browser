@@ -977,18 +977,8 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
     context.register_global_property(JsString::from("XMLHttpRequest"), xhr, boa_engine::property::Attribute::all())
         .map_err(|e| format!("Failed to register XMLHttpRequest constructor: {}", e))?;
 
-    // Create fetch stub (returns a rejected promise for now)
-    let fetch_fn = NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-        let url = args.get(0)
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-        println!("[JS] fetch('{}') called (not implemented)", url);
-        Ok(JsValue::undefined())
-    });
-    context.register_global_builtin_callable(JsString::from("fetch"), 1, fetch_fn)
-        .map_err(|e| format!("Failed to register fetch: {}", e))?;
-
+    // Note: fetch API is now registered in the fetch module
+    
     // Create atob/btoa functions for base64 encoding/decoding
     let atob_fn = NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
         let encoded = args.get(0)

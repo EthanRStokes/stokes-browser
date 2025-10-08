@@ -3295,6 +3295,7 @@ dependencies = [
  "image",
  "markup5ever_rcdom",
  "resvg",
+ "serde_json",
  "skia-safe",
  "stacker",
  "tiny-skia",
