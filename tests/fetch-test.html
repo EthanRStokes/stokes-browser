@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Fetch API Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+        }
+        #output {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #f0f0f0;
+            border-radius: 3px;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <h1>Fetch API Test</h1>
+
+    <div class="test-section">
+        <h2>Test 1: Basic Fetch</h2>
+        <button onclick="testBasicFetch()">Test Basic Fetch</button>
+        <div id="output"></div>
+    </div>
+
+    <script>
+        function testBasicFetch() {
+            const output = document.getElementById('output');
+            output.textContent = 'Testing fetch()...';
+
+            console.log('Starting fetch test...');
+
+            // Test fetch with a simple URL
+            fetch('https://example.com')
+                .then(response => {
+                    console.log('Fetch successful!');
+                    console.log('Status:', response.status);
+                    console.log('OK:', response.ok);
+                    output.textContent = 'Status: ' + response.status + '\nOK: ' + response.ok;
+
+                    return response.text();
+                })
+                .then(text => {
+                    console.log('Response text length:', text.length);
+                    output.textContent += '\n\nResponse text length: ' + text.length + ' characters';
+                    output.textContent += '\n\nFirst 200 characters:\n' + text.substring(0, 200);
+                })
+                .catch(error => {
+                    console.error('Fetch error:', error);
+                    output.textContent = 'Error: ' + error;
+                });
+        }
+
+        // Test on page load
+        console.log('Fetch API test page loaded');
+        console.log('fetch function exists:', typeof fetch !== 'undefined');
+    </script>
+</body>
+</html>
+
