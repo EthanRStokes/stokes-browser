@@ -660,6 +660,77 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
         })
     };
 
+    // Create a documentElement object (represents the <html> element)
+    let document_element = ObjectInitializer::new(context)
+        .property(
+            JsString::from("tagName"),
+            JsValue::from(JsString::from("HTML")),
+            boa_engine::property::Attribute::all(),
+        )
+        .property(
+            JsString::from("nodeName"),
+            JsValue::from(JsString::from("HTML")),
+            boa_engine::property::Attribute::all(),
+        )
+        .property(
+            JsString::from("nodeType"),
+            JsValue::from(1), // ELEMENT_NODE
+            boa_engine::property::Attribute::all(),
+        )
+        .function(
+            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                let attr_name = args.get(0)
+                    .and_then(|v| v.as_string())
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_default();
+                println!("[JS] documentElement.getAttribute('{}') called", attr_name);
+                Ok(JsValue::null())
+            }),
+            JsString::from("getAttribute"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                let attr_name = args.get(0)
+                    .and_then(|v| v.as_string())
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_default();
+                let attr_value = args.get(1)
+                    .and_then(|v| v.as_string())
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_default();
+                println!("[JS] documentElement.setAttribute('{}', '{}') called", attr_name, attr_value);
+                Ok(JsValue::undefined())
+            }),
+            JsString::from("setAttribute"),
+            2,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                let event_type = args.get(0)
+                    .and_then(|v| v.as_string())
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_default();
+                println!("[JS] documentElement.addEventListener('{}') called", event_type);
+                Ok(JsValue::undefined())
+            }),
+            JsString::from("addEventListener"),
+            3,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                let event_type = args.get(0)
+                    .and_then(|v| v.as_string())
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_default();
+                println!("[JS] documentElement.removeEventListener('{}') called", event_type);
+                Ok(JsValue::undefined())
+            }),
+            JsString::from("removeEventListener"),
+            3,
+        )
+        .build();
+
     // Create the document object with the new closures
     let document = ObjectInitializer::new(context)
         .function(
@@ -686,6 +757,11 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
             create_element_fn,
             JsString::from("createElement"),
             1,
+        )
+        .property(
+            JsString::from("documentElement"),
+            document_element,
+            boa_engine::property::Attribute::all(),
         )
         .build();
 

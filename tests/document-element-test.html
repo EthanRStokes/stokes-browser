@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Document Element Test</title>
+</head>
+<body>
+    <h1>Testing document.documentElement</h1>
+    <p>This tests the bug.js issue with document.documentElement.addEventListener</p>
+
+    <script>
+        // This mimics the code from bug.js that was causing the error
+        (function() {
+            document.documentElement.addEventListener("submit", function(b) {
+                var a;
+                if (a = b.target) {
+                    var c = a.getAttribute("data-submitfalse");
+                    a = c === "1" || c === "q" && !a.elements.q.value ? !0 : !1
+                } else a = !1;
+                a && (b.preventDefault(), b.stopPropagation())
+            }, !0);
+
+            document.documentElement.addEventListener("click", function(b) {
+                var a;
+                a: {
+                    for (a = b.target; a && a !== document.documentElement; a = a.parentElement)
+                        if (a.tagName === "A") {
+                            a = a.getAttribute("data-nohref") === "1";
+                            break a
+                        } a = !1
+                }
+                a && b.preventDefault()
+            }, !0);
+
+            console.log("Event listeners added successfully!");
+        }).call(this);
+    </script>
+</body>
+</html>
+
