@@ -689,59 +689,96 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
         )
         .build();
 
-    // Create the window object
-    let window = ObjectInitializer::new(context)
-        .function(
-            NativeFunction::from_fn_ptr(WindowObject::alert),
-            JsString::from("alert"),
-            1,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(WindowObject::set_timeout),
-            JsString::from("setTimeout"),
-            2,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(WindowObject::set_interval),
-            JsString::from("setInterval"),
-            2,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(WindowObject::clear_timeout),
-            JsString::from("clearTimeout"),
-            1,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(WindowObject::clear_interval),
-            JsString::from("clearInterval"),
-            1,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(WindowObject::request_animation_frame),
-            JsString::from("requestAnimationFrame"),
-            1,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(WindowObject::cancel_animation_frame),
-            JsString::from("cancelAnimationFrame"),
-            1,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(WindowObject::get_computed_style),
-            JsString::from("getComputedStyle"),
-            1,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(WindowObject::add_event_listener),
-            JsString::from("addEventListener"),
-            2,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(WindowObject::remove_event_listener),
-            JsString::from("removeEventListener"),
-            2,
-        )
-        .build();
+    // Register document object in global scope
+    context.register_global_property(JsString::from("document"), document, boa_engine::property::Attribute::all())
+        .map_err(|e| format!("Failed to register document object: {}", e))?;
+
+    // In browsers, the global object IS the window object
+    // So we need to add window properties to the global object itself
+    let global_object = context.global_object();
+
+    // Add window functions directly to global object
+    global_object.set(
+        JsString::from("alert"),
+        NativeFunction::from_fn_ptr(WindowObject::alert).to_js_function(context.realm()),
+        true,
+        context
+    ).map_err(|e| format!("Failed to set alert: {}", e))?;
+
+    global_object.set(
+        JsString::from("setTimeout"),
+        NativeFunction::from_fn_ptr(WindowObject::set_timeout).to_js_function(context.realm()),
+        true,
+        context
+    ).map_err(|e| format!("Failed to set setTimeout: {}", e))?;
+
+    global_object.set(
+        JsString::from("setInterval"),
+        NativeFunction::from_fn_ptr(WindowObject::set_interval).to_js_function(context.realm()),
+        true,
+        context
+    ).map_err(|e| format!("Failed to set setInterval: {}", e))?;
+
+    global_object.set(
+        JsString::from("clearTimeout"),
+        NativeFunction::from_fn_ptr(WindowObject::clear_timeout).to_js_function(context.realm()),
+        true,
+        context
+    ).map_err(|e| format!("Failed to set clearTimeout: {}", e))?;
+
+    global_object.set(
+        JsString::from("clearInterval"),
+        NativeFunction::from_fn_ptr(WindowObject::clear_interval).to_js_function(context.realm()),
+        true,
+        context
+    ).map_err(|e| format!("Failed to set clearInterval: {}", e))?;
+
+    global_object.set(
+        JsString::from("requestAnimationFrame"),
+        NativeFunction::from_fn_ptr(WindowObject::request_animation_frame).to_js_function(context.realm()),
+        true,
+        context
+    ).map_err(|e| format!("Failed to set requestAnimationFrame: {}", e))?;
+
+    global_object.set(
+        JsString::from("cancelAnimationFrame"),
+        NativeFunction::from_fn_ptr(WindowObject::cancel_animation_frame).to_js_function(context.realm()),
+        true,
+        context
+    ).map_err(|e| format!("Failed to set cancelAnimationFrame: {}", e))?;
+
+    global_object.set(
+        JsString::from("getComputedStyle"),
+        NativeFunction::from_fn_ptr(WindowObject::get_computed_style).to_js_function(context.realm()),
+        true,
+        context
+    ).map_err(|e| format!("Failed to set getComputedStyle: {}", e))?;
+
+    global_object.set(
+        JsString::from("addEventListener"),
+        NativeFunction::from_fn_ptr(WindowObject::add_event_listener).to_js_function(context.realm()),
+        true,
+        context
+    ).map_err(|e| format!("Failed to set addEventListener: {}", e))?;
+
+    global_object.set(
+        JsString::from("removeEventListener"),
+        NativeFunction::from_fn_ptr(WindowObject::remove_event_listener).to_js_function(context.realm()),
+        true,
+        context
+    ).map_err(|e| format!("Failed to set removeEventListener: {}", e))?;
+
+    // Register window as the global object itself (circular reference)
+    global_object.set(JsString::from("window"), global_object.clone(), true, context)
+        .map_err(|e| format!("Failed to set window: {}", e))?;
+    global_object.set(JsString::from("self"), global_object.clone(), true, context)
+        .map_err(|e| format!("Failed to set self: {}", e))?;
+    global_object.set(JsString::from("top"), global_object.clone(), true, context)
+        .map_err(|e| format!("Failed to set top: {}", e))?;
+    global_object.set(JsString::from("parent"), global_object.clone(), true, context)
+        .map_err(|e| format!("Failed to set parent: {}", e))?;
+    global_object.set(JsString::from("globalThis"), global_object.clone(), true, context)
+        .map_err(|e| format!("Failed to set globalThis: {}", e))?;
 
     // Create the navigator object with proper properties (not functions)
     let languages_array = JsArray::from_iter([JsValue::from(JsString::from("en-US"))], context);
@@ -819,28 +856,6 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
     // Register node constructor in global scope
     context.register_global_property(JsString::from("Node"), node, boa_engine::property::Attribute::all())
         .map_err(|e| format!("Failed to register Node constructor: {}", e))?;
-
-    // Register document object in global scope
-    context.register_global_property(JsString::from("document"), document, boa_engine::property::Attribute::all())
-        .map_err(|e| format!("Failed to register document object: {}", e))?;
-
-    // Register window object in global scope
-    context.register_global_property(JsString::from("window"), window.clone(), boa_engine::property::Attribute::all())
-        .map_err(|e| format!("Failed to register window object: {}", e))?;
-
-    // Add circular references to window object (window.window, window.self, etc.)
-    // These are expected by many JavaScript libraries including Google Analytics
-    let global_object = context.global_object().clone();
-    global_object.set(JsString::from("window"), window.clone(), true, context)
-        .map_err(|e| format!("Failed to set window.window: {}", e))?;
-    global_object.set(JsString::from("self"), window.clone(), true, context)
-        .map_err(|e| format!("Failed to set window.self: {}", e))?;
-    global_object.set(JsString::from("top"), window.clone(), true, context)
-        .map_err(|e| format!("Failed to set window.top: {}", e))?;
-    global_object.set(JsString::from("parent"), window.clone(), true, context)
-        .map_err(|e| format!("Failed to set window.parent: {}", e))?;
-    global_object.set(JsString::from("globalThis"), window.clone(), true, context)
-        .map_err(|e| format!("Failed to set globalThis: {}", e))?;
 
     // Register navigator object in global scope
     context.register_global_property(JsString::from("navigator"), navigator, boa_engine::property::Attribute::all())
