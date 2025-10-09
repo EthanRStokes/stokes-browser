@@ -180,6 +180,7 @@ pub fn apply_declaration(computed: &mut ComputedValues, declaration: &Declaratio
                     "block" => DisplayType::Block,
                     "inline" => DisplayType::Inline,
                     "inline-block" => DisplayType::InlineBlock,
+                    "flex" => DisplayType::Flex,
                     "none" => DisplayType::None,
                     _ => computed.display.clone(),
                 };

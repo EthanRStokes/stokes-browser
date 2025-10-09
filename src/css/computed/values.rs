@@ -57,6 +57,7 @@ pub enum DisplayType {
     Block,
     Inline,
     InlineBlock,
+    Flex,
     None,
 }
 

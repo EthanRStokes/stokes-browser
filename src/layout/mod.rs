@@ -117,6 +117,9 @@ impl LayoutEngine {
             layout_box.css_height = computed_styles.height.clone();
             layout_box.css_width = computed_styles.width.clone();
 
+            // Set display type from computed styles
+            layout_box.display_type = computed_styles.display.clone();
+
             // Override box type based on display property
             match computed_styles.display {
                 crate::css::computed::DisplayType::Block => {
@@ -128,6 +131,10 @@ impl LayoutEngine {
                 },
                 crate::css::computed::DisplayType::InlineBlock => {
                     layout_box.box_type = BoxType::InlineBlock;
+                },
+                crate::css::computed::DisplayType::Flex => {
+                    // Flex containers behave like block containers but layout children horizontally
+                    // Keep the box_type as is, the display_type will control layout
                 },
                 crate::css::computed::DisplayType::None => {
                     // Elements with display: none should not be rendered

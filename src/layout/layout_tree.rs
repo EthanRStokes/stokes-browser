@@ -120,6 +120,7 @@ pub struct LayoutBox {
     pub flex_shrink: crate::css::FlexShrink, // CSS flex-shrink property
     pub flex_basis: crate::css::FlexBasis, // CSS flex-basis property
     pub gap: crate::css::Gap, // CSS gap property (row-gap and column-gap)
+    pub display_type: crate::css::computed::DisplayType, // CSS display property
 }
 
 impl LayoutBox {
@@ -141,11 +142,18 @@ impl LayoutBox {
             flex_shrink: crate::css::FlexShrink::default(), // Default value
             flex_basis: crate::css::FlexBasis::Auto, // Default value
             gap: crate::css::Gap::default(), // Default value
+            display_type: crate::css::computed::DisplayType::Block, // Default value
         }
     }
 
     /// Calculate layout
     pub fn layout(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
+        // Check if this is a flex container
+        if self.display_type == crate::css::computed::DisplayType::Flex {
+            self.layout_flex(container_width, container_height, offset_x, offset_y, scale_factor);
+            return;
+        }
+
         match &self.box_type {
             BoxType::Block => self.layout_block(container_width, container_height, offset_x, offset_y, scale_factor),
             BoxType::Inline => self.layout_inline(container_width, container_height, offset_x, offset_y, scale_factor),
@@ -734,6 +742,151 @@ impl LayoutBox {
             self.dimensions.border.bottom *= scale_factor;
             self.dimensions.border.left *= scale_factor;
         }
+    }
+
+    /// Layout flex container - arranges children horizontally
+    fn layout_flex(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
+        // Scale margins, padding, and borders for high DPI
+        self.scale_edge_sizes(scale_factor);
+
+        // Use CSS width if specified, otherwise use available container width
+        let content_width = self.calculate_used_width(container_width, scale_factor);
+
+        // Calculate content area with proper offset positioning
+        let content_x = offset_x + self.dimensions.margin.left + self.dimensions.border.left + self.dimensions.padding.left;
+        let content_y = offset_y + self.dimensions.margin.top + self.dimensions.border.top + self.dimensions.padding.top;
+
+        self.dimensions.content = Rect::from_xywh(content_x, content_y, content_width, 0.0);
+
+        // Calculate gap spacing (column-gap for horizontal flex layout)
+        let column_gap = self.gap.column.to_px(16.0, container_width) * scale_factor;
+
+        // Calculate total gap space
+        let total_gap = if self.children.len() > 1 {
+            column_gap * (self.children.len() - 1) as f32
+        } else {
+            0.0
+        };
+
+        // Available space for flex items (excluding gaps)
+        let available_width = content_width - total_gap;
+
+        // Step 1: Calculate the hypothetical main size (base size) for each flex item
+        let mut flex_items: Vec<(f32, f32, f32)> = Vec::new(); // (base_size, flex_grow, flex_shrink)
+
+        for child in &self.children {
+            // Determine the flex base size according to flex-basis
+            let base_size = match &child.flex_basis {
+                crate::css::FlexBasis::Length(length) => {
+                    // Explicit length value (including 0px from "flex: 1")
+                    length.to_px(16.0, content_width) * scale_factor
+                }
+                crate::css::FlexBasis::Auto => {
+                    // If flex-basis is auto, use the item's main size (width) if specified
+                    if let Some(css_width) = &child.css_width {
+                        css_width.to_px(16.0, content_width) * scale_factor
+                    } else {
+                        // Use content size - for now, we'll use a minimum size
+                        // In a full implementation, this would calculate intrinsic content size
+                        // For flex items without width, use a small default that will grow
+                        50.0 * scale_factor // Minimum content size
+                    }
+                }
+                crate::css::FlexBasis::Content => {
+                    // Content-based sizing - use intrinsic content size
+                    // For now, use a minimum default
+                    50.0 * scale_factor
+                }
+            };
+
+            flex_items.push((base_size, child.flex_grow.0, child.flex_shrink.0));
+        }
+
+        // Step 2: Calculate total base size
+        let total_base_size: f32 = flex_items.iter().map(|(size, _, _)| size).sum();
+
+        // Step 3: Determine if we need to grow or shrink
+        let remaining_space = available_width - total_base_size;
+
+        let mut final_widths = Vec::new();
+
+        if remaining_space > 0.0 {
+            // We have extra space - distribute using flex-grow
+            let total_grow: f32 = flex_items.iter().map(|(_, grow, _)| grow).sum();
+
+            if total_grow > 0.0 {
+                // Distribute extra space proportionally based on flex-grow
+                for (base_size, grow, _) in &flex_items {
+                    let extra = (grow / total_grow) * remaining_space;
+                    final_widths.push(base_size + extra);
+                }
+            } else {
+                // No flex-grow, items keep their base size
+                for (base_size, _, _) in &flex_items {
+                    final_widths.push(*base_size);
+                }
+            }
+        } else if remaining_space < 0.0 {
+            // We need to shrink - distribute using flex-shrink
+            let total_shrink: f32 = flex_items.iter().map(|(base, _, shrink)| base * shrink).sum();
+
+            if total_shrink > 0.0 {
+                // Shrink items proportionally based on flex-shrink weighted by base size
+                for (base_size, _, shrink) in &flex_items {
+                    let shrink_amount = (base_size * shrink / total_shrink) * remaining_space.abs();
+                    final_widths.push((base_size - shrink_amount).max(0.0));
+                }
+            } else {
+                // No flex-shrink, items keep their base size (may overflow)
+                for (base_size, _, _) in &flex_items {
+                    final_widths.push(*base_size);
+                }
+            }
+        } else {
+            // Perfect fit - no growth or shrinkage needed
+            for (base_size, _, _) in &flex_items {
+                final_widths.push(*base_size);
+            }
+        }
+
+        // Step 4: Layout children horizontally with calculated widths
+        let mut current_x = content_x;
+        let mut max_child_height = 0.0f32;
+
+        for (i, child) in self.children.iter_mut().enumerate() {
+            // Add column-gap before each child except the first
+            if i > 0 {
+                current_x += column_gap;
+            }
+
+            let child_width = final_widths[i];
+
+            // Layout the child with the calculated width
+            child.layout(child_width, container_height, current_x, content_y, scale_factor);
+
+            // Track maximum child height for container height
+            max_child_height = max_child_height.max(child.dimensions.total_height());
+
+            current_x += child_width;
+        }
+
+        // Calculate auto content height based on children
+        let auto_content_height = if self.children.is_empty() {
+            0.0
+        } else {
+            max_child_height
+        };
+
+        // Use CSS height if specified, otherwise use auto height
+        let final_content_height = self.calculate_used_height(container_height, scale_factor, auto_content_height);
+
+        // Update our content dimensions with the final height
+        self.dimensions.content = Rect::from_xywh(
+            content_x,
+            content_y,
+            content_width,
+            final_content_height
+        );
     }
 
     /// Get all layout boxes in depth-first order
