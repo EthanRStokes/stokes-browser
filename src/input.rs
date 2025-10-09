@@ -99,7 +99,7 @@ pub fn handle_mouse_click(
 pub fn handle_middle_click(
     x: f32,
     y: f32,
-    ui: &BrowserUI,
+    ui: &mut BrowserUI,
     tabs: &[(String, String)], // (tab_id, tab_title) pairs
 ) -> InputAction {
     // Check if a tab was clicked

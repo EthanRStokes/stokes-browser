@@ -10,7 +10,7 @@ mod input;
 
 use std::ffi::CString;
 use std::num::NonZeroU32;
-use std::sync::{Mutex, OnceLock};
+use std::ops::DerefMut;
 use std::time::{Duration, Instant};
 use gl::types::GLint;
 use glutin::config::{ConfigTemplateBuilder, GlConfig};
@@ -20,11 +20,10 @@ use glutin::surface::{GlSurface, SurfaceAttributesBuilder, WindowSurface};
 use glutin::surface::Surface as GlutinSurface;
 use glutin_winit::DisplayBuilder;
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent, MouseScrollDelta, DeviceEvent, KeyEvent};
+use winit::dpi::LogicalSize;
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
-use arboard::Clipboard;
 
 use crate::engine::{Engine, EngineConfig};
 use crate::ui::BrowserUI;
@@ -415,14 +414,17 @@ impl BrowserApp {
         let tabs: Vec<(String, String)> = self.tabs.iter()
             .map(|tab| (tab.id.clone(), tab.engine.page_title().to_string()))
             .collect();
+        let ui = &mut self.ui;
+        let active_tab_index = self.active_tab_index;
+        let engine = &mut self.tabs[active_tab_index].engine;
 
         let action = input::handle_mouse_click(
             x,
             y,
-            &mut self.ui,
-            &mut self.active_tab_mut().engine,
+            ui,
+            engine,
             &tabs,
-            self.active_tab_index,
+            active_tab_index,
         );
 
         self.handle_input_action(action, event_loop);
@@ -434,7 +436,7 @@ impl BrowserApp {
             .map(|tab| (tab.id.clone(), tab.engine.page_title().to_string()))
             .collect();
 
-        let action = input::handle_middle_click(x, y, &self.ui, &tabs);
+        let action = input::handle_middle_click(x, y, &mut self.ui, &tabs);
         self.handle_input_action(action, event_loop);
     }
 
@@ -557,16 +559,6 @@ impl BrowserApp {
             println!("No URL to reload");
         }
     }
-
-    // Update cursor shape based on the position
-    fn update_cursor_for_position(&self) {
-        input::update_cursor_for_position(
-            self.cursor_position,
-            &self.ui,
-            &self.active_tab().engine,
-            &self.env.window,
-        );
-    }
 }
 
 impl ApplicationHandler for BrowserApp {
@@ -641,290 +633,39 @@ impl ApplicationHandler for BrowserApp {
                 self.cursor_position = (position.x, position.y);
 
                 // Update cursor based on the element under the mouse
-                self.update_cursor_for_position();
+                input::update_cursor_for_position(
+                    self.cursor_position,
+                    &self.ui,
+                    &self.active_tab().engine,
+                    &self.env.window,
+                );
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                // Check if mouse is over the tab bar (y < chrome height)
-                let chrome_height = self.ui.chrome_height() as f64;
-                let is_over_tabs = self.cursor_position.1 >= 48.0 && self.cursor_position.1 < chrome_height;
-
-                if is_over_tabs {
-                    // Handle tab scrolling
-                    match delta {
-                        MouseScrollDelta::LineDelta(_x, y) => {
-                            self.ui.handle_scroll(y);
-                            self.env.window.request_redraw();
-                        }
-                        MouseScrollDelta::PixelDelta(pos) => {
-                            self.ui.handle_scroll(pos.y as f32 / 30.0);
-                            self.env.window.request_redraw();
-                        }
-                    }
-                } else {
-                    // Handle page content scrolling
-                    let scroll_speed = 50.0;
-                    let shift_held = self.modifiers.state().shift_key();
-
-                    match delta {
-                        MouseScrollDelta::LineDelta(x, y) => {
-                            if shift_held {
-                                // Shift+scroll: convert vertical scroll to horizontal
-                                self.active_tab_mut().engine.scroll_horizontal(-y * scroll_speed);
-                            } else {
-                                // Normal scrolling: both vertical and horizontal
-                                self.active_tab_mut().engine.scroll_vertical(-y * scroll_speed);
-                                self.active_tab_mut().engine.scroll_horizontal(-x * scroll_speed);
-                            }
-                            self.env.window.request_redraw();
-                        }
-                        MouseScrollDelta::PixelDelta(pos) => {
-                            if shift_held {
-                                // Shift+scroll: convert vertical scroll to horizontal
-                                self.active_tab_mut().engine.scroll_horizontal(-pos.y as f32);
-                            } else {
-                                // Pixel-precise scrolling (trackpad)
-                                self.active_tab_mut().engine.scroll_vertical(-pos.y as f32);
-                                self.active_tab_mut().engine.scroll_horizontal(-pos.x as f32);
-                            }
-                            self.env.window.request_redraw();
-                        }
-                    }
-                }
+                let action = input::handle_mouse_wheel(
+                    delta,
+                    self.cursor_position,
+                    &self.modifiers,
+                    &mut self.ui,
+                    &mut self.tabs[self.active_tab_index].engine,
+                );
+                self.handle_input_action(action, event_loop);
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed {
-                    use winit::keyboard::{KeyCode, PhysicalKey, Key, NamedKey};
+                // Compute values before the function call to avoid borrow conflicts
+                let active_tab_index = self.active_tab_index;
+                let tabs_len = self.tabs.len();
+                let has_focused = self.has_focused_text_field();
 
-                    // Handle keyboard shortcuts with modifiers
-                    if self.modifiers.state().control_key() {
-                        match event.logical_key {
-                            Key::Character(ref text) => {
-                                match text.as_str() {
-                                    "a" => {
-                                        // Ctrl+A: Select all text in address bar
-                                        if self.has_focused_text_field() {
-                                            println!("Select all shortcut (Ctrl+A)");
-                                            self.ui.select_all();
-                                            self.env.window.request_redraw();
-                                            return;
-                                        }
-                                    }
-                                    "c" => {
-                                        // Ctrl+C: Copy selected text to clipboard
-                                        if self.has_focused_text_field() {
-                                            if let Some(selected_text) = self.ui.get_selected_text() {
-                                                if !selected_text.is_empty() {
-                                                    println!("Copy shortcut (Ctrl+C): {}", selected_text);
-                                                    if let Ok(mut clipboard) = Clipboard::new() {
-                                                        if let Err(e) = clipboard.set_text(&selected_text) {
-                                                            eprintln!("Failed to copy to clipboard: {}", e);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            self.env.window.request_redraw();
-                                            return;
-                                        }
-                                    }
-                                    "v" => {
-                                        // Ctrl+V: Paste text from clipboard
-                                        if self.has_focused_text_field() {
-                                            println!("Paste shortcut (Ctrl+V)");
-                                            match Clipboard::new() {
-                                                Ok(mut clipboard) => {
-                                                    match clipboard.get_text() {
-                                                        Ok(clipboard_text) => {
-                                                            println!("Pasted text: {}", clipboard_text);
-                                                            self.ui.insert_text_at_cursor(&clipboard_text);
-                                                        }
-                                                        Err(e) => {
-                                                            eprintln!("Failed to read from clipboard: {:?}", e);
-                                                        }
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                }
-                                            }
-                                            self.env.window.request_redraw();
-                                            return;
-                                        }
-                                    }
-                                    "x" => {
-                                        // Ctrl+X: Cut selected text to clipboard
-                                        if self.has_focused_text_field() {
-                                            if let Some(selected_text) = self.ui.get_selected_text() {
-                                                if !selected_text.is_empty() {
-                                                    println!("Cut shortcut (Ctrl+X): {}", selected_text);
-                                                    if let Ok(mut clipboard) = Clipboard::new() {
-                                                        if let Err(e) = clipboard.set_text(&selected_text) {
-                                                            eprintln!("Failed to copy to clipboard: {}", e);
-                                                        } else {
-                                                            // Delete the selected text after copying
-                                                            self.ui.delete_selection();
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            self.env.window.request_redraw();
-                                            return;
-                                        }
-                                    }
-                                    "t" => {
-                                        // Ctrl+T: New tab
-                                        println!("New tab shortcut (Ctrl+T)");
-                                        self.add_tab();
-                                        self.env.window.request_redraw();
-                                        return;
-                                    }
-                                    "w" => {
-                                        // Ctrl+W: Close current tab
-                                        println!("Close tab shortcut (Ctrl+W)");
-                                        if self.close_tab(self.active_tab_index) == TabCloseResult::QuitApp {
-                                            event_loop.exit();
-                                        } else {
-                                            self.env.window.request_redraw();
-                                        }
-                                        return;
-                                    }
-                                    "l" => {
-                                        // Ctrl+L: Focus address bar
-                                        println!("Focus address bar shortcut (Ctrl+L)");
-                                        self.ui.set_focus("address_bar");
-                                        self.env.window.request_redraw();
-                                        return;
-                                    }
-                                    "r" => {
-                                        // Ctrl+R: Reload page
-                                        println!("Reload shortcut (Ctrl+R)");
-                                        self.reload_current_page();
-                                        return;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            Key::Named(NamedKey::Tab) => {
-                                // Ctrl+Tab: Switch to next tab
-                                println!("Switch tab shortcut (Ctrl+Tab)");
-                                let next_index = (self.active_tab_index + 1) % self.tabs.len();
-                                self.switch_to_tab(next_index);
-                                self.env.window.request_redraw();
-                                return;
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    // Handle number keys for tab switching (Ctrl+1, Ctrl+2, etc.)
-                    if self.modifiers.state().control_key() {
-                        if let Key::Character(ref text) = event.logical_key {
-                            if let Ok(num) = text.parse::<usize>() {
-                                if num >= 1 && num <= 9 {
-                                    let tab_index = num - 1;
-                                    if tab_index < self.tabs.len() {
-                                        println!("Switch to tab {} shortcut (Ctrl+{})", tab_index + 1, num);
-                                        self.switch_to_tab(tab_index);
-                                        self.env.window.request_redraw();
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Handle text input and navigation keys
-                    match event.logical_key {
-                        Key::Named(NamedKey::Escape) => {
-                            // Clear focus from address bar when Escape is pressed
-                            self.ui.clear_focus();
-                            self.env.window.request_redraw();
-                        }
-                        Key::Named(NamedKey::Backspace) => {
-                            self.ui.handle_key_input("Backspace");
-                            self.env.window.request_redraw();
-                        }
-                        Key::Named(NamedKey::Delete) => {
-                            self.ui.handle_key_input("Delete");
-                            self.env.window.request_redraw();
-                        }
-                        Key::Named(NamedKey::ArrowLeft) => {
-                            // Check if we're in a text field first
-                            if !self.has_focused_text_field() {
-                                self.active_tab_mut().engine.scroll_horizontal(-30.0);
-                            } else {
-                                self.ui.handle_key_input("ArrowLeft");
-                            }
-                            self.env.window.request_redraw();
-                        }
-                        Key::Named(NamedKey::ArrowRight) => {
-                            // Check if we're in a text field first
-                            if !self.has_focused_text_field() {
-                                self.active_tab_mut().engine.scroll_horizontal(30.0);
-                            } else {
-                                self.ui.handle_key_input("ArrowRight");
-                            }
-                            self.env.window.request_redraw();
-                        }
-                        Key::Named(NamedKey::ArrowUp) => {
-                            self.active_tab_mut().engine.scroll_vertical(-30.0);
-                            self.env.window.request_redraw();
-                        }
-                        Key::Named(NamedKey::ArrowDown) => {
-                            self.active_tab_mut().engine.scroll_vertical(30.0);
-                            self.env.window.request_redraw();
-                        }
-                        Key::Named(NamedKey::Home) => {
-                            // Check if we're in a text field first
-                            if !self.has_focused_text_field() {
-                                self.active_tab_mut().engine.set_scroll_position(0.0, 0.0);
-                            } else {
-                                self.ui.handle_key_input("Home");
-                            }
-                            self.env.window.request_redraw();
-                        }
-                        Key::Named(NamedKey::End) => {
-                            // Check if we're in a text field first
-                            if !self.has_focused_text_field() {
-                                let engine = &mut self.active_tab_mut().engine;
-                                engine.set_scroll_position(0.0, f32::MAX); // Will be clamped to max
-                            } else {
-                                self.ui.handle_key_input("End");
-                            }
-                            self.env.window.request_redraw();
-                        }
-                        Key::Named(NamedKey::Enter) => {
-                            if let Some(url) = self.ui.handle_key_input("Enter") {
-                                // Navigate to the URL from the address bar
-                                let url_to_navigate = if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://") || url.starts_with('/') || url.ends_with(".html") || url.ends_with(".htm") {
-                                    url
-                                } else {
-                                    format!("https://{}", url)
-                                };
-
-                                // Navigate synchronously using block_in_place
-                                tokio::task::block_in_place(|| {
-                                    tokio::runtime::Handle::current().block_on(async {
-                                        self.navigate(&url_to_navigate).await;
-                                    })
-                                });
-                            }
-                            self.env.window.request_redraw();
-                        }
-                        Key::Named(NamedKey::PageUp) => {
-                            self.active_tab_mut().engine.scroll_vertical(-300.0);
-                            self.env.window.request_redraw();
-                        }
-                        Key::Named(NamedKey::PageDown) => {
-                            self.active_tab_mut().engine.scroll_vertical(300.0);
-                            self.env.window.request_redraw();
-                        }
-                        Key::Character(text) => {
-                            // Handle regular character input
-                            self.ui.handle_text_input(text.as_str());
-                            self.env.window.request_redraw();
-                        }
-                        _ => {}
-                    }
-                }
+                let action = input::handle_keyboard_input(
+                    &event,
+                    &self.modifiers,
+                    &mut self.ui,
+                    &mut self.tabs[self.active_tab_index].engine,
+                    active_tab_index,
+                    tabs_len,
+                    has_focused,
+                );
+                self.handle_input_action(action, event_loop);
             }
             WindowEvent::ModifiersChanged(new_modifiers) => {
                 self.modifiers = new_modifiers;
