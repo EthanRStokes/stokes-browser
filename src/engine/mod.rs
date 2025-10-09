@@ -974,4 +974,32 @@ impl Engine {
 
         None
     }
+
+    /// Process pending JavaScript timers (setTimeout/setInterval)
+    /// Returns true if any timers were executed
+    pub fn process_timers(&mut self) -> bool {
+        if let Some(runtime) = &mut self.js_runtime {
+            runtime.process_timers()
+        } else {
+            false
+        }
+    }
+
+    /// Check if there are any active timers
+    pub fn has_active_timers(&self) -> bool {
+        if let Some(runtime) = &self.js_runtime {
+            runtime.has_active_timers()
+        } else {
+            false
+        }
+    }
+
+    /// Get the time until the next timer should fire
+    pub fn time_until_next_timer(&self) -> Option<std::time::Duration> {
+        if let Some(runtime) = &self.js_runtime {
+            runtime.time_until_next_timer()
+        } else {
+            None
+        }
+    }
 }

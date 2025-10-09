@@ -9,7 +9,7 @@ mod js;
 
 use std::ffi::CString;
 use std::num::NonZeroU32;
-use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use gl::types::GLint;
 use glutin::config::{ConfigTemplateBuilder, GlConfig};
@@ -488,6 +488,25 @@ impl BrowserApp {
         })
     }
 
+    /// Process timers for the active tab
+    fn process_timers(&mut self) {
+        let engine = &mut self.active_tab_mut().engine;
+        if engine.process_timers() {
+            // If any timers were executed, request a redraw
+            self.env.window.request_redraw();
+        }
+    }
+
+    /// Check if there are any active timers that need processing
+    fn has_active_timers(&self) -> bool {
+        self.active_tab().engine.has_active_timers()
+    }
+
+    /// Get the time until the next timer should fire
+    fn time_until_next_timer(&self) -> Option<Duration> {
+        self.active_tab().engine.time_until_next_timer()
+    }
+
     fn render(&mut self) -> Result<(), String> {
         // Get the canvas first
         let canvas = self.env.surface.canvas();
@@ -907,6 +926,9 @@ impl ApplicationHandler for BrowserApp {
             _ => {}
         }
 
+        // Process timers for the active tab
+        self.process_timers();
+
         let expected_frame_length_seconds = 1.0 / 60.0;
         let frame_duration = Duration::from_secs_f32(expected_frame_length_seconds);
 
@@ -915,9 +937,18 @@ impl ApplicationHandler for BrowserApp {
             self.env.window.request_redraw();
         }
 
-        event_loop.set_control_flow(ControlFlow::WaitUntil(
-            self.previous_frame_start + frame_duration
-        ))
+        // Determine when to wake up next based on timers
+        let next_frame_time = self.previous_frame_start + frame_duration;
+
+        if let Some(timer_duration) = self.time_until_next_timer() {
+            // We have active timers, wake up at the earlier of next frame or next timer
+            let timer_wake_time = Instant::now() + timer_duration;
+            let wake_time = next_frame_time.min(timer_wake_time);
+            event_loop.set_control_flow(ControlFlow::WaitUntil(wake_time));
+        } else {
+            // No active timers, just wake up for next frame
+            event_loop.set_control_flow(ControlFlow::WaitUntil(next_frame_time));
+        }
     }
 }
 

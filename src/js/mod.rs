@@ -4,10 +4,12 @@ mod console;
 mod dom_bindings;
 mod element_bindings;
 mod fetch;
+mod timers;
 
 pub use runtime::JsRuntime;
 pub use console::Console;
 pub use element_bindings::ElementWrapper;
+pub use timers::TimerManager;
 
 use boa_engine::{Context, JsValue, Source};
 use std::rc::Rc;

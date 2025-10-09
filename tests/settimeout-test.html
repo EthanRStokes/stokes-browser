@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>setTimeout Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+        .box {
+            width: 200px;
+            height: 200px;
+            background-color: lightblue;
+            margin: 20px 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            transition: background-color 0.3s;
+        }
+        .box.changed {
+            background-color: lightcoral;
+        }
+    </style>
+</head>
+<body>
+    <h1>setTimeout and setInterval Test</h1>
+    <p>This page tests window.setTimeout and window.setInterval</p>
+
+    <div id="message">Waiting...</div>
+    <div id="counter">Counter: 0</div>
+    <div id="box" class="box">Box</div>
+
+    <button id="testBtn">Start Timer</button>
+    <button id="stopBtn">Stop Interval</button>
+
+    <script>
+        console.log('Testing setTimeout...');
+
+        // Test 1: Simple setTimeout
+        setTimeout(function() {
+            console.log('setTimeout executed after 1 second');
+            document.getElementById('message').textContent = 'setTimeout worked! (1 second)';
+        }, 1000);
+
+        // Test 2: setTimeout with 0 delay
+        setTimeout(function() {
+            console.log('setTimeout with 0 delay executed');
+        }, 0);
+
+        // Test 3: Nested setTimeout
+        setTimeout(function() {
+            console.log('First timeout (2 seconds)');
+            setTimeout(function() {
+                console.log('Nested timeout (1 second after first)');
+                document.getElementById('box').classList.add('changed');
+            }, 1000);
+        }, 2000);
+
+        // Test 4: setInterval
+        let counter = 0;
+        let intervalId = setInterval(function() {
+            counter++;
+            console.log('Interval tick: ' + counter);
+            document.getElementById('counter').textContent = 'Counter: ' + counter;
+
+            if (counter >= 10) {
+                clearInterval(intervalId);
+                console.log('Interval stopped at 10');
+            }
+        }, 500);
+
+        // Test 5: clearTimeout
+        let timeoutId = setTimeout(function() {
+            console.log('This should not appear');
+        }, 5000);
+
+        setTimeout(function() {
+            clearTimeout(timeoutId);
+            console.log('Successfully cleared timeout');
+        }, 100);
+
+        // Test 6: Button-triggered timeout
+        document.getElementById('testBtn').addEventListener('click', function() {
+            console.log('Button clicked, starting 2-second timer');
+            setTimeout(function() {
+                alert('Timer finished!');
+            }, 2000);
+        });
+
+        // Test 7: Stop interval button
+        document.getElementById('stopBtn').addEventListener('click', function() {
+            clearInterval(intervalId);
+            console.log('Interval manually stopped');
+        });
+
+        console.log('All timers set up');
+    </script>
+</body>
+</html>
+

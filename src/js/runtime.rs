@@ -3,7 +3,8 @@ use boa_engine::{Context, JsValue, Source};
 use std::rc::Rc;
 use std::cell::RefCell;
 use crate::dom::DomNode;
-use super::{JsResult, initialize_bindings};
+use super::{JsResult, initialize_bindings, TimerManager};
+use std::time::Duration;
 
 // Stack size for growing when needed (16MB to handle very large scripts)
 const STACK_SIZE: usize = 16 * 1024 * 1024;
@@ -14,6 +15,7 @@ const RED_ZONE: usize = 32 * 1024;
 pub struct JsRuntime {
     context: Context,
     document_root: Rc<RefCell<DomNode>>,
+    timer_manager: TimerManager,
 }
 
 impl JsRuntime {
@@ -24,9 +26,14 @@ impl JsRuntime {
         // Initialize browser bindings
         initialize_bindings(&mut context, document_root.clone())?;
 
+        // Create and set up timer manager
+        let timer_manager = TimerManager::new();
+        super::timers::setup_timers(&mut context, timer_manager.clone())?;
+
         Ok(Self {
             context,
             document_root,
+            timer_manager,
         })
     }
 
@@ -82,6 +89,22 @@ impl JsRuntime {
                 }
             }
         }
+    }
+
+    /// Process pending timers and execute callbacks that are ready
+    /// Returns true if any timers were executed
+    pub fn process_timers(&mut self) -> bool {
+        self.timer_manager.process_timers(&mut self.context)
+    }
+
+    /// Check if there are any active timers
+    pub fn has_active_timers(&self) -> bool {
+        self.timer_manager.has_active_timers()
+    }
+
+    /// Get the time until the next timer should fire
+    pub fn time_until_next_timer(&self) -> Option<Duration> {
+        self.timer_manager.time_until_next_timer()
     }
 
     /// Get a reference to the context
