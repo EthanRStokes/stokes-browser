@@ -670,16 +670,29 @@ impl ApplicationHandler for BrowserApp {
                 } else {
                     // Handle page content scrolling
                     let scroll_speed = 50.0;
+                    let shift_held = self.modifiers.state().shift_key();
+
                     match delta {
-                        MouseScrollDelta::LineDelta(_x, y) => {
-                            // Vertical scrolling (most common)
-                            self.active_tab_mut().engine.scroll_vertical(-y * scroll_speed);
+                        MouseScrollDelta::LineDelta(x, y) => {
+                            if shift_held {
+                                // Shift+scroll: convert vertical scroll to horizontal
+                                self.active_tab_mut().engine.scroll_horizontal(-y * scroll_speed);
+                            } else {
+                                // Normal scrolling: both vertical and horizontal
+                                self.active_tab_mut().engine.scroll_vertical(-y * scroll_speed);
+                                self.active_tab_mut().engine.scroll_horizontal(-x * scroll_speed);
+                            }
                             self.env.window.request_redraw();
                         }
                         MouseScrollDelta::PixelDelta(pos) => {
-                            // Pixel-precise scrolling (trackpad)
-                            self.active_tab_mut().engine.scroll_vertical(-pos.y as f32);
-                            self.active_tab_mut().engine.scroll_horizontal(-pos.x as f32);
+                            if shift_held {
+                                // Shift+scroll: convert vertical scroll to horizontal
+                                self.active_tab_mut().engine.scroll_horizontal(-pos.y as f32);
+                            } else {
+                                // Pixel-precise scrolling (trackpad)
+                                self.active_tab_mut().engine.scroll_vertical(-pos.y as f32);
+                                self.active_tab_mut().engine.scroll_horizontal(-pos.x as f32);
+                            }
                             self.env.window.request_redraw();
                         }
                     }
