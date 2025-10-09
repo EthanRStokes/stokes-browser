@@ -7,7 +7,7 @@ pub(crate) mod computed;
 pub mod transition_manager;
 
 pub use self::parser::CssParser;
-pub use values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Float, Overflow, FontStyle, FontVariant, LineHeight, VerticalAlign, ContentValue, BoxSizing, Cursor, Visibility, TextTransform, ListStyleType, TimingFunction, StepPosition, Duration, Transition, TransitionProperty, TransitionSpec, Outline, OutlineStyle, FlexBasis, WhiteSpace, Gap};
+pub use values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Float, Overflow, FontStyle, FontVariant, LineHeight, VerticalAlign, ContentValue, BoxSizing, Cursor, Visibility, TextTransform, ListStyleType, TimingFunction, StepPosition, Duration, Transition, TransitionProperty, TransitionSpec, Outline, OutlineStyle, FlexBasis, FlexGrow, FlexShrink, Flex, WhiteSpace, Gap};
 pub use self::selector::{Selector, SelectorType, PseudoClass, PseudoElement};
 pub use self::stylesheet::{Stylesheet, Rule, Declaration};
 pub use self::computed::{ComputedValues, StyleResolver};
@@ -86,6 +86,9 @@ pub enum PropertyName {
     OutlineStyle,
     OutlineColor,
     OutlineOffset,
+    Flex,
+    FlexGrow,
+    FlexShrink,
     FlexBasis,
     Gap,
     Unknown(String),
@@ -165,6 +168,9 @@ impl From<&str> for PropertyName {
             "outline-style" => PropertyName::OutlineStyle,
             "outline-color" => PropertyName::OutlineColor,
             "outline-offset" => PropertyName::OutlineOffset,
+            "flex" => PropertyName::Flex,
+            "flex-grow" => PropertyName::FlexGrow,
+            "flex-shrink" => PropertyName::FlexShrink,
             "flex-basis" => PropertyName::FlexBasis,
             "gap" => PropertyName::Gap,
             _ => {

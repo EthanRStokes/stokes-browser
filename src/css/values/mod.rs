@@ -17,7 +17,7 @@ pub use length::{Length, Unit};
 pub use border::{BorderRadius, BorderRadiusPx, Outline, OutlineStyle};
 pub use shadow::{BoxShadow, BoxShadowPx};
 pub use text::{TextDecoration, TextDecorationType, TextAlign, TextTransform, WhiteSpace};
-pub use layout::{Clear, Float, Overflow, BoxSizing, Visibility, VerticalAlign, ContentValue, FlexBasis, Gap};
+pub use layout::{Clear, Float, Overflow, BoxSizing, Visibility, VerticalAlign, ContentValue, FlexBasis, FlexGrow, FlexShrink, Flex, Gap};
 pub use font::{FontStyle, FontVariant, LineHeight};
 pub use background::BackgroundImage;
 pub use cursor::Cursor;

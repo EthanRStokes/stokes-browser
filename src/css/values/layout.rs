@@ -349,6 +349,159 @@ impl Default for FlexBasis {
     }
 }
 
+/// CSS flex-grow property
+#[derive(Debug, Clone, PartialEq)]
+pub struct FlexGrow(pub f32);
+
+impl FlexGrow {
+    /// Parse flex-grow value from string
+    pub fn parse(value: &str) -> Self {
+        let value = value.trim();
+        if let Ok(num) = value.parse::<f32>() {
+            FlexGrow(num.max(0.0)) // flex-grow cannot be negative
+        } else {
+            FlexGrow::default()
+        }
+    }
+}
+
+impl Default for FlexGrow {
+    fn default() -> Self {
+        FlexGrow(0.0) // Initial value is 0
+    }
+}
+
+/// CSS flex-shrink property
+#[derive(Debug, Clone, PartialEq)]
+pub struct FlexShrink(pub f32);
+
+impl FlexShrink {
+    /// Parse flex-shrink value from string
+    pub fn parse(value: &str) -> Self {
+        let value = value.trim();
+        if let Ok(num) = value.parse::<f32>() {
+            FlexShrink(num.max(0.0)) // flex-shrink cannot be negative
+        } else {
+            FlexShrink::default()
+        }
+    }
+}
+
+impl Default for FlexShrink {
+    fn default() -> Self {
+        FlexShrink(1.0) // Initial value is 1
+    }
+}
+
+/// CSS flex shorthand property
+/// Syntax: flex: <flex-grow> <flex-shrink>? <flex-basis>?
+#[derive(Debug, Clone, PartialEq)]
+pub struct Flex {
+    pub grow: FlexGrow,
+    pub shrink: FlexShrink,
+    pub basis: FlexBasis,
+}
+
+impl Flex {
+    /// Parse flex shorthand value from string
+    /// Supports: none | auto | initial | <flex-grow> <flex-shrink>? <flex-basis>?
+    pub fn parse(value: &str) -> Self {
+        let value = value.trim();
+
+        // Handle special keywords
+        match value.to_lowercase().as_str() {
+            "none" => {
+                // flex: none means flex: 0 0 auto
+                return Flex {
+                    grow: FlexGrow(0.0),
+                    shrink: FlexShrink(0.0),
+                    basis: FlexBasis::Auto,
+                };
+            }
+            "auto" => {
+                // flex: auto means flex: 1 1 auto
+                return Flex {
+                    grow: FlexGrow(1.0),
+                    shrink: FlexShrink(1.0),
+                    basis: FlexBasis::Auto,
+                };
+            }
+            "initial" => {
+                // flex: initial means flex: 0 1 auto
+                return Flex::default();
+            }
+            _ => {}
+        }
+
+        // Parse individual values
+        let parts: Vec<&str> = value.split_whitespace().collect();
+
+        let mut grow = FlexGrow::default();
+        let mut shrink = FlexShrink::default();
+        let mut basis = FlexBasis::Auto;
+
+        match parts.len() {
+            1 => {
+                // Single value: could be grow (number) or basis (length/keyword)
+                if let Ok(num) = parts[0].parse::<f32>() {
+                    // It's a unitless number, so it's flex-grow
+                    // When flex-grow is specified alone, flex-shrink defaults to 1 and flex-basis to 0
+                    grow = FlexGrow(num.max(0.0));
+                    shrink = FlexShrink(1.0);
+                    basis = FlexBasis::Length(Length::px(0.0));
+                } else {
+                    // It's a length or keyword, so it's flex-basis
+                    // When only flex-basis is specified, flex-grow is 1 and flex-shrink is 1
+                    grow = FlexGrow(1.0);
+                    shrink = FlexShrink(1.0);
+                    basis = FlexBasis::parse(parts[0]);
+                }
+            }
+            2 => {
+                // Two values: flex-grow flex-shrink | flex-grow flex-basis
+                if let Ok(first) = parts[0].parse::<f32>() {
+                    grow = FlexGrow(first.max(0.0));
+
+                    if let Ok(second) = parts[1].parse::<f32>() {
+                        // Both are numbers: grow and shrink
+                        shrink = FlexShrink(second.max(0.0));
+                        basis = FlexBasis::Length(Length::px(0.0));
+                    } else {
+                        // Second is basis
+                        shrink = FlexShrink(1.0);
+                        basis = FlexBasis::parse(parts[1]);
+                    }
+                }
+            }
+            3 => {
+                // Three values: flex-grow flex-shrink flex-basis
+                if let Ok(first) = parts[0].parse::<f32>() {
+                    grow = FlexGrow(first.max(0.0));
+                }
+                if let Ok(second) = parts[1].parse::<f32>() {
+                    shrink = FlexShrink(second.max(0.0));
+                }
+                basis = FlexBasis::parse(parts[2]);
+            }
+            _ => {
+                // Invalid, return default
+            }
+        }
+
+        Flex { grow, shrink, basis }
+    }
+}
+
+impl Default for Flex {
+    fn default() -> Self {
+        Flex {
+            grow: FlexGrow(0.0),
+            shrink: FlexShrink(1.0),
+            basis: FlexBasis::Auto,
+        }
+    }
+}
+
 /// CSS gap property (row-gap and column-gap)
 #[derive(Debug, Clone, PartialEq)]
 pub struct Gap {

@@ -116,6 +116,8 @@ pub struct LayoutBox {
     pub css_max_height: Option<crate::css::Length>, // CSS specified max-height
     pub css_min_height: Option<crate::css::Length>, // CSS specified min-height
     pub box_sizing: crate::css::BoxSizing, // CSS box-sizing property
+    pub flex_grow: crate::css::FlexGrow, // CSS flex-grow property
+    pub flex_shrink: crate::css::FlexShrink, // CSS flex-shrink property
     pub flex_basis: crate::css::FlexBasis, // CSS flex-basis property
     pub gap: crate::css::Gap, // CSS gap property (row-gap and column-gap)
 }
@@ -135,6 +137,8 @@ impl LayoutBox {
             css_max_height: None,
             css_min_height: None,
             box_sizing: crate::css::BoxSizing::ContentBox, // Default value
+            flex_grow: crate::css::FlexGrow::default(), // Default value
+            flex_shrink: crate::css::FlexShrink::default(), // Default value
             flex_basis: crate::css::FlexBasis::Auto, // Default value
             gap: crate::css::Gap::default(), // Default value
         }
@@ -759,7 +763,9 @@ impl LayoutBox {
         // Store box-sizing value
         self.box_sizing = styles.box_sizing.clone();
 
-        // Store flex-basis value
+        // Store flex properties
+        self.flex_grow = styles.flex_grow.clone();
+        self.flex_shrink = styles.flex_shrink.clone();
         self.flex_basis = styles.flex_basis.clone();
 
         // Store gap value

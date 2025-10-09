@@ -456,6 +456,77 @@ pub fn apply_declaration(computed: &mut ComputedValues, declaration: &Declaratio
                 _ => {}
             }
         }
+        PropertyName::FlexGrow => {
+            match &declaration.value {
+                CssValue::Number(num) => {
+                    computed.flex_grow = crate::css::FlexGrow(*num);
+                }
+                CssValue::String(value) => {
+                    computed.flex_grow = crate::css::FlexGrow::parse(value);
+                }
+                CssValue::Keyword(keyword) => {
+                    computed.flex_grow = crate::css::FlexGrow::parse(keyword);
+                }
+                _ => {}
+            }
+        }
+        PropertyName::FlexShrink => {
+            match &declaration.value {
+                CssValue::Number(num) => {
+                    computed.flex_shrink = crate::css::FlexShrink(*num);
+                }
+                CssValue::String(value) => {
+                    computed.flex_shrink = crate::css::FlexShrink::parse(value);
+                }
+                CssValue::Keyword(keyword) => {
+                    computed.flex_shrink = crate::css::FlexShrink::parse(keyword);
+                }
+                _ => {}
+            }
+        }
+        PropertyName::Flex => {
+            // Handle flex shorthand property
+            match &declaration.value {
+                CssValue::Keyword(keyword) => {
+                    let flex = crate::css::Flex::parse(keyword);
+                    computed.flex_grow = flex.grow;
+                    computed.flex_shrink = flex.shrink;
+                    computed.flex_basis = flex.basis;
+                }
+                CssValue::String(value) => {
+                    let flex = crate::css::Flex::parse(value);
+                    computed.flex_grow = flex.grow;
+                    computed.flex_shrink = flex.shrink;
+                    computed.flex_basis = flex.basis;
+                }
+                CssValue::Number(num) => {
+                    // Single number is flex-grow
+                    let flex = crate::css::Flex::parse(&num.to_string());
+                    computed.flex_grow = flex.grow;
+                    computed.flex_shrink = flex.shrink;
+                    computed.flex_basis = flex.basis;
+                }
+                CssValue::MultipleValues(values) => {
+                    // Multiple values: convert to string and parse
+                    let value_str = values.iter()
+                        .map(|v| match v {
+                            CssValue::Number(n) => n.to_string(),
+                            CssValue::Length(l) => format!("{}{:?}", l.value, l.unit).to_lowercase(),
+                            CssValue::Keyword(k) => k.clone(),
+                            CssValue::String(s) => s.clone(),
+                            CssValue::Auto => "auto".to_string(),
+                            _ => String::new(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let flex = crate::css::Flex::parse(&value_str);
+                    computed.flex_grow = flex.grow;
+                    computed.flex_shrink = flex.shrink;
+                    computed.flex_basis = flex.basis;
+                }
+                _ => {}
+            }
+        }
         PropertyName::Gap => {
             match &declaration.value {
                 CssValue::Length(length) => {

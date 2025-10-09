@@ -46,6 +46,8 @@ pub struct ComputedValues {
     pub list_style_type: crate::css::ListStyleType,
     pub outline: crate::css::Outline,
     pub outline_offset: crate::css::values::Length,
+    pub flex_grow: crate::css::FlexGrow,
+    pub flex_shrink: crate::css::FlexShrink,
     pub flex_basis: crate::css::FlexBasis,
     pub gap: crate::css::Gap,
 }
@@ -102,6 +104,8 @@ impl Default for ComputedValues {
             list_style_type: crate::css::ListStyleType::None,
             outline: crate::css::Outline::none(),
             outline_offset: crate::css::values::Length::default(),
+            flex_grow: crate::css::FlexGrow::default(),
+            flex_shrink: crate::css::FlexShrink::default(),
             flex_basis: crate::css::FlexBasis::default(),
             gap: crate::css::Gap::default(),
         }
