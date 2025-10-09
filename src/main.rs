@@ -72,6 +72,8 @@ struct BrowserApp {
     skia_context: gpu::DirectContext,
     cursor_position: (f64, f64), // Track cursor position
     scale_factor: f64, // Track DPI scale factor
+    loading_spinner_angle: f32, // Track loading spinner rotation angle
+    last_spinner_update: Instant, // Track last time spinner was updated
 }
 
 struct Env {
@@ -235,6 +237,8 @@ impl BrowserApp {
             skia_context: gr_context,
             cursor_position: (0.0, 0.0), // Initialize cursor position
             scale_factor, // Initialize with actual scale factor from window
+            loading_spinner_angle: 0.0, // Initialize spinner angle
+            last_spinner_update: Instant::now(), // Initialize spinner update time
         }
     }
 
@@ -508,6 +512,23 @@ impl BrowserApp {
     }
 
     fn render(&mut self) -> Result<(), String> {
+        // Update loading spinner angle if the page is loading
+        let is_loading = self.active_tab().engine.is_loading();
+        if is_loading {
+            let now = Instant::now();
+            let elapsed = now.duration_since(self.last_spinner_update).as_secs_f32();
+            // Rotate at about 2 full rotations per second
+            self.loading_spinner_angle += elapsed * 4.0 * std::f32::consts::PI;
+            // Keep angle within 0-2π range
+            if self.loading_spinner_angle >= 2.0 * std::f32::consts::PI {
+                self.loading_spinner_angle -= 2.0 * std::f32::consts::PI;
+            }
+            self.last_spinner_update = now;
+            
+            // Request another redraw to continue animation
+            self.env.window.request_redraw();
+        }
+
         // Get the canvas first
         let canvas = self.env.surface.canvas();
         canvas.clear(Color::WHITE);
@@ -519,6 +540,9 @@ impl BrowserApp {
 
         // Render UI on top of web content
         self.ui.render(canvas);
+
+        // Render loading indicator if page is loading
+        self.ui.render_loading_indicator(canvas, is_loading, self.loading_spinner_angle);
 
         // Flush to display
         self.env.gr_context.flush_and_submit();

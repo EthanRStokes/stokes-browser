@@ -1,5 +1,6 @@
 use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob, FontStyle, Path};
 use std::time::{Duration, Instant};
+use std::f32::consts::PI;
 
 /// Tooltip information
 #[derive(Debug, Clone)]
@@ -1240,6 +1241,62 @@ impl BrowserUI {
             // Draw tooltip text
             paint.set_color(Color::BLACK);
             canvas.draw_text_blob(&text_blob, (tooltip_x + padding, tooltip_y + padding - text_bounds.top), &paint);
+        }
+    }
+
+    /// Draw a loading spinner indicator
+    /// `angle` is the current rotation angle in radians (0 to 2*PI)
+    pub fn render_loading_indicator(&self, canvas: &Canvas, is_loading: bool, angle: f32) {
+        if !is_loading {
+            return;
+        }
+
+        // Find the address bar to position the spinner
+        for comp in &self.components {
+            if let UiComponent::TextField { id, x, y, width, height, .. } = comp {
+                if id == "address_bar" {
+                    // Position spinner at the right side of the address bar
+                    let spinner_size = 20.0 * self.scale_factor as f32;
+                    let spinner_x = x + width - spinner_size - (8.0 * self.scale_factor as f32);
+                    let spinner_y = y + (height / 2.0);
+
+                    Self::draw_spinner(canvas, spinner_x, spinner_y, spinner_size / 2.0, angle, self.scale_factor);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Draw an animated spinner
+    fn draw_spinner(canvas: &Canvas, center_x: f32, center_y: f32, radius: f32, angle: f32, scale_factor: f64) {
+        let mut paint = Paint::default();
+        paint.set_stroke(true);
+        paint.set_stroke_width(2.5 * scale_factor as f32);
+        paint.set_style(skia_safe::PaintStyle::Stroke);
+        paint.set_stroke_cap(skia_safe::paint::Cap::Round);
+        paint.set_anti_alias(true);
+
+        // Draw multiple arcs with varying opacity for a smooth spinner effect
+        let num_segments = 8;
+        for i in 0..num_segments {
+            let segment_angle = angle + (i as f32 * 2.0 * PI / num_segments as f32);
+            let start_angle = segment_angle * 180.0 / PI;
+
+            // Fade out older segments
+            let alpha = ((num_segments - i) as f32 / num_segments as f32 * 255.0) as u8;
+            paint.set_color(Color::from_argb(alpha, 50, 120, 255));
+
+            let sweep_angle = 30.0; // degrees
+            let rect = Rect::from_xywh(
+                center_x - radius,
+                center_y - radius,
+                radius * 2.0,
+                radius * 2.0
+            );
+
+            let mut path = Path::new();
+            path.add_arc(rect, start_angle, sweep_angle);
+            canvas.draw_path(&path, &paint);
         }
     }
 }
