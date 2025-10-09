@@ -307,7 +307,7 @@ impl BrowserApp {
     }
 
     // Navigate to a URL synchronously (for event handlers)
-    async fn navigate_to_url(&mut self, url: &str) {
+    fn navigate_to_url(&mut self, url: &str) {
         let url = url.to_string();
 
         // Set loading state immediately before spawning task
@@ -319,7 +319,11 @@ impl BrowserApp {
         // We still need to block here because we can't restructure the entire app to be async-aware
         // But the key is that we've already set the loading state and requested a redraw BEFORE blocking
 
-        self.navigate(&url).into_future();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                self.navigate(&url).await;
+            })
+        });
 
         // Request another redraw after navigation completes
         self.env.window.request_redraw();
