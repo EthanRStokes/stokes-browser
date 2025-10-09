@@ -456,6 +456,11 @@ impl Engine {
         self.is_loading
     }
 
+    /// Set the loading state manually (useful for UI updates)
+    pub fn set_loading_state(&mut self, loading: bool) {
+        self.is_loading = loading;
+    }
+
     /// Extract domain from URL
     fn extract_domain_from_url(&self, url: &str) -> Option<String> {
         url.split("://")

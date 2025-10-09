@@ -6,6 +6,7 @@ mod layout;
 mod renderer;
 mod css;
 mod js;
+mod input;
 
 use std::ffi::CString;
 use std::num::NonZeroU32;
@@ -307,13 +308,22 @@ impl BrowserApp {
     }
 
     // Navigate to a URL synchronously (for event handlers)
-    fn navigate_to_url(&mut self, url: &str) {
+    async fn navigate_to_url(&mut self, url: &str) {
         let url = url.to_string();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                self.navigate(&url).await;
-            })
-        });
+
+        // Set loading state immediately before spawning task
+        self.active_tab_mut().engine.set_loading_state(true);
+
+        // Update window title to show loading state
+        self.render().expect("Render failed");
+
+        // We still need to block here because we can't restructure the entire app to be async-aware
+        // But the key is that we've already set the loading state and requested a redraw BEFORE blocking
+
+        self.navigate(&url).into_future();
+
+        // Request another redraw after navigation completes
+        self.env.window.request_redraw();
     }
 
     // Add a new tab
@@ -402,87 +412,30 @@ impl BrowserApp {
 
     // Handle mouse click
     fn handle_click(&mut self, x: f32, y: f32, event_loop: &ActiveEventLoop) {
-        // Check if close button was clicked first
-        if let Some(tab_id) = self.ui.check_close_button_click(x, y) {
-            println!("Close button clicked for tab: {}", tab_id);
-            if let Some(tab_index) = self.tabs.iter().position(|tab| tab.id == tab_id) {
-                if self.close_tab(tab_index) == TabCloseResult::QuitApp {
-                    event_loop.exit();
-                }
-            }
-            self.env.window.request_redraw();
-            return;
-        }
+        let tabs: Vec<(String, String)> = self.tabs.iter()
+            .map(|tab| (tab.id.clone(), tab.engine.page_title().to_string()))
+            .collect();
 
-        // UI now uses pixel coordinates directly
-        if let Some(component_id) = self.ui.handle_click(x, y) {
-            // Handle based on component
-            if component_id == "back" {
-                println!("Back button clicked");
-                // Back navigation would go here
-            } else if component_id == "forward" {
-                println!("Forward button clicked");
-                // Forward navigation would go here
-            } else if component_id == "refresh" {
-                println!("Refresh button clicked");
-                // Reload the current page
-                self.reload_current_page();
-            } else if component_id == "new_tab" {
-                println!("New tab button clicked");
-                self.add_tab();
-                self.env.window.request_redraw();
-            } else if component_id == "address_bar" {
-                // Focus the address bar for typing
-                self.ui.set_focus("address_bar");
-                self.env.window.request_redraw();
-            } else if component_id.starts_with("tab") {
-                // Tab switching by clicking
-                self.switch_to_tab_by_id(&component_id);
-                self.env.window.request_redraw();
-            }
-            return;
-        }
+        let action = input::handle_mouse_click(
+            x,
+            y,
+            &mut self.ui,
+            &mut self.active_tab_mut().engine,
+            &tabs,
+            self.active_tab_index,
+        );
 
-        // Check if a hyperlink was clicked on the page content
-        // Adjust y coordinate to account for the chrome (UI bar)
-        let chrome_height = self.ui.chrome_height();
-        if y >= chrome_height as f32 {
-            let content_y = y - chrome_height as f32;
-
-            // Check if the click hit a hyperlink
-            if let Some(href) = self.active_tab_mut().engine.handle_click(x, content_y) {
-                println!("Hyperlink clicked: {}", href);
-
-                // Resolve the href against the current page URL before navigating
-                match self.active_tab().engine.resolve_url(&href) {
-                    Ok(resolved_url) => {
-                        println!("Resolved to: {}", resolved_url);
-                        self.navigate_to_url(&resolved_url);
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to resolve hyperlink URL '{}': {}", href, e);
-                        // Try navigating with the raw href as fallback
-                        self.navigate_to_url(&href);
-                    }
-                }
-            }
-        }
+        self.handle_input_action(action, event_loop);
     }
 
     // Handle middle-click on tabs to close them
     fn handle_middle_click(&mut self, x: f32, y: f32, event_loop: &ActiveEventLoop) {
-        // Check if a tab was clicked
-        if let Some(component_id) = self.ui.handle_click(x, y) {
-            if component_id.starts_with("tab") {
-                // Find the tab index by ID
-                if let Some(tab_index) = self.tabs.iter().position(|tab| tab.id == component_id) {
-                    println!("Middle-click closing tab: {}", component_id);
-                    if self.close_tab(tab_index) == TabCloseResult::QuitApp {
-                        event_loop.exit();
-                    }
-                }
-            }
-        }
+        let tabs: Vec<(String, String)> = self.tabs.iter()
+            .map(|tab| (tab.id.clone(), tab.engine.page_title().to_string()))
+            .collect();
+
+        let action = input::handle_middle_click(x, y, &self.ui, &tabs);
+        self.handle_input_action(action, event_loop);
     }
 
     // Check if any text field currently has focus
@@ -490,6 +443,39 @@ impl BrowserApp {
         self.ui.components.iter().any(|comp| {
             matches!(comp, crate::ui::UiComponent::TextField { has_focus: true, .. })
         })
+    }
+
+    // Handle input actions returned by the input module
+    fn handle_input_action(&mut self, action: input::InputAction, event_loop: &ActiveEventLoop) {
+        match action {
+            input::InputAction::CloseTab(tab_index) => {
+                if self.close_tab(tab_index) == TabCloseResult::QuitApp {
+                    event_loop.exit();
+                }
+            }
+            input::InputAction::Navigate(url) => {
+                self.navigate_to_url(&url);
+            }
+            input::InputAction::SwitchTab(tab_index) => {
+                self.switch_to_tab(tab_index);
+            }
+            input::InputAction::AddTab => {
+                self.add_tab();
+            }
+            input::InputAction::ReloadPage => {
+                self.reload_current_page();
+            }
+            input::InputAction::RequestRedraw => {
+                // Just request redraw, no other action needed
+            }
+            input::InputAction::QuitApp => {
+                event_loop.exit();
+            }
+            input::InputAction::None => {}
+        }
+
+        // Request a redraw after handling the input action
+        self.env.window.request_redraw();
     }
 
     /// Process timers for the active tab
@@ -524,7 +510,7 @@ impl BrowserApp {
                 self.loading_spinner_angle -= 2.0 * std::f32::consts::PI;
             }
             self.last_spinner_update = now;
-            
+
             // Request another redraw to continue animation
             self.env.window.request_redraw();
         }
@@ -574,29 +560,12 @@ impl BrowserApp {
 
     // Update cursor shape based on the position
     fn update_cursor_for_position(&self) {
-        let (x, y) = self.cursor_position;
-
-        // Check if the mouse is over a text field first (UI takes priority)
-        if self.ui.is_mouse_over_text_field(x, y) {
-            // Change cursor to I-beam when over text fields
-            self.env.window.set_cursor(winit::window::CursorIcon::Text);
-        } else if self.ui.is_mouse_over_interactive_element(x, y) {
-            // Change cursor to pointer (hand) when over other interactive elements like buttons
-            self.env.window.set_cursor(winit::window::CursorIcon::Pointer);
-        } else {
-            // Check if the mouse is over page content
-            let chrome_height = self.ui.chrome_height() as f64;
-            if y > chrome_height {
-                // Mouse is over page content, check CSS cursor property
-                let content_y = (y - chrome_height) as f32;
-                let css_cursor = self.active_tab().engine.get_cursor_at_position(x as f32, content_y);
-                let winit_cursor = css_cursor.to_winit_cursor();
-                self.env.window.set_cursor(winit_cursor);
-            } else {
-                // Mouse is over chrome area but not an interactive element
-                self.env.window.set_cursor(winit::window::CursorIcon::Default);
-            }
-        }
+        input::update_cursor_for_position(
+            self.cursor_position,
+            &self.ui,
+            &self.active_tab().engine,
+            &self.env.window,
+        );
     }
 }
 
