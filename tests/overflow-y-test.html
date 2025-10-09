@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .container {
+            width: 200px;
+            height: 150px;
+            background-color: lightblue;
+            margin: 20px;
+            border: 2px solid navy;
+        }
+        
+        .overflow-visible {
+            overflow-y: visible;
+        }
+        
+        .overflow-hidden {
+            overflow-y: hidden;
+        }
+        
+        .overflow-scroll {
+            overflow-y: scroll;
+        }
+        
+        .overflow-auto {
+            overflow-y: auto;
+        }
+        
+        .content {
+            height: 300px;
+            background: linear-gradient(to bottom, white, pink);
+            padding: 10px;
+        }
+        
+        h2 {
+            margin: 10px 0;
+            font-size: 18px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Overflow-Y Property Test</h1>
+    
+    <div class="container overflow-visible">
+        <h2>overflow-y: visible</h2>
+        <div class="content">
+            This content is taller than the container. With overflow-y: visible, 
+            it should overflow the container boundaries vertically.
+        </div>
+    </div>
+    
+    <div class="container overflow-hidden">
+        <h2>overflow-y: hidden</h2>
+        <div class="content">
+            This content is taller than the container. With overflow-y: hidden, 
+            the overflow should be clipped and not visible.
+        </div>
+    </div>
+    
+    <div class="container overflow-scroll">
+        <h2>overflow-y: scroll</h2>
+        <div class="content">
+            This content is taller than the container. With overflow-y: scroll, 
+            a scrollbar should be shown (if implemented).
+        </div>
+    </div>
+    
+    <div class="container overflow-auto">
+        <h2>overflow-y: auto</h2>
+        <div class="content">
+            This content is taller than the container. With overflow-y: auto, 
+            a scrollbar should appear only if needed (if implemented).
+        </div>
+    </div>
+</body>
+</html>
+

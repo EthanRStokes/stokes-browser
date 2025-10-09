@@ -151,8 +151,27 @@ pub fn apply_declaration(computed: &mut ComputedValues, declaration: &Declaratio
         PropertyName::Overflow => {
             if let CssValue::Keyword(overflow_value) = &declaration.value {
                 computed.overflow = crate::css::Overflow::parse(overflow_value);
+                // When overflow is set, it applies to both x and y
+                computed.overflow_x = crate::css::Overflow::parse(overflow_value);
+                computed.overflow_y = crate::css::Overflow::parse(overflow_value);
             } else if let CssValue::String(overflow_value) = &declaration.value {
                 computed.overflow = crate::css::Overflow::parse(overflow_value);
+                computed.overflow_x = crate::css::Overflow::parse(overflow_value);
+                computed.overflow_y = crate::css::Overflow::parse(overflow_value);
+            }
+        }
+        PropertyName::OverflowX => {
+            if let CssValue::Keyword(overflow_value) = &declaration.value {
+                computed.overflow_x = crate::css::Overflow::parse(overflow_value);
+            } else if let CssValue::String(overflow_value) = &declaration.value {
+                computed.overflow_x = crate::css::Overflow::parse(overflow_value);
+            }
+        }
+        PropertyName::OverflowY => {
+            if let CssValue::Keyword(overflow_value) = &declaration.value {
+                computed.overflow_y = crate::css::Overflow::parse(overflow_value);
+            } else if let CssValue::String(overflow_value) = &declaration.value {
+                computed.overflow_y = crate::css::Overflow::parse(overflow_value);
             }
         }
         PropertyName::Display => {

@@ -641,6 +641,35 @@ impl Engine {
             } else {
                 // Execute inline script
                 println!("Executing inline script ({} bytes)", content.len());
+
+                // Save the script to a local file in debug_js/
+                #[cfg(debug_assertions)]
+                {
+                    use std::fs;
+                    use std::path::Path;
+
+                    let debug_dir = Path::new("debug_js");
+                    if !debug_dir.exists() {
+                        if let Err(e) = fs::create_dir_all(debug_dir) {
+                            eprintln!("Failed to create debug_js directory: {}", e);
+                        }
+                    }
+
+                    // Use a unique filename for each inline script
+                    // Here we just use a timestamp for simplicity
+                    use std::time::{SystemTime, UNIX_EPOCH};
+                    let start = SystemTime::now();
+                    let since_the_epoch = start.duration_since(UNIX_EPOCH)
+                        .expect("Time went backwards");
+                    let filename = format!("inline_script_{}.js", since_the_epoch.as_millis());
+                    let filepath = debug_dir.join(filename);
+                    if let Err(e) = fs::write(&filepath, &content) {
+                        eprintln!("Failed to write inline script to {}: {}", filepath.display(), e);
+                    } else {
+                        println!("Saved inline script to {}", filepath.display());
+                    }
+                }
+
                 self.execute_javascript(&content);
             }
         }
@@ -652,6 +681,28 @@ impl Engine {
         let script_bytes = self.http_client.fetch_resource(&absolute_url).await?;
         let script_content = String::from_utf8(script_bytes)
             .map_err(|_| NetworkError::Utf8("Failed to decode script as UTF-8".to_string()))?;
+
+        // Save the script to a local file in debug_js/
+        #[cfg(debug_assertions)]
+        {
+            use std::fs;
+            use std::path::Path;
+
+            let debug_dir = Path::new("debug_js");
+            if !debug_dir.exists() {
+                if let Err(e) = fs::create_dir_all(debug_dir) {
+                    eprintln!("Failed to create debug_js directory: {}", e);
+                }
+            }
+
+            let filename = script_url.split('/').last().unwrap_or("script.js");
+            let filepath = debug_dir.join(filename);
+            if let Err(e) = fs::write(&filepath, &script_content) {
+                eprintln!("Failed to write script to {}: {}", filepath.display(), e);
+            } else {
+                println!("Saved external script to {}", filepath.display());
+            }
+        }
         Ok(script_content)
     }
 
