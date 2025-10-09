@@ -81,31 +81,36 @@ impl Engine {
         self.current_url = url.to_string();
 
         // Fetch the page content
-        let html = self.http_client.fetch(url).await?;
+        let result = async {
+            let html = self.http_client.fetch(url).await?;
 
-        // Parse the HTML into our DOM
-        let dom = Dom::parse_html(&html);
+            // Parse the HTML into our DOM
+            let dom = Dom::parse_html(&html);
 
-        // Extract page title
-        self.page_title = dom.get_title();
+            // Extract page title
+            self.page_title = dom.get_title();
 
-        // Store the DOM
-        self.dom = Some(dom);
+            // Store the DOM
+            self.dom = Some(dom);
 
-        // Parse and apply CSS styles from the document
-        self.parse_document_styles().await;
+            // Parse and apply CSS styles from the document
+            self.parse_document_styles().await;
 
-        // Calculate layout with CSS styles applied
-        self.recalculate_layout();
+            // Calculate layout with CSS styles applied
+            self.recalculate_layout();
 
-        // Start loading images after layout is calculated
-        self.start_image_loading().await;
+            // Start loading images after layout is calculated
+            self.start_image_loading().await;
 
-        // Execute JavaScript in the page after everything is loaded
-        self.execute_document_scripts().await;
+            // Execute JavaScript in the page after everything is loaded
+            self.execute_document_scripts().await;
 
+            Ok(())
+        }.await;
+
+        // Always reset loading state
         self.is_loading = false;
-        Ok(())
+        result
     }
 
     /// Start loading all images found in the current DOM
