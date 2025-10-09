@@ -93,6 +93,10 @@ impl Engine {
             // Store the DOM
             self.dom = Some(dom);
 
+            // Reset scroll position
+            self.scroll_x = 0.0;
+            self.scroll_y = 0.0;
+
             // Parse and apply CSS styles from the document
             self.parse_document_styles().await;
 
