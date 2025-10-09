@@ -1,0 +1,467 @@
+Reset scroll on navigation<!DOCTYPE html>
+<html>
+<head>
+    <title>CSS Flex Property Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+
+        .test-section {
+            margin-bottom: 30px;
+            background: white;
+            padding: 15px;
+            border-radius: 5px;
+        }
+
+        h2 {
+            color: #333;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 5px;
+        }
+
+        h3 {
+            color: #555;
+            margin-top: 20px;
+        }
+
+        .container {
+            display: flex;
+            border: 2px solid #007bff;
+            padding: 10px;
+            margin: 10px 0;
+            background-color: #e7f3ff;
+            min-height: 100px;
+        }
+
+        .item {
+            background-color: #ffd700;
+            border: 1px solid #ff8c00;
+            padding: 10px;
+            margin: 5px;
+            text-align: center;
+        }
+
+        /* Test 1: flex shorthand with single number (flex-grow only) */
+        .test1-item1 { flex: 1; background-color: #ffb6c1; }
+        .test1-item2 { flex: 2; background-color: #98fb98; }
+        .test1-item3 { flex: 1; background-color: #87ceeb; }
+
+        /* Test 2: flex shorthand with keywords */
+        .test2-item1 { flex: auto; background-color: #ffb6c1; }
+        .test2-item2 { flex: none; background-color: #98fb98; }
+        .test2-item3 { flex: initial; background-color: #87ceeb; }
+
+        /* Test 3: flex shorthand with two values (grow + shrink) */
+        .test3-item1 { flex: 2 1; background-color: #ffb6c1; }
+        .test3-item2 { flex: 1 2; background-color: #98fb98; }
+        .test3-item3 { flex: 1 1; background-color: #87ceeb; }
+
+        /* Test 4: flex shorthand with two values (grow + basis) */
+        .test4-item1 { flex: 1 100px; background-color: #ffb6c1; }
+        .test4-item2 { flex: 2 150px; background-color: #98fb98; }
+        .test4-item3 { flex: 1 auto; background-color: #87ceeb; }
+
+        /* Test 5: flex shorthand with three values (grow + shrink + basis) */
+        .test5-item1 { flex: 1 1 200px; background-color: #ffb6c1; }
+        .test5-item2 { flex: 2 1 100px; background-color: #98fb98; }
+        .test5-item3 { flex: 1 2 auto; background-color: #87ceeb; }
+
+        /* Test 6: Individual flex properties */
+        .test6-item1 {
+            flex-grow: 1;
+            flex-shrink: 0;
+            flex-basis: auto;
+            background-color: #ffb6c1;
+        }
+        .test6-item2 {
+            flex-grow: 2;
+            flex-shrink: 1;
+            flex-basis: 100px;
+            background-color: #98fb98;
+        }
+        .test6-item3 {
+            flex-grow: 0;
+            flex-shrink: 2;
+            flex-basis: 150px;
+            background-color: #87ceeb;
+        }
+
+        /* Test 7: flex-basis with different units */
+        .test7-item1 { flex: 1 1 50%; background-color: #ffb6c1; }
+        .test7-item2 { flex: 1 1 100px; background-color: #98fb98; }
+        .test7-item3 { flex: 1 1 10em; background-color: #87ceeb; }
+
+        /* Test 8: Zero flex-grow (no growth) */
+        .test8-item1 { flex: 0 1 100px; background-color: #ffb6c1; }
+        .test8-item2 { flex: 0 1 150px; background-color: #98fb98; }
+        .test8-item3 { flex: 0 1 200px; background-color: #87ceeb; }
+
+        /* Test 9: Zero flex-shrink (no shrinking) */
+        .test9-item1 { flex: 1 0 200px; background-color: #ffb6c1; }
+        .test9-item2 { flex: 1 0 200px; background-color: #98fb98; }
+        .test9-item3 { flex: 1 0 200px; background-color: #87ceeb; }
+
+        /* Test 10: Mixed scenarios */
+        .test10-item1 { flex: 1; min-width: 100px; background-color: #ffb6c1; }
+        .test10-item2 { flex: 2; max-width: 200px; background-color: #98fb98; }
+        .test10-item3 { flex: 1; width: 150px; background-color: #87ceeb; }
+
+        /* Test 11: Only flex-grow specified */
+        .test11-item1 { flex-grow: 1; background-color: #ffb6c1; }
+        .test11-item2 { flex-grow: 3; background-color: #98fb98; }
+        .test11-item3 { flex-grow: 2; background-color: #87ceeb; }
+
+        /* Test 12: Only flex-shrink specified */
+        .test12-item1 {
+            flex-shrink: 0;
+            width: 300px;
+            background-color: #ffb6c1;
+        }
+        .test12-item2 {
+            flex-shrink: 1;
+            width: 300px;
+            background-color: #98fb98;
+        }
+        .test12-item3 {
+            flex-shrink: 2;
+            width: 300px;
+            background-color: #87ceeb;
+        }
+
+        /* Test 13: Only flex-basis specified */
+        .test13-item1 { flex-basis: 100px; background-color: #ffb6c1; }
+        .test13-item2 { flex-basis: 200px; background-color: #98fb98; }
+        .test13-item3 { flex-basis: auto; background-color: #87ceeb; }
+
+        /* Test 14: Content-based flex-basis */
+        .test14-item1 { flex: 1 1 content; background-color: #ffb6c1; }
+        .test14-item2 { flex: 2 1 content; background-color: #98fb98; }
+        .test14-item3 { flex: 1 1 content; background-color: #87ceeb; }
+
+        /* Test 15: Fractional flex values */
+        .test15-item1 { flex: 0.5; background-color: #ffb6c1; }
+        .test15-item2 { flex: 1.5; background-color: #98fb98; }
+        .test15-item3 { flex: 2.5; background-color: #87ceeb; }
+
+        .description {
+            font-size: 14px;
+            color: #666;
+            margin: 5px 0;
+            font-style: italic;
+        }
+
+        .label {
+            font-weight: bold;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <h1>CSS Flex Property Comprehensive Test Suite</h1>
+
+    <div class="test-section">
+        <h2>Test 1: Single Number (flex-grow only)</h2>
+        <p class="description">When a single unitless number is specified, it sets flex-grow. flex-shrink defaults to 1 and flex-basis to 0.</p>
+        <div class="container">
+            <div class="item test1-item1">
+                <span class="label">flex: 1</span><br>
+                Item 1
+            </div>
+            <div class="item test1-item2">
+                <span class="label">flex: 2</span><br>
+                Item 2 (2x growth)
+            </div>
+            <div class="item test1-item3">
+                <span class="label">flex: 1</span><br>
+                Item 3
+            </div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 2: Keyword Values</h2>
+        <p class="description">Special keywords: auto (1 1 auto), none (0 0 auto), initial (0 1 auto)</p>
+        <div class="container">
+            <div class="item test2-item1">
+                <span class="label">flex: auto</span><br>
+                Auto (1 1 auto)
+            </div>
+            <div class="item test2-item2">
+                <span class="label">flex: none</span><br>
+                None (0 0 auto)
+            </div>
+            <div class="item test2-item3">
+                <span class="label">flex: initial</span><br>
+                Initial (0 1 auto)
+            </div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 3: Two Numbers (grow + shrink)</h2>
+        <p class="description">Two unitless numbers specify flex-grow and flex-shrink. flex-basis defaults to 0.</p>
+        <div class="container">
+            <div class="item test3-item1">
+                <span class="label">flex: 2 1</span><br>
+                Grow 2, Shrink 1
+            </div>
+            <div class="item test3-item2">
+                <span class="label">flex: 1 2</span><br>
+                Grow 1, Shrink 2
+            </div>
+            <div class="item test3-item3">
+                <span class="label">flex: 1 1</span><br>
+                Grow 1, Shrink 1
+            </div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 4: Number + Length (grow + basis)</h2>
+        <p class="description">One number and one length specify flex-grow and flex-basis. flex-shrink defaults to 1.</p>
+        <div class="container">
+            <div class="item test4-item1">
+                <span class="label">flex: 1 100px</span><br>
+                Grow 1, Basis 100px
+            </div>
+            <div class="item test4-item2">
+                <span class="label">flex: 2 150px</span><br>
+                Grow 2, Basis 150px
+            </div>
+            <div class="item test4-item3">
+                <span class="label">flex: 1 auto</span><br>
+                Grow 1, Basis auto
+            </div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 5: Three Values (grow + shrink + basis)</h2>
+        <p class="description">Three values specify flex-grow, flex-shrink, and flex-basis explicitly.</p>
+        <div class="container">
+            <div class="item test5-item1">
+                <span class="label">flex: 1 1 200px</span><br>
+                1 1 200px
+            </div>
+            <div class="item test5-item2">
+                <span class="label">flex: 2 1 100px</span><br>
+                2 1 100px
+            </div>
+            <div class="item test5-item3">
+                <span class="label">flex: 1 2 auto</span><br>
+                1 2 auto
+            </div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 6: Individual Properties</h2>
+        <p class="description">Using flex-grow, flex-shrink, and flex-basis separately instead of the shorthand.</p>
+        <div class="container">
+            <div class="item test6-item1">
+                <span class="label">grow:1 shrink:0 basis:auto</span><br>
+                Item 1
+            </div>
+            <div class="item test6-item2">
+                <span class="label">grow:2 shrink:1 basis:100px</span><br>
+                Item 2
+            </div>
+            <div class="item test6-item3">
+                <span class="label">grow:0 shrink:2 basis:150px</span><br>
+                Item 3
+            </div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 7: Different flex-basis Units</h2>
+        <p class="description">Testing flex-basis with percentage, pixels, and em units.</p>
+        <div class="container">
+            <div class="item test7-item1">
+                <span class="label">flex: 1 1 50%</span><br>
+                Basis: 50%
+            </div>
+            <div class="item test7-item2">
+                <span class="label">flex: 1 1 100px</span><br>
+                Basis: 100px
+            </div>
+            <div class="item test7-item3">
+                <span class="label">flex: 1 1 10em</span><br>
+                Basis: 10em
+            </div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 8: Zero flex-grow (No Growth)</h2>
+        <p class="description">Items with flex-grow: 0 will not grow beyond their flex-basis.</p>
+        <div class="container">
+            <div class="item test8-item1">
+                <span class="label">flex: 0 1 100px</span><br>
+                No grow
+            </div>
+            <div class="item test8-item2">
+                <span class="label">flex: 0 1 150px</span><br>
+                No grow
+            </div>
+            <div class="item test8-item3">
+                <span class="label">flex: 0 1 200px</span><br>
+                No grow
+            </div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 9: Zero flex-shrink (No Shrinking)</h2>
+        <p class="description">Items with flex-shrink: 0 will not shrink below their flex-basis (may overflow).</p>
+        <div class="container" style="width: 400px;">
+            <div class="item test9-item1">
+                <span class="label">flex: 1 0 200px</span><br>
+                No shrink
+            </div>
+            <div class="item test9-item2">
+                <span class="label">flex: 1 0 200px</span><br>
+                No shrink
+            </div>
+            <div class="item test9-item3">
+                <span class="label">flex: 1 0 200px</span><br>
+                No shrink
+            </div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 10: Flex with Width Constraints</h2>
+        <p class="description">Combining flex with min-width, max-width, and width properties.</p>
+        <div class="container">
+            <div class="item test10-item1">
+                <span class="label">flex:1 min-width:100px</span><br>
+                Min constraint
+            </div>
+            <div class="item test10-item2">
+                <span class="label">flex:2 max-width:200px</span><br>
+                Max constraint
+            </div>
+            <div class="item test10-item3">
+                <span class="label">flex:1 width:150px</span><br>
+                Fixed width
+            </div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 11: Only flex-grow</h2>
+        <p class="description">Setting only flex-grow property (shrink defaults to 1, basis to auto).</p>
+        <div class="container">
+            <div class="item test11-item1">
+                <span class="label">flex-grow: 1</span><br>
+                Item 1
+            </div>
+            <div class="item test11-item2">
+                <span class="label">flex-grow: 3</span><br>
+                Item 2 (3x)
+            </div>
+            <div class="item test11-item3">
+                <span class="label">flex-grow: 2</span><br>
+                Item 3 (2x)
+            </div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 12: Only flex-shrink</h2>
+        <p class="description">Setting only flex-shrink with fixed widths (container too narrow to fit all items).</p>
+        <div class="container" style="width: 500px;">
+            <div class="item test12-item1">
+                <span class="label">shrink:0 width:300px</span><br>
+                No shrink
+            </div>
+            <div class="item test12-item2">
+                <span class="label">shrink:1 width:300px</span><br>
+                Shrink 1x
+            </div>
+            <div class="item test12-item3">
+                <span class="label">shrink:2 width:300px</span><br>
+                Shrink 2x
+            </div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 13: Only flex-basis</h2>
+        <p class="description">Setting only flex-basis property (grow defaults to 0, shrink to 1).</p>
+        <div class="container">
+            <div class="item test13-item1">
+                <span class="label">flex-basis: 100px</span><br>
+                Basis 100px
+            </div>
+            <div class="item test13-item2">
+                <span class="label">flex-basis: 200px</span><br>
+                Basis 200px
+            </div>
+            <div class="item test13-item3">
+                <span class="label">flex-basis: auto</span><br>
+                Basis auto
+            </div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 14: Content-based flex-basis</h2>
+        <p class="description">Using 'content' keyword for flex-basis (size based on content).</p>
+        <div class="container">
+            <div class="item test14-item1">
+                <span class="label">flex: 1 1 content</span><br>
+                Short
+            </div>
+            <div class="item test14-item2">
+                <span class="label">flex: 2 1 content</span><br>
+                This is a much longer text content
+            </div>
+            <div class="item test14-item3">
+                <span class="label">flex: 1 1 content</span><br>
+                Medium length
+            </div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 15: Fractional flex Values</h2>
+        <p class="description">Testing flex with fractional (decimal) values for fine-tuned growth ratios.</p>
+        <div class="container">
+            <div class="item test15-item1">
+                <span class="label">flex: 0.5</span><br>
+                0.5x growth
+            </div>
+            <div class="item test15-item2">
+                <span class="label">flex: 1.5</span><br>
+                1.5x growth
+            </div>
+            <div class="item test15-item3">
+                <span class="label">flex: 2.5</span><br>
+                2.5x growth
+            </div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Summary</h2>
+        <p>This test file covers:</p>
+        <ul>
+            <li>✓ Single value flex (number, keyword, length)</li>
+            <li>✓ Two value flex (number + number, number + length)</li>
+            <li>✓ Three value flex (complete syntax)</li>
+            <li>✓ Individual properties (flex-grow, flex-shrink, flex-basis)</li>
+            <li>✓ Special keywords (auto, none, initial, content)</li>
+            <li>✓ Different units (px, %, em)</li>
+            <li>✓ Zero values (no grow/shrink)</li>
+            <li>✓ Fractional values</li>
+            <li>✓ Interaction with width constraints</li>
+        </ul>
+    </div>
+</body>
+</html>
+
