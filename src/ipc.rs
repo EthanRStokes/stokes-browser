@@ -1,10 +1,13 @@
 // Inter-Process Communication module for browser processes
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
-use std::os::unix::net::{UnixStream, UnixListener};
 use std::path::PathBuf;
-use std::sync::mpsc;
-use std::thread;
+
+#[cfg(unix)]
+use std::os::unix::net::{UnixListener, UnixStream};
+
+#[cfg(target_os = "windows")]
+use uds_windows::{UnixListener, UnixStream};
 
 /// Messages sent from parent (browser UI) to child (tab process)
 #[derive(Debug, Clone, Serialize, Deserialize)]
