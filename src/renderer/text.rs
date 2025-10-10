@@ -1,5 +1,5 @@
 // Text rendering functionality
-use skia_safe::{Canvas, Paint, Font, TextBlob, Rect};
+use skia_safe::{Canvas, Paint, Font, TextBlob};
 use crate::layout::LayoutBox;
 use crate::css::ComputedValues;
 use super::font::FontManager;
@@ -233,4 +233,3 @@ pub fn wrap_text_with_font(text: &str, font: &Font, max_width: f32, white_space:
 
     wrapped_lines
 }
-

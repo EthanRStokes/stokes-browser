@@ -1,5 +1,5 @@
 // Image rendering functionality
-use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob};
+use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob, SamplingOptions, MipmapMode, FilterMode};
 use crate::layout::LayoutBox;
 use crate::dom::ImageData;
 use crate::dom::ImageLoadingState;
@@ -8,19 +8,27 @@ use crate::dom::ImageLoadingState;
 pub fn render_image_node(canvas: &Canvas, layout_box: &LayoutBox, image_data: &ImageData, scale_factor: f64, font: &Font) {
     let content_rect = layout_box.dimensions.content;
 
+    // Early exit if content rect is too small
+    if content_rect.width() < 1.0 || content_rect.height() < 1.0 {
+        return;
+    }
+
     match &image_data.loading_state {
         ImageLoadingState::Loaded(_) => {
             // Try to get the cached decoded image
-            // We need to work around the borrowing issue by cloning the image if available
             if let Some(cached_image) = &image_data.cached_image {
                 let mut paint = Paint::default();
                 paint.set_anti_alias(true);
 
+                // Use high quality filtering for better image scaling
+                let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::Linear);
+
                 // Draw the cached image scaled to fit the content rect
-                canvas.draw_image_rect(
+                canvas.draw_image_rect_with_sampling_options(
                     cached_image,
                     None, // Use entire source image
                     content_rect,
+                    sampling,
                     &paint
                 );
             } else {
@@ -114,4 +122,3 @@ pub fn render_image_placeholder(canvas: &Canvas, rect: &Rect, text: &str, scale_
         );
     }
 }
-

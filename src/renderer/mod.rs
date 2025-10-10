@@ -10,7 +10,7 @@ mod pseudo;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use skia_safe::{Canvas, Color, Font, Paint};
+use skia_safe::{Canvas, Color, Font, Paint, Rect};
 use crate::css::ComputedValues;
 use crate::css::transition_manager::TransitionManager;
 use crate::dom::{DomNode, ElementData, NodeType};
@@ -47,7 +47,7 @@ impl HtmlRenderer {
 
     /// Render a layout tree to the canvas with transition support
     pub fn render(
-        &self,
+        &mut self,
         canvas: &Canvas,
         layout: &LayoutBox,
         node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
@@ -63,23 +63,38 @@ impl HtmlRenderer {
         // Apply scroll offset by translating the canvas
         canvas.translate((-scroll_x, -scroll_y));
 
-        // Render the layout tree with styles and scale factor
-        self.render_box(canvas, layout, node_map, style_map, transition_manager, scale_factor);
+        // Calculate viewport bounds for culling off-screen elements
+        let viewport_rect = Rect::from_xywh(
+            scroll_x,
+            scroll_y,
+            canvas.base_layer_size().width as f32,
+            canvas.base_layer_size().height as f32,
+        );
+
+        // Render the layout tree with styles, scale factor, and viewport culling
+        self.render_box(canvas, layout, node_map, style_map, transition_manager, scale_factor, &viewport_rect);
 
         // Restore the canvas state
         canvas.restore();
     }
 
-    /// Render a single layout box with CSS styles, transitions, and scale factor
+    /// Render a single layout box with CSS styles, transitions, and scale factor (OPTIMIZED)
     fn render_box(
-        &self,
+        &mut self,
         canvas: &Canvas,
         layout_box: &LayoutBox,
         node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
         style_map: &HashMap<usize, ComputedValues>,
         transition_manager: Option<&TransitionManager>,
         scale_factor: f64,
+        viewport_rect: &Rect,
     ) {
+        // Early culling: Skip rendering if box is completely outside viewport
+        let border_box = layout_box.dimensions.border_box();
+        if !viewport_rect.intersects(border_box) {
+            return; // Skip this box and all its children
+        }
+
         // Get base computed styles for this node
         let base_styles = style_map.get(&layout_box.node_id);
 
@@ -157,7 +172,7 @@ impl HtmlRenderer {
 
                 // Render children in z-index order
                 for (child, _) in children_with_z {
-                    self.render_box(canvas, child, node_map, style_map, transition_manager, scale_factor);
+                    self.render_box(canvas, child, node_map, style_map, transition_manager, scale_factor, viewport_rect);
                 }
             }
         }
@@ -165,7 +180,7 @@ impl HtmlRenderer {
 
     /// Render an element with CSS styles applied
     fn render_element(
-        &self,
+        &mut self,
         canvas: &Canvas,
         layout_box: &LayoutBox,
         element_data: &ElementData,
@@ -197,7 +212,7 @@ impl HtmlRenderer {
         }
 
         // Create background paint with CSS colors
-        let mut bg_paint = Paint::default();
+        let mut bg_paint = &mut self.paints.background_paint;
         if let Some(styles) = computed_styles {
             if let Some(bg_color) = &styles.background_color {
                 let mut color = bg_color.to_skia_color();

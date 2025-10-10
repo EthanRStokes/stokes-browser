@@ -481,6 +481,7 @@ impl Engine {
 
     /// Scroll vertically by the given delta
     pub fn scroll_vertical(&mut self, delta: f32) -> bool {
+        let delta = delta * 3.5;
         let old_scroll_y = self.scroll_y;
         self.scroll_y = (self.scroll_y + delta).max(0.0);
 
