@@ -272,6 +272,9 @@ impl BrowserApp {
             self.active_tab_index = self.tab_order.len() - 1;
             self.ui.set_active_tab(&new_tab_id);
 
+            // Clear the address bar when opening a new tab
+            self.ui.update_address_bar("");
+
             // Send initial configuration
             let size = self.env.window.inner_size();
             let _ = self.tab_manager.send_to_tab(&new_tab_id, ParentToTabMessage::Resize {
