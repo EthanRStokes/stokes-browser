@@ -1,5 +1,5 @@
 // Text rendering functionality
-use skia_safe::{Canvas, Paint, Font, TextBlob};
+use skia_safe::{Canvas, Paint, Font, TextBlob, MaskFilter, BlurStyle};
 use crate::layout::LayoutBox;
 use crate::css::ComputedValues;
 use super::font::FontManager;
@@ -27,6 +27,7 @@ pub fn render_text_node(
         let mut vertical_align = crate::css::VerticalAlign::Baseline; // Default vertical alignment
         let mut text_transform = crate::css::TextTransform::None; // Default text transform
         let mut white_space = crate::css::WhiteSpace::Normal; // Default white-space
+        let mut text_shadows = Vec::new(); // Default text shadows
 
         if let Some(styles) = computed_styles {
             // Apply CSS color
@@ -63,6 +64,9 @@ pub fn render_text_node(
 
             // Apply CSS white-space
             white_space = styles.white_space.clone();
+
+            // Apply CSS text-shadow
+            text_shadows = styles.text_shadow.clone();
         }
 
         // Apply text transformation to the content
@@ -110,6 +114,40 @@ pub fn render_text_node(
                 // Apply vertical alignment offset to the y position
                 let adjusted_y = current_y + vertical_align_offset;
 
+                // Render text shadows first (so they appear behind the text)
+                if let Some(styles) = computed_styles {
+                    for shadow in &text_shadows {
+                        let shadow_px = shadow.to_px(scaled_font_size, 0.0);
+
+                        // Skip shadow if it has no effect
+                        if !shadow_px.has_shadow() {
+                            continue;
+                        }
+
+                        // Create shadow paint
+                        let mut shadow_paint = text_paint.clone();
+
+                        // Apply shadow color with opacity
+                        let mut shadow_color = shadow_px.color.to_skia_color();
+                        shadow_color = shadow_color.with_a((shadow_color.a() as f32 * styles.opacity) as u8);
+                        shadow_paint.set_color(shadow_color);
+
+                        // Apply blur if specified
+                        if shadow_px.blur_radius > 0.0 {
+                            let blur_sigma = shadow_px.blur_radius / 2.0;
+                            if let Some(mask_filter) = MaskFilter::blur(BlurStyle::Normal, blur_sigma, None) {
+                                shadow_paint.set_mask_filter(mask_filter);
+                            }
+                        }
+
+                        // Draw shadow at offset position
+                        let shadow_x = start_x + shadow_px.offset_x * scale_factor as f32;
+                        let shadow_y = adjusted_y + shadow_px.offset_y * scale_factor as f32;
+                        canvas.draw_text_blob(&text_blob, (shadow_x, shadow_y), &shadow_paint);
+                    }
+                }
+
+                // Render the actual text on top of shadows
                 canvas.draw_text_blob(&text_blob, (start_x, adjusted_y), &text_paint);
 
                 // Render text decorations if specified (with opacity applied)

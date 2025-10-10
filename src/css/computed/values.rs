@@ -1,5 +1,5 @@
 // Computed CSS values structure
-use crate::css::{BorderRadius, BoxShadow, TextDecoration};
+use crate::css::{BorderRadius, BoxShadow, TextDecoration, TextShadow};
 use crate::layout::box_model::EdgeSizes;
 
 /// Computed CSS values for a node
@@ -17,6 +17,7 @@ pub struct ComputedValues {
     pub text_decoration: TextDecoration,
     pub text_align: crate::css::TextAlign,
     pub text_transform: crate::css::TextTransform,
+    pub text_shadow: Vec<TextShadow>,
     pub white_space: crate::css::WhiteSpace,
     pub vertical_align: crate::css::VerticalAlign,
     pub content: crate::css::ContentValue,
@@ -76,6 +77,7 @@ impl Default for ComputedValues {
             text_decoration: TextDecoration::default(),
             text_align: crate::css::TextAlign::default(),
             text_transform: crate::css::TextTransform::default(),
+            text_shadow: Vec::new(),
             white_space: crate::css::WhiteSpace::Normal,
             vertical_align: crate::css::VerticalAlign::default(),
             content: crate::css::ContentValue::Normal,

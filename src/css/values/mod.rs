@@ -15,7 +15,7 @@ pub mod transition;
 pub use color::Color;
 pub use length::{Length, Unit};
 pub use border::{BorderRadius, BorderRadiusPx, Outline, OutlineStyle};
-pub use shadow::{BoxShadow, BoxShadowPx};
+pub use shadow::{BoxShadow, BoxShadowPx, TextShadow, TextShadowPx};
 pub use text::{TextDecoration, TextDecorationType, TextAlign, TextTransform, WhiteSpace};
 pub use layout::{Clear, Float, Overflow, BoxSizing, Visibility, VerticalAlign, ContentValue, FlexBasis, FlexGrow, FlexShrink, Flex, Gap};
 pub use font::{FontStyle, FontVariant, LineHeight};

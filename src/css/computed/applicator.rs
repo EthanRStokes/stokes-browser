@@ -111,6 +111,19 @@ pub fn apply_declaration(computed: &mut ComputedValues, declaration: &Declaratio
                 computed.text_transform = crate::css::TextTransform::parse(transform);
             }
         }
+        PropertyName::TextShadow => {
+            if let CssValue::String(shadow_str) = &declaration.value {
+                if let Some(shadows) = crate::css::TextShadow::parse(shadow_str) {
+                    computed.text_shadow = shadows;
+                }
+            } else if let CssValue::Keyword(keyword) = &declaration.value {
+                if keyword == "none" {
+                    computed.text_shadow = Vec::new();
+                } else if let Some(shadows) = crate::css::TextShadow::parse(keyword) {
+                    computed.text_shadow = shadows;
+                }
+            }
+        }
         PropertyName::WhiteSpace => {
             if let CssValue::Keyword(white_space) = &declaration.value {
                 computed.white_space = crate::css::WhiteSpace::parse(white_space);

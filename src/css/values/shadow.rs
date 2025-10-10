@@ -191,3 +191,144 @@ impl BoxShadowPx {
     }
 }
 
+/// Text shadow configuration (similar to box-shadow but without spread and inset)
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextShadow {
+    pub offset_x: Length,
+    pub offset_y: Length,
+    pub blur_radius: Length,
+    pub color: Color,
+}
+
+impl TextShadow {
+    /// Create a new text shadow
+    pub fn new(offset_x: Length, offset_y: Length, blur_radius: Length, color: Color) -> Self {
+        Self {
+            offset_x,
+            offset_y,
+            blur_radius,
+            color,
+        }
+    }
+
+    /// Convert to pixel values for rendering
+    pub fn to_px(&self, font_size: f32, parent_size: f32) -> TextShadowPx {
+        TextShadowPx {
+            offset_x: self.offset_x.to_px(font_size, parent_size),
+            offset_y: self.offset_y.to_px(font_size, parent_size),
+            blur_radius: self.blur_radius.to_px(font_size, parent_size),
+            color: self.color.clone(),
+        }
+    }
+
+    /// Parse text-shadow from CSS string
+    pub fn parse(value: &str) -> Option<Vec<TextShadow>> {
+        // Split by comma for multiple shadows
+        let shadow_strings: Vec<&str> = value.split(',').map(|s| s.trim()).collect();
+        let mut shadows = Vec::new();
+
+        for shadow_str in shadow_strings {
+            if let Some(shadow) = Self::parse_single_shadow(shadow_str) {
+                shadows.push(shadow);
+            }
+        }
+
+        if shadows.is_empty() {
+            None
+        } else {
+            Some(shadows)
+        }
+    }
+
+    fn parse_single_shadow(value: &str) -> Option<TextShadow> {
+        let value = value.trim();
+
+        // Check for "none"
+        if value == "none" {
+            return None;
+        }
+
+        let parts: Vec<&str> = value.split_whitespace().collect();
+
+        // Need at least 2 values (offset-x, offset-y)
+        if parts.len() < 2 {
+            return None;
+        }
+
+        // Parse offset-x and offset-y (required)
+        let offset_x = CssValue::parse(parts[0]);
+        let offset_y = CssValue::parse(parts[1]);
+
+        let offset_x = if let CssValue::Length(len) = offset_x { len } else { return None; };
+        let offset_y = if let CssValue::Length(len) = offset_y { len } else { return None; };
+
+        let mut blur_radius = Length::px(0.0);
+        let mut color = Color::Rgba { r: 0, g: 0, b: 0, a: 1.0 }; // Default text shadow color
+
+        // Parse remaining values
+        let mut i = 2;
+        while i < parts.len() {
+            let part = parts[i];
+            let css_value = CssValue::parse(part);
+
+            match css_value {
+                CssValue::Length(len) => {
+                    if i == 2 {
+                        blur_radius = len;
+                    }
+                },
+                CssValue::Color(c) => {
+                    color = c;
+                },
+                _ => {
+                    // Try to parse as color if it's a named color or hex
+                    if Self::could_be_color(part) {
+                        if let CssValue::Color(c) = CssValue::parse(part) {
+                            color = c;
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+
+        Some(TextShadow::new(
+            offset_x,
+            offset_y,
+            blur_radius,
+            color,
+        ))
+    }
+
+    fn could_be_color(value: &str) -> bool {
+        value.starts_with('#') ||
+        value.starts_with("rgb") ||
+        matches!(CssValue::parse(value), CssValue::Color(_))
+    }
+}
+
+impl Default for TextShadow {
+    fn default() -> Self {
+        Self {
+            offset_x: Length::px(0.0),
+            offset_y: Length::px(0.0),
+            blur_radius: Length::px(0.0),
+            color: Color::Rgba { r: 0, g: 0, b: 0, a: 1.0 },
+        }
+    }
+}
+
+/// Text shadow in pixels for rendering
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextShadowPx {
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub blur_radius: f32,
+    pub color: Color,
+}
+
+impl TextShadowPx {
+    pub fn has_shadow(&self) -> bool {
+        self.blur_radius > 0.0 || self.offset_x != 0.0 || self.offset_y != 0.0
+    }
+}
