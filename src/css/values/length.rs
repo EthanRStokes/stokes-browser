@@ -8,6 +8,8 @@ pub enum Unit {
     Em,
     Rem,
     Percent,
+    Vw, // Viewport width (1vw = 1% of viewport width)
+    Vh, // Viewport height (1vh = 1% of viewport height)
     Auto,
 }
 
@@ -35,6 +37,14 @@ impl Length {
         Self { value, unit: Unit::Percent }
     }
 
+    pub fn vw(value: f32) -> Self {
+        Self { value, unit: Unit::Vw }
+    }
+
+    pub fn vh(value: f32) -> Self {
+        Self { value, unit: Unit::Vh }
+    }
+
     /// Convert to pixels given a context
     pub fn to_px(&self, font_size: f32, parent_size: f32) -> f32 {
         match self.unit {
@@ -44,6 +54,8 @@ impl Length {
             Unit::Rem => self.value * 16.0, // Default root font size
             Unit::Percent => self.value / 100.0 * parent_size,
             Unit::Auto => 0.0, // Auto should be handled by layout algorithm
+            Unit::Vw => self.value / 100.0 * parent_size, // 1vw = 1% of viewport width
+            Unit::Vh => self.value / 100.0 * parent_size, // 1vh = 1% of viewport height
         }
     }
 }
@@ -53,4 +65,3 @@ impl Default for Length {
         Length::px(0.0)
     }
 }
-

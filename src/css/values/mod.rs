@@ -158,7 +158,16 @@ impl CssValue {
             if let Ok(num) = value[..value.len()-2].parse::<f32>() {
                 return Some(Length::pt(num));
             }
+        } else if value.ends_with("vw") {
+            if let Ok(num) = value[..value.len()-2].parse::<f32>() {
+                return Some(Length::vw(num));
+            }
+        } else if value.ends_with("vh") {
+            if let Ok(num) = value[..value.len()-2].parse::<f32>() {
+                return Some(Length::vh(num));
+            }
         }
+        println!("Warning: Unknown length unit in '{}'", value);
         None
     }
 
