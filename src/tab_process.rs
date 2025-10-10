@@ -257,6 +257,9 @@ impl TabProcess {
 
             let canvas = surface.canvas();
 
+            // Clear the canvas to prevent old frames from showing through
+            canvas.clear(skia_safe::Color::WHITE);
+
             // Render the engine content
             self.engine.render(canvas, self.engine.scale_factor);
 
