@@ -3,7 +3,7 @@ use crate::engine::{Engine, EngineConfig};
 use crate::ipc::{IpcChannel, ParentToTabMessage, TabToParentMessage, connect};
 use std::io;
 use std::path::PathBuf;
-use skia_safe::{ColorType, AlphaType, ImageInfo};
+use skia_safe::{ColorType, AlphaType, ImageInfo, Surface};
 use shared_memory::{ShmemConf, Shmem};
 
 /// Tab process that runs in its own OS process
@@ -18,6 +18,7 @@ pub struct TabProcess {
 /// Shared memory surface for efficient rendering data transfer
 struct SharedSurface {
     shmem: Shmem,
+    surface: Surface,
     width: u32,
     height: u32,
     generation: u32,
@@ -60,8 +61,20 @@ impl TabProcess {
             .create()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
+        // Create a reusable raster surface
+        let image_info = ImageInfo::new(
+            (width as i32, height as i32),
+            ColorType::RGBA8888,
+            AlphaType::Premul,
+            None,
+        );
+
+        let surface = skia_safe::surfaces::raster(&image_info, None, None)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to create surface"))?;
+
         self.shared_surface = Some(SharedSurface {
             shmem,
+            surface,
             width,
             height,
             generation: self.surface_generation,
@@ -251,27 +264,7 @@ impl TabProcess {
     /// Render a frame to the shared memory surface
     fn render_frame(&mut self) -> io::Result<()> {
         if let Some(ref mut shared) = self.shared_surface {
-            // Create Skia surface that renders directly to the shared memory buffer
-            let image_info = ImageInfo::new(
-                (shared.width as i32, shared.height as i32),
-                ColorType::RGBA8888,
-                AlphaType::Premul,
-                None,
-            );
-
-            let row_bytes = shared.width as usize * 4;
-
-            // Create surface from the shared memory pointer
-            let mut surface = unsafe {
-                skia_safe::surfaces::wrap_pixels(
-                    &image_info,
-                    shared.shmem.as_slice_mut(),
-                    Some(row_bytes),
-                    None,
-                )
-            }.ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to create surface"))?;
-
-            let canvas = surface.canvas();
+            let canvas = shared.surface.canvas();
 
             // Clear the canvas to prevent old frames from showing through
             canvas.clear(skia_safe::Color::WHITE);
@@ -279,7 +272,19 @@ impl TabProcess {
             // Render the engine content
             self.engine.render(canvas, self.engine.scale_factor);
 
-            // No need to flush - wrap_pixels writes directly to the buffer
+            // Copy the pixel data to shared memory
+            if let Some(pixmap) = shared.surface.peek_pixels() {
+                if let Some(src) = pixmap.bytes() {
+                    let dst = unsafe { shared.shmem.as_slice_mut() };
+
+                    // Copy all pixel data at once
+                    dst.copy_from_slice(src);
+                } else {
+                    return Err(io::Error::new(io::ErrorKind::Other, "Failed to get pixel bytes"));
+                }
+            } else {
+                return Err(io::Error::new(io::ErrorKind::Other, "Failed to peek pixels"));
+            }
 
             // Notify parent that frame is ready
             self.channel.send(&TabToParentMessage::FrameRendered {
