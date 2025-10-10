@@ -20,6 +20,56 @@ pub enum InputAction {
     ReloadPage,
 }
 
+/// Handles mouse click events (UI only, for multi-process architecture)
+pub fn handle_mouse_click_ui(
+    x: f32,
+    y: f32,
+    ui: &mut BrowserUI,
+    tabs: &[(String, String)], // (tab_id, tab_title) pairs
+    active_tab_index: usize,
+) -> InputAction {
+    // Check if close button was clicked first
+    if let Some(tab_id) = ui.check_close_button_click(x, y) {
+        println!("Close button clicked for tab: {}", tab_id);
+        if let Some(tab_index) = tabs.iter().position(|(id, _)| id == &tab_id) {
+            return InputAction::CloseTab(tab_index);
+        }
+    }
+
+    // UI now uses pixel coordinates directly
+    if let Some(component_id) = ui.handle_click(x, y) {
+        // Handle based on component
+        if component_id == "back" {
+            println!("Back button clicked");
+            // Back navigation would go here
+            return InputAction::RequestRedraw;
+        } else if component_id == "forward" {
+            println!("Forward button clicked");
+            // Forward navigation would go here
+            return InputAction::RequestRedraw;
+        } else if component_id == "refresh" {
+            println!("Refresh button clicked");
+            return InputAction::ReloadPage;
+        } else if component_id == "new_tab" {
+            println!("New tab button clicked");
+            return InputAction::AddTab;
+        } else if component_id == "address_bar" {
+            // Focus the address bar for typing
+            ui.set_focus("address_bar");
+            return InputAction::RequestRedraw;
+        } else if component_id.starts_with("tab") {
+            // Tab switching by clicking
+            if let Some(tab_index) = tabs.iter().position(|(id, _)| id == &component_id) {
+                return InputAction::SwitchTab(tab_index);
+            }
+        }
+        return InputAction::RequestRedraw;
+    }
+
+    // For content clicks, we don't handle them here - they're forwarded to the tab process
+    InputAction::None
+}
+
 /// Handles mouse click events
 pub fn handle_mouse_click(
     x: f32,

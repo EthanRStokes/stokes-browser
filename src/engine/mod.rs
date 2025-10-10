@@ -473,6 +473,12 @@ impl Engine {
             .map(|s| s.to_string())
     }
 
+    /// Scroll the page by delta amounts
+    pub fn scroll(&mut self, delta_x: f32, delta_y: f32) {
+        self.scroll_horizontal(delta_x);
+        self.scroll_vertical(delta_y);
+    }
+
     /// Scroll vertically by the given delta
     pub fn scroll_vertical(&mut self, delta: f32) -> bool {
         let old_scroll_y = self.scroll_y;

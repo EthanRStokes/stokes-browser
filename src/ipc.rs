@@ -1,0 +1,174 @@
+// Inter-Process Communication module for browser processes
+use serde::{Deserialize, Serialize};
+use std::io::{self, Read, Write};
+use std::os::unix::net::{UnixStream, UnixListener};
+use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread;
+
+/// Messages sent from parent (browser UI) to child (tab process)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ParentToTabMessage {
+    /// Navigate to a URL
+    Navigate(String),
+    /// Reload the current page
+    Reload,
+    /// Resize the rendering area
+    Resize { width: f32, height: f32 },
+    /// Scroll the page
+    Scroll { delta_x: f32, delta_y: f32 },
+    /// Click at position
+    Click { x: f32, y: f32 },
+    /// Mouse move
+    MouseMove { x: f32, y: f32 },
+    /// Keyboard input
+    KeyboardInput { key: String, modifiers: KeyModifiers },
+    /// Request a frame render
+    RequestFrame,
+    /// Update scale factor
+    SetScaleFactor(f64),
+    /// Shutdown the tab process
+    Shutdown,
+}
+
+/// Messages sent from child (tab process) to parent (browser UI)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TabToParentMessage {
+    /// Navigation started
+    NavigationStarted(String),
+    /// Navigation completed
+    NavigationCompleted { url: String, title: String },
+    /// Navigation failed
+    NavigationFailed(String),
+    /// Page title changed
+    TitleChanged(String),
+    /// Loading state changed
+    LoadingStateChanged(bool),
+    /// Frame rendered (contains shared memory key)
+    FrameRendered {
+        shmem_name: String,
+        width: u32,
+        height: u32,
+    },
+    /// Cursor should change
+    CursorChanged(CursorType),
+    /// Tab process is ready
+    Ready,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyModifiers {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub meta: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CursorType {
+    Default,
+    Pointer,
+    Text,
+}
+
+/// IPC channel for bidirectional communication
+pub struct IpcChannel {
+    stream: UnixStream,
+}
+
+impl IpcChannel {
+    /// Create a new IPC channel from a Unix stream
+    pub fn new(stream: UnixStream) -> Self {
+        Self { stream }
+    }
+
+    /// Send a message through the channel
+    pub fn send<T: Serialize>(&mut self, message: &T) -> io::Result<()> {
+        let encoded = bincode::serialize(message)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        // Send length prefix (4 bytes)
+        let len = encoded.len() as u32;
+        self.stream.write_all(&len.to_le_bytes())?;
+
+        // Send the actual message
+        self.stream.write_all(&encoded)?;
+        self.stream.flush()?;
+        Ok(())
+    }
+
+    /// Receive a message from the channel
+    pub fn receive<T: for<'de> Deserialize<'de>>(&mut self) -> io::Result<T> {
+        // Read length prefix
+        let mut len_bytes = [0u8; 4];
+        self.stream.read_exact(&mut len_bytes)?;
+        let len = u32::from_le_bytes(len_bytes) as usize;
+
+        // Read the message
+        let mut buffer = vec![0u8; len];
+        self.stream.read_exact(&mut buffer)?;
+
+        let decoded = bincode::deserialize(&buffer)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        Ok(decoded)
+    }
+
+    /// Try to receive a message without blocking
+    pub fn try_receive<T: for<'de> Deserialize<'de>>(&mut self) -> io::Result<Option<T>> {
+        self.stream.set_nonblocking(true)?;
+        let result = self.receive();
+        self.stream.set_nonblocking(false)?;
+
+        match result {
+            Ok(msg) => Ok(Some(msg)),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// IPC server for the parent process to accept connections from tab processes
+pub struct IpcServer {
+    listener: UnixListener,
+    socket_path: PathBuf,
+}
+
+impl IpcServer {
+    /// Create a new IPC server
+    pub fn new() -> io::Result<Self> {
+        let socket_path = std::env::temp_dir().join(format!("stokes_browser_{}.sock", std::process::id()));
+
+        // Remove the socket file if it already exists
+        let _ = std::fs::remove_file(&socket_path);
+
+        let listener = UnixListener::bind(&socket_path)?;
+        Ok(Self {
+            listener,
+            socket_path,
+        })
+    }
+
+    /// Get the socket path
+    pub fn socket_path(&self) -> &PathBuf {
+        &self.socket_path
+    }
+
+    /// Accept a new connection
+    pub fn accept(&self) -> io::Result<IpcChannel> {
+        let (stream, _) = self.listener.accept()?;
+        Ok(IpcChannel::new(stream))
+    }
+}
+
+impl Drop for IpcServer {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.socket_path);
+    }
+}
+
+/// Connect to an IPC server
+pub fn connect(socket_path: &PathBuf) -> io::Result<IpcChannel> {
+    let stream = UnixStream::connect(socket_path)?;
+    Ok(IpcChannel::new(stream))
+}
+
