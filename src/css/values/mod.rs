@@ -11,6 +11,7 @@ pub mod background;
 pub mod cursor;
 pub mod list;
 pub mod transition;
+pub mod stroke;
 // Re-export commonly used types
 pub use color::Color;
 pub use length::{Length, Unit};
@@ -23,6 +24,7 @@ pub use background::BackgroundImage;
 pub use cursor::Cursor;
 pub use list::ListStyleType;
 pub use transition::{TimingFunction, StepPosition, Duration, Transition, TransitionProperty, TransitionSpec};
+pub use stroke::Stroke;
 
 use std::fmt;
 

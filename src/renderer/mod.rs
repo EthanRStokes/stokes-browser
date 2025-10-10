@@ -288,6 +288,11 @@ impl HtmlRenderer {
             decorations::render_outline(canvas, &border_box, styles, opacity, scale_factor);
         }
 
+        // Render stroke if specified (CSS stroke property)
+        if let Some(styles) = computed_styles {
+            decorations::render_stroke(canvas, &border_box, &styles.stroke, opacity, scale_factor);
+        }
+
         // Render rounded corners if border radius is specified
         if let Some(styles) = computed_styles {
             let border_radius_px = styles.border_radius.to_px(styles.font_size, 400.0);

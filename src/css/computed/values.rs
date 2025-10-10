@@ -1,5 +1,5 @@
 // Computed CSS values structure
-use crate::css::{BorderRadius, BoxShadow, TextDecoration, TextShadow};
+use crate::css::{BorderRadius, BoxShadow, TextDecoration, TextShadow, Stroke};
 use crate::layout::box_model::EdgeSizes;
 
 /// Computed CSS values for a node
@@ -51,6 +51,7 @@ pub struct ComputedValues {
     pub flex_shrink: crate::css::FlexShrink,
     pub flex_basis: crate::css::FlexBasis,
     pub gap: crate::css::Gap,
+    pub stroke: Stroke,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -111,6 +112,7 @@ impl Default for ComputedValues {
             flex_shrink: crate::css::FlexShrink::default(),
             flex_basis: crate::css::FlexBasis::default(),
             gap: crate::css::Gap::default(),
+            stroke: Stroke::default(),
         }
     }
 }

@@ -7,7 +7,7 @@ pub(crate) mod computed;
 pub mod transition_manager;
 
 pub use self::parser::CssParser;
-pub use values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextShadow, TextShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Float, Overflow, FontStyle, FontVariant, LineHeight, VerticalAlign, ContentValue, BoxSizing, Cursor, Visibility, TextTransform, ListStyleType, TimingFunction, StepPosition, Duration, Transition, TransitionProperty, TransitionSpec, Outline, OutlineStyle, FlexBasis, FlexGrow, FlexShrink, Flex, WhiteSpace, Gap};
+pub use values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextShadow, TextShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Float, Overflow, FontStyle, FontVariant, LineHeight, VerticalAlign, ContentValue, BoxSizing, Cursor, Visibility, TextTransform, ListStyleType, TimingFunction, StepPosition, Duration, Transition, TransitionProperty, TransitionSpec, Outline, OutlineStyle, FlexBasis, FlexGrow, FlexShrink, Flex, WhiteSpace, Gap, Stroke};
 pub use self::selector::{Selector, SelectorType, PseudoClass, PseudoElement};
 pub use self::stylesheet::{Stylesheet, Rule, Declaration};
 pub use self::computed::{ComputedValues, StyleResolver};
@@ -92,6 +92,9 @@ pub enum PropertyName {
     FlexShrink,
     FlexBasis,
     Gap,
+    Stroke,
+    StrokeWidth,
+    StrokeOpacity,
     Unknown(String),
 }
 
@@ -175,6 +178,9 @@ impl From<&str> for PropertyName {
             "flex-shrink" => PropertyName::FlexShrink,
             "flex-basis" => PropertyName::FlexBasis,
             "gap" => PropertyName::Gap,
+            "stroke" => PropertyName::Stroke,
+            "stroke-width" => PropertyName::StrokeWidth,
+            "stroke-opacity" => PropertyName::StrokeOpacity,
             _ => {
                 println!("Warning: Unknown CSS property: {}", s);
                 PropertyName::Unknown(s.to_string())

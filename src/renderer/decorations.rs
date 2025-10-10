@@ -1,6 +1,6 @@
 // Text decorations, borders, shadows, and outlines
 use skia_safe::{Canvas, Paint, Color, Rect, TextBlob};
-use crate::css::{ComputedValues, TextDecoration, BorderRadiusPx, OutlineStyle};
+use crate::css::{ComputedValues, TextDecoration, BorderRadiusPx, OutlineStyle, Stroke};
 
 /// Render text decorations (underline, overline, line-through)
 pub fn render_text_decorations(
@@ -271,3 +271,41 @@ pub fn render_outline(
     canvas.draw_rect(outline_rect, &outline_paint);
 }
 
+/// Render stroke for an element (similar to SVG stroke)
+pub fn render_stroke(
+    canvas: &Canvas,
+    rect: &Rect,
+    stroke: &Stroke,
+    opacity: f32,
+    scale_factor: f64,
+) {
+    // Only render if stroke is visible
+    if !stroke.is_visible() {
+        return;
+    }
+
+    let stroke_color = match &stroke.color {
+        Some(color) => color,
+        None => return, // No stroke color, don't render
+    };
+
+    // Get stroke width in pixels
+    let stroke_width_px = stroke.width_px(16.0, 0.0);
+    let scaled_stroke_width = stroke_width_px * scale_factor as f32;
+
+    // Create stroke paint
+    let mut stroke_paint = Paint::default();
+    let mut color = stroke_color.to_skia_color();
+    
+    // Apply both stroke opacity and element opacity
+    let combined_opacity = stroke.opacity * opacity;
+    color = color.with_a((color.a() as f32 * combined_opacity) as u8);
+    
+    stroke_paint.set_color(color);
+    stroke_paint.set_stroke(true);
+    stroke_paint.set_stroke_width(scaled_stroke_width);
+    stroke_paint.set_anti_alias(true);
+
+    // Draw the stroke around the element
+    canvas.draw_rect(*rect, &stroke_paint);
+}

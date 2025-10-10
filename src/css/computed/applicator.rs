@@ -576,6 +576,47 @@ pub fn apply_declaration(computed: &mut ComputedValues, declaration: &Declaratio
                 _ => {}
             }
         }
+        PropertyName::Stroke => {
+            // Handle stroke property (color)
+            match &declaration.value {
+                CssValue::Color(color) => {
+                    computed.stroke.color = Some(color.clone());
+                }
+                CssValue::Keyword(keyword) => {
+                    if keyword == "none" {
+                        computed.stroke.color = None;
+                    } else {
+                        // Try to parse as a color name
+                        computed.stroke.color = Some(crate::css::Color::Named(keyword.clone()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        PropertyName::StrokeWidth => {
+            // Handle stroke-width property
+            if let CssValue::Length(length) = &declaration.value {
+                computed.stroke.width = length.clone();
+            } else if let CssValue::Number(num) = &declaration.value {
+                // Numbers without units are treated as pixels for stroke-width
+                computed.stroke.width = crate::css::Length::px(*num);
+            }
+        }
+        PropertyName::StrokeOpacity => {
+            // Handle stroke-opacity property
+            match &declaration.value {
+                CssValue::Number(num) => {
+                    // Clamp stroke-opacity between 0.0 and 1.0
+                    computed.stroke.opacity = num.clamp(0.0, 1.0);
+                }
+                CssValue::Keyword(keyword) => {
+                    if let Ok(num) = keyword.parse::<f32>() {
+                        computed.stroke.opacity = num.clamp(0.0, 1.0);
+                    }
+                }
+                _ => {}
+            }
+        }
         _ => {
             // Handle other properties as needed
         }
