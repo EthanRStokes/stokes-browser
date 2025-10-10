@@ -138,7 +138,135 @@ impl CssValue {
     }
 
     pub(crate) fn parse_length(value: &str) -> Option<Length> {
-        if value.ends_with("px") {
+        // Parse based on suffix - check longer suffixes first to avoid prefix matching issues
+
+        // 5-character units
+        if value.ends_with("svmin") {
+            if let Ok(num) = value[..value.len()-5].parse::<f32>() {
+                return Some(Length::svmin(num));
+            }
+        } else if value.ends_with("svmax") {
+            if let Ok(num) = value[..value.len()-5].parse::<f32>() {
+                return Some(Length::svmax(num));
+            }
+        } else if value.ends_with("lvmin") {
+            if let Ok(num) = value[..value.len()-5].parse::<f32>() {
+                return Some(Length::lvmin(num));
+            }
+        } else if value.ends_with("lvmax") {
+            if let Ok(num) = value[..value.len()-5].parse::<f32>() {
+                return Some(Length::lvmax(num));
+            }
+        } else if value.ends_with("dvmin") {
+            if let Ok(num) = value[..value.len()-5].parse::<f32>() {
+                return Some(Length::dvmin(num));
+            }
+        } else if value.ends_with("dvmax") {
+            if let Ok(num) = value[..value.len()-5].parse::<f32>() {
+                return Some(Length::dvmax(num));
+            }
+        } else if value.ends_with("cqmin") {
+            if let Ok(num) = value[..value.len()-5].parse::<f32>() {
+                return Some(Length::cqmin(num));
+            }
+        } else if value.ends_with("cqmax") {
+            if let Ok(num) = value[..value.len()-5].parse::<f32>() {
+                return Some(Length::cqmax(num));
+            }
+        }
+
+        // 4-character units
+        else if value.ends_with("vmin") {
+            if let Ok(num) = value[..value.len()-4].parse::<f32>() {
+                return Some(Length::vmin(num));
+            }
+        } else if value.ends_with("vmax") {
+            if let Ok(num) = value[..value.len()-4].parse::<f32>() {
+                return Some(Length::vmax(num));
+            }
+        }
+
+        // 3-character units
+        else if value.ends_with("rem") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::rem(num));
+            }
+        } else if value.ends_with("svw") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::svw(num));
+            }
+        } else if value.ends_with("svh") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::svh(num));
+            }
+        } else if value.ends_with("svi") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::svi(num));
+            }
+        } else if value.ends_with("svb") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::svb(num));
+            }
+        } else if value.ends_with("lvw") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::lvw(num));
+            }
+        } else if value.ends_with("lvh") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::lvh(num));
+            }
+        } else if value.ends_with("lvi") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::lvi(num));
+            }
+        } else if value.ends_with("lvb") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::lvb(num));
+            }
+        } else if value.ends_with("dvw") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::dvw(num));
+            }
+        } else if value.ends_with("dvh") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::dvh(num));
+            }
+        } else if value.ends_with("dvi") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::dvi(num));
+            }
+        } else if value.ends_with("dvb") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::dvb(num));
+            }
+        } else if value.ends_with("cqw") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::cqw(num));
+            }
+        } else if value.ends_with("cqh") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::cqh(num));
+            }
+        } else if value.ends_with("cqi") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::cqi(num));
+            }
+        } else if value.ends_with("cqb") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::cqb(num));
+            }
+        } else if value.ends_with("cap") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::cap(num));
+            }
+        } else if value.ends_with("rlh") {
+            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
+                return Some(Length::rlh(num));
+            }
+        }
+
+        // 2-character units
+        else if value.ends_with("px") {
             if let Ok(num) = value[..value.len()-2].parse::<f32>() {
                 return Some(Length::px(num));
             }
@@ -146,17 +274,25 @@ impl CssValue {
             if let Ok(num) = value[..value.len()-2].parse::<f32>() {
                 return Some(Length::em(num));
             }
-        } else if value.ends_with("rem") {
-            if let Ok(num) = value[..value.len()-3].parse::<f32>() {
-                return Some(Length { value: num, unit: Unit::Rem });
-            }
-        } else if value.ends_with('%') {
-            if let Ok(num) = value[..value.len()-1].parse::<f32>() {
-                return Some(Length::percent(num));
-            }
         } else if value.ends_with("pt") {
             if let Ok(num) = value[..value.len()-2].parse::<f32>() {
                 return Some(Length::pt(num));
+            }
+        } else if value.ends_with("pc") {
+            if let Ok(num) = value[..value.len()-2].parse::<f32>() {
+                return Some(Length::pc(num));
+            }
+        } else if value.ends_with("cm") {
+            if let Ok(num) = value[..value.len()-2].parse::<f32>() {
+                return Some(Length::cm(num));
+            }
+        } else if value.ends_with("mm") {
+            if let Ok(num) = value[..value.len()-2].parse::<f32>() {
+                return Some(Length::mm(num));
+            }
+        } else if value.ends_with("in") {
+            if let Ok(num) = value[..value.len()-2].parse::<f32>() {
+                return Some(Length::inch(num));
             }
         } else if value.ends_with("vw") {
             if let Ok(num) = value[..value.len()-2].parse::<f32>() {
@@ -166,7 +302,43 @@ impl CssValue {
             if let Ok(num) = value[..value.len()-2].parse::<f32>() {
                 return Some(Length::vh(num));
             }
+        } else if value.ends_with("vi") {
+            if let Ok(num) = value[..value.len()-2].parse::<f32>() {
+                return Some(Length::vi(num));
+            }
+        } else if value.ends_with("vb") {
+            if let Ok(num) = value[..value.len()-2].parse::<f32>() {
+                return Some(Length::vb(num));
+            }
+        } else if value.ends_with("ex") {
+            if let Ok(num) = value[..value.len()-2].parse::<f32>() {
+                return Some(Length::ex(num));
+            }
+        } else if value.ends_with("ch") {
+            if let Ok(num) = value[..value.len()-2].parse::<f32>() {
+                return Some(Length::ch(num));
+            }
+        } else if value.ends_with("ic") {
+            if let Ok(num) = value[..value.len()-2].parse::<f32>() {
+                return Some(Length::ic(num));
+            }
+        } else if value.ends_with("lh") {
+            if let Ok(num) = value[..value.len()-2].parse::<f32>() {
+                return Some(Length::lh(num));
+            }
         }
+
+        // 1-character units
+        else if value.ends_with('%') {
+            if let Ok(num) = value[..value.len()-1].parse::<f32>() {
+                return Some(Length::percent(num));
+            }
+        } else if value.ends_with('q') || value.ends_with('Q') {
+            if let Ok(num) = value[..value.len()-1].parse::<f32>() {
+                return Some(Length::q(num));
+            }
+        }
+
         println!("Warning: Unknown length unit in '{}'", value);
         None
     }
