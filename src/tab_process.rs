@@ -3,7 +3,7 @@ use crate::engine::{Engine, EngineConfig};
 use crate::ipc::{IpcChannel, ParentToTabMessage, TabToParentMessage, connect};
 use std::io;
 use std::path::PathBuf;
-use skia_safe::{Surface, ColorType, AlphaType, ImageInfo};
+use skia_safe::{ColorType, AlphaType, ImageInfo};
 use shared_memory::{ShmemConf, Shmem};
 
 /// Tab process that runs in its own OS process
@@ -17,7 +17,6 @@ pub struct TabProcess {
 /// Shared memory surface for efficient rendering data transfer
 struct SharedSurface {
     shmem: Shmem,
-    surface: Surface,
     width: u32,
     height: u32,
 }
@@ -49,24 +48,8 @@ impl TabProcess {
             .create()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-        // Create Skia surface from shared memory
-        let image_info = ImageInfo::new(
-            (width as i32, height as i32),
-            ColorType::RGBA8888,
-            AlphaType::Premul,
-            None,
-        );
-
-        let row_bytes = width as usize * 4;
-        let surface = Surface::new_raster(
-            &image_info,
-            Some(row_bytes),
-            None,
-        ).ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to create surface"))?;
-
         self.shared_surface = Some(SharedSurface {
             shmem,
-            surface,
             width,
             height,
         });
@@ -170,7 +153,7 @@ impl TabProcess {
             ParentToTabMessage::KeyboardInput { key_type, modifiers } => {
                 // Handle keyboard input in the engine
                 use crate::ipc::{KeyInputType, ScrollDirection};
-                
+
                 match key_type {
                     KeyInputType::Scroll { direction, amount } => {
                         // Handle keyboard scrolling
@@ -210,7 +193,7 @@ impl TabProcess {
                         // Handle character input
                         // This could be for text input fields, keyboard shortcuts, etc.
                         // TODO: Forward to focused element in DOM
-                        
+
                         // Check for special keyboard shortcuts
                         if modifiers.ctrl {
                             match text.as_str() {
@@ -231,7 +214,7 @@ impl TabProcess {
                         }
                     }
                 }
-                
+
                 self.render_frame()?;
             }
             ParentToTabMessage::RequestFrame => {
@@ -252,10 +235,32 @@ impl TabProcess {
     /// Render a frame to the shared memory surface
     fn render_frame(&mut self) -> io::Result<()> {
         if let Some(ref mut shared) = self.shared_surface {
-            let canvas = shared.surface.canvas();
+            // Create Skia surface that renders directly to the shared memory buffer
+            let image_info = ImageInfo::new(
+                (shared.width as i32, shared.height as i32),
+                ColorType::RGBA8888,
+                AlphaType::Premul,
+                None,
+            );
+
+            let row_bytes = shared.width as usize * 4;
+
+            // Create surface from the shared memory pointer
+            let mut surface = unsafe {
+                skia_safe::surfaces::wrap_pixels(
+                    &image_info,
+                    shared.shmem.as_slice_mut(),
+                    Some(row_bytes),
+                    None,
+                )
+            }.ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to create surface"))?;
+
+            let canvas = surface.canvas();
 
             // Render the engine content
             self.engine.render(canvas, self.engine.scale_factor);
+
+            // No need to flush - wrap_pixels writes directly to the buffer
 
             // Notify parent that frame is ready
             self.channel.send(&TabToParentMessage::FrameRendered {
