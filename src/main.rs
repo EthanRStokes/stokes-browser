@@ -200,16 +200,7 @@ impl BrowserApp {
         ui.initialize_renderer();
 
         // Create tab manager
-        let mut tab_manager = TabManager::new().expect("Failed to create tab manager");
-
-        // Create initial tab
-        let initial_tab_id = tab_manager.create_tab().expect("Failed to create initial tab");
-        ui.add_tab(&initial_tab_id, "New Tab");
-
-        // Send initial configuration to tab
-        let (width, height) = (size.width as f32, size.height as f32);
-        let _ = tab_manager.send_to_tab(&initial_tab_id, ParentToTabMessage::Resize { width, height });
-        let _ = tab_manager.send_to_tab(&initial_tab_id, ParentToTabMessage::SetScaleFactor(scale_factor));
+        let tab_manager = TabManager::new().expect("Failed to create tab manager");
 
         Self {
             env,
@@ -225,7 +216,7 @@ impl BrowserApp {
             scale_factor,
             loading_spinner_angle: 0.0,
             last_spinner_update: Instant::now(),
-            tab_order: vec![initial_tab_id],
+            tab_order: vec![],
         }
     }
 
@@ -637,10 +628,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = EventLoop::new()?;
     let mut app = BrowserApp::new(&event_loop).await;
 
-    // Navigate initial tab
-    if let Some(tab_id) = app.active_tab_id().cloned() {
-        let _ = app.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Navigate("https://example.com".to_string()));
-    }
+    // Create initial tab
+    app.add_tab();
 
     event_loop.run_app(&mut app)?;
     Ok(())
