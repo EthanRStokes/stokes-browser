@@ -3,9 +3,7 @@ use crate::engine::{Engine, EngineConfig};
 use crate::ipc::{IpcChannel, ParentToTabMessage, TabToParentMessage, connect};
 use std::io;
 use std::path::PathBuf;
-use std::sync::Arc;
-use parking_lot::Mutex;
-use skia_safe::{Surface, Canvas, ColorType, AlphaType, ImageInfo};
+use skia_safe::{Surface, ColorType, AlphaType, ImageInfo};
 use shared_memory::{ShmemConf, Shmem};
 
 /// Tab process that runs in its own OS process
@@ -165,12 +163,75 @@ impl TabProcess {
                 self.engine.handle_click(x, y);
                 self.render_frame()?;
             }
-            ParentToTabMessage::MouseMove { x, y } => {
+            ParentToTabMessage::MouseMove { x: _, y: _ } => {
                 // Update cursor if hovering over interactive elements
                 // TODO: Implement cursor detection and send CursorChanged message
             }
-            ParentToTabMessage::KeyboardInput { key, modifiers } => {
-                // TODO: Handle keyboard input in engine
+            ParentToTabMessage::KeyboardInput { key_type, modifiers } => {
+                // Handle keyboard input in the engine
+                use crate::ipc::{KeyInputType, ScrollDirection};
+                
+                match key_type {
+                    KeyInputType::Scroll { direction, amount } => {
+                        // Handle keyboard scrolling
+                        match direction {
+                            ScrollDirection::Up => {
+                                self.engine.scroll_vertical(-amount);
+                            }
+                            ScrollDirection::Down => {
+                                self.engine.scroll_vertical(amount);
+                            }
+                            ScrollDirection::Left => {
+                                self.engine.scroll_horizontal(-amount);
+                            }
+                            ScrollDirection::Right => {
+                                self.engine.scroll_horizontal(amount);
+                            }
+                        }
+                    }
+                    KeyInputType::Named(key_name) => {
+                        // Handle named keys
+                        match key_name.as_str() {
+                            "Home" => {
+                                self.engine.set_scroll_position(0.0, 0.0);
+                            }
+                            "End" => {
+                                self.engine.set_scroll_position(0.0, f32::MAX);
+                            }
+                            "Enter" | "Escape" | "Tab" | "ShiftTab" | "Backspace" | "Delete" => {
+                                // These keys might be handled by JavaScript or form elements
+                                // For now, we just trigger a re-render
+                                // TODO: Forward to focused element in DOM
+                            }
+                            _ => {}
+                        }
+                    }
+                    KeyInputType::Character(text) => {
+                        // Handle character input
+                        // This could be for text input fields, keyboard shortcuts, etc.
+                        // TODO: Forward to focused element in DOM
+                        
+                        // Check for special keyboard shortcuts
+                        if modifiers.ctrl {
+                            match text.as_str() {
+                                "ctrl+a" => {
+                                    // Select all in page
+                                    // TODO: Implement text selection
+                                }
+                                "ctrl+c" => {
+                                    // Copy selected text
+                                    // TODO: Implement copy from page content
+                                }
+                                "ctrl+f" => {
+                                    // Find in page
+                                    // TODO: Implement find functionality
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                
                 self.render_frame()?;
             }
             ParentToTabMessage::RequestFrame => {

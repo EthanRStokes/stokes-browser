@@ -718,6 +718,16 @@ impl BrowserUI {
         }
     }
 
+    /// Check if any text field has focus
+    pub fn is_text_field_focused(&self) -> bool {
+        for comp in &self.components {
+            if let UiComponent::TextField { has_focus: true, .. } = comp {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Select all text in the focused text field
     pub fn select_all(&mut self) {
         for comp in &mut self.components {

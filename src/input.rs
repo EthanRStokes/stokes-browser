@@ -3,9 +3,9 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
 use winit::window::Window;
 use arboard::Clipboard;
-
 use crate::engine::Engine;
 use crate::ui::BrowserUI;
+use crate::ipc::KeyModifiers;
 
 /// Result of input action that may affect tabs
 #[derive(Debug, PartialEq)]
@@ -18,6 +18,23 @@ pub enum InputAction {
     CloseTab(usize),
     SwitchTab(usize),
     ReloadPage,
+    ForwardToTab(KeyboardInput),
+}
+
+/// Represents keyboard input to be forwarded to tab process
+#[derive(Debug, Clone, PartialEq)]
+pub enum KeyboardInput {
+    Character(String),
+    Named(String),
+    Scroll { direction: ScrollDirection, amount: f32 },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScrollDirection {
+    Up,
+    Down,
+    Left,
+    Right,
 }
 
 /// Handles mouse click events (UI only, for multi-process architecture)
@@ -219,21 +236,21 @@ pub fn handle_mouse_wheel(
     }
 }
 
-/// Handles keyboard input events
+/// Handles keyboard input events (multi-process version)
 pub fn handle_keyboard_input(
     event: &KeyEvent,
     modifiers: &Modifiers,
     ui: &mut BrowserUI,
-    active_engine: &mut Engine,
     active_tab_index: usize,
     num_tabs: usize,
-    has_focused_text_field: bool,
 ) -> InputAction {
     if event.state != ElementState::Pressed {
         return InputAction::None;
     }
 
-    // Handle keyboard shortcuts with modifiers
+    let has_focused_text_field = ui.is_text_field_focused();
+
+    // Handle keyboard shortcuts with modifiers (browser-level)
     if modifiers.state().control_key() {
         match &event.logical_key {
             Key::Character(text) => {
@@ -245,9 +262,11 @@ pub fn handle_keyboard_input(
                             ui.select_all();
                             return InputAction::RequestRedraw;
                         }
+                        // Forward to tab for page content selection
+                        return InputAction::ForwardToTab(KeyboardInput::Character("ctrl+a".to_string()));
                     }
                     "c" => {
-                        // Ctrl+C: Copy selected text to clipboard
+                        // Ctrl+C: Copy selected text to clipboard (UI only)
                         if has_focused_text_field {
                             if let Some(selected_text) = ui.get_selected_text() {
                                 if !selected_text.is_empty() {
@@ -261,6 +280,8 @@ pub fn handle_keyboard_input(
                             }
                             return InputAction::RequestRedraw;
                         }
+                        // Forward to tab for page content copying
+                        return InputAction::ForwardToTab(KeyboardInput::Character("ctrl+c".to_string()));
                     }
                     "v" => {
                         // Ctrl+V: Paste text from clipboard
@@ -282,6 +303,8 @@ pub fn handle_keyboard_input(
                             }
                             return InputAction::RequestRedraw;
                         }
+                        // Forward to tab for page content pasting
+                        return InputAction::ForwardToTab(KeyboardInput::Character("ctrl+v".to_string()));
                     }
                     "x" => {
                         // Ctrl+X: Cut selected text to clipboard
@@ -293,7 +316,6 @@ pub fn handle_keyboard_input(
                                         if let Err(e) = clipboard.set_text(&selected_text) {
                                             eprintln!("Failed to copy to clipboard: {}", e);
                                         } else {
-                                            // Delete the selected text after copying
                                             ui.delete_selection();
                                         }
                                     }
@@ -301,33 +323,40 @@ pub fn handle_keyboard_input(
                             }
                             return InputAction::RequestRedraw;
                         }
+                        // Forward to tab for page content cutting
+                        return InputAction::ForwardToTab(KeyboardInput::Character("ctrl+x".to_string()));
                     }
                     "t" => {
-                        // Ctrl+T: New tab
+                        // Ctrl+T: New tab (always browser-level)
                         println!("New tab shortcut (Ctrl+T)");
                         return InputAction::AddTab;
                     }
                     "w" => {
-                        // Ctrl+W: Close current tab
+                        // Ctrl+W: Close current tab (always browser-level)
                         println!("Close tab shortcut (Ctrl+W)");
                         return InputAction::CloseTab(active_tab_index);
                     }
                     "l" => {
-                        // Ctrl+L: Focus address bar
+                        // Ctrl+L: Focus address bar (always browser-level)
                         println!("Focus address bar shortcut (Ctrl+L)");
                         ui.set_focus("address_bar");
                         return InputAction::RequestRedraw;
                     }
                     "r" => {
-                        // Ctrl+R: Reload page
+                        // Ctrl+R: Reload page (always browser-level)
                         println!("Reload shortcut (Ctrl+R)");
                         return InputAction::ReloadPage;
+                    }
+                    "f" => {
+                        // Ctrl+F: Find in page (forward to tab)
+                        println!("Find in page shortcut (Ctrl+F)");
+                        return InputAction::ForwardToTab(KeyboardInput::Character("ctrl+f".to_string()));
                     }
                     _ => {}
                 }
             }
             Key::Named(NamedKey::Tab) => {
-                // Ctrl+Tab: Switch to next tab
+                // Ctrl+Tab: Switch to next tab (always browser-level)
                 println!("Switch tab shortcut (Ctrl+Tab)");
                 let next_index = (active_tab_index + 1) % num_tabs;
                 return InputAction::SwitchTab(next_index);
@@ -354,92 +383,145 @@ pub fn handle_keyboard_input(
     // Handle text input and navigation keys
     match &event.logical_key {
         Key::Named(NamedKey::Escape) => {
-            // Clear focus from address bar when Escape is pressed
-            ui.clear_focus();
-            return InputAction::RequestRedraw;
+            if has_focused_text_field {
+                // Clear focus from address bar when Escape is pressed
+                ui.clear_focus();
+                return InputAction::RequestRedraw;
+            }
+            // Forward to tab (e.g., for closing modals, stopping animations)
+            return InputAction::ForwardToTab(KeyboardInput::Named("Escape".to_string()));
         }
         Key::Named(NamedKey::Backspace) => {
-            ui.handle_key_input("Backspace");
-            return InputAction::RequestRedraw;
+            if has_focused_text_field {
+                ui.handle_key_input("Backspace");
+                return InputAction::RequestRedraw;
+            }
+            return InputAction::ForwardToTab(KeyboardInput::Named("Backspace".to_string()));
         }
         Key::Named(NamedKey::Delete) => {
-            ui.handle_key_input("Delete");
-            return InputAction::RequestRedraw;
+            if has_focused_text_field {
+                ui.handle_key_input("Delete");
+                return InputAction::RequestRedraw;
+            }
+            return InputAction::ForwardToTab(KeyboardInput::Named("Delete".to_string()));
         }
         Key::Named(NamedKey::ArrowLeft) => {
-            // Check if we're in a text field first
-            if !has_focused_text_field {
-                active_engine.scroll_horizontal(-30.0);
-            } else {
+            if has_focused_text_field {
                 ui.handle_key_input("ArrowLeft");
+                return InputAction::RequestRedraw;
             }
-            return InputAction::RequestRedraw;
+            // Forward to tab for page scrolling
+            return InputAction::ForwardToTab(KeyboardInput::Scroll {
+                direction: ScrollDirection::Left,
+                amount: 30.0,
+            });
         }
         Key::Named(NamedKey::ArrowRight) => {
-            // Check if we're in a text field first
-            if !has_focused_text_field {
-                active_engine.scroll_horizontal(30.0);
-            } else {
+            if has_focused_text_field {
                 ui.handle_key_input("ArrowRight");
+                return InputAction::RequestRedraw;
             }
-            return InputAction::RequestRedraw;
+            return InputAction::ForwardToTab(KeyboardInput::Scroll {
+                direction: ScrollDirection::Right,
+                amount: 30.0,
+            });
         }
         Key::Named(NamedKey::ArrowUp) => {
-            active_engine.scroll_vertical(-30.0);
-            return InputAction::RequestRedraw;
+            if !has_focused_text_field {
+                return InputAction::ForwardToTab(KeyboardInput::Scroll {
+                    direction: ScrollDirection::Up,
+                    amount: 30.0,
+                });
+            }
         }
         Key::Named(NamedKey::ArrowDown) => {
-            active_engine.scroll_vertical(30.0);
-            return InputAction::RequestRedraw;
+            if !has_focused_text_field {
+                return InputAction::ForwardToTab(KeyboardInput::Scroll {
+                    direction: ScrollDirection::Down,
+                    amount: 30.0,
+                });
+            }
         }
         Key::Named(NamedKey::Home) => {
-            // Check if we're in a text field first
-            if !has_focused_text_field {
-                active_engine.set_scroll_position(0.0, 0.0);
-            } else {
+            if has_focused_text_field {
                 ui.handle_key_input("Home");
+                return InputAction::RequestRedraw;
             }
-            return InputAction::RequestRedraw;
+            return InputAction::ForwardToTab(KeyboardInput::Named("Home".to_string()));
         }
         Key::Named(NamedKey::End) => {
-            // Check if we're in a text field first
-            if !has_focused_text_field {
-                active_engine.set_scroll_position(0.0, f32::MAX); // Will be clamped to max
-            } else {
+            if has_focused_text_field {
                 ui.handle_key_input("End");
+                return InputAction::RequestRedraw;
             }
-            return InputAction::RequestRedraw;
+            return InputAction::ForwardToTab(KeyboardInput::Named("End".to_string()));
         }
         Key::Named(NamedKey::Enter) => {
-            if let Some(url) = ui.handle_key_input("Enter") {
-                // Navigate to the URL from the address bar
-                let url_to_navigate = if url.starts_with("http://")
-                    || url.starts_with("https://")
-                    || url.starts_with("file://")
-                    || url.starts_with('/')
-                    || url.ends_with(".html")
-                    || url.ends_with(".htm")
-                {
-                    url
-                } else {
-                    format!("https://{}", url)
-                };
-                return InputAction::Navigate(url_to_navigate);
+            if has_focused_text_field {
+                if let Some(url) = ui.handle_key_input("Enter") {
+                    // Navigate to the URL from the address bar
+                    let url_to_navigate = if url.starts_with("http://")
+                        || url.starts_with("https://")
+                        || url.starts_with("file://")
+                        || url.starts_with('/')
+                        || url.ends_with(".html")
+                        || url.ends_with(".htm")
+                    {
+                        url
+                    } else {
+                        format!("https://{}", url)
+                    };
+                    return InputAction::Navigate(url_to_navigate);
+                }
+                return InputAction::RequestRedraw;
             }
-            return InputAction::RequestRedraw;
+            return InputAction::ForwardToTab(KeyboardInput::Named("Enter".to_string()));
         }
         Key::Named(NamedKey::PageUp) => {
-            active_engine.scroll_vertical(-300.0);
-            return InputAction::RequestRedraw;
+            return InputAction::ForwardToTab(KeyboardInput::Scroll {
+                direction: ScrollDirection::Up,
+                amount: 300.0,
+            });
         }
         Key::Named(NamedKey::PageDown) => {
-            active_engine.scroll_vertical(300.0);
+            return InputAction::ForwardToTab(KeyboardInput::Scroll {
+                direction: ScrollDirection::Down,
+                amount: 300.0,
+            });
+        }
+        Key::Named(NamedKey::Space) => {
+            if !has_focused_text_field {
+                // Space bar scrolls down when not in a text field
+                let scroll_amount: f32 = if modifiers.state().shift_key() {
+                    -300.0 // Shift+Space scrolls up
+                } else {
+                    300.0
+                };
+                return InputAction::ForwardToTab(KeyboardInput::Scroll {
+                    direction: if scroll_amount > 0.0 { ScrollDirection::Down } else { ScrollDirection::Up },
+                    amount: scroll_amount.abs(),
+                });
+            }
+            // Space in text field is handled as regular character input
+            ui.handle_text_input(" ");
             return InputAction::RequestRedraw;
         }
         Key::Character(text) => {
-            // Handle regular character input
-            ui.handle_text_input(text.as_str());
-            return InputAction::RequestRedraw;
+            if has_focused_text_field {
+                // Handle regular character input in UI text fields
+                ui.handle_text_input(text.as_str());
+                return InputAction::RequestRedraw;
+            }
+            // Forward other character input to tab (e.g., for in-page search)
+            return InputAction::ForwardToTab(KeyboardInput::Character(text.to_string()));
+        }
+        Key::Named(NamedKey::Tab) => {
+            // Tab key for focus navigation (forward to tab)
+            if modifiers.state().shift_key() {
+                return InputAction::ForwardToTab(KeyboardInput::Named("ShiftTab".to_string()));
+            } else {
+                return InputAction::ForwardToTab(KeyboardInput::Named("Tab".to_string()));
+            }
         }
         _ => {}
     }

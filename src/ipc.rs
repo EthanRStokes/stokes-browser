@@ -21,14 +21,37 @@ pub enum ParentToTabMessage {
     Click { x: f32, y: f32 },
     /// Mouse move
     MouseMove { x: f32, y: f32 },
-    /// Keyboard input
-    KeyboardInput { key: String, modifiers: KeyModifiers },
+    /// Keyboard input (character or named key)
+    KeyboardInput {
+        key_type: KeyInputType,
+        modifiers: KeyModifiers
+    },
     /// Request a frame render
     RequestFrame,
     /// Update scale factor
     SetScaleFactor(f64),
     /// Shutdown the tab process
     Shutdown,
+}
+
+/// Type of keyboard input
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum KeyInputType {
+    /// Regular character input
+    Character(String),
+    /// Named key (Enter, Escape, Tab, etc.)
+    Named(String),
+    /// Scroll command from keyboard
+    Scroll { direction: ScrollDirection, amount: f32 },
+}
+
+/// Scroll direction for keyboard scrolling
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ScrollDirection {
+    Up,
+    Down,
+    Left,
+    Right,
 }
 
 /// Messages sent from child (tab process) to parent (browser UI)
@@ -171,4 +194,3 @@ pub fn connect(socket_path: &PathBuf) -> io::Result<IpcChannel> {
     let stream = UnixStream::connect(socket_path)?;
     Ok(IpcChannel::new(stream))
 }
-

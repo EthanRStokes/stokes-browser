@@ -375,6 +375,9 @@ impl BrowserApp {
             input::InputAction::QuitApp => {
                 event_loop.exit();
             }
+            input::InputAction::ForwardToTab(_) => {
+                // This case is handled separately in the keyboard input handler
+            }
             input::InputAction::None => {}
         }
         self.env.window.request_redraw();
@@ -401,7 +404,7 @@ impl BrowserApp {
                         self.env.window.set_title(&format!("{} - Web Browser", title));
                     }
                 }
-                TabToParentMessage::LoadingStateChanged(is_loading) => {
+                TabToParentMessage::LoadingStateChanged(_is_loading) => {
                     // Update loading indicator
                     self.env.window.request_redraw();
                 }
@@ -539,6 +542,65 @@ impl ApplicationHandler for BrowserApp {
             }
             WindowEvent::ModifiersChanged(new_modifiers) => {
                 self.modifiers = new_modifiers;
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                // Handle keyboard input with the new multi-process architecture
+                let action = input::handle_keyboard_input(
+                    &event,
+                    &self.modifiers,
+                    &mut self.ui,
+                    self.active_tab_index,
+                    self.tab_order.len(),
+                );
+
+                // Handle browser-level actions
+                match &action {
+                    input::InputAction::ForwardToTab(keyboard_input) => {
+                        // Forward keyboard input to active tab process
+                        if let Some(tab_id) = self.active_tab_id().cloned() {
+                            let key_modifiers = ipc::KeyModifiers {
+                                ctrl: self.modifiers.state().control_key(),
+                                alt: self.modifiers.state().alt_key(),
+                                shift: self.modifiers.state().shift_key(),
+                                meta: self.modifiers.state().super_key(),
+                            };
+
+                            let key_type = match keyboard_input {
+                                input::KeyboardInput::Character(s) => {
+                                    ipc::KeyInputType::Character(s.clone())
+                                }
+                                input::KeyboardInput::Named(s) => {
+                                    ipc::KeyInputType::Named(s.clone())
+                                }
+                                input::KeyboardInput::Scroll { direction, amount } => {
+                                    let ipc_direction = match direction {
+                                        input::ScrollDirection::Up => ipc::ScrollDirection::Up,
+                                        input::ScrollDirection::Down => ipc::ScrollDirection::Down,
+                                        input::ScrollDirection::Left => ipc::ScrollDirection::Left,
+                                        input::ScrollDirection::Right => ipc::ScrollDirection::Right,
+                                    };
+                                    ipc::KeyInputType::Scroll {
+                                        direction: ipc_direction,
+                                        amount: *amount,
+                                    }
+                                }
+                            };
+
+                            let _ = self.tab_manager.send_to_tab(
+                                &tab_id,
+                                ParentToTabMessage::KeyboardInput {
+                                    key_type,
+                                    modifiers: key_modifiers,
+                                },
+                            );
+                        }
+                        self.env.window.request_redraw();
+                    }
+                    _ => {
+                        // Handle non-forwarding actions
+                        self.handle_input_action(action, event_loop);
+                    }
+                }
             }
             _ => {}
         }
