@@ -12,6 +12,7 @@ pub struct TabProcess {
     channel: IpcChannel,
     tab_id: String,
     shared_surface: Option<SharedSurface>,
+    surface_generation: u32,
 }
 
 /// Shared memory surface for efficient rendering data transfer
@@ -19,6 +20,7 @@ struct SharedSurface {
     shmem: Shmem,
     width: u32,
     height: u32,
+    generation: u32,
 }
 
 impl TabProcess {
@@ -32,12 +34,22 @@ impl TabProcess {
             channel,
             tab_id,
             shared_surface: None,
+            surface_generation: 0,
         })
     }
 
     /// Initialize shared memory surface
     fn init_shared_surface(&mut self, width: u32, height: u32) -> io::Result<()> {
-        let shmem_name = format!("stokes_tab_{}_{}", self.tab_id, std::process::id());
+        // Drop the old shared memory surface first to avoid conflicts
+        if let Some(old_surface) = self.shared_surface.take() {
+            // Explicitly drop the old shmem to release the OS resource
+            drop(old_surface.shmem);
+        }
+
+        // Increment generation counter for unique ID
+        self.surface_generation = self.surface_generation.wrapping_add(1);
+
+        let shmem_name = format!("stokes_tab_{}_{}_{}", self.tab_id, std::process::id(), self.surface_generation);
 
         // Calculate required size (RGBA8888 = 4 bytes per pixel)
         let size = (width * height * 4) as usize;
@@ -52,6 +64,7 @@ impl TabProcess {
             shmem,
             width,
             height,
+            generation: self.surface_generation,
         });
 
         Ok(())
@@ -63,16 +76,18 @@ impl TabProcess {
         self.channel.send(&TabToParentMessage::Ready)?;
 
         loop {
-            // Process any pending messages from parent
-            match self.channel.receive::<ParentToTabMessage>() {
-                Ok(msg) => {
-                    if !self.handle_message(msg).await? {
-                        break; // Shutdown requested
+            // Process all pending messages from parent (non-blocking)
+            let mut has_messages = true;
+            while has_messages {
+                match self.channel.try_receive::<ParentToTabMessage>()? {
+                    Some(msg) => {
+                        if !self.handle_message(msg).await? {
+                            return Ok(()); // Shutdown requested
+                        }
                     }
-                }
-                Err(e) => {
-                    eprintln!("Tab process {} error receiving message: {}", self.tab_id, e);
-                    break;
+                    None => {
+                        has_messages = false;
+                    }
                 }
             }
 
@@ -81,9 +96,10 @@ impl TabProcess {
                 // If timers executed, render a new frame
                 self.render_frame()?;
             }
-        }
 
-        Ok(())
+            // Small sleep to prevent CPU spinning
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
     }
 
     /// Handle a message from the parent process
@@ -267,7 +283,7 @@ impl TabProcess {
 
             // Notify parent that frame is ready
             self.channel.send(&TabToParentMessage::FrameRendered {
-                shmem_name: format!("stokes_tab_{}_{}", self.tab_id, std::process::id()),
+                shmem_name: format!("stokes_tab_{}_{}_{}", self.tab_id, std::process::id(), shared.generation),
                 width: shared.width,
                 height: shared.height,
             })?;
