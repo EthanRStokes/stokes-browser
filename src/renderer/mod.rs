@@ -89,11 +89,11 @@ impl HtmlRenderer {
         scale_factor: f64,
         viewport_rect: &Rect,
     ) {
-        // Early culling: Skip rendering if box is completely outside viewport
-        let border_box = layout_box.dimensions.border_box();
-        if !viewport_rect.intersects(border_box) {
-            return; // Skip this box and all its children
-        }
+        // TODO Early culling: Skip rendering if box is completely outside viewport
+        //let border_box = layout_box.dimensions.border_box();
+        //if !viewport_rect.intersects(border_box) {
+        //    return; // Skip this box and all its children
+        //}
 
         // Get base computed styles for this node
         let base_styles = style_map.get(&layout_box.node_id);

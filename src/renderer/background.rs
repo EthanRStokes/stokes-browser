@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use skia_safe::{Canvas, Paint, Color, Rect, SamplingOptions, MipmapMode, FilterMode};
 use crate::css::{ComputedValues, BackgroundImage};
 
-/// Background image cache manager (OPTIMIZED)
+/// Background image cache manager
 pub struct BackgroundImageCache {
     cache: RefCell<HashMap<String, Option<skia_safe::Image>>>,
 }
