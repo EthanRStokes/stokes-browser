@@ -71,11 +71,83 @@ impl HtmlRenderer {
             canvas.base_layer_size().height as f32,
         );
 
+        // Find and render body background to fill entire viewport (before rendering layout tree)
+        self.render_body_background_to_viewport(canvas, layout, node_map, style_map, transition_manager, &viewport_rect, scale_factor);
+
         // Render the layout tree with styles, scale factor, and viewport culling
         self.render_box(canvas, layout, node_map, style_map, transition_manager, scale_factor, &viewport_rect);
 
         // Restore the canvas state
         canvas.restore();
+    }
+
+    /// Find and render the body element's background to fill the entire viewport
+    /// This matches HTML/CSS behavior where body background propagates to the canvas
+    fn render_body_background_to_viewport(
+        &mut self,
+        canvas: &Canvas,
+        layout_box: &LayoutBox,
+        node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
+        style_map: &HashMap<usize, ComputedValues>,
+        transition_manager: Option<&TransitionManager>,
+        viewport_rect: &Rect,
+        scale_factor: f64,
+    ) {
+        // Recursively search for the body element
+        if let Some(body_node_id) = self.find_body_element(layout_box, node_map) {
+            // Get body element's computed styles
+            let base_styles = style_map.get(&body_node_id);
+            let computed_styles = if let (Some(manager), Some(base)) = (transition_manager, base_styles) {
+                let interpolated = manager.get_interpolated_styles(body_node_id, base);
+                Some(interpolated)
+            } else {
+                base_styles.cloned()
+            };
+
+            if let Some(styles) = computed_styles {
+                // Get opacity value (default to 1.0 if not specified)
+                let opacity = styles.opacity;
+
+                // Render background color if specified
+                if let Some(bg_color) = &styles.background_color {
+                    let mut color = bg_color.to_skia_color();
+                    color = color.with_a((color.a() as f32 * opacity) as u8);
+
+                    let mut bg_paint = Paint::default();
+                    bg_paint.set_color(color);
+                    canvas.draw_rect(*viewport_rect, &bg_paint);
+                }
+
+                // Render background image if specified
+                background::render_background_image(canvas, viewport_rect, &styles, scale_factor, &self.background_image_cache);
+            }
+        }
+    }
+
+    /// Recursively find the body element's node ID
+    fn find_body_element(
+        &self,
+        layout_box: &LayoutBox,
+        node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
+    ) -> Option<usize> {
+        // Check current node
+        if let Some(dom_node_rc) = node_map.get(&layout_box.node_id) {
+            let dom_node = dom_node_rc.borrow();
+            if let NodeType::Element(element_data) = &dom_node.node_type {
+                if element_data.tag_name == "body" {
+                    return Some(layout_box.node_id);
+                }
+            }
+        }
+
+        // Search children
+        for child in &layout_box.children {
+            if let Some(body_id) = self.find_body_element(child, node_map) {
+                return Some(body_id);
+            }
+        }
+
+        None
     }
 
     /// Render a single layout box with CSS styles, transitions, and scale factor (OPTIMIZED)
@@ -211,28 +283,33 @@ impl HtmlRenderer {
             decorations::render_box_shadows(canvas, &border_box, styles, scale_factor);
         }
 
+        // Skip background rendering for body element (it's already rendered to fill viewport)
+        let is_body = element_data.tag_name == "body";
+
         // Create background paint with CSS colors
         let mut bg_paint = &mut self.paints.background_paint;
-        if let Some(styles) = computed_styles {
-            if let Some(bg_color) = &styles.background_color {
-                let mut color = bg_color.to_skia_color();
-                // Apply opacity to background color
-                color = color.with_a((color.a() as f32 * opacity) as u8);
-                bg_paint.set_color(color);
+        if !is_body {
+            if let Some(styles) = computed_styles {
+                if let Some(bg_color) = &styles.background_color {
+                    let mut color = bg_color.to_skia_color();
+                    // Apply opacity to background color
+                    color = color.with_a((color.a() as f32 * opacity) as u8);
+                    bg_paint.set_color(color);
+                } else {
+                    // Fallback to default background colors
+                    background::set_default_background_color(&mut bg_paint, &element_data.tag_name);
+                    // Apply opacity
+                    let mut color = bg_paint.color();
+                    color = color.with_a((color.a() as f32 * opacity) as u8);
+                    bg_paint.set_color(color);
+                }
             } else {
-                // Fallback to default background colors
                 background::set_default_background_color(&mut bg_paint, &element_data.tag_name);
                 // Apply opacity
                 let mut color = bg_paint.color();
                 color = color.with_a((color.a() as f32 * opacity) as u8);
                 bg_paint.set_color(color);
             }
-        } else {
-            background::set_default_background_color(&mut bg_paint, &element_data.tag_name);
-            // Apply opacity
-            let mut color = bg_paint.color();
-            color = color.with_a((color.a() as f32 * opacity) as u8);
-            bg_paint.set_color(color);
         }
 
         // Draw border if specified in styles or default for certain elements
@@ -309,12 +386,16 @@ impl HtmlRenderer {
             }
         }
 
-        // Draw background (only if no rounded corners)
-        canvas.draw_rect(border_box, &bg_paint);
+        // Draw background (only if no rounded corners and not body element)
+        if !is_body {
+            canvas.draw_rect(border_box, &bg_paint);
+        }
 
-        // Render background image if specified
-        if let Some(styles) = computed_styles {
-            background::render_background_image(canvas, &border_box, styles, scale_factor, &self.background_image_cache);
+        // Render background image if specified (skip for body element)
+        if !is_body {
+            if let Some(styles) = computed_styles {
+                background::render_background_image(canvas, &border_box, styles, scale_factor, &self.background_image_cache);
+            }
         }
 
         if should_draw_border {
