@@ -172,7 +172,24 @@ impl TabProcess {
                 self.render_frame()?;
             }
             ParentToTabMessage::Click { x, y } => {
-                self.engine.handle_click(x, y);
+                // Handle click and check if a link was clicked
+                if let Some(href) = self.engine.handle_click(x, y) {
+                    println!("[Tab Process] Link clicked: {}", href);
+                    
+                    // Resolve the href against the current page URL
+                    match self.engine.resolve_url(&href) {
+                        Ok(resolved_url) => {
+                            println!("[Tab Process] Resolved to: {}", resolved_url);
+                            // Send navigation request to parent
+                            self.channel.send(&TabToParentMessage::NavigateRequest(resolved_url))?;
+                        }
+                        Err(e) => {
+                            eprintln!("[Tab Process] Failed to resolve URL '{}': {}", href, e);
+                            // Try with the raw href as fallback
+                            self.channel.send(&TabToParentMessage::NavigateRequest(href))?;
+                        }
+                    }
+                }
                 self.render_frame()?;
             }
             ParentToTabMessage::MouseMove { x: _, y: _ } => {

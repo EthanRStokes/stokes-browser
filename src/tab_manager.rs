@@ -55,7 +55,7 @@ impl TabManager {
         let exe_path = std::env::current_exe()?;
 
         // Spawn the tab process
-        let mut child = Command::new(exe_path)
+        let child = Command::new(exe_path)
             .arg("--tab-process")
             .arg(&tab_id)
             .arg(self.ipc_server.socket_path().to_str().unwrap())
@@ -144,6 +144,12 @@ impl TabManager {
                 }
                 TabToParentMessage::Ready => {
                     println!("Tab {} is ready", tab_id);
+                }
+                TabToParentMessage::NavigateRequest(url) => {
+                    // Handle navigation request from web content (e.g., link clicks)
+                    println!("Navigation request from tab {}: {}", tab_id, url);
+                    tab.url = url.clone();
+                    // The actual navigation will be handled by sending Navigate message back to the tab
                 }
             }
         }

@@ -80,6 +80,8 @@ pub enum TabToParentMessage {
     CursorChanged(CursorType),
     /// Tab process is ready
     Ready,
+    /// Request navigation to a URL (e.g., from clicking a link)
+    NavigateRequest(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

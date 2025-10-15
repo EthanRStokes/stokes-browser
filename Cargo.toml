@@ -11,6 +11,7 @@ skia-safe = { version = "0.89.0", features = ["gpu", "gl"] }
 #winit = { version = "0.30.12", features = ["wayland"] }
 image = "0.25.8"
 tokio = { version = "1.47.1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+futures = "0.3"
 curl = "0.4"
 html5ever = "0.35.0"
 markup5ever_rcdom = "0.35.0+unofficial"

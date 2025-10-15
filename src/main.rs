@@ -405,6 +405,14 @@ impl BrowserApp {
                 TabToParentMessage::FrameRendered { .. } => {
                     self.env.window.request_redraw();
                 }
+                TabToParentMessage::NavigateRequest(url) => {
+                    // Handle navigation request from web content (e.g., link clicks)
+                    println!("Handling navigation request to: {}", url);
+                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Navigate(url.clone()));
+                    if Some(&tab_id) == self.active_tab_id() {
+                        self.ui.update_address_bar(&url);
+                    }
+                }
                 _ => {}
             }
         }
