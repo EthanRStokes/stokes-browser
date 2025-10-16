@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Alert Test</title>
+</head>
+<body>
+    <h1>JavaScript Alert Test</h1>
+    <button onclick="alert('Hello from JavaScript!')">Click me for alert</button>
+    <button onclick="alert('This is a test alert with a longer message to see how it displays in the native dialog box.')">Long message alert</button>
+    <button onclick="testMultipleAlerts()">Multiple alerts</button>
+
+    <script>
+        // Test alert on page load
+        console.log("Page loaded, showing alert");
+        alert("Welcome! This page tests the alert() function.");
+
+        function testMultipleAlerts() {
+            alert("First alert");
+            alert("Second alert");
+            alert("Third alert");
+        }
+    </script>
+</body>
+</html>
+

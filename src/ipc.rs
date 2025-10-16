@@ -82,6 +82,8 @@ pub enum TabToParentMessage {
     Ready,
     /// Request navigation to a URL (e.g., from clicking a link)
     NavigateRequest(String),
+    /// Show an alert dialog
+    Alert(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +102,7 @@ pub enum CursorType {
 }
 
 /// IPC channel for bidirectional communication
+#[derive(Debug)]
 pub struct IpcChannel {
     stream: UnixStream,
 }

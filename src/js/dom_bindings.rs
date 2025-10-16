@@ -247,33 +247,8 @@ impl WindowObject {
             .map(|s| s.to_std_string_escaped())
             .unwrap_or_default();
 
-        println!("[JS Alert] {}", message);
-        Ok(JsValue::undefined())
-    }
-
-    /// window.setTimeout implementation (basic)
-    fn set_timeout(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        println!("[JS] setTimeout called (not fully implemented yet)");
-        // Return a dummy timer ID
-        Ok(JsValue::from(1))
-    }
-
-    /// window.setInterval implementation (basic)
-    fn set_interval(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        println!("[JS] setInterval called (not fully implemented yet)");
-        // Return a dummy timer ID
-        Ok(JsValue::from(1))
-    }
-
-    /// window.clearTimeout implementation
-    fn clear_timeout(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        println!("[JS] clearTimeout called");
-        Ok(JsValue::undefined())
-    }
-
-    /// window.clearInterval implementation
-    fn clear_interval(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        println!("[JS] clearInterval called");
+        // Use the alert callback system to send the alert to the parent process
+        super::alert_callback::trigger_alert(message);
         Ok(JsValue::undefined())
     }
 

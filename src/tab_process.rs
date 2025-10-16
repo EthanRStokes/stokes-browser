@@ -1,15 +1,18 @@
 // Tab process module - runs the browser engine in a separate process
 use crate::engine::{Engine, EngineConfig};
 use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage};
+use crate::js;
 use shared_memory::{Shmem, ShmemConf};
 use skia_safe::{AlphaType, ColorType, ImageInfo, Surface};
+use std::cell::RefCell;
 use std::io;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
     engine: Engine,
-    channel: IpcChannel,
+    channel: Rc<RefCell<IpcChannel>>,
     tab_id: String,
     shared_surface: Option<SharedSurface>,
     surface_generation: u32,
@@ -32,7 +35,7 @@ impl TabProcess {
 
         Ok(Self {
             engine,
-            channel,
+            channel: Rc::new(RefCell::new(channel)),
             tab_id,
             shared_surface: None,
             surface_generation: 0,
@@ -85,14 +88,24 @@ impl TabProcess {
 
     /// Main event loop for the tab process
     pub async fn run(&mut self) -> io::Result<()> {
+        // Set up alert callback to send alerts via IPC
+        let channel_for_alert = self.channel.clone();
+        js::set_alert_callback(move |message: String| {
+            if let Ok(mut channel) = channel_for_alert.try_borrow_mut() {
+                let _ = channel.send(&TabToParentMessage::Alert(message));
+            }
+        });
+
         // Send ready message
-        self.channel.send(&TabToParentMessage::Ready)?;
+        self.channel.borrow_mut().send(&TabToParentMessage::Ready)?;
 
         loop {
             // Process all pending messages from parent (non-blocking)
             let mut has_messages = true;
             while has_messages {
-                match self.channel.try_receive::<ParentToTabMessage>()? {
+                // Get the message first without holding the borrow
+                let msg_option = self.channel.borrow_mut().try_receive::<ParentToTabMessage>()?;
+                match msg_option {
                     Some(msg) => {
                         if !self.handle_message(msg).await? {
                             return Ok(()); // Shutdown requested
@@ -119,45 +132,45 @@ impl TabProcess {
     async fn handle_message(&mut self, message: ParentToTabMessage) -> io::Result<bool> {
         match message {
             ParentToTabMessage::Navigate(url) => {
-                self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()))?;
+                self.channel.borrow_mut().send(&TabToParentMessage::NavigationStarted(url.clone()))?;
                 self.engine.set_loading_state(true);
 
                 match self.engine.navigate(&url).await {
                     Ok(_) => {
                         let title = self.engine.page_title().to_string();
-                        self.channel.send(&TabToParentMessage::NavigationCompleted {
+                        self.channel.borrow_mut().send(&TabToParentMessage::NavigationCompleted {
                             url: url.clone(),
                             title: title.clone(),
                         })?;
-                        self.channel.send(&TabToParentMessage::TitleChanged(title))?;
-                        self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                        self.channel.borrow_mut().send(&TabToParentMessage::TitleChanged(title))?;
+                        self.channel.borrow_mut().send(&TabToParentMessage::LoadingStateChanged(false))?;
                         self.render_frame()?;
                     }
                     Err(e) => {
-                        self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()))?;
-                        self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                        self.channel.borrow_mut().send(&TabToParentMessage::NavigationFailed(e.to_string()))?;
+                        self.channel.borrow_mut().send(&TabToParentMessage::LoadingStateChanged(false))?;
                     }
                 }
             }
             ParentToTabMessage::Reload => {
                 let url = self.engine.current_url().to_string();
                 if !url.is_empty() {
-                    self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()))?;
+                    self.channel.borrow_mut().send(&TabToParentMessage::NavigationStarted(url.clone()))?;
                     self.engine.set_loading_state(true);
 
                     match self.engine.navigate(&url).await {
                         Ok(_) => {
                             let title = self.engine.page_title().to_string();
-                            self.channel.send(&TabToParentMessage::NavigationCompleted {
+                            self.channel.borrow_mut().send(&TabToParentMessage::NavigationCompleted {
                                 url: url.clone(),
                                 title,
                             })?;
-                            self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                            self.channel.borrow_mut().send(&TabToParentMessage::LoadingStateChanged(false))?;
                             self.render_frame()?;
                         }
                         Err(e) => {
-                            self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()))?;
-                            self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                            self.channel.borrow_mut().send(&TabToParentMessage::NavigationFailed(e.to_string()))?;
+                            self.channel.borrow_mut().send(&TabToParentMessage::LoadingStateChanged(false))?;
                         }
                     }
                 }
@@ -181,12 +194,12 @@ impl TabProcess {
                         Ok(resolved_url) => {
                             println!("[Tab Process] Resolved to: {}", resolved_url);
                             // Send navigation request to parent
-                            self.channel.send(&TabToParentMessage::NavigateRequest(resolved_url))?;
+                            self.channel.borrow_mut().send(&TabToParentMessage::NavigateRequest(resolved_url))?;
                         }
                         Err(e) => {
                             eprintln!("[Tab Process] Failed to resolve URL '{}': {}", href, e);
                             // Try with the raw href as fallback
-                            self.channel.send(&TabToParentMessage::NavigateRequest(href))?;
+                            self.channel.borrow_mut().send(&TabToParentMessage::NavigateRequest(href))?;
                         }
                     }
                 }
@@ -304,7 +317,7 @@ impl TabProcess {
             }
 
             // Notify parent that frame is ready
-            self.channel.send(&TabToParentMessage::FrameRendered {
+            self.channel.borrow_mut().send(&TabToParentMessage::FrameRendered {
                 shmem_name: format!("stokes_tab_{}_{}_{}", self.tab_id, std::process::id(), shared.generation),
                 width: shared.width,
                 height: shared.height,

@@ -240,6 +240,11 @@ impl BrowserApp {
                         self.ui.update_address_bar(&url);
                     }
                 }
+                TabToParentMessage::Alert(message) => {
+                    // Display alert dialog using native dialog
+                    println!("Alert from tab {}: {}", tab_id, message);
+                    self.show_alert(&message);
+                }
                 _ => {}
             }
         }
@@ -289,6 +294,21 @@ impl BrowserApp {
             .map_err(|e| format!("Failed to swap buffers: {}", e))?;
 
         Ok(())
+    }
+
+    /// Show an alert dialog with the given message
+    fn show_alert(&self, message: &str) {
+        // For now, use rfd (Rusty File Dialogs) for native dialogs
+        // This will display a native OS dialog box
+        use rfd::MessageDialog;
+        use rfd::MessageLevel;
+        
+        MessageDialog::new()
+            .set_level(MessageLevel::Info)
+            .set_title("Alert")
+            .set_description(message)
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
     }
 }
 
@@ -447,4 +467,3 @@ impl ApplicationHandler for BrowserApp {
         event_loop.set_control_flow(ControlFlow::WaitUntil(next_frame_time));
     }
 }
-
