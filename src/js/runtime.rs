@@ -16,15 +16,16 @@ pub struct JsRuntime {
     context: Context,
     document_root: Rc<RefCell<DomNode>>,
     timer_manager: Rc<TimerManager>,
+    user_agent: String,
 }
 
 impl JsRuntime {
     /// Create a new JavaScript runtime
-    pub fn new(document_root: Rc<RefCell<DomNode>>) -> JsResult<Self> {
+    pub fn new(document_root: Rc<RefCell<DomNode>>, user_agent: String) -> JsResult<Self> {
         let mut context = Context::default();
 
         // Initialize browser bindings
-        initialize_bindings(&mut context, document_root.clone())?;
+        initialize_bindings(&mut context, document_root.clone(), user_agent.clone())?;
 
         // Create and set up timer manager
         let timer_manager = Rc::new(TimerManager::new());
@@ -34,6 +35,7 @@ impl JsRuntime {
             context,
             document_root,
             timer_manager,
+            user_agent,
         })
     }
 
@@ -110,13 +112,5 @@ impl JsRuntime {
     /// Get a reference to the context
     pub fn context_mut(&mut self) -> &mut Context {
         &mut self.context
-    }
-
-    /// Update the document root
-    pub fn update_document(&mut self, document_root: Rc<RefCell<DomNode>>) -> JsResult<()> {
-        self.document_root = document_root.clone();
-        // Re-initialize DOM bindings with new document
-        super::dom_bindings::setup_dom_bindings(&mut self.context, document_root)?;
-        Ok(())
     }
 }

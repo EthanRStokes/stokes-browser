@@ -295,31 +295,6 @@ impl WindowObject {
     }
 }
 
-/// Navigator object functions
-struct NavigatorObject;
-
-impl NavigatorObject {
-    fn user_agent(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        Ok(JsValue::from(JsString::from("Stokes Browser/1.0")))
-    }
-
-    fn language(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        Ok(JsValue::from(JsString::from("en-US")))
-    }
-
-    fn platform(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        Ok(JsValue::from(JsString::from(std::env::consts::OS)))
-    }
-
-    fn online(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        Ok(JsValue::from(true))
-    }
-
-    fn app_name(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        Ok(JsValue::from(JsString::from("Stokes Browser")))
-    }
-}
-
 /// Location object functions
 struct LocationObject;
 
@@ -376,7 +351,7 @@ impl StorageObject {
 }
 
 /// Set up DOM bindings in the JavaScript context
-pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNode>>) -> Result<(), String> {
+pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNode>>, user_agent: String) -> Result<(), String> {
     use boa_engine::object::ObjectInitializer;
 
     // Create the Node constructor with node type constants
@@ -607,7 +582,7 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
     let navigator = ObjectInitializer::new(context)
         .property(
             JsString::from("userAgent"),
-            JsValue::from(JsString::from("Stokes Browser/1.0")),
+            JsValue::from(JsString::from(user_agent)),
             boa_engine::property::Attribute::all(),
         )
         .property(

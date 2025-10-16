@@ -650,7 +650,8 @@ impl Engine {
     pub fn initialize_js_runtime(&mut self) {
         if let Some(dom) = &self.dom {
             let root = dom.get_root();
-            match JsRuntime::new(root) {
+            let user_agent = self.config.user_agent.clone();
+            match JsRuntime::new(root, user_agent) {
                 Ok(runtime) => {
                     println!("JavaScript runtime initialized successfully");
                     self.js_runtime = Some(runtime);

@@ -31,12 +31,12 @@ pub fn execute_script(context: &mut Context, code: &str) -> JsResult<JsValue> {
 }
 
 /// Initialize JavaScript bindings for the browser
-pub fn initialize_bindings(context: &mut Context, document_root: Rc<RefCell<DomNode>>) -> JsResult<()> {
+pub fn initialize_bindings(context: &mut Context, document_root: Rc<RefCell<DomNode>>, user_agent: String) -> JsResult<()> {
     // Set up console object
     console::setup_console(context)?;
     
     // Set up DOM bindings
-    dom_bindings::setup_dom_bindings(context, document_root)?;
+    dom_bindings::setup_dom_bindings(context, document_root, user_agent)?;
     
     // Set up fetch API
     fetch::setup_fetch(context)?;
