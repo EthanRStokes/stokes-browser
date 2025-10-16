@@ -9,7 +9,7 @@ use crate::networking::{HttpClient, NetworkError};
 use crate::dom::{Dom, DomNode, NodeType, ImageData, ImageLoadingState};
 use crate::layout::{LayoutEngine, LayoutBox};
 use crate::renderer::HtmlRenderer;
-use crate::css::{CssParser, Stylesheet, ComputedValues};
+use crate::css::{CssParser, ComputedValues};
 use crate::css::transition_manager::TransitionManager;
 use crate::js::JsRuntime;
 use crate::dom::{EventType, EventDispatcher};
@@ -123,36 +123,67 @@ impl Engine {
             // Find all image nodes
             let image_nodes = dom.find_nodes(|node| matches!(node.node_type, NodeType::Image(_)));
 
-            for image_node_rc in image_nodes {
+            // Collect image sources that need to be loaded
+            let mut image_requests:Vec<(&Rc<RefCell<DomNode>>, Rc<String>)> = Vec::new();
+
+            for image_node_rc in &image_nodes {
                 if let Ok(mut image_node) = image_node_rc.try_borrow_mut() {
                     if let NodeType::Image(ref mut image_data) = image_node.node_type {
+                        let image_data = Rc::get_mut(image_data).unwrap();
                         // Only start loading if not already loaded or loading
                         if matches!(image_data.loading_state, ImageLoadingState::NotLoaded) {
                             // Set to loading state
                             image_data.loading_state = ImageLoadingState::Loading;
 
-                            // Start the async fetch (we'll need to handle this differently in practice)
-                            let src = image_data.src.clone();
-                            if !src.is_empty() {
-                                // For now, we'll fetch synchronously in this method
-                                // In a real browser, this would be done with proper async handling
-                                match self.fetch_image(&src).await {
-                                    Ok(image_bytes) => {
-                                        image_data.loading_state = ImageLoadingState::Loaded(image_bytes.clone());
+                            if !image_data.src.is_empty() {
+                                image_requests.push((image_node_rc, image_data.src.clone()));
+                            }
+                        }
+                    }
+                }
+            }
 
-                                        // Decode and cache the image immediately after loading
-                                        if let Some(decoded_image) = ImageData::decode_image_data_static(&image_bytes) {
-                                            image_data.cached_image = Some(decoded_image);
-                                            println!("Successfully loaded and decoded image: {}", src);
-                                        } else {
-                                            println!("Successfully loaded but failed to decode image: {}", src);
-                                        }
-                                    }
-                                    Err(err) => {
-                                        image_data.loading_state = ImageLoadingState::Failed(err.to_string());
-                                        println!("Failed to load image {}: {}", src, err);
-                                    }
+            // Fetch all images concurrently
+            let mut fetch_futures = Vec::new();
+            for (_, src) in &image_requests {
+                // Resolve URL before creating the future
+                let absolute_url = match self.resolve_url(src) {
+                    Ok(url) => url,
+                    Err(e) => {
+                        eprintln!("Failed to resolve image URL {}: {}", src, e);
+                        continue;
+                    }
+                };
+
+                let http_client = &self.http_client;
+                let src_clone = src.clone();
+                fetch_futures.push(async move {
+                    let result = http_client.fetch_resource(&absolute_url).await;
+                    (src_clone, result)
+                });
+            }
+
+            let results = futures::future::join_all(fetch_futures).await;
+
+            // Process results and update image nodes
+            for ((node_rc, src), (_, result)) in image_requests.iter().zip(results.into_iter()) {
+                if let Ok(mut image_node) = node_rc.try_borrow_mut() {
+                    if let NodeType::Image(ref mut image_data) = image_node.node_type {
+                        let image_data = Rc::get_mut(image_data).unwrap();
+                        match result {
+                            Ok(image_bytes) => {
+                                // Decode and cache the image immediately after loading
+                                if let Some(decoded_image) = ImageData::decode_image_data_static(&image_bytes) {
+                                    image_data.cached_image = Some(decoded_image);
+                                    println!("Successfully loaded and decoded image: {}", src);
+                                } else {
+                                    println!("Successfully loaded but failed to decode image: {}", src);
                                 }
+                                image_data.loading_state = ImageLoadingState::Loaded(image_bytes);
+                            }
+                            Err(err) => {
+                                image_data.loading_state = ImageLoadingState::Failed(err.to_string());
+                                println!("Failed to load image {}: {}", src, err);
                             }
                         }
                     }
@@ -273,6 +304,7 @@ impl Engine {
             for image_node_rc in image_nodes {
                 if let Ok(mut image_node) = image_node_rc.try_borrow_mut() {
                     if let NodeType::Image(ref mut image_data) = image_node.node_type {
+                        let image_data = Rc::get_mut(image_data).unwrap();
                         image_data.loading_state = ImageLoadingState::NotLoaded;
                     }
                 }
@@ -393,6 +425,7 @@ impl Engine {
     }
 
     /// Add a CSS stylesheet from a URL
+    #[inline]
     pub async fn load_external_stylesheet(&mut self, css_url: &str) -> Result<(), NetworkError> {
         let absolute_url = self.resolve_url(css_url)?;
         let css_content = self.http_client.fetch_resource(&absolute_url).await?;
@@ -437,9 +470,35 @@ impl Engine {
                 self.add_stylesheet(&css_content);
             }
 
+            let mut fetch_futures = Vec::new();
             for href in link_hrefs {
-                if let Err(e) = self.load_external_stylesheet(&href).await {
-                    println!("Failed to load stylesheet {}: {}", href, e);
+                let absolute_url = match self.resolve_url(&href) {
+                    Ok(url) => url,
+                    Err(e) => {
+                        println!("Failed to resolve stylesheet URL {}: {}", href, e);
+                        continue;
+                    }
+                };
+                let http_client = &self.http_client;
+                fetch_futures.push(async move {
+                    http_client.fetch_resource(&absolute_url).await
+                });
+            }
+
+            let results = futures::future::join_all(fetch_futures).await;
+
+            for result in results {
+                match result {
+                    Ok(css_bytes) => {
+                        if let Ok(css_content) = String::from_utf8(css_bytes) {
+                            self.add_stylesheet(&css_content);
+                        } else {
+                            println!("Failed to decode fetched stylesheet as UTF-8");
+                        }
+                    }
+                    Err(e) => {
+                        println!("Failed to fetch external stylesheet: {}", e);
+                    }
                 }
             }
         }

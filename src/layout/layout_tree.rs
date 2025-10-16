@@ -1,3 +1,4 @@
+use std::rc::Rc;
 // Layout tree implementation
 use super::box_model::{Dimensions, EdgeSizes};
 use skia_safe::Rect;
@@ -98,7 +99,7 @@ pub enum BoxType {
     Inline,
     InlineBlock,
     Text,
-    Image(ImageData),
+    Image(Rc<ImageData>),
 }
 
 /// A box in the layout tree
@@ -504,7 +505,7 @@ impl LayoutBox {
     }
 
     /// Layout image nodes with position offset
-    fn layout_image(&mut self, data: ImageData, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
+    fn layout_image(&mut self, data: Rc<ImageData>, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
         // Default image dimensions
         let default_width = 150;
         let default_height = 100;

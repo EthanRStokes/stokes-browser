@@ -76,7 +76,7 @@ impl HtmlParser {
                         }
                     }
 
-                    target_node.node_type = NodeType::Image(image_data);
+                    target_node.node_type = NodeType::Image(Rc::from(image_data));
                 } else {
                     target_node.node_type = NodeType::Element(ElementData::with_attributes(&tag_name, attributes));
                 }

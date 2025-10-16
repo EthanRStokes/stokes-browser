@@ -25,7 +25,7 @@ pub enum NodeType {
         target: String,
         data: String,
     },
-    Image(ImageData),
+    Image(Rc<ImageData>),
 }
 
 /// Data specific to element nodes
@@ -69,7 +69,7 @@ impl ElementData {
 /// Data specific to image nodes
 #[derive(Debug, Clone)]
 pub struct ImageData {
-    pub src: String,
+    pub src: Rc<String>,
     pub alt: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -101,7 +101,7 @@ impl PartialEq for ImageData {
 impl ImageData {
     pub fn new(src: String, alt: String) -> Self {
         Self {
-            src,
+            src: Rc::from(src),
             alt,
             width: None,
             height: None,
