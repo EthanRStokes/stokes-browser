@@ -78,7 +78,7 @@ impl HtmlRenderer {
         canvas.restore();
     }
 
-    /// Render a single layout box with CSS styles, transitions, and scale factor (OPTIMIZED)
+    /// Render a single layout box with CSS styles, transitions, and scale factor
     fn render_box(
         &mut self,
         canvas: &Canvas,

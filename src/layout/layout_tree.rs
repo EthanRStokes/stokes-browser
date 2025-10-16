@@ -122,6 +122,8 @@ pub struct LayoutBox {
     pub flex_basis: crate::css::FlexBasis, // CSS flex-basis property
     pub gap: crate::css::Gap, // CSS gap property (row-gap and column-gap)
     pub display_type: crate::css::computed::DisplayType, // CSS display property
+    pub float: crate::css::Float, // CSS float property
+    pub clear: crate::css::Clear, // CSS clear property
 }
 
 impl LayoutBox {
@@ -144,6 +146,8 @@ impl LayoutBox {
             flex_basis: crate::css::FlexBasis::Auto, // Default value
             gap: crate::css::Gap::default(), // Default value
             display_type: crate::css::computed::DisplayType::Block, // Default value
+            float: crate::css::Float::None, // Default value
+            clear: crate::css::Clear::None, // Default value
         }
     }
 
@@ -207,19 +211,85 @@ impl LayoutBox {
                 current_y += row_gap;
             }
 
-            // Layout the child first to determine its dimensions
-            child.layout(available_width, container_height, content_x, current_y, scale_factor);
+            // Handle clear property - move past floats if needed
+            if child.clear != crate::css::Clear::None {
+                current_y = float_context.get_clear_y(&child.clear, current_y);
+            }
 
-            // Now position it based on float/clear properties (would need access to style_map)
-            // For now, we'll just stack them vertically
-            current_y += child.dimensions.total_height();
+            // Check if this child is floated
+            match child.float {
+                crate::css::Float::Left => {
+                    // Layout the child first to get its dimensions
+                    child.layout(available_width, container_height, content_x, current_y, scale_factor);
+
+                    // Find appropriate Y position for the float if current position doesn't have space
+                    let float_width = child.dimensions.total_width();
+                    let float_y = float_context.find_y_for_width(current_y, float_width, available_width, content_x);
+
+                    // Get the left edge position considering other floats
+                    let (left_edge, _) = float_context.get_available_width(float_y, available_width, content_x);
+
+                    // Position the float at the left edge
+                    let float_x = left_edge;
+                    child.layout(available_width, container_height, float_x - child.dimensions.margin.left, float_y - child.dimensions.margin.top, scale_factor);
+
+                    // Register this float in the context
+                    let float_height = child.dimensions.total_height();
+                    float_context.left_floats.push((float_x, float_y, float_width, float_height));
+
+                    // Floats don't affect current_y for normal flow (they're taken out of flow)
+                }
+                crate::css::Float::Right => {
+                    // Layout the child first to get its dimensions
+                    child.layout(available_width, container_height, content_x, current_y, scale_factor);
+
+                    // Find appropriate Y position for the float if current position doesn't have space
+                    let float_width = child.dimensions.total_width();
+                    let float_y = float_context.find_y_for_width(current_y, float_width, available_width, content_x);
+
+                    // Get the right edge position considering other floats
+                    let (_, avail_width) = float_context.get_available_width(float_y, available_width, content_x);
+
+                    // Position the float at the right edge
+                    let float_x = content_x + avail_width - float_width;
+                    child.layout(available_width, container_height, float_x - child.dimensions.margin.left, float_y - child.dimensions.margin.top, scale_factor);
+
+                    // Register this float in the context
+                    let float_height = child.dimensions.total_height();
+                    float_context.right_floats.push((float_x, float_y, float_width, float_height));
+
+                    // Floats don't affect current_y for normal flow (they're taken out of flow)
+                }
+                crate::css::Float::None => {
+                    // Normal flow element - position it considering active floats
+                    // Get available width at current Y position
+                    let (_left_edge, avail_width) = float_context.get_available_width(current_y, available_width, content_x);
+
+                    // If available width is too small, move down to find space
+                    let required_width = child.dimensions.margin.left + child.dimensions.margin.right + 10.0; // Minimum required
+                    let actual_y = if avail_width < required_width {
+                        float_context.find_y_for_width(current_y, required_width, available_width, content_x)
+                    } else {
+                        current_y
+                    };
+
+                    // Get the final available space at the chosen Y position
+                    let (final_left_edge, final_avail_width) = float_context.get_available_width(actual_y, available_width, content_x);
+
+                    // Layout the child with the available width, positioned at the left edge
+                    child.layout(final_avail_width, container_height, final_left_edge, actual_y, scale_factor);
+
+                    // Advance current_y for the next normal flow element
+                    current_y = actual_y + child.dimensions.total_height();
+                }
+            }
         }
 
         // Calculate auto content height based on children and floats
         let auto_content_height = if self.children.is_empty() {
             0.0
         } else {
-            // Include floats in height calculation
+            // Start with normal flow height
             let mut max_height = current_y - content_y;
 
             // Check if any floats extend beyond normal flow
@@ -925,6 +995,10 @@ impl LayoutBox {
 
         // Store gap value
         self.gap = styles.gap.clone();
+
+        // Store float and clear properties
+        self.float = styles.float.clone();
+        self.clear = styles.clear.clone();
 
         // Note: Other style properties like colors, fonts are handled in the renderer
         // Scale factor will be applied during layout phase

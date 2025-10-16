@@ -99,6 +99,10 @@ impl LayoutEngine {
             // Apply box-sizing property
             layout_box.box_sizing = computed_styles.box_sizing.clone();
 
+            // Apply float and clear properties
+            layout_box.float = computed_styles.float.clone();
+            layout_box.clear = computed_styles.clear.clone();
+
             // Apply width and height constraints
             if let Some(width) = &computed_styles.width {
                 let parent_width = self.viewport_width; // Simplified parent width

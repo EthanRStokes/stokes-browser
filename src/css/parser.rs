@@ -187,7 +187,7 @@ impl CssParser {
         declarations
     }
 
-    /// Parse a single CSS declaration with fast path (optimized)
+    /// Parse a single CSS declaration with fast path
     #[inline]
     fn parse_declaration_fast(&self, decl_text: &str) -> Option<Declaration> {
         // Skip leading whitespace manually to avoid trim allocation
