@@ -175,6 +175,12 @@ impl CssValue {
             return None;
         }
 
+        // CSS length values must be ASCII (numbers + unit). If the string contains
+        // non-ASCII characters, it's not a valid length value.
+        if !value.is_ascii() {
+            return None;
+        }
+
         let bytes = value.as_bytes();
         let len = bytes.len();
 
