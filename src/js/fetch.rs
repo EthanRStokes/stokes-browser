@@ -1,8 +1,8 @@
+use crate::networking::HttpClient;
 // Fetch API implementation for JavaScript
-use boa_engine::{Context, JsResult as BoaResult, JsValue, NativeFunction, object::ObjectInitializer, JsString, property::Attribute};
+use boa_engine::{object::ObjectInitializer, property::Attribute, Context, JsResult as BoaResult, JsString, JsValue, NativeFunction};
 use boa_gc::{Finalize, Trace};
 use std::sync::{Arc, Mutex};
-use crate::networking::HttpClient;
 
 /// Response object wrapper for fetch API
 #[derive(Debug, Clone, Trace, Finalize)]

@@ -1,9 +1,9 @@
+use crate::dom::DomNode;
+use boa_engine::{object::JsObject, Context, JsValue};
+use std::cell::RefCell;
 // Event system for DOM nodes
 use std::collections::HashMap;
-use boa_engine::{JsValue, Context, object::JsObject};
 use std::rc::Rc;
-use std::cell::RefCell;
-use crate::dom::DomNode;
 
 /// Event types supported by the browser
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

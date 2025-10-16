@@ -1,8 +1,8 @@
-// Text rendering functionality
-use skia_safe::{Canvas, Paint, Font, TextBlob, MaskFilter, BlurStyle};
-use crate::layout::LayoutBox;
-use crate::css::ComputedValues;
 use super::font::FontManager;
+use crate::css::ComputedValues;
+use crate::layout::LayoutBox;
+// Text rendering functionality
+use skia_safe::{BlurStyle, Canvas, Font, MaskFilter, Paint, TextBlob};
 
 /// Render text with CSS styles applied and DPI scale factor
 pub fn render_text_node(

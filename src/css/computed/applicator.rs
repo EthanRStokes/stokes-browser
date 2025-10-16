@@ -1,6 +1,6 @@
 // Declaration application logic for CSS properties
 use super::values::{ComputedValues, DisplayType};
-use crate::css::{PropertyName, CssValue, Declaration, BorderRadius, BoxShadow, TextDecoration};
+use crate::css::{BorderRadius, BoxShadow, CssValue, Declaration, PropertyName, TextDecoration};
 use crate::layout::box_model::EdgeSizes;
 
 /// Apply a CSS declaration to computed values

@@ -1,5 +1,5 @@
 // Computed CSS values structure
-use crate::css::{BorderRadius, BoxShadow, TextDecoration, TextShadow, Stroke};
+use crate::css::{BorderRadius, BoxShadow, Stroke, TextDecoration, TextShadow};
 use crate::layout::box_model::EdgeSizes;
 
 /// Computed CSS values for a node

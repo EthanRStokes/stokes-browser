@@ -14,7 +14,7 @@ mod resolver;
 mod applicator;
 mod shorthands;
 
+pub use resolver::StyleResolver;
 // Re-export main types
 pub use values::{ComputedValues, DisplayType};
-pub use resolver::StyleResolver;
 

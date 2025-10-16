@@ -2,15 +2,13 @@
 pub(crate) mod box_model;
 mod layout_tree;
 
-pub use self::box_model::*;
 pub use self::layout_tree::*;
 
-use std::collections::HashMap;
-use std::rc::{Rc, Weak};
+use crate::css::{ComputedValues, StyleResolver, Stylesheet};
+use crate::dom::{DomNode, NodeType};
 use std::cell::RefCell;
-use skia_safe::{Rect, Size};
-use crate::dom::{DomNode, NodeType, ElementData};
-use crate::css::{StyleResolver, ComputedValues, Stylesheet};
+use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Layout engine responsible for computing element positions and sizes
 pub struct LayoutEngine {

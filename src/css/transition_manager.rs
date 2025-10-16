@@ -1,8 +1,8 @@
+use super::{Color, ComputedValues, Length};
+use crate::css::values::transition::TransitionSpec;
 // CSS transition manager for handling animated property changes
 use std::collections::HashMap;
 use std::time::Instant;
-use crate::css::values::transition::TransitionSpec;
-use super::{ComputedValues, Color, Length};
 
 /// Tracks active transitions for elements
 pub struct TransitionManager {

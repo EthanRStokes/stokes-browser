@@ -3,23 +3,23 @@ mod parser;
 mod node;
 mod events;
 
+use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
-use std::cell::RefCell;
 
+pub use self::events::{EventDispatcher, EventType};
+pub use self::node::{AttributeMap, DomNode, ElementData, ImageData, ImageLoadingState, NodeType};
 pub use self::parser::HtmlParser;
-pub use self::node::{DomNode, NodeType, ElementData, AttributeMap, ImageData, ImageLoadingState};
-pub use self::events::{EventType, EventListener, EventListenerRegistry, Event, EventPhase, EventDispatcher};
 
 /// Represents a DOM tree
 pub struct Dom {
-    pub root: DomNode,
+    pub root: Rc<RefCell<DomNode>>,
 }
 
 impl Dom {
     /// Create a new empty DOM
     pub fn new() -> Self {
         Self {
-            root: DomNode::new(NodeType::Document, None),
+            root: Rc::new(RefCell::from(DomNode::new(NodeType::Document, None))),
         }
     }
 
@@ -30,20 +30,20 @@ impl Dom {
     }
 
     /// Find nodes by tag name
-    pub fn query_selector(&self, selector: &str) -> Vec<Rc<RefCell<DomNode>>> {
-        self.root.query_selector(selector)
+    pub fn query_selector(&mut self, selector: &str) -> Vec<Rc<RefCell<DomNode>>> {
+        self.get_mut_root().query_selector(selector)
     }
 
     /// Find nodes that match a predicate
-    pub fn find_nodes<F>(&self, predicate: F) -> Vec<Rc<RefCell<DomNode>>>
+    pub fn find_nodes<F>(&mut self, predicate: F) -> Vec<Rc<RefCell<DomNode>>>
     where
         F: Fn(&DomNode) -> bool + Clone,
     {
-        self.root.find_nodes(predicate)
+        self.get_mut_root().find_nodes(predicate)
     }
 
     /// Extract the page title
-    pub fn get_title(&self) -> String {
+    pub fn get_title(&mut self) -> String {
         // Find the title element in the head
         let title_nodes = self.query_selector("title");
         if let Some(title_node) = title_nodes.first() {
@@ -57,6 +57,10 @@ impl Dom {
 
     /// Get the root node as Rc<RefCell<DomNode>>
     pub fn get_root(&self) -> Rc<RefCell<DomNode>> {
-        Rc::new(RefCell::new(self.root.clone()))
+        Rc::clone(&self.root)
+    }
+
+    pub fn get_mut_root(&mut self) -> RefMut<'_, DomNode> {
+        self.root.borrow_mut()
     }
 }

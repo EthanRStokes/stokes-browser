@@ -1,8 +1,8 @@
+use crate::css::{BackgroundImage, ComputedValues};
+use skia_safe::{Canvas, Color, FilterMode, MipmapMode, Paint, Rect, SamplingOptions};
+use std::cell::RefCell;
 // Background rendering (colors, images)
 use std::collections::HashMap;
-use std::cell::RefCell;
-use skia_safe::{Canvas, Paint, Color, Rect, SamplingOptions, MipmapMode, FilterMode};
-use crate::css::{ComputedValues, BackgroundImage};
 
 /// Background image cache manager
 pub struct BackgroundImageCache {

@@ -1,9 +1,9 @@
+use super::{initialize_bindings, JsResult, TimerManager};
+use crate::dom::DomNode;
 // JavaScript runtime management
 use boa_engine::{Context, JsValue, Source};
-use std::rc::Rc;
 use std::cell::RefCell;
-use crate::dom::DomNode;
-use super::{JsResult, initialize_bindings, TimerManager};
+use std::rc::Rc;
 use std::time::Duration;
 
 // Stack size for growing when needed (16MB to handle very large scripts)
@@ -15,7 +15,7 @@ const RED_ZONE: usize = 32 * 1024;
 pub struct JsRuntime {
     context: Context,
     document_root: Rc<RefCell<DomNode>>,
-    timer_manager: TimerManager,
+    timer_manager: Rc<TimerManager>,
 }
 
 impl JsRuntime {
@@ -27,7 +27,7 @@ impl JsRuntime {
         initialize_bindings(&mut context, document_root.clone())?;
 
         // Create and set up timer manager
-        let timer_manager = TimerManager::new();
+        let timer_manager = Rc::new(TimerManager::new());
         super::timers::setup_timers(&mut context, timer_manager.clone())?;
 
         Ok(Self {

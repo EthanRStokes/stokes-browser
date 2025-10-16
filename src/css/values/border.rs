@@ -1,7 +1,7 @@
 // CSS border-related values
 
-use super::length::Length;
 use super::color::Color;
+use super::length::Length;
 use crate::css::values::CssValue;
 
 /// CSS border radius values

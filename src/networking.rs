@@ -1,7 +1,7 @@
 // Networking module for handling HTTP requests
 use curl::easy::{Easy, List};
-use std::time::Duration;
 use std::path::Path;
+use std::time::Duration;
 
 #[derive(Debug)]
 pub enum NetworkError {

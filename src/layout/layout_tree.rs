@@ -1,8 +1,8 @@
-use std::rc::Rc;
 // Layout tree implementation
 use super::box_model::{Dimensions, EdgeSizes};
-use skia_safe::Rect;
 use crate::dom::ImageData;
+use skia_safe::Rect;
+use std::cell::RefCell;
 
 /// Tracks active floats in a formatting context
 #[derive(Debug, Clone)]
@@ -99,7 +99,7 @@ pub enum BoxType {
     Inline,
     InlineBlock,
     Text,
-    Image(Rc<ImageData>),
+    Image(RefCell<ImageData>),
 }
 
 /// A box in the layout tree
@@ -505,7 +505,8 @@ impl LayoutBox {
     }
 
     /// Layout image nodes with position offset
-    fn layout_image(&mut self, data: Rc<ImageData>, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
+    fn layout_image(&mut self, data: RefCell<ImageData>, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
+        let data = data.borrow();
         // Default image dimensions
         let default_width = 150;
         let default_height = 100;

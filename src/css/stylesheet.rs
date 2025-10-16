@@ -1,6 +1,5 @@
 // CSS stylesheet, rules, and declarations
-use super::{PropertyName, CssValue, Selector};
-use std::collections::HashMap;
+use super::{CssValue, PropertyName, Selector};
 
 /// A CSS declaration (property: value)
 #[derive(Debug, Clone)]

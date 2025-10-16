@@ -1,10 +1,10 @@
 // Tab process module - runs the browser engine in a separate process
 use crate::engine::{Engine, EngineConfig};
-use crate::ipc::{IpcChannel, ParentToTabMessage, TabToParentMessage, connect};
+use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage};
+use shared_memory::{Shmem, ShmemConf};
+use skia_safe::{AlphaType, ColorType, ImageInfo, Surface};
 use std::io;
 use std::path::PathBuf;
-use skia_safe::{ColorType, AlphaType, ImageInfo, Surface};
-use shared_memory::{ShmemConf, Shmem};
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {

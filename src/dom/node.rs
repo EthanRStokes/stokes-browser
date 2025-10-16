@@ -1,9 +1,9 @@
+use crate::dom::events::EventListenerRegistry;
+use std::cell::RefCell;
 // DOM node implementation for representing HTML elements
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
-use std::cell::RefCell;
-use crate::dom::events::EventListenerRegistry;
 
 /// A map of attribute names to values
 pub type AttributeMap = HashMap<String, String>;
@@ -25,7 +25,7 @@ pub enum NodeType {
         target: String,
         data: String,
     },
-    Image(Rc<ImageData>),
+    Image(RefCell<ImageData>),
 }
 
 /// Data specific to element nodes
@@ -581,6 +581,7 @@ impl fmt::Debug for DomNode {
                 write!(f, "<?{} {}?>", target, data)
             },
             NodeType::Image(data) => {
+                let data = data.borrow();
                 write!(f, "<img src=\"{}\" alt=\"{}\"", data.src, data.alt)?;
                 if let Some(width) = data.width {
                     write!(f, " width=\"{}\"", width)?;

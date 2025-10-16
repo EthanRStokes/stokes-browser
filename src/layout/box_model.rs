@@ -1,5 +1,5 @@
 // Box model implementation for CSS layout
-use skia_safe::{Rect, Point, Size};
+use skia_safe::Rect;
 
 /// CSS box model dimensions
 #[derive(Debug, Clone, Default)]

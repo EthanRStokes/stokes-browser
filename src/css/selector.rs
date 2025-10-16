@@ -1,7 +1,5 @@
 // CSS selector implementation
-use crate::dom::{DomNode, NodeType, ElementData};
-use std::rc::Rc;
-use std::cell::RefCell;
+use crate::dom::{DomNode, ElementData, NodeType};
 
 /// CSS pseudo-class types
 #[derive(Debug, Clone, PartialEq)]

@@ -1,8 +1,8 @@
+use skia_safe::font_style::{Slant, Weight, Width};
+use skia_safe::{Font, FontStyle, Typeface};
+use std::cell::RefCell;
 // Font management and caching for the renderer
 use std::collections::HashMap;
-use std::cell::RefCell;
-use skia_safe::{Font, FontStyle, Typeface};
-use skia_safe::font_style::{Weight, Width, Slant};
 
 /// Font manager with caching capabilities
 pub struct FontManager {

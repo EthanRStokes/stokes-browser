@@ -1,11 +1,9 @@
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta};
-use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::{Key, NamedKey};
-use winit::window::Window;
-use arboard::Clipboard;
 use crate::engine::Engine;
 use crate::ui::BrowserUI;
-use crate::ipc::KeyModifiers;
+use arboard::Clipboard;
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseScrollDelta};
+use winit::keyboard::{Key, NamedKey};
+use winit::window::Window;
 
 /// Result of input action that may affect tabs
 #[derive(Debug, PartialEq)]

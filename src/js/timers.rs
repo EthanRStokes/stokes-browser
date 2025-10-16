@@ -1,10 +1,10 @@
 // Timer implementation for setTimeout and setInterval
-use boa_engine::{Context, JsValue, NativeFunction, JsString, object::JsObject};
+use boa_engine::{object::JsObject, Context, JsString, JsValue, NativeFunction};
 use boa_gc::Finalize;
-use std::time::{Duration, Instant};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::cell::RefCell;
+use std::time::{Duration, Instant};
 
 /// A pending timer that will execute a callback after a delay
 #[derive(Debug, Clone)]
@@ -152,7 +152,7 @@ impl TimerManager {
 }
 
 /// Set up timer functions in the JavaScript context
-pub fn setup_timers(context: &mut Context, timer_manager: TimerManager) -> Result<(), String> {
+pub fn setup_timers(context: &mut Context, timer_manager: Rc<TimerManager>) -> Result<(), String> {
     // setTimeout function
     let timer_manager_1 = timer_manager.clone();
     context.register_global_callable(

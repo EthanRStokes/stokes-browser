@@ -1,11 +1,13 @@
-// Image rendering functionality
-use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob, SamplingOptions, MipmapMode, FilterMode};
-use crate::layout::LayoutBox;
 use crate::dom::ImageData;
 use crate::dom::ImageLoadingState;
+use crate::layout::LayoutBox;
+// Image rendering functionality
+use skia_safe::{Canvas, Color, FilterMode, Font, MipmapMode, Paint, Rect, SamplingOptions, TextBlob};
+use std::cell::RefCell;
 
 /// Render image content
-pub fn render_image_node(canvas: &Canvas, layout_box: &LayoutBox, image_data: &ImageData, scale_factor: f64, font: &Font) {
+pub fn render_image_node(canvas: &Canvas, layout_box: &LayoutBox, image_data: &RefCell<ImageData>, scale_factor: f64, font: &Font) {
+    let image_data = image_data.borrow();
     let content_rect = layout_box.dimensions.content;
 
     // Early exit if content rect is too small

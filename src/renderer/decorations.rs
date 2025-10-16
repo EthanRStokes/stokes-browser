@@ -1,6 +1,6 @@
+use crate::css::{BorderRadiusPx, ComputedValues, OutlineStyle, Stroke, TextDecoration};
 // Text decorations, borders, shadows, and outlines
-use skia_safe::{Canvas, Paint, Color, Rect, TextBlob};
-use crate::css::{ComputedValues, TextDecoration, BorderRadiusPx, OutlineStyle, Stroke};
+use skia_safe::{Canvas, Color, Paint, Rect, TextBlob};
 
 /// Render text decorations (underline, overline, line-through)
 pub fn render_text_decorations(

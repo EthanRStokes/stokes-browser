@@ -1,8 +1,8 @@
-// Pseudo-element rendering (::before, ::after)
-use skia_safe::{Canvas, Paint, Rect, TextBlob};
+use super::font::FontManager;
 use crate::css::{ComputedValues, ContentValue};
 use crate::dom::ElementData;
-use super::font::FontManager;
+// Pseudo-element rendering (::before, ::after)
+use skia_safe::{Canvas, Paint, Rect, TextBlob};
 
 /// Render pseudo-element generated content (::before or ::after)
 pub fn render_pseudo_element_content(

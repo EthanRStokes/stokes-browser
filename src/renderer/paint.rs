@@ -1,5 +1,5 @@
 // Paint and styling utilities
-use skia_safe::{Paint, Color};
+use skia_safe::{Color, Paint};
 
 /// Create default paints for rendering
 pub struct DefaultPaints {

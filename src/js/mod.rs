@@ -7,14 +7,12 @@ mod fetch;
 mod timers;
 
 pub use runtime::JsRuntime;
-pub use console::Console;
-pub use element_bindings::ElementWrapper;
 pub use timers::TimerManager;
 
-use boa_engine::{Context, JsValue, Source};
-use std::rc::Rc;
-use std::cell::RefCell;
 use crate::dom::DomNode;
+use boa_engine::{Context, JsValue, Source};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// JavaScript execution result
 pub type JsResult<T> = Result<T, String>;

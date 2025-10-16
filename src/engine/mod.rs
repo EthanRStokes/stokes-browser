@@ -1,18 +1,18 @@
 // The core browser engine that coordinates between components
 mod config;
 
+use crate::css::transition_manager::TransitionManager;
+use crate::css::{ComputedValues, CssParser};
+use crate::dom::{Dom, DomNode, ImageData, ImageLoadingState, NodeType};
+use crate::dom::{EventDispatcher, EventType};
+use crate::js::JsRuntime;
+use crate::layout::{LayoutBox, LayoutEngine};
+use crate::networking::{HttpClient, NetworkError};
+use crate::renderer::HtmlRenderer;
+use skia_safe::Canvas;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::cell::RefCell;
-use skia_safe::Canvas;
-use crate::networking::{HttpClient, NetworkError};
-use crate::dom::{Dom, DomNode, NodeType, ImageData, ImageLoadingState};
-use crate::layout::{LayoutEngine, LayoutBox};
-use crate::renderer::HtmlRenderer;
-use crate::css::{CssParser, ComputedValues};
-use crate::css::transition_manager::TransitionManager;
-use crate::js::JsRuntime;
-use crate::dom::{EventType, EventDispatcher};
 
 pub use self::config::EngineConfig;
 
@@ -85,7 +85,7 @@ impl Engine {
             let html = self.http_client.fetch(url).await?;
 
             // Parse the HTML into our DOM
-            let dom = Dom::parse_html(&html);
+            let mut dom = Dom::parse_html(&html);
 
             // Extract page title
             self.page_title = dom.get_title();
@@ -124,12 +124,12 @@ impl Engine {
             let image_nodes = dom.find_nodes(|node| matches!(node.node_type, NodeType::Image(_)));
 
             // Collect image sources that need to be loaded
-            let mut image_requests:Vec<(&Rc<RefCell<DomNode>>, Rc<String>)> = Vec::new();
+            let mut image_requests: Vec<(&Rc<RefCell<DomNode>>, Rc<String>)> = Vec::new();
 
             for image_node_rc in &image_nodes {
                 if let Ok(mut image_node) = image_node_rc.try_borrow_mut() {
                     if let NodeType::Image(ref mut image_data) = image_node.node_type {
-                        let image_data = Rc::get_mut(image_data).unwrap();
+                        let image_data = image_data.get_mut();
                         // Only start loading if not already loaded or loading
                         if matches!(image_data.loading_state, ImageLoadingState::NotLoaded) {
                             // Set to loading state
@@ -156,10 +156,9 @@ impl Engine {
                 };
 
                 let http_client = &self.http_client;
-                let src_clone = src.clone();
                 fetch_futures.push(async move {
                     let result = http_client.fetch_resource(&absolute_url).await;
-                    (src_clone, result)
+                    (src, result)
                 });
             }
 
@@ -169,7 +168,7 @@ impl Engine {
             for ((node_rc, src), (_, result)) in image_requests.iter().zip(results.into_iter()) {
                 if let Ok(mut image_node) = node_rc.try_borrow_mut() {
                     if let NodeType::Image(ref mut image_data) = image_node.node_type {
-                        let image_data = Rc::get_mut(image_data).unwrap();
+                        let image_data = image_data.get_mut();
                         match result {
                             Ok(image_bytes) => {
                                 // Decode and cache the image immediately after loading
@@ -304,7 +303,7 @@ impl Engine {
             for image_node_rc in image_nodes {
                 if let Ok(mut image_node) = image_node_rc.try_borrow_mut() {
                     if let NodeType::Image(ref mut image_data) = image_node.node_type {
-                        let image_data = Rc::get_mut(image_data).unwrap();
+                        let image_data = image_data.get_mut();
                         image_data.loading_state = ImageLoadingState::NotLoaded;
                     }
                 }
@@ -436,7 +435,7 @@ impl Engine {
 
     /// Extract and parse CSS from <style> tags and <link> tags in the current DOM
     pub async fn parse_document_styles(&mut self) {
-        if let Some(dom) = &self.dom {
+        if let Some(dom) = &mut self.dom {
             // Collect style contents first
             let mut style_contents = Vec::new();
             let style_elements = dom.query_selector("style");
@@ -684,7 +683,7 @@ impl Engine {
         // Collect script contents and external URLs first to avoid borrow issues
         let mut script_items = Vec::new();
 
-        if let Some(dom) = &self.dom {
+        if let Some(dom) = &mut self.dom {
             let script_elements = dom.query_selector("script");
 
             for script_element in script_elements {

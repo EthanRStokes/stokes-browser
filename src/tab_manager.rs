@@ -1,13 +1,12 @@
 // Tab Manager - manages tab processes from the parent process
 use crate::ipc::{IpcChannel, IpcServer, ParentToTabMessage, TabToParentMessage};
+use shared_memory::ShmemConf;
+use skia_safe::{AlphaType, ColorType, Data, Image, ImageInfo};
 use std::collections::HashMap;
 use std::io;
-use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
-use skia_safe::{Image, ImageInfo, ColorType, AlphaType, Data};
-use shared_memory::{Shmem, ShmemConf};
 
 /// Represents a managed tab process
 pub struct ManagedTab {

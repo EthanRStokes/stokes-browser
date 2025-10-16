@@ -1,11 +1,11 @@
-// DOM bindings for JavaScript
-use boa_engine::{Context, JsResult as BoaResult, JsValue, NativeFunction, object::builtins::JsArray, JsString};
-use boa_gc::{Finalize, Trace};
-use std::rc::Rc;
-use std::cell::RefCell;
-use base64::Engine;
-use crate::dom::{DomNode, NodeType};
 use super::element_bindings::ElementWrapper;
+use crate::dom::{DomNode, NodeType};
+use base64::Engine;
+// DOM bindings for JavaScript
+use boa_engine::{object::builtins::JsArray, Context, JsResult as BoaResult, JsString, JsValue, NativeFunction};
+use boa_gc::{Finalize, Trace};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Document object wrapper
 #[derive(Debug, Clone, Trace, Finalize)]

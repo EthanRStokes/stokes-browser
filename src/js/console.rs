@@ -1,5 +1,5 @@
 // Console API implementation for JavaScript
-use boa_engine::{Context, JsResult as BoaResult, JsValue, NativeFunction, object::builtins::JsArray, JsString};
+use boa_engine::{Context, JsResult as BoaResult, JsString, JsValue, NativeFunction};
 use boa_gc::{Finalize, Trace};
 
 /// Console object for JavaScript

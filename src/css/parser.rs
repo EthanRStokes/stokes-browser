@@ -1,5 +1,5 @@
 // CSS parser implementation
-use super::{PropertyName, CssValue, Selector, Stylesheet, Rule, Declaration};
+use super::{CssValue, Declaration, PropertyName, Rule, Selector, Stylesheet};
 
 /// Simple CSS parser
 pub struct CssParser;

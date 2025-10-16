@@ -7,17 +7,17 @@ mod background;
 mod decorations;
 mod pseudo;
 
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
-use skia_safe::{Canvas, Color, Font, Paint, Rect};
-use crate::css::ComputedValues;
 use crate::css::transition_manager::TransitionManager;
+use crate::css::ComputedValues;
 use crate::dom::{DomNode, ElementData, NodeType};
 use crate::layout::LayoutBox;
 use crate::renderer::background::BackgroundImageCache;
 use crate::renderer::font::FontManager;
 use crate::renderer::paint::DefaultPaints;
+use skia_safe::{Canvas, Color, Font, Paint, Rect};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer {

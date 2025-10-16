@@ -1,6 +1,6 @@
-use skia_safe::{Canvas, Paint, Color, Rect, Font, TextBlob, FontStyle, Path};
-use std::time::{Duration, Instant};
+use skia_safe::{Canvas, Color, Font, FontStyle, Paint, Path, Rect, TextBlob};
 use std::f32::consts::PI;
+use std::time::{Duration, Instant};
 
 /// Tooltip information
 #[derive(Debug, Clone)]

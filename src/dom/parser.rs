@@ -1,11 +1,11 @@
+use super::{AttributeMap, Dom, DomNode, ElementData, ImageData, NodeType};
 // HTML parser using html5ever
 use html5ever::parse_document;
 use html5ever::tendril::TendrilSink;
 use markup5ever_rcdom as rcdom;
+use markup5ever_rcdom::{Handle, NodeData};
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
-use markup5ever_rcdom::{Handle, NodeData};
-use super::{Dom, DomNode, NodeType, ElementData, AttributeMap, ImageData};
 
 /// HTML Parser for converting HTML strings into DOM structures
 pub struct HtmlParser;
@@ -33,8 +33,9 @@ impl HtmlParser {
         &self, 
         handle: &Handle, 
         parent: Option<Weak<RefCell<DomNode>>>, // Remove underscore since we'll use it
-        target_node: &mut DomNode
+        target_node: &mut Rc<RefCell<DomNode>>
     ) {
+        let mut target_node = target_node.borrow_mut();
         let node = handle;
 
         // Set the parent reference in the target node
@@ -76,7 +77,9 @@ impl HtmlParser {
                         }
                     }
 
-                    target_node.node_type = NodeType::Image(Rc::from(image_data));
+                    println!("Found image: src='{}', alt='{}', width={:?}, height={:?}",
+                        image_data.src, image_data.alt, image_data.width, image_data.height);
+                    target_node.node_type = NodeType::Image(RefCell::new(image_data));
                 } else {
                     target_node.node_type = NodeType::Element(ElementData::with_attributes(&tag_name, attributes));
                 }
@@ -107,16 +110,13 @@ impl HtmlParser {
             let child_node = DomNode::new(NodeType::Document, None);  // Temporary type
 
             // Add the child to the parent first to get the Rc reference
-            let child_rc = target_node.add_child(child_node);
+            let mut child_rc = target_node.add_child(child_node);
             
             // Create a weak reference to pass as parent to the recursive call
             let parent_weak = Some(Rc::downgrade(&child_rc));
-            
-            // Get a mutable reference to the child for the recursive call
-            let mut child_ref = child_rc.borrow_mut();
-            
+
             // Recursively build the DOM for this child, passing the current node as parent
-            self.build_dom_from_handle(child_handle, parent_weak, &mut child_ref);
+            self.build_dom_from_handle(child_handle, parent_weak, &mut child_rc);
         }
     }
 

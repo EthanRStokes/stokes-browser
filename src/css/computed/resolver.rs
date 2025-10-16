@@ -1,7 +1,7 @@
 // Style resolver that computes final styles for DOM nodes
 use super::values::ComputedValues;
-use crate::css::{Stylesheet, Selector, Declaration};
-use crate::dom::{DomNode, NodeType, ElementData};
+use crate::css::{Selector, Stylesheet};
+use crate::dom::{DomNode, ElementData, NodeType};
 
 /// Style resolver that computes final styles for DOM nodes
 pub struct StyleResolver {

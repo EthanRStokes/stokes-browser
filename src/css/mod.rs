@@ -6,11 +6,11 @@ mod stylesheet;
 pub(crate) mod computed;
 pub mod transition_manager;
 
-pub use self::parser::CssParser;
-pub use values::{CssValue, Color, Length, Unit, BorderRadius, BorderRadiusPx, BoxShadow, BoxShadowPx, TextShadow, TextShadowPx, TextDecoration, TextDecorationType, BackgroundImage, TextAlign, Clear, Float, Overflow, FontStyle, FontVariant, LineHeight, VerticalAlign, ContentValue, BoxSizing, Cursor, Visibility, TextTransform, ListStyleType, TimingFunction, StepPosition, Duration, Transition, TransitionProperty, TransitionSpec, Outline, OutlineStyle, FlexBasis, FlexGrow, FlexShrink, Flex, WhiteSpace, Gap, Stroke};
-pub use self::selector::{Selector, SelectorType, PseudoClass, PseudoElement};
-pub use self::stylesheet::{Stylesheet, Rule, Declaration};
 pub use self::computed::{ComputedValues, StyleResolver};
+pub use self::parser::CssParser;
+pub use self::selector::Selector;
+pub use self::stylesheet::{Declaration, Rule, Stylesheet};
+pub use values::{BackgroundImage, BorderRadius, BorderRadiusPx, BoxShadow, BoxSizing, Clear, Color, ContentValue, CssValue, Cursor, Flex, FlexBasis, FlexGrow, FlexShrink, Float, FontStyle, FontVariant, Gap, Length, LineHeight, ListStyleType, Outline, OutlineStyle, Overflow, Stroke, TextAlign, TextDecoration, TextShadow, TextTransform, TimingFunction, TransitionSpec, VerticalAlign, Visibility, WhiteSpace};
 
 /// CSS property names
 #[derive(Debug, Clone, PartialEq, Hash)]

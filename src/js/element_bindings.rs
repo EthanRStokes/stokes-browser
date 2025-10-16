@@ -1,11 +1,11 @@
-// Element bindings for JavaScript
-use boa_engine::{Context, JsResult as BoaResult, JsValue, NativeFunction, JsString, object::builtins::JsArray};
+use crate::dom::{DomNode, ElementData, EventType, NodeType};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
+// Element bindings for JavaScript
+use boa_engine::{object::builtins::JsArray, Context, JsResult as BoaResult, JsString, JsValue, NativeFunction};
 use boa_gc::{Finalize, Trace};
-use std::rc::Rc;
 use std::cell::RefCell;
-use crate::dom::{DomNode, NodeType, ElementData, EventType};
+use std::rc::Rc;
 
 /// Wrapper for a DOM element that can be used in JavaScript
 #[derive(Debug, Clone, Trace, Finalize)]
