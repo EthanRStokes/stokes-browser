@@ -581,34 +581,6 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
     ).map_err(|e| format!("Failed to set alert: {}", e))?;
 
     global_object.set(
-        JsString::from("setTimeout"),
-        NativeFunction::from_fn_ptr(WindowObject::set_timeout).to_js_function(context.realm()),
-        true,
-        context
-    ).map_err(|e| format!("Failed to set setTimeout: {}", e))?;
-
-    global_object.set(
-        JsString::from("setInterval"),
-        NativeFunction::from_fn_ptr(WindowObject::set_interval).to_js_function(context.realm()),
-        true,
-        context
-    ).map_err(|e| format!("Failed to set setInterval: {}", e))?;
-
-    global_object.set(
-        JsString::from("clearTimeout"),
-        NativeFunction::from_fn_ptr(WindowObject::clear_timeout).to_js_function(context.realm()),
-        true,
-        context
-    ).map_err(|e| format!("Failed to set clearTimeout: {}", e))?;
-
-    global_object.set(
-        JsString::from("clearInterval"),
-        NativeFunction::from_fn_ptr(WindowObject::clear_interval).to_js_function(context.realm()),
-        true,
-        context
-    ).map_err(|e| format!("Failed to set clearInterval: {}", e))?;
-
-    global_object.set(
         JsString::from("requestAnimationFrame"),
         NativeFunction::from_fn_ptr(WindowObject::request_animation_frame).to_js_function(context.realm()),
         true,
