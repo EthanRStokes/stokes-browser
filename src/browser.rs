@@ -25,7 +25,6 @@ enum TabCloseResult {
 /// The main browser application (parent process)
 pub(crate) struct BrowserApp {
     env: Env,
-
     modifiers: Modifiers,
     previous_frame_start: Instant,
     tab_manager: TabManager,
@@ -302,7 +301,7 @@ impl BrowserApp {
         // This will display a native OS dialog box
         use rfd::MessageDialog;
         use rfd::MessageLevel;
-        
+
         MessageDialog::new()
             .set_level(MessageLevel::Info)
             .set_title("Alert")
