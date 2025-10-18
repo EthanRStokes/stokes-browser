@@ -33,8 +33,8 @@ impl HtmlRenderer {
         let font_manager = FontManager::new();
         let paints = DefaultPaints::new();
 
-        let default_font = Font::new(font_manager.typeface.clone(), 14.0);
-        let heading_font = Font::new(font_manager.typeface.clone(), 18.0);
+        let default_font = Font::new(font_manager.placeholder_typeface.clone(), 14.0);
+        let heading_font = Font::new(font_manager.placeholder_typeface.clone(), 18.0);
 
         Self {
             default_font,
@@ -140,7 +140,7 @@ impl HtmlRenderer {
                         }
                     },
                     NodeType::Image(image_data) => {
-                        let placeholder_font = self.font_manager.get_font_for_size(12.0 * scale_factor as f32);
+                        let placeholder_font = self.font_manager.placeholder_font_for_size(12.0 * scale_factor as f32);
                         image::render_image_node(canvas, layout_box, image_data, scale_factor, &placeholder_font);
                     },
                     NodeType::Document => {

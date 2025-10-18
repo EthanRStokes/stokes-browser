@@ -33,7 +33,7 @@ pub fn render_pseudo_element_content(
     }
 
     let scaled_font_size = styles.font_size * scale_factor as f32;
-    let font = font_manager.get_font_for_size_and_style(scaled_font_size, &styles.font_style);
+    let font = font_manager.placeholder_font_for_size_and_style(scaled_font_size, &styles.font_style);
 
     // Create text blob
     if let Some(text_blob) = TextBlob::new(&content_text, &font) {

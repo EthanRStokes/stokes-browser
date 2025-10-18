@@ -848,7 +848,34 @@ impl BrowserUI {
         // Apply scale factor to font size for proper DPI scaling
         let base_font_size = 14.0;
         let scaled_font_size = base_font_size * self.scale_factor as f32;
-        let font = Font::new(typeface, scaled_font_size);
+        let font = Font::new(typeface.clone(), scaled_font_size);
+
+        // Draw BROWSING WITH STOKES text in the top-right corner
+        {
+            // Draw "browsing the web" text in small-caps 18px Times New Roman
+            let times_typeface = font_mgr.match_family_style("Times New Roman", FontStyle::bold_italic())
+                .or_else(|| font_mgr.match_family_style("Liberation Serif", FontStyle::default()))
+                .or_else(|| font_mgr.match_family_style("Times", FontStyle::default()))
+                .or_else(|| font_mgr.match_family_style("serif", FontStyle::default()))
+                .unwrap_or(typeface);
+
+            let custom_font_size = 18.0 * self.scale_factor as f32;
+            let mut custom_font = Font::new(times_typeface, custom_font_size);
+
+            // Enable small-caps by setting font features
+            custom_font.set_subpixel(true);
+
+            // Render text in small-caps style (manually convert to uppercase with smaller caps)
+            let custom_text = "BROWSING WITH STOKES";
+            paint.set_color(Color::from_rgb(60, 60, 60));
+
+            if let Some(text_blob) = TextBlob::new(custom_text, &custom_font) {
+                let text_bounds = text_blob.bounds();
+                let text_x = canvas_width - text_bounds.width() - (20.0 * self.scale_factor as f32);
+                let text_y = 22.0 * self.scale_factor as f32;
+                canvas.draw_text_blob(&text_blob, (text_x, text_y), &paint);
+            }
+        }
 
         // Scale other text rendering properties
         let text_padding = 5.0 * self.scale_factor as f32;

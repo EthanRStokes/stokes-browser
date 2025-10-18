@@ -3,18 +3,19 @@ use skia_safe::{Font, FontStyle, Typeface};
 use std::cell::RefCell;
 // Font management and caching for the renderer
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Font manager with caching capabilities
 pub struct FontManager {
-    pub typeface: Typeface,
-    pub italic_typeface: Typeface,
+    pub placeholder_typeface: Typeface,
+    pub placeholder_italic_typeface: Typeface,
     pub font_mgr: skia_safe::FontMgr,
     // Cache for different sizes - wrapped in RefCell for interior mutability
-    font_cache: RefCell<HashMap<u32, Font>>, // key is font size as u32 (rounded)
+    font_cache: RefCell<HashMap<u32, Rc<Font>>>, // key is font size as u32 (rounded)
     // Cache for styled fonts: (family, size, weight, style) -> Font
     styled_font_cache: RefCell<HashMap<(String, u32, String, u8), Font>>, // u8: 0=normal, 1=italic, 2=oblique
     // Cache for typefaces by family and style to avoid recreating them
-    typeface_cache: RefCell<HashMap<(String, i32, u8), Typeface>>,
+    typeface_cache: RefCell<HashMap<(String, i32, u8), Rc<Typeface>>>,
 }
 
 impl FontManager {
@@ -28,8 +29,8 @@ impl FontManager {
             .unwrap_or_else(|| typeface.clone());
 
         Self {
-            typeface,
-            italic_typeface,
+            placeholder_typeface: typeface,
+            placeholder_italic_typeface: italic_typeface,
             font_mgr,
             font_cache: RefCell::new(HashMap::new()),
             styled_font_cache: RefCell::new(HashMap::new()),
@@ -38,7 +39,7 @@ impl FontManager {
     }
 
     /// Get or create a font for the specified size
-    pub fn get_font_for_size(&self, size: f32) -> Font {
+    pub fn placeholder_font_for_size(&self, size: f32) -> Rc<Font> {
         let size_key = size.round() as u32;
 
         // Check cache first
@@ -50,13 +51,13 @@ impl FontManager {
         }
 
         // Create new font and cache it
-        let font = Font::new(self.typeface.clone(), size);
+        let font = Rc::new(Font::new(self.placeholder_typeface.as_ref(), size));
         self.font_cache.borrow_mut().insert(size_key, font.clone());
         font
     }
 
     /// Get or create a font for the specified size and style
-    pub fn get_font_for_size_and_style(&self, size: f32, css_font_style: &crate::css::FontStyle) -> Font {
+    pub fn placeholder_font_for_size_and_style(&self, size: f32, css_font_style: &crate::css::FontStyle) -> Font {
         // Use default font family and weight
         self.get_font("Arial", size, "normal", css_font_style)
     }
@@ -89,7 +90,7 @@ impl FontManager {
         let typeface = self.get_typeface_for_family(family, font_weight, style_key);
 
         // Create font with the typeface and size
-        let mut font = Font::new(typeface, size);
+        let mut font = Font::new(typeface.as_ref(), size);
 
         // Configure font properties for proper rendering
         // Enable embolden if we have a bold weight but the typeface doesn't support it natively
@@ -115,7 +116,7 @@ impl FontManager {
     }
 
     /// Get a typeface for the specified font family with fallbacks
-    fn get_typeface_for_family(&self, family: &str, weight: i32, style_key: u8) -> Typeface {
+    fn get_typeface_for_family(&self, family: &str, weight: i32, style_key: u8) -> Rc<Typeface> {
         let typeface_key = (family.to_string(), weight, style_key);
 
         // Check typeface cache first
@@ -167,14 +168,15 @@ impl FontManager {
             if let Some(tf) = self.font_mgr.legacy_make_typeface(None, skia_style) {
                 tf
             } else if style_key > 0 {
-                self.italic_typeface.clone()
+                self.placeholder_italic_typeface.clone()
             } else {
-                self.typeface.clone()
+                self.placeholder_typeface.clone()
             }
         });
+        let typeface = Rc::new(typeface);
 
         // Cache the typeface
-        self.typeface_cache.borrow_mut().insert(typeface_key, typeface.clone());
+        self.typeface_cache.borrow_mut().insert(typeface_key, Rc::clone(&typeface));
 
         typeface
     }
