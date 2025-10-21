@@ -5,6 +5,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
 
+/// Callback type for layout invalidation
+pub type LayoutInvalidationCallback = Box<dyn Fn()>;
+
 /// A map of attribute names to values
 pub type AttributeMap = HashMap<String, String>;
 
@@ -317,6 +320,8 @@ pub struct DomNode {
     pub children: Vec<Rc<RefCell<DomNode>>>,
     /// Event listener registry
     pub event_listeners: EventListenerRegistry,
+    /// Optional callback to invalidate layout when tree structure changes
+    pub layout_invalidation_callback: Option<Rc<LayoutInvalidationCallback>>,
 }
 
 impl DomNode {
@@ -327,6 +332,26 @@ impl DomNode {
             parent,
             children: Vec::new(),
             event_listeners: EventListenerRegistry::new(),
+            layout_invalidation_callback: None,
+        }
+    }
+
+    /// Set the layout invalidation callback for this node and all its descendants
+    pub fn set_layout_invalidation_callback(&mut self, callback: Rc<LayoutInvalidationCallback>) {
+        self.layout_invalidation_callback = Some(callback.clone());
+
+        // Recursively set for all children
+        for child in &self.children {
+            if let Ok(mut child_node) = child.try_borrow_mut() {
+                child_node.set_layout_invalidation_callback(callback.clone());
+            }
+        }
+    }
+
+    /// Invalidate layout by calling the callback if set
+    fn invalidate_layout(&self) {
+        if let Some(callback) = &self.layout_invalidation_callback {
+            callback();
         }
     }
 
@@ -334,6 +359,17 @@ impl DomNode {
     pub fn add_child(&mut self, child: DomNode) -> Rc<RefCell<DomNode>> {
         let child_rc = Rc::new(RefCell::new(child));
         self.children.push(Rc::clone(&child_rc));
+
+        // Set the layout invalidation callback on the new child
+        if let Some(callback) = &self.layout_invalidation_callback {
+            if let Ok(mut child_node) = child_rc.try_borrow_mut() {
+                child_node.set_layout_invalidation_callback(callback.clone());
+            }
+        }
+
+        // Invalidate layout since tree structure changed
+        self.invalidate_layout();
+
         child_rc
     }
 
@@ -359,6 +395,8 @@ impl DomNode {
         match &mut self.node_type {
             NodeType::Text(content) => {
                 *content = text.to_string();
+                // Invalidate layout since content changed
+                self.invalidate_layout();
             }
             _ => {
                 // Remove all children
@@ -368,6 +406,10 @@ impl DomNode {
                 if !text.is_empty() {
                     let text_node = DomNode::new(NodeType::Text(text.to_string()), None);
                     self.add_child(text_node);
+                }
+                // Note: invalidate_layout is called in add_child, or here if text is empty
+                if text.is_empty() {
+                    self.invalidate_layout();
                 }
             }
         }
@@ -438,6 +480,17 @@ impl DomNode {
 
         let child_rc = Rc::new(RefCell::new(child));
         self.children.insert(index, Rc::clone(&child_rc));
+
+        // Set the layout invalidation callback on the new child
+        if let Some(callback) = &self.layout_invalidation_callback {
+            if let Ok(mut child_node) = child_rc.try_borrow_mut() {
+                child_node.set_layout_invalidation_callback(callback.clone());
+            }
+        }
+
+        // Invalidate layout since tree structure changed
+        self.invalidate_layout();
+
         Ok(child_rc)
     }
 
@@ -447,6 +500,8 @@ impl DomNode {
         match position {
             Some(index) => {
                 self.children.remove(index);
+                // Invalidate layout since tree structure changed
+                self.invalidate_layout();
                 Ok(())
             },
             None => Err("Child not found")

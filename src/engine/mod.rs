@@ -44,6 +44,8 @@ pub struct Engine {
     previous_style_map: HashMap<usize, ComputedValues>,
     // JavaScript runtime
     js_runtime: Option<JsRuntime>,
+    // Flag to track when layout needs recomputation due to DOM changes
+    layout_needs_recomputation: Rc<RefCell<bool>>,
 }
 
 impl Engine {
@@ -71,6 +73,7 @@ impl Engine {
             transition_manager: TransitionManager::new(),
             previous_style_map: HashMap::new(),
             js_runtime: None,
+            layout_needs_recomputation: Rc::new(RefCell::new(false)),
         }
     }
 
@@ -89,6 +92,13 @@ impl Engine {
 
             // Extract page title
             self.page_title = dom.get_title();
+
+            // Set up layout invalidation callback on the DOM root
+            let layout_flag = Rc::clone(&self.layout_needs_recomputation);
+            let callback = Rc::new(Box::new(move || {
+                *layout_flag.borrow_mut() = true;
+            }) as Box<dyn Fn()>);
+            dom.get_mut_root().set_layout_invalidation_callback(callback);
 
             // Store the DOM
             self.dom = Some(dom);
@@ -328,6 +338,17 @@ impl Engine {
 
             // Update content dimensions
             self.update_content_dimensions();
+
+            // Clear the recomputation flag since we just recomputed
+            *self.layout_needs_recomputation.borrow_mut() = false;
+        }
+    }
+
+    /// Check if layout needs recomputation and apply it if needed
+    /// This should be called before rendering or when checking layout state
+    pub fn apply_pending_layout_changes(&mut self) {
+        if *self.layout_needs_recomputation.borrow() {
+            self.recalculate_layout();
         }
     }
 
@@ -364,6 +385,9 @@ impl Engine {
 
     /// Render the current page to a canvas with transition support
     pub fn render(&mut self, canvas: &Canvas, scale_factor: f64) {
+        // Apply any pending layout changes from DOM modifications
+        self.apply_pending_layout_changes();
+
         if let Some(layout) = &self.layout {
             // Update style map only if it's dirty
             if self.style_map_dirty {
