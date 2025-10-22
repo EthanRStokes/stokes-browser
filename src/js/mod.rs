@@ -6,10 +6,12 @@ mod element_bindings;
 mod fetch;
 mod timers;
 mod alert_callback;
+mod registry;
 
 pub use runtime::JsRuntime;
 pub use timers::TimerManager;
 pub use alert_callback::{set_alert_callback, clear_alert_callback};
+pub use registry::{get_node, register_node, unregister_node};
 
 use crate::dom::DomNode;
 use boa_engine::{Context, JsValue, Source};

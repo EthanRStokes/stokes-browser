@@ -7,6 +7,8 @@ use boa_gc::{Finalize, Trace};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use super::register_node; // register nodes in global registry
+
 /// Wrapper for a DOM element that can be used in JavaScript
 #[derive(Debug, Clone, Trace, Finalize)]
 pub struct ElementWrapper {
@@ -430,6 +432,10 @@ impl ElementWrapper {
                     1,
                 )
                 .build();
+
+            // Register the node in the global registry using the same pointer used in __nodePtr
+            let ptr_val = Rc::as_ptr(&node_ref_for_storage) as i64;
+            register_node(ptr_val, &node_ref_for_storage);
 
             Ok(js_element.into())
         } else {

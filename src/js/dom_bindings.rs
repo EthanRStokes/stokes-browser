@@ -6,6 +6,7 @@ use boa_engine::{object::builtins::JsArray, Context, JsResult as BoaResult, JsSt
 use boa_gc::{Finalize, Trace};
 use std::cell::RefCell;
 use std::rc::Rc;
+use crate::js::get_node as registry_get_node; // use registry get_node
 
 /// Document object wrapper
 #[derive(Debug, Clone, Trace, Finalize)]
@@ -727,6 +728,20 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
         .map_err(|e| format!("Failed to register HTMLElement constructor: {}", e))?;
 
     // Create a simple Element.prototype with common stub methods
+    // Helper to resolve underlying DomNode from a JS wrapper object
+    fn get_node_from_this(this: &JsValue, context: &mut Context) -> Option<Rc<RefCell<DomNode>>> {
+        if let Some(obj) = this.as_object() {
+            let key = JsString::from("__nodePtr");
+            if let Ok(val) = obj.get(key, context) {
+                if let Some(n) = val.as_number() {
+                    let ptr = n as i64;
+                    return registry_get_node(ptr);
+                }
+            }
+        }
+        None
+    }
+
     let element_proto = ObjectInitializer::new(context)
         .function(
             NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], context: &mut Context| {
@@ -734,6 +749,19 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
                     .and_then(|v| v.as_string())
                     .map(|s| s.to_std_string_escaped())
                     .unwrap_or_default();
+
+                if let Some(node_rc) = get_node_from_this(this, context) {
+                    let node = node_rc.borrow();
+                    if let NodeType::Element(ref element_data) = node.node_type {
+                        if let Some(value) = element_data.attributes.get(&attr_name) {
+                            println!("[JS] Element.prototype.getAttribute('{}') -> '{}'", attr_name, value);
+                            return Ok(JsValue::from(JsString::from(value.clone())));
+                        } else {
+                            return Ok(JsValue::null());
+                        }
+                    }
+                }
+
                 println!("[JS] Element.prototype.getAttribute('{}') called on {:?}", attr_name, this);
                 Ok(JsValue::null())
             }),
@@ -741,7 +769,7 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], _context: &mut Context| {
+            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], context: &mut Context| {
                 let attr_name = args.get(0)
                     .and_then(|v| v.as_string())
                     .map(|s| s.to_std_string_escaped())
@@ -750,6 +778,16 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
                     .and_then(|v| v.as_string())
                     .map(|s| s.to_std_string_escaped())
                     .unwrap_or_default();
+
+                if let Some(node_rc) = get_node_from_this(this, context) {
+                    let mut node = node_rc.borrow_mut();
+                    if let NodeType::Element(ref mut element_data) = node.node_type {
+                        element_data.attributes.insert(attr_name.clone(), attr_value.clone());
+                        println!("[JS] Element.prototype.setAttribute('{}','{}') on registry node", attr_name, attr_value);
+                        return Ok(JsValue::undefined());
+                    }
+                }
+
                 println!("[JS] Element.prototype.setAttribute('{}','{}') called on {:?}", attr_name, attr_value, this);
                 Ok(JsValue::undefined())
             }),
@@ -757,11 +795,21 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
             2,
         )
         .function(
-            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], _context: &mut Context| {
+            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], context: &mut Context| {
                 let attr_name = args.get(0)
                     .and_then(|v| v.as_string())
                     .map(|s| s.to_std_string_escaped())
                     .unwrap_or_default();
+
+                if let Some(node_rc) = get_node_from_this(this, context) {
+                    let mut node = node_rc.borrow_mut();
+                    if let NodeType::Element(ref mut element_data) = node.node_type {
+                        element_data.attributes.remove(&attr_name);
+                        println!("[JS] Element.prototype.removeAttribute('{}') on registry node", attr_name);
+                        return Ok(JsValue::undefined());
+                    }
+                }
+
                 println!("[JS] Element.prototype.removeAttribute('{}') called on {:?}", attr_name, this);
                 Ok(JsValue::undefined())
             }),
@@ -769,11 +817,21 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], _context: &mut Context| {
+            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], context: &mut Context| {
                 let attr_name = args.get(0)
                     .and_then(|v| v.as_string())
                     .map(|s| s.to_std_string_escaped())
                     .unwrap_or_default();
+
+                if let Some(node_rc) = get_node_from_this(this, context) {
+                    let node = node_rc.borrow();
+                    if let NodeType::Element(ref element_data) = node.node_type {
+                        let has = element_data.attributes.contains_key(&attr_name);
+                        println!("[JS] Element.prototype.hasAttribute('{}') -> {} on registry node", attr_name, has);
+                        return Ok(JsValue::from(has));
+                    }
+                }
+
                 println!("[JS] Element.prototype.hasAttribute('{}') called on {:?}", attr_name, this);
                 Ok(JsValue::from(false))
             }),
@@ -781,72 +839,137 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], context: &mut Context| {
+                // appendChild: if child is a registry node, move it under this node
+                let child_value = args.get(0).cloned().unwrap_or(JsValue::null());
+
+                if let Some(parent_rc) = get_node_from_this(this, context) {
+                    println!("[JS] Element.prototype.appendChild called on registry node");
+
+                    if let Some(child_obj) = child_value.as_object() {
+                        let key = JsString::from("__nodePtr");
+                        if let Ok(ptr_val) = child_obj.get(key, context) {
+                            if let Some(n) = ptr_val.as_number() {
+                                let child_ptr = n as i64;
+                                if let Some(child_rc) = registry_get_node(child_ptr) {
+                                    // Remove child from old parent if present
+                                    if let Some(old_parent_weak) = child_rc.borrow().parent.clone() {
+                                        if let Some(old_parent_rc) = old_parent_weak.upgrade() {
+                                            old_parent_rc.borrow_mut().children.retain(|c| {
+                                                Rc::as_ptr(c) as i64 != child_ptr
+                                            });
+                                        }
+                                    }
+
+                                    // Attach to new parent
+                                    parent_rc.borrow_mut().children.push(Rc::clone(&child_rc));
+                                    child_rc.borrow_mut().parent = Some(Rc::downgrade(&parent_rc));
+
+                                    println!("[JS] Appended existing registry child to parent");
+                                    return Ok(child_value);
+                                }
+                            }
+                        }
+
+                        // Fallback: try to create a new element from tagName property
+                        let tag_key = JsString::from("tagName");
+                        if let Ok(tag_value) = child_obj.get(tag_key, context) {
+                            if let Some(tag_str) = tag_value.as_string() {
+                                let tag_name = tag_str.to_std_string_escaped().to_lowercase();
+                                let element_data = crate::dom::ElementData::new(&tag_name);
+                                let new_child = crate::dom::DomNode::new(crate::dom::NodeType::Element(element_data), None);
+                                let child_rc = Rc::new(RefCell::new(new_child));
+                                parent_rc.borrow_mut().children.push(Rc::clone(&child_rc));
+                                child_rc.borrow_mut().parent = Some(Rc::downgrade(&parent_rc));
+                                println!("[JS] Appended new child created from stub object");
+                                return Ok(child_value);
+                            }
+                        }
+                    }
+                }
+
                 println!("[JS] Element.prototype.appendChild() called");
-                Ok(args.get(0).cloned().unwrap_or(JsValue::null()))
+                Ok(child_value)
             }),
             JsString::from("appendChild"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], context: &mut Context| {
+                let child_value = args.get(0).cloned().unwrap_or(JsValue::null());
+
+                if let Some(parent_rc) = get_node_from_this(this, context) {
+                    println!("[JS] Element.prototype.removeChild called on registry node");
+
+                    if let Some(child_obj) = child_value.as_object() {
+                        let key = JsString::from("__nodePtr");
+                        if let Ok(ptr_val) = child_obj.get(key, context) {
+                            if let Some(n) = ptr_val.as_number() {
+                                let child_ptr = n as i64;
+                                let mut parent = parent_rc.borrow_mut();
+                                let initial_count = parent.children.len();
+                                parent.children.retain(|c| Rc::as_ptr(c) as i64 != child_ptr);
+                                let final_count = parent.children.len();
+                                if initial_count > final_count {
+                                    println!("[JS] Removed child from parent");
+                                } else {
+                                    println!("[JS] Child not found in parent");
+                                }
+                                return Ok(child_value);
+                            }
+                        }
+                    }
+                }
+
                 println!("[JS] Element.prototype.removeChild() called");
-                Ok(args.get(0).cloned().unwrap_or(JsValue::null()))
+                Ok(child_value)
             }),
             JsString::from("removeChild"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                println!("[JS] Element.prototype.insertBefore() called");
-                Ok(args.get(0).cloned().unwrap_or(JsValue::null()))
-            }),
-            JsString::from("insertBefore"),
-            2,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                let event_type = args.get(0)
-                    .and_then(|v| v.as_string())
-                    .map(|s| s.to_std_string_escaped())
-                    .unwrap_or_default();
-                println!("[JS] Element.prototype.addEventListener('{}') called on {:?}", event_type, _this);
-                Ok(JsValue::undefined())
-            }),
-            JsString::from("addEventListener"),
-            3,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                let event_type = args.get(0)
-                    .and_then(|v| v.as_string())
-                    .map(|s| s.to_std_string_escaped())
-                    .unwrap_or_default();
-                println!("[JS] Element.prototype.removeEventListener('{}') called on {:?}", event_type, _this);
-                Ok(JsValue::undefined())
-            }),
-            JsString::from("removeEventListener"),
-            2,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], context: &mut Context| {
                 let selector = args.get(0)
                     .and_then(|v| v.as_string())
                     .map(|s| s.to_std_string_escaped())
                     .unwrap_or_default();
-                println!("[JS] Element.prototype.querySelector('{}') called on {:?}", selector, _this);
+
+                if let Some(node_rc) = get_node_from_this(this, context) {
+                    let node = node_rc.borrow();
+                    let results = node.query_selector(&selector);
+                    if let Some(res_rc) = results.first() {
+                        drop(node);
+                        return ElementWrapper::create_js_element(res_rc, context);
+                    }
+                    return Ok(JsValue::null());
+                }
+
+                println!("[JS] Element.prototype.querySelector('{}') called on {:?}", selector, this);
                 Ok(JsValue::null())
             }),
             JsString::from("querySelector"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], context: &mut Context| {
+            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], context: &mut Context| {
                 let selector = args.get(0)
                     .and_then(|v| v.as_string())
                     .map(|s| s.to_std_string_escaped())
                     .unwrap_or_default();
-                println!("[JS] Element.prototype.querySelectorAll('{}') called on {:?}", selector, _this);
+
+                if let Some(node_rc) = get_node_from_this(this, context) {
+                    let node = node_rc.borrow();
+                    let results = node.query_selector(&selector);
+                    let array = JsArray::new(context);
+                    for (i, result_rc) in results.iter().enumerate() {
+                        if let Ok(js_elem) = ElementWrapper::create_js_element(result_rc, context) {
+                            let _ = array.set(i, js_elem, true, context);
+                        }
+                    }
+                    return Ok(array.into());
+                }
+
+                println!("[JS] Element.prototype.querySelectorAll('{}') called on {:?}", selector, this);
                 let array = JsArray::new(context);
                 Ok(array.into())
             }),
