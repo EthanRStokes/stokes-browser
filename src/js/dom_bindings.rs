@@ -674,14 +674,203 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
         .map_err(|e| format!("Failed to register Polymer object: {}", e))?;
 
     // Create Element constructor with common constants
-    let element = ObjectInitializer::new(context).build();
-    context.register_global_property(JsString::from("Element"), element, boa_engine::property::Attribute::all())
+    let element_ctor: JsValue = unsafe {
+        NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
+            // Constructor behavior: document.createElement(tagName)
+            let tag_name = args.get(0)
+                .and_then(|v| v.as_string())
+                .map(|s| s.to_std_string_escaped())
+                .unwrap_or_default();
+
+            if tag_name.is_empty() {
+                println!("[JS] Element constructor called with empty tag name");
+                return Ok(JsValue::null());
+            }
+
+            ElementWrapper::create_stub_element(&tag_name, context)
+        })
+    } .to_js_function(context.realm()).into(); // convert to JsValue
+
+    // Attach a few constants on the constructor (for compatibility)
+    if let Some(elem_obj) = element_ctor.as_object() {
+        let _ = elem_obj.set(JsString::from("ELEMENT_NODE"), JsValue::from(1), true, context);
+        let _ = elem_obj.set(JsString::from("nodeName"), JsValue::from(JsString::from("Element")), true, context);
+    }
+
+    // Register the constructor in global scope
+    context.register_global_property(JsString::from("Element"), element_ctor.clone(), boa_engine::property::Attribute::all())
         .map_err(|e| format!("Failed to register Element constructor: {}", e))?;
 
-    // Create HTMLElement constructor
-    let html_element = ObjectInitializer::new(context).build();
-    context.register_global_property(JsString::from("HTMLElement"), html_element, boa_engine::property::Attribute::all())
+    // Create HTMLElement constructor as alias of Element (most behavior is same for now)
+    let html_element_ctor: JsValue = unsafe {
+        NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
+            // Behave like Element constructor
+            let tag_name = args.get(0)
+                .and_then(|v| v.as_string())
+                .map(|s| s.to_std_string_escaped())
+                .unwrap_or_default();
+
+            if tag_name.is_empty() {
+                println!("[JS] HTMLElement constructor called with empty tag name");
+                return Ok(JsValue::null());
+            }
+
+            ElementWrapper::create_stub_element(&tag_name, context)
+        })
+    } .to_js_function(context.realm()).into(); // convert to JsValue
+
+    if let Some(html_elem_obj) = html_element_ctor.as_object() {
+        let _ = html_elem_obj.set(JsString::from("nodeName"), JsValue::from(JsString::from("HTMLElement")), true, context);
+    }
+
+    context.register_global_property(JsString::from("HTMLElement"), html_element_ctor.clone(), boa_engine::property::Attribute::all())
         .map_err(|e| format!("Failed to register HTMLElement constructor: {}", e))?;
+
+    // Create a simple Element.prototype with common stub methods
+    let element_proto = ObjectInitializer::new(context)
+        .function(
+            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], context: &mut Context| {
+                let attr_name = args.get(0)
+                    .and_then(|v| v.as_string())
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_default();
+                println!("[JS] Element.prototype.getAttribute('{}') called on {:?}", attr_name, this);
+                Ok(JsValue::null())
+            }),
+            JsString::from("getAttribute"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                let attr_name = args.get(0)
+                    .and_then(|v| v.as_string())
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_default();
+                let attr_value = args.get(1)
+                    .and_then(|v| v.as_string())
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_default();
+                println!("[JS] Element.prototype.setAttribute('{}','{}') called on {:?}", attr_name, attr_value, this);
+                Ok(JsValue::undefined())
+            }),
+            JsString::from("setAttribute"),
+            2,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                let attr_name = args.get(0)
+                    .and_then(|v| v.as_string())
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_default();
+                println!("[JS] Element.prototype.removeAttribute('{}') called on {:?}", attr_name, this);
+                Ok(JsValue::undefined())
+            }),
+            JsString::from("removeAttribute"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                let attr_name = args.get(0)
+                    .and_then(|v| v.as_string())
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_default();
+                println!("[JS] Element.prototype.hasAttribute('{}') called on {:?}", attr_name, this);
+                Ok(JsValue::from(false))
+            }),
+            JsString::from("hasAttribute"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                println!("[JS] Element.prototype.appendChild() called");
+                Ok(args.get(0).cloned().unwrap_or(JsValue::null()))
+            }),
+            JsString::from("appendChild"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                println!("[JS] Element.prototype.removeChild() called");
+                Ok(args.get(0).cloned().unwrap_or(JsValue::null()))
+            }),
+            JsString::from("removeChild"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                println!("[JS] Element.prototype.insertBefore() called");
+                Ok(args.get(0).cloned().unwrap_or(JsValue::null()))
+            }),
+            JsString::from("insertBefore"),
+            2,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                let event_type = args.get(0)
+                    .and_then(|v| v.as_string())
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_default();
+                println!("[JS] Element.prototype.addEventListener('{}') called on {:?}", event_type, _this);
+                Ok(JsValue::undefined())
+            }),
+            JsString::from("addEventListener"),
+            3,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                let event_type = args.get(0)
+                    .and_then(|v| v.as_string())
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_default();
+                println!("[JS] Element.prototype.removeEventListener('{}') called on {:?}", event_type, _this);
+                Ok(JsValue::undefined())
+            }),
+            JsString::from("removeEventListener"),
+            2,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
+                let selector = args.get(0)
+                    .and_then(|v| v.as_string())
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_default();
+                println!("[JS] Element.prototype.querySelector('{}') called on {:?}", selector, _this);
+                Ok(JsValue::null())
+            }),
+            JsString::from("querySelector"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], context: &mut Context| {
+                let selector = args.get(0)
+                    .and_then(|v| v.as_string())
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_default();
+                println!("[JS] Element.prototype.querySelectorAll('{}') called on {:?}", selector, _this);
+                let array = JsArray::new(context);
+                Ok(array.into())
+            }),
+            JsString::from("querySelectorAll"),
+            1,
+        )
+        .build();
+
+    // Register Element.prototype and set HTMLElement.prototype to the same object
+    context.register_global_property(JsString::from("ElementPrototype"), element_proto.clone(), boa_engine::property::Attribute::all())
+        .map_err(|e| format!("Failed to register Element.prototype (temporary holder): {}", e))?;
+
+    // Attach prototype to constructors by retrieving them from the global object
+    let global_object = context.global_object();
+    if let Ok(elem_ctor_val) = global_object.get(JsString::from("Element"), context) {
+        if let Some(obj) = elem_ctor_val.as_object() {
+            let _ = obj.set(JsString::from("prototype"), element_proto.clone(), true, context);
+        }
+    }
+    if let Ok(html_ctor_val) = global_object.get(JsString::from("HTMLElement"), context) {
+        if let Some(obj) = html_ctor_val.as_object() {
+            let _ = obj.set(JsString::from("prototype"), element_proto.clone(), true, context);
+        }
+    }
 
     // Create Event constructor
     let event = ObjectInitializer::new(context).build();
