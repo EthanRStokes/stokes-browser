@@ -2,6 +2,7 @@
 use curl::easy::{Easy, List};
 use std::path::Path;
 use std::time::Duration;
+use url::Url;
 
 #[derive(Debug)]
 pub enum NetworkError {
@@ -38,43 +39,33 @@ impl HttpClient {
         Self {}
     }
 
-    /// Check if a URL is a local file path
-    fn is_local_file(url: &str) -> bool {
-        // Check for file:// protocol
-        if url.starts_with("file://") {
-            return true;
-        }
 
-        // Check if it looks like a file path
-        // Unix-style absolute paths start with /
-        // Windows-style paths might start with C:\ or similar
-        if url.starts_with('/') || (url.len() >= 3 && url.chars().nth(1) == Some(':')) {
-            return true;
-        }
-
-        // Check if it's a relative path with common file extensions
-        if url.ends_with(".html") || url.ends_with(".htm") {
-            return true;
-        }
-
-        false
-    }
-
-    /// Convert a URL to a file path
-    fn url_to_file_path(url: &str) -> String {
-        if url.starts_with("file://") {
-            // Remove file:// prefix
-            let path = &url[7..];
-            // On Windows, file URLs might be like file:///C:/path
-            // On Unix, they're like file:///path
-            if cfg!(windows) && path.starts_with('/') && path.len() > 2 && path.chars().nth(2) == Some(':') {
-                path[1..].to_string()
-            } else {
-                path.to_string()
+    /// Convert an input (which may be a file:// URL or a plain filesystem path)
+    /// to a local file system path string.
+    fn url_to_file_path(input: &str) -> String {
+        if input.starts_with("file://") {
+            // Url crate can normalize file URLs properly
+            match Url::parse(input) {
+                Ok(url) => {
+                    if let Ok(path) = url.to_file_path() {
+                        return path.to_string_lossy().into_owned();
+                    }
+                }
+                Err(_) => {
+                    // Fall through to manual stripping
+                }
             }
-        } else {
-            url.to_string()
+            // Manual fallback: strip file:// prefix
+            let path = &input[7..];
+            if cfg!(windows) && path.starts_with('/') && path.len() > 2 && path.chars().nth(2) == Some(':') {
+                return path[1..].to_string();
+            }
+            return path.to_string();
         }
+
+        // If the input isn't a file:// URL but looks like a filesystem path,
+        // return it as-is.
+        input.to_string()
     }
 
     /// Read a local HTML file
@@ -121,18 +112,20 @@ impl HttpClient {
     pub async fn fetch(&self, url: &str) -> Result<String, NetworkError> {
         println!("Fetching: {}", url);
 
+        let url = match Url::parse(url) {
+            Ok(u) => u,
+            Err(err) => {
+                return Err(NetworkError::Curl(err.to_string()))
+            }
+        };
+
         // Check if it's a local file
-        if Self::is_local_file(url) {
-            let file_path = Self::url_to_file_path(url);
+        if url.scheme() == "file" {
+            let file_path = Self::url_to_file_path(url.as_str());
             return Self::read_local_file(&file_path).await;
         }
 
-        // Ensure URL starts with http:// or https://
-        let url = if !url.starts_with("http://") && !url.starts_with("https://") {
-            format!("https://{}", url)
-        } else {
-            url.to_string()
-        };
+        // Normalize the URL: if it lacks a scheme, default to https://
 
         // Run curl operation in a blocking task since curl is synchronous
         let result = tokio::task::spawn_blocking(move || {
@@ -141,7 +134,7 @@ impl HttpClient {
             let mut headers = Vec::new();
 
             // Configure curl
-            easy.url(&url).map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.url(&url.as_str()).map_err(|e| NetworkError::Curl(e.to_string()))?;
             easy.useragent("Stokes-Browser/1.0").map_err(|e| NetworkError::Curl(e.to_string()))?;
             easy.timeout(Duration::from_secs(30)).map_err(|e| NetworkError::Curl(e.to_string()))?;
             easy.follow_location(true).map_err(|e| NetworkError::Curl(e.to_string()))?;
@@ -194,21 +187,27 @@ impl HttpClient {
     pub async fn fetch_resource(&self, url: &str) -> Result<Vec<u8>, NetworkError> {
         println!("Fetching resource: {}", url);
 
+        let url = match Url::parse(url) {
+            Ok(u) => u,
+            Err(err) => {
+                return Err(NetworkError::Curl(err.to_string()))
+            }
+        };
+
         // Check if it's a local file
-        if Self::is_local_file(url) {
-            let file_path = Self::url_to_file_path(url);
+        if url.scheme() == "file" {
+            let file_path = Self::url_to_file_path(url.as_str());
             return Self::read_local_resource(&file_path).await;
         }
 
         // Run curl operation in a blocking task
-        let url = url.to_string();
         let result = tokio::task::spawn_blocking(move || {
             let mut easy = Easy::new();
             let mut data = Vec::new();
             let mut headers = Vec::new();
 
             // Configure curl
-            easy.url(&url).map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.url(&url.as_str()).map_err(|e| NetworkError::Curl(e.to_string()))?;
             easy.useragent("Stokes-Browser/1.0").map_err(|e| NetworkError::Curl(e.to_string()))?;
             easy.timeout(Duration::from_secs(30)).map_err(|e| NetworkError::Curl(e.to_string()))?;
             easy.follow_location(true).map_err(|e| NetworkError::Curl(e.to_string()))?;
@@ -268,12 +267,16 @@ impl HttpClient {
 
     /// Check if a URL is valid and reachable (for validation)
     pub async fn head(&self, url: &str) -> Result<bool, NetworkError> {
-        let url = url.to_string();
+        let url = match Url::parse(url) {
+            Ok(u) => u,
+            Err(e) => return Err(NetworkError::Curl(e.to_string())),
+        };
+
         let result = tokio::task::spawn_blocking(move || {
             let mut easy = Easy::new();
 
             // Configure curl for HEAD request
-            easy.url(&url).map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.url(&url.as_str()).map_err(|e| NetworkError::Curl(e.to_string()))?;
             easy.useragent("Stokes-Browser/1.0").map_err(|e| NetworkError::Curl(e.to_string()))?;
             easy.timeout(Duration::from_secs(10)).map_err(|e| NetworkError::Curl(e.to_string()))?;
             easy.nobody(true).map_err(|e| NetworkError::Curl(e.to_string()))?; // This makes it a HEAD request
