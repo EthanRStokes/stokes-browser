@@ -129,6 +129,7 @@ impl ComputedValues {
             "main" | "aside" | "blockquote" | "ul" | "ol" | "li" => DisplayType::Block,
             "span" | "a" | "em" | "strong" | "code" | "b" | "i" | "u" => DisplayType::Inline,
             "img" => DisplayType::InlineBlock,
+            "button" => DisplayType::InlineBlock,
             _ => DisplayType::Inline,
         };
 
@@ -159,6 +160,14 @@ impl ComputedValues {
         if tag_name == "a" {
             values.color = Some(crate::css::values::Color::Hex("#0000EE".to_string())); // Blue for unvisited links
             values.text_decoration = crate::css::TextDecoration::Underline;
+        }
+
+        // Default button styles
+        if tag_name == "button" {
+            values.cursor = crate::css::Cursor::Pointer;
+            values.background_color = Some(crate::css::values::Color::Named("#f2f2f2".to_string()));
+            // Add a small border by default
+            values.border = EdgeSizes { top: 1.0, right: 1.0, bottom: 1.0, left: 1.0 };
         }
 
         values

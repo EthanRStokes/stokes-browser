@@ -84,6 +84,7 @@ pub fn set_default_background_color(paint: &mut Paint, tag_name: &str) {
         "div" => Color::from_rgb(248, 248, 248),
         "p" => Color::WHITE,
         "a" => Color::from_rgb(230, 240, 255),
+        "button" => Color::from_rgb(242, 242, 242),
         _ => Color::WHITE,
     };
     paint.set_color(color);

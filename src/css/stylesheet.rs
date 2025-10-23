@@ -89,7 +89,7 @@ impl Stylesheet {
         
         // Default inline elements
         let inline_elements = vec![
-            "span", "a", "em", "strong", "code", "b", "i", "u", "small", "sub", "sup"
+            "span", "a", "em", "strong", "code", "b", "i", "u", "small", "sub", "sup", "button"
         ];
         
         for element in inline_elements {
