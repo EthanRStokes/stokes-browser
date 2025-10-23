@@ -187,7 +187,7 @@ impl HtmlRenderer {
         computed_styles: Option<&ComputedValues>,
         scale_factor: f32,
     ) {
-        let border_box = layout_box.dimensions.border_box();
+        let content_rect = layout_box.dimensions.content;
 
         // Get opacity value (default to 1.0 if no styles)
         let opacity = computed_styles.map(|s| s.opacity).unwrap_or(1.0);
@@ -196,7 +196,7 @@ impl HtmlRenderer {
         if let Some(styles) = computed_styles {
             pseudo::render_pseudo_element_content(
                 canvas,
-                &border_box,
+                &content_rect,
                 element_data,
                 styles,
                 scale_factor,
@@ -208,7 +208,7 @@ impl HtmlRenderer {
 
         // Render box shadows first (behind the element)
         if let Some(styles) = computed_styles {
-            decorations::render_box_shadows(canvas, &border_box, styles, scale_factor);
+            decorations::render_box_shadows(canvas, &content_rect, styles, scale_factor);
         }
 
         // Create background paint with CSS colors
@@ -280,17 +280,17 @@ impl HtmlRenderer {
             heading_paint.set_stroke(true);
             let scaled_heading_border = 2.0 * scale_factor as f32;
             heading_paint.set_stroke_width(scaled_heading_border);
-            canvas.draw_rect(border_box, &heading_paint);
+            canvas.draw_rect(content_rect, &heading_paint);
         }
 
         // Render outline if specified
         if let Some(styles) = computed_styles {
-            decorations::render_outline(canvas, &border_box, styles, opacity, scale_factor);
+            decorations::render_outline(canvas, &content_rect, styles, opacity, scale_factor);
         }
 
         // Render stroke if specified (CSS stroke property)
         if let Some(styles) = computed_styles {
-            decorations::render_stroke(canvas, &border_box, &styles.stroke, opacity, scale_factor);
+            decorations::render_stroke(canvas, &content_rect, &styles.stroke, opacity, scale_factor);
         }
 
         // Render rounded corners if border radius is specified
@@ -299,7 +299,7 @@ impl HtmlRenderer {
             if border_radius_px.has_radius() {
                 decorations::render_rounded_element(
                     canvas,
-                    border_box,
+                    content_rect,
                     &border_radius_px,
                     &bg_paint,
                     if should_draw_border { Some(&border_paint) } else { None },
@@ -310,15 +310,15 @@ impl HtmlRenderer {
         }
 
         // Draw background (only if no rounded corners)
-        canvas.draw_rect(border_box, &bg_paint);
+        canvas.draw_rect(content_rect, &bg_paint);
 
         // Render background image if specified
         if let Some(styles) = computed_styles {
-            background::render_background_image(canvas, &border_box, styles, scale_factor, &self.background_image_cache);
+            background::render_background_image(canvas, &content_rect, styles, scale_factor, &self.background_image_cache);
         }
 
         if should_draw_border {
-            canvas.draw_rect(border_box, &border_paint);
+            canvas.draw_rect(content_rect, &border_paint);
         }
     }
 }
