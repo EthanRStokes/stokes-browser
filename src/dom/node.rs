@@ -4,12 +4,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
-use html5ever::{Attribute, QualName};
+use html5ever::QualName;
 use html5ever::tendril::StrTendril;
 use slab::Slab;
-use taffy::Style;
 use crate::css::ComputedValues;
-use crate::layout::LayoutBox;
 
 /// Callback type for layout invalidation
 pub type LayoutInvalidationCallback = Box<dyn Fn()>;
@@ -324,6 +322,7 @@ impl ImageData {
 
 /// A node in the DOM tree
 #[derive(Clone)]
+#[allow(dead_code)] // Allow unused warnings for this struct
 pub struct DomNode {
     // the tree this belongs to
     tree: *mut Slab<Rc<RefCell<DomNode>>>,
@@ -458,7 +457,7 @@ impl DomNode {
     }
 
     /// Enhanced CSS selector matching (still simplified but more comprehensive)
-    pub fn query_selector(&self, selector: &str) -> Vec<Rc<RefCell<DomNode>>> {
+    pub fn query_selector(&self, selector: &str) -> Vec<usize> {
         self.find_nodes(|node| self.matches_selector(node, selector))
     }
 
@@ -500,18 +499,21 @@ impl DomNode {
     /// Get element by ID (returns first match)
     pub fn get_element_by_id(&self, id: &str) -> Option<Rc<RefCell<DomNode>>> {
         let selector = format!("#{}", id);
-        self.query_selector(&selector).into_iter().next()
+        let id = self.query_selector(&selector).into_iter().next();
+        id.map(|id| self.get_node(id).clone())
     }
 
     /// Get elements by class name
     pub fn get_elements_by_class_name(&self, class_name: &str) -> Vec<Rc<RefCell<DomNode>>> {
         let selector = format!(".{}", class_name);
-        self.query_selector(&selector)
+        let ids = self.query_selector(&selector);
+        ids.into_iter().map(|id| self.get_node(id).clone()).collect()
     }
 
     /// Get elements by tag name
     pub fn get_elements_by_tag_name(&self, tag_name: &str) -> Vec<Rc<RefCell<DomNode>>> {
-        self.query_selector(tag_name)
+        let ids = self.query_selector(tag_name);
+        ids.into_iter().map(|id| self.get_node(id).clone()).collect()
     }
 
     /// Insert a child node at a specific position
@@ -608,11 +610,11 @@ impl DomNode {
     }
 
     /// Find nodes that match a predicate, returning owned references
-    pub fn find_nodes<F>(&self, predicate: F) -> Vec<Rc<RefCell<DomNode>>>
+    pub fn find_nodes<F>(&self, predicate: F) -> Vec<usize>
     where
         F: Fn(&DomNode) -> bool + Clone,
     {
-        let mut result = Vec::new();
+        let mut result: Vec<usize> = Vec::new();
 
         // We can't include self in the result since we don't have an Rc to self
         // This method is meant to be called on nodes that are already in Rc<RefCell<>>
@@ -622,7 +624,7 @@ impl DomNode {
             let child = self.get_node(*child);
             let child_borrowed = child.borrow();
             if predicate(&*child_borrowed) {
-                result.push(Rc::clone(child));
+                result.push(child_borrowed.id);
             }
             drop(child_borrowed); // Explicitly drop the borrow
 

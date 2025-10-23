@@ -12,10 +12,9 @@ use crate::networking::{HttpClient, NetworkError};
 use crate::renderer::HtmlRenderer;
 use blitz_traits::shell::Viewport;
 use skia_safe::Canvas;
-use std::cell::{Ref, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use taffy::TaffyTree;
 
 /// The core browser engine that coordinates all browser activities
 pub struct Engine {
@@ -205,6 +204,8 @@ impl Engine {
             }
         }
 
+        drop(dom); // Release DOM borrow before recalculating layout
+
         // Recalculate layout after images are loaded (dimensions may have changed)
         self.recalculate_layout();
     }
@@ -336,8 +337,8 @@ impl Engine {
             return;
         }
 
-        let dom = &self.dom_mut();
-        let dom = dom.borrow_mut();
+        let dom = &self.dom();
+        let dom = dom.borrow();
 
         let root = dom.root_node();
         self.layout = Some(self.layout_engine.compute_layout(&root, self.viewport.hidpi_scale));
@@ -455,7 +456,7 @@ impl Engine {
 
     /// Extract and parse CSS from <style> tags and <link> tags in the current DOM
     pub async fn parse_document_styles(&mut self) {
-        let dom = &mut self.dom_mut();
+        let dom = &mut self.dom();
         let mut dom = dom.borrow_mut();
 
         // Collect style contents first
@@ -669,7 +670,7 @@ impl Engine {
 
     /// Initialize JavaScript runtime for the current document
     pub fn initialize_js_runtime(&mut self) {
-        let dom = self.dom_mut();
+        let dom = self.dom();
         let user_agent = self.config.user_agent.clone();
         match JsRuntime::new(dom, user_agent) {
             Ok(runtime) => {
@@ -703,7 +704,7 @@ impl Engine {
         // Collect script contents and external URLs first to avoid borrow issues
         let mut script_items = Vec::new();
 
-        let dom = &mut self.dom_mut();
+        let dom = &mut self.dom();
         let mut dom = dom.borrow_mut();
         let script_elements = dom.query_selector("script");
 

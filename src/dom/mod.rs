@@ -3,7 +3,7 @@ mod parser;
 pub(crate) mod node;
 mod events;
 
-use std::cell::{RefCell, RefMut};
+use std::cell::RefCell;
 use std::rc::Rc;
 use slab::Slab;
 pub use self::events::{EventDispatcher, EventType};
@@ -48,7 +48,10 @@ impl Dom {
 
     /// Find nodes by tag name
     pub fn query_selector(&mut self, selector: &str) -> Vec<Rc<RefCell<DomNode>>> {
-        self.root_node().borrow_mut().query_selector(selector)
+        let ids = self.root_node().borrow().query_selector(selector);
+        ids.into_iter()
+            .filter_map(|id| self.nodes.get(id).cloned())
+            .collect()
     }
 
     /// Find nodes that match a predicate
@@ -56,7 +59,10 @@ impl Dom {
     where
         F: Fn(&DomNode) -> bool + Clone,
     {
-        self.root_node().borrow_mut().find_nodes(predicate)
+        let ids = self.root_node().borrow().find_nodes(predicate);
+        ids.into_iter()
+            .filter_map(|id| self.nodes.get(id).cloned())
+            .collect()
     }
 
     /// Extract the page title
