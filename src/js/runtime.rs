@@ -1,5 +1,5 @@
 use super::{initialize_bindings, JsResult, TimerManager};
-use crate::dom::DomNode;
+use crate::dom::{Dom, DomNode};
 // JavaScript runtime management
 use boa_engine::{Context, JsValue, Source};
 use std::cell::RefCell;
@@ -14,14 +14,14 @@ const RED_ZONE: usize = 32 * 1024;
 /// JavaScript runtime that manages execution context
 pub struct JsRuntime {
     context: Context,
-    document_root: Rc<RefCell<DomNode>>,
+    document_root: Rc<RefCell<Dom>>,
     timer_manager: Rc<TimerManager>,
     user_agent: String,
 }
 
 impl JsRuntime {
     /// Create a new JavaScript runtime
-    pub fn new(document_root: Rc<RefCell<DomNode>>, user_agent: String) -> JsResult<Self> {
+    pub fn new(document_root: Rc<RefCell<Dom>>, user_agent: String) -> JsResult<Self> {
         let mut context = Context::default();
 
         // Initialize browser bindings

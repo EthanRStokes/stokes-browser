@@ -1,23 +1,24 @@
 use super::element_bindings::ElementWrapper;
-use crate::dom::{DomNode, NodeType};
+use crate::dom::{Dom, DomNode, NodeData};
 use base64::Engine;
 // DOM bindings for JavaScript
-use boa_engine::{object::builtins::JsArray, Context, JsResult as BoaResult, JsString, JsValue, NativeFunction};
+use boa_engine::{object::builtins::JsArray, Context, JsResult as BoaResult, JsResult, JsString, JsValue, NativeFunction};
 use boa_gc::{Finalize, Trace};
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::rc::Rc;
+use html5ever::{ns, LocalName, QualName};
 use crate::js::get_node as registry_get_node; // use registry get_node
 
 /// Document object wrapper
 #[derive(Debug, Clone, Trace, Finalize)]
 struct DocumentWrapper {
     #[unsafe_ignore_trace]
-    root: Rc<RefCell<DomNode>>,
+    dom: Rc<RefCell<Dom>>,
 }
 
 impl DocumentWrapper {
-    fn new(root: Rc<RefCell<DomNode>>) -> Self {
-        Self { root }
+    fn new(dom: Rc<RefCell<Dom>>) -> Self {
+        Self { dom }
     }
 
     /// document.getElementById implementation
@@ -34,13 +35,14 @@ impl DocumentWrapper {
         println!("[JS] document.getElementById('{}') called", id);
 
         // Search the DOM tree for the element
-        let root = self.root.borrow();
+        let dom = self.dom.borrow();
+        let root = dom.root_node().borrow();
         match root.get_element_by_id(&id) {
             Some(element_rc) => {
                 drop(root); // Release the borrow before creating JS element
                 let element = element_rc.borrow();
-                if let NodeType::Element(ref data) = element.node_type {
-                    println!("[JS] Found element with id '{}': <{}>", id, data.tag_name);
+                if let NodeData::Element(ref data) = element.data {
+                    println!("[JS] Found element with id '{}': <{}>", id, data.name.local);
                     drop(element);
                     ElementWrapper::create_js_element(&element_rc, context)
                 } else {
@@ -65,20 +67,21 @@ impl DocumentWrapper {
 
         println!("[JS] document.getElementsByTagName('{}') called", tag_name);
 
-        let root = self.root.borrow();
+        let dom = self.dom.borrow();
+        let root = dom.root_node().borrow();
         let elements = root.get_elements_by_tag_name(&tag_name);
 
         let array = JsArray::new(context);
         for (i, element_rc) in elements.iter().enumerate() {
             let element = element_rc.borrow();
-            if let NodeType::Element(ref data) = element.node_type {
+            if let NodeData::Element(ref data) = element.data {
                 // Capture attributes for the closure
                 let attributes = data.attributes.clone();
 
                 let js_element = ObjectInitializer::new(context)
                     .property(
                         JsString::from("tagName"),
-                        JsValue::from(JsString::from(data.tag_name.to_uppercase())),
+                        JsValue::from(JsString::from(data.name.local.to_uppercase())),
                         boa_engine::property::Attribute::all(),
                     )
                     .property(
@@ -88,7 +91,7 @@ impl DocumentWrapper {
                     )
                     .property(
                         JsString::from("nodeName"),
-                        JsValue::from(JsString::from(data.tag_name.to_uppercase())),
+                        JsValue::from(JsString::from(data.name.local.to_uppercase())),
                         boa_engine::property::Attribute::all(),
                     )
                     .function(
@@ -141,16 +144,17 @@ impl DocumentWrapper {
 
         println!("[JS] document.querySelector('{}') called", selector);
 
-        let root = self.root.borrow();
+        let dom = self.dom.borrow();
+        let root = dom.root_node().borrow();
         let elements = root.query_selector(&selector);
 
         if let Some(element_rc) = elements.first() {
             let element = element_rc.borrow();
-            if let NodeType::Element(ref data) = element.node_type {
+            if let NodeData::Element(ref data) = element.data {
                 let js_element = ObjectInitializer::new(context)
                     .property(
                         JsString::from("tagName"),
-                        JsValue::from(JsString::from(data.tag_name.to_uppercase())),
+                        JsValue::from(JsString::from(data.name.local.to_uppercase())),
                         boa_engine::property::Attribute::all(),
                     )
                     .property(
@@ -165,7 +169,7 @@ impl DocumentWrapper {
                     )
                     .build();
 
-                println!("[JS] Found element matching '{}': <{}>", selector, data.tag_name);
+                println!("[JS] Found element matching '{}': <{}>", selector, data.name.local);
                 return Ok(js_element.into());
             }
         }
@@ -185,17 +189,18 @@ impl DocumentWrapper {
 
         println!("[JS] document.querySelectorAll('{}') called", selector);
 
-        let root = self.root.borrow();
+        let dom = self.dom.borrow();
+        let root = dom.root_node().borrow();
         let elements = root.query_selector(&selector);
 
         let array = JsArray::new(context);
         for (i, element_rc) in elements.iter().enumerate() {
             let element = element_rc.borrow();
-            if let NodeType::Element(ref data) = element.node_type {
+            if let NodeData::Element(ref data) = element.data {
                 let js_element = ObjectInitializer::new(context)
                     .property(
                         JsString::from("tagName"),
-                        JsValue::from(JsString::from(data.tag_name.to_uppercase())),
+                        JsValue::from(JsString::from(data.name.local.to_uppercase())),
                         boa_engine::property::Attribute::all(),
                     )
                     .property(
@@ -232,7 +237,7 @@ impl DocumentWrapper {
         println!("[JS] document.createElement('{}') called", tag_name);
 
         // Use ElementWrapper to create a proper element with working getAttribute/setAttribute
-        ElementWrapper::create_stub_element(&tag_name, context)
+        ElementWrapper::create_stub_element_(&tag_name, &self.dom, context)
     }
 }
 
@@ -352,7 +357,7 @@ impl StorageObject {
 }
 
 /// Set up DOM bindings in the JavaScript context
-pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNode>>, user_agent: String) -> Result<(), String> {
+pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<Dom>>, user_agent: String) -> Result<(), String> {
     use boa_engine::object::ObjectInitializer;
 
     // Create the Node constructor with node type constants
@@ -372,7 +377,7 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
         .build();
 
     // Create the DocumentWrapper instance
-    let doc_wrapper = DocumentWrapper::new(document_root);
+    let doc_wrapper = DocumentWrapper::new(document_root.clone());
 
     // Create closures that use the DocumentWrapper methods
     let doc_wrapper_for_get_by_id = doc_wrapper.clone();
@@ -674,6 +679,7 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
     context.register_global_property(JsString::from("Polymer"), polymer, boa_engine::property::Attribute::all())
         .map_err(|e| format!("Failed to register Polymer object: {}", e))?;
 
+    let element_ctor_wrapper = ElementWrapper::new(document_root.clone());
     // Create Element constructor with common constants
     let element_ctor: JsValue = unsafe {
         NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
@@ -688,7 +694,7 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
                 return Ok(JsValue::null());
             }
 
-            ElementWrapper::create_stub_element(&tag_name, context)
+            element_ctor_wrapper.create_stub_element(&tag_name, context)
         })
     } .to_js_function(context.realm()).into(); // convert to JsValue
 
@@ -702,6 +708,7 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
     context.register_global_property(JsString::from("Element"), element_ctor.clone(), boa_engine::property::Attribute::all())
         .map_err(|e| format!("Failed to register Element constructor: {}", e))?;
 
+    let html_element_ctor_wrapper = ElementWrapper::new(document_root);
     // Create HTMLElement constructor as alias of Element (most behavior is same for now)
     let html_element_ctor: JsValue = unsafe {
         NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
@@ -716,7 +723,7 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
                 return Ok(JsValue::null());
             }
 
-            ElementWrapper::create_stub_element(&tag_name, context)
+            html_element_ctor_wrapper.create_stub_element(&tag_name, context)
         })
     } .to_js_function(context.realm()).into(); // convert to JsValue
 
@@ -752,7 +759,7 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
 
                 if let Some(node_rc) = get_node_from_this(this, context) {
                     let node = node_rc.borrow();
-                    if let NodeType::Element(ref element_data) = node.node_type {
+                    if let NodeData::Element(ref element_data) = node.data {
                         if let Some(value) = element_data.attributes.get(&attr_name) {
                             println!("[JS] Element.prototype.getAttribute('{}') -> '{}'", attr_name, value);
                             return Ok(JsValue::from(JsString::from(value.clone())));
@@ -781,7 +788,7 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
 
                 if let Some(node_rc) = get_node_from_this(this, context) {
                     let mut node = node_rc.borrow_mut();
-                    if let NodeType::Element(ref mut element_data) = node.node_type {
+                    if let NodeData::Element(ref mut element_data) = node.data {
                         element_data.attributes.insert(attr_name.clone(), attr_value.clone());
                         println!("[JS] Element.prototype.setAttribute('{}','{}') on registry node", attr_name, attr_value);
                         return Ok(JsValue::undefined());
@@ -803,7 +810,7 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
 
                 if let Some(node_rc) = get_node_from_this(this, context) {
                     let mut node = node_rc.borrow_mut();
-                    if let NodeType::Element(ref mut element_data) = node.node_type {
+                    if let NodeData::Element(ref mut element_data) = node.data {
                         element_data.attributes.remove(&attr_name);
                         println!("[JS] Element.prototype.removeAttribute('{}') on registry node", attr_name);
                         return Ok(JsValue::undefined());
@@ -825,7 +832,7 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
 
                 if let Some(node_rc) = get_node_from_this(this, context) {
                     let node = node_rc.borrow();
-                    if let NodeType::Element(ref element_data) = node.node_type {
+                    if let NodeData::Element(ref element_data) = node.data {
                         let has = element_data.attributes.contains_key(&attr_name);
                         println!("[JS] Element.prototype.hasAttribute('{}') -> {} on registry node", attr_name, has);
                         return Ok(JsValue::from(has));
@@ -855,14 +862,17 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
                                     // Remove child from old parent if present
                                     if let Some(old_parent_weak) = child_rc.borrow().parent.clone() {
                                         if let Some(old_parent_rc) = old_parent_weak.upgrade() {
-                                            old_parent_rc.borrow_mut().children.retain(|c| {
-                                                Rc::as_ptr(c) as i64 != child_ptr
+                                            let mut old_parent = old_parent_rc.borrow_mut();
+                                            old_parent.children.retain(|c| {
+                                                let parent = old_parent_rc.borrow();
+                                                let child = parent.get_node(*c);
+                                                Rc::as_ptr(child) as i64 != child_ptr
                                             });
                                         }
                                     }
 
                                     // Attach to new parent
-                                    parent_rc.borrow_mut().children.push(Rc::clone(&child_rc));
+                                    parent_rc.borrow_mut().children.push(child_rc.borrow().id);
                                     child_rc.borrow_mut().parent = Some(Rc::downgrade(&parent_rc));
 
                                     println!("[JS] Appended existing registry child to parent");
@@ -872,19 +882,21 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
                         }
 
                         // Fallback: try to create a new element from tagName property
-                        let tag_key = JsString::from("tagName");
+                        // TODO reimplement
+                        /*let tag_key = JsString::from("tagName");
                         if let Ok(tag_value) = child_obj.get(tag_key, context) {
                             if let Some(tag_str) = tag_value.as_string() {
                                 let tag_name = tag_str.to_std_string_escaped().to_lowercase();
-                                let element_data = crate::dom::ElementData::new(&tag_name);
-                                let new_child = crate::dom::DomNode::new(crate::dom::NodeType::Element(element_data), None);
+                                let qual_name = QualName::new(None, ns!(), LocalName::from(tag_name.as_str()));
+                                let element_data = crate::dom::ElementData::new(qual_name);
+                                let new_child = DomNode::new(NodeData::Element(element_data), None);
                                 let child_rc = Rc::new(RefCell::new(new_child));
                                 parent_rc.borrow_mut().children.push(Rc::clone(&child_rc));
                                 child_rc.borrow_mut().parent = Some(Rc::downgrade(&parent_rc));
                                 println!("[JS] Appended new child created from stub object");
                                 return Ok(child_value);
                             }
-                        }
+                        }*/
                     }
                 }
 
@@ -908,7 +920,11 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<DomNo
                                 let child_ptr = n as i64;
                                 let mut parent = parent_rc.borrow_mut();
                                 let initial_count = parent.children.len();
-                                parent.children.retain(|c| Rc::as_ptr(c) as i64 != child_ptr);
+                                parent.children.retain(|c| {
+                                    let parent = parent_rc.borrow();
+                                    let child = parent.get_node(*c);
+                                    Rc::as_ptr(child) as i64 != child_ptr
+                                });
                                 let final_count = parent.children.len();
                                 if initial_count > final_count {
                                     println!("[JS] Removed child from parent");

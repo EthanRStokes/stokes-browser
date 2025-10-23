@@ -13,7 +13,7 @@ pub use timers::TimerManager;
 pub use alert_callback::{set_alert_callback, clear_alert_callback};
 pub use registry::{get_node, register_node, unregister_node};
 
-use crate::dom::DomNode;
+use crate::dom::{Dom, DomNode};
 use boa_engine::{Context, JsValue, Source};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -33,7 +33,7 @@ pub fn execute_script(context: &mut Context, code: &str) -> JsResult<JsValue> {
 }
 
 /// Initialize JavaScript bindings for the browser
-pub fn initialize_bindings(context: &mut Context, document_root: Rc<RefCell<DomNode>>, user_agent: String) -> JsResult<()> {
+pub fn initialize_bindings(context: &mut Context, document_root: Rc<RefCell<Dom>>, user_agent: String) -> JsResult<()> {
     // Set up console object
     console::setup_console(context)?;
     

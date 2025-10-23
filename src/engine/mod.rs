@@ -4,7 +4,7 @@ mod config;
 pub use self::config::EngineConfig;
 use crate::css::transition_manager::TransitionManager;
 use crate::css::{ComputedValues, CssParser};
-use crate::dom::{Dom, DomNode, ImageData, ImageLoadingState, NodeType};
+use crate::dom::{Dom, DomNode, ImageData, ImageLoadingState, NodeData};
 use crate::dom::{EventDispatcher, EventType};
 use crate::js::JsRuntime;
 use crate::layout::{LayoutBox, LayoutEngine};
@@ -12,9 +12,10 @@ use crate::networking::{HttpClient, NetworkError};
 use crate::renderer::HtmlRenderer;
 use blitz_traits::shell::Viewport;
 use skia_safe::Canvas;
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use taffy::TaffyTree;
 
 /// The core browser engine that coordinates all browser activities
 pub struct Engine {
@@ -23,7 +24,7 @@ pub struct Engine {
     current_url: String,
     page_title: String,
     is_loading: bool,
-    dom: Option<Dom>,
+    pub(crate) dom: Option<Rc<RefCell<Dom>>>,
     layout: Option<LayoutBox>,
     layout_engine: LayoutEngine,
     node_map: HashMap<usize, Rc<RefCell<DomNode>>>,
@@ -73,6 +74,14 @@ impl Engine {
         }
     }
 
+    pub(crate) fn dom(&self) -> Rc<RefCell<Dom>> {
+        self.dom.as_ref().unwrap().clone()
+    }
+
+    pub(crate) fn dom_mut(&mut self) -> Rc<RefCell<Dom>> {
+        self.dom.as_ref().unwrap().clone()
+    }
+
     /// Navigate to a new URL
     pub async fn navigate(&mut self, url: &str) -> Result<(), NetworkError> {
         println!("Navigating to: {}", url);
@@ -94,10 +103,10 @@ impl Engine {
             let callback = Rc::new(Box::new(move || {
                 *layout_flag.borrow_mut() = true;
             }) as Box<dyn Fn()>);
-            dom.get_mut_root().set_layout_invalidation_callback(callback);
+            dom.root_node().borrow_mut().set_layout_invalidation_callback(callback);
 
             // Store the DOM
-            self.dom = Some(dom);
+            self.dom = Some(Rc::new(RefCell::new(dom)));
 
             // Reset scroll position
             self.scroll_x = 0.0;
@@ -125,79 +134,79 @@ impl Engine {
 
     /// Start loading all images found in the current DOM
     pub async fn start_image_loading(&mut self) {
-        if let Some(dom) = &mut self.dom {
-            // Find all image nodes
-            let image_nodes = dom.find_nodes(|node| matches!(node.node_type, NodeType::Image(_)));
+        let dom = &mut self.dom_mut();
+        let mut dom = dom.borrow_mut();
+        // Find all image nodes
+        let image_nodes = dom.find_nodes(|node| matches!(node.data, NodeData::Image(_)));
 
-            // Collect image sources that need to be loaded
-            let mut image_requests: Vec<(&Rc<RefCell<DomNode>>, Rc<String>)> = Vec::new();
+        // Collect image sources that need to be loaded
+        let mut image_requests: Vec<(&Rc<RefCell<DomNode>>, Rc<String>)> = Vec::new();
 
-            for image_node_rc in &image_nodes {
-                if let Ok(mut image_node) = image_node_rc.try_borrow_mut() {
-                    if let NodeType::Image(ref mut image_data) = image_node.node_type {
-                        let image_data = image_data.get_mut();
-                        // Only start loading if not already loaded or loading
-                        if matches!(image_data.loading_state, ImageLoadingState::NotLoaded) {
-                            // Set to loading state
-                            image_data.loading_state = ImageLoadingState::Loading;
+        for image_node_rc in &image_nodes {
+            if let Ok(mut image_node) = image_node_rc.try_borrow_mut() {
+                if let NodeData::Image(ref mut image_data) = image_node.data {
+                    let image_data = image_data.get_mut();
+                    // Only start loading if not already loaded or loading
+                    if matches!(image_data.loading_state, ImageLoadingState::NotLoaded) {
+                        // Set to loading state
+                        image_data.loading_state = ImageLoadingState::Loading;
 
-                            if !image_data.src.is_empty() {
-                                image_requests.push((image_node_rc, image_data.src.clone()));
-                            }
+                        if !image_data.src.is_empty() {
+                            image_requests.push((image_node_rc, image_data.src.clone()));
                         }
                     }
                 }
             }
-
-            // Fetch all images concurrently
-            let mut fetch_futures = Vec::new();
-            for (_, src) in &image_requests {
-                // Resolve URL before creating the future
-                let absolute_url = match self.resolve_url(src) {
-                    Ok(url) => url,
-                    Err(e) => {
-                        eprintln!("Failed to resolve image URL {}: {}", src, e);
-                        continue;
-                    }
-                };
-
-                let http_client = &self.http_client;
-                fetch_futures.push(async move {
-                    let result = http_client.fetch_resource(&absolute_url).await;
-                    (src, result)
-                });
-            }
-
-            let results = futures::future::join_all(fetch_futures).await;
-
-            // Process results and update image nodes
-            for ((node_rc, src), (_, result)) in image_requests.iter().zip(results.into_iter()) {
-                if let Ok(mut image_node) = node_rc.try_borrow_mut() {
-                    if let NodeType::Image(ref mut image_data) = image_node.node_type {
-                        let image_data = image_data.get_mut();
-                        match result {
-                            Ok(image_bytes) => {
-                                // Decode and cache the image immediately after loading
-                                if let Some(decoded_image) = ImageData::decode_image_data_static(&image_bytes) {
-                                    image_data.cached_image = Some(decoded_image);
-                                    println!("Successfully loaded and decoded image: {}", src);
-                                } else {
-                                    println!("Successfully loaded but failed to decode image: {}", src);
-                                }
-                                image_data.loading_state = ImageLoadingState::Loaded(image_bytes);
-                            }
-                            Err(err) => {
-                                image_data.loading_state = ImageLoadingState::Failed(err.to_string());
-                                println!("Failed to load image {}: {}", src, err);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Recalculate layout after images are loaded (dimensions may have changed)
-            self.recalculate_layout();
         }
+
+        // Fetch all images concurrently
+        let mut fetch_futures = Vec::new();
+        for (_, src) in &image_requests {
+            // Resolve URL before creating the future
+            let absolute_url = match self.resolve_url(src) {
+                Ok(url) => url,
+                Err(e) => {
+                    eprintln!("Failed to resolve image URL {}: {}", src, e);
+                    continue;
+                }
+            };
+
+            let http_client = &self.http_client;
+            fetch_futures.push(async move {
+                let result = http_client.fetch_resource(&absolute_url).await;
+                (src, result)
+            });
+        }
+
+        let results = futures::future::join_all(fetch_futures).await;
+
+        // Process results and update image nodes
+        for ((node_rc, src), (_, result)) in image_requests.iter().zip(results.into_iter()) {
+            if let Ok(mut image_node) = node_rc.try_borrow_mut() {
+                if let NodeData::Image(ref mut image_data) = image_node.data {
+                    let image_data = image_data.get_mut();
+                    match result {
+                        Ok(image_bytes) => {
+                            // Decode and cache the image immediately after loading
+                            if let Some(decoded_image) = ImageData::decode_image_data_static(&image_bytes) {
+                                image_data.cached_image = Some(decoded_image);
+                                println!("Successfully loaded and decoded image: {}", src);
+                            } else {
+                                println!("Successfully loaded but failed to decode image: {}", src);
+                            }
+                            image_data.loading_state = ImageLoadingState::Loaded(image_bytes);
+                        }
+                        Err(err) => {
+                            image_data.loading_state = ImageLoadingState::Failed(err.to_string());
+                            println!("Failed to load image {}: {}", src, err);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Recalculate layout after images are loaded (dimensions may have changed)
+        self.recalculate_layout();
     }
 
     /// Fetch a single image from a URL
@@ -302,42 +311,47 @@ impl Engine {
 
     /// Force reload images (useful for debugging or refresh)
     pub async fn reload_images(&mut self) {
-        if let Some(dom) = &mut self.dom {
-            // Find all image nodes and reset their loading state
-            let image_nodes = dom.find_nodes(|node| matches!(node.node_type, NodeType::Image(_)));
+        let dom = &mut self.dom_mut();
+        let mut dom = dom.borrow_mut();
+        // Find all image nodes and reset their loading state
+        let image_nodes = dom.find_nodes(|node| matches!(node.data, NodeData::Image(_)));
 
-            for image_node_rc in image_nodes {
-                if let Ok(mut image_node) = image_node_rc.try_borrow_mut() {
-                    if let NodeType::Image(ref mut image_data) = image_node.node_type {
-                        let image_data = image_data.get_mut();
-                        image_data.loading_state = ImageLoadingState::NotLoaded;
-                    }
+        for image_node_rc in image_nodes {
+            if let Ok(mut image_node) = image_node_rc.try_borrow_mut() {
+                if let NodeData::Image(ref mut image_data) = image_node.data {
+                    let image_data = image_data.get_mut();
+                    image_data.loading_state = ImageLoadingState::NotLoaded;
                 }
             }
-
-            // Start loading again
-            self.start_image_loading().await;
         }
+
+        // Start loading again
+        self.start_image_loading().await;
     }
 
 
     /// Recalculate layout with current DOM and styles
     pub fn recalculate_layout(&mut self) {
-        if let Some(dom) = &self.dom {
-            let root = dom.get_root();
-            self.layout = Some(self.layout_engine.compute_layout(&root, self.viewport.hidpi_scale));
-
-            // Update node map from layout engine
-            self.node_map = self.layout_engine.get_node_map().clone();
-
-            self.style_map_dirty = true;
-
-            // Update content dimensions
-            self.update_content_dimensions();
-
-            // Clear the recomputation flag since we just recomputed
-            *self.layout_needs_recomputation.borrow_mut() = false;
+        if self.dom.is_none() {
+            return;
         }
+
+        let dom = &self.dom_mut();
+        let dom = dom.borrow_mut();
+
+        let root = dom.root_node();
+        self.layout = Some(self.layout_engine.compute_layout(&root, self.viewport.hidpi_scale));
+
+        // Update node map from layout engine
+        self.node_map = self.layout_engine.get_node_map().clone();
+
+        self.style_map_dirty = true;
+
+        // Update content dimensions
+        self.update_content_dimensions();
+
+        // Clear the recomputation flag since we just recomputed
+        *self.layout_needs_recomputation.borrow_mut() = false;
     }
 
     /// Check if layout needs recomputation and apply it if needed
@@ -387,34 +401,13 @@ impl Engine {
     }
 
     /// Render the current page to a canvas with transition support
-    pub fn render(&mut self, canvas: &Canvas, scale_factor: f32) {
+    pub fn render(&mut self, canvas: &Canvas, dom: &Rc<RefCell<Dom>>, scale_factor: f32) {
+        let dom = dom.borrow();
+        let node = dom.root_node();
         // Apply any pending layout changes from DOM modifications
         self.apply_pending_layout_changes();
 
         if let Some(layout) = &self.layout {
-            // Update style map only if it's dirty
-            if self.style_map_dirty {
-                let new_style_map: HashMap<usize, ComputedValues> = self.node_map.keys()
-                    .filter_map(|&node_id| {
-                        self.layout_engine.get_computed_styles(node_id)
-                            .map(|styles| (node_id, styles.clone()))
-                    })
-                    .collect();
-
-                // Check for style changes and update transitions
-                for (node_id, new_styles) in &new_style_map {
-                    if let Some(old_styles) = self.previous_style_map.get(node_id) {
-                        // Update transitions for this element if styles changed
-                        self.transition_manager.update_element_styles(*node_id, old_styles, new_styles);
-                    }
-                }
-
-                // Update the cached style maps
-                self.previous_style_map = self.cached_style_map.clone();
-                self.cached_style_map = new_style_map;
-                self.style_map_dirty = false;
-            }
-
             // Clean up completed transitions
             self.transition_manager.cleanup_completed_transitions();
 
@@ -427,9 +420,9 @@ impl Engine {
 
             self.renderer.render(
                 canvas,
+                node,
                 layout,
                 &self.node_map,
-                &self.cached_style_map,
                 transition_manager_ref,
                 self.scroll_x,
                 self.scroll_y,
@@ -462,69 +455,70 @@ impl Engine {
 
     /// Extract and parse CSS from <style> tags and <link> tags in the current DOM
     pub async fn parse_document_styles(&mut self) {
-        if let Some(dom) = &mut self.dom {
-            // Collect style contents first
-            let mut style_contents = Vec::new();
-            let style_elements = dom.query_selector("style");
-            for style_element in style_elements {
-                let style_node = style_element.borrow();
-                let css_content = style_node.text_content();
-                if !css_content.trim().is_empty() {
-                    style_contents.push(css_content);
-                }
-            }
+        let dom = &mut self.dom_mut();
+        let mut dom = dom.borrow_mut();
 
-            // Collect link hrefs first
-            let mut link_hrefs = Vec::new();
-            let link_elements = dom.query_selector("link");
-            for link_element in link_elements {
-                let link_node = link_element.borrow();
-                if let NodeType::Element(element_data) = &link_node.node_type {
-                    if let (Some(rel), Some(href)) = (
-                        element_data.attributes.get("rel"),
-                        element_data.attributes.get("href")
-                    ) {
-                        if rel.to_lowercase() == "stylesheet" {
-                            link_hrefs.push(href.clone());
-                        }
+        // Collect style contents first
+        let mut style_contents = Vec::new();
+        let style_elements = dom.query_selector("style");
+        for style_element in style_elements {
+            let style_node = style_element.borrow();
+            let css_content = style_node.text_content();
+            if !css_content.trim().is_empty() {
+                style_contents.push(css_content);
+            }
+        }
+
+        // Collect link hrefs first
+        let mut link_hrefs = Vec::new();
+        let link_elements = dom.query_selector("link");
+        for link_element in link_elements {
+            let link_node = link_element.borrow();
+            if let NodeData::Element(element_data) = &link_node.data {
+                if let (Some(rel), Some(href)) = (
+                    element_data.attributes.get("rel"),
+                    element_data.attributes.get("href")
+                ) {
+                    if rel.to_lowercase() == "stylesheet" {
+                        link_hrefs.push(href.clone());
                     }
                 }
             }
+        }
 
-            // Now process the collected data without holding DOM borrows
-            for css_content in style_contents {
-                self.add_stylesheet(&css_content);
-            }
+        // Now process the collected data without holding DOM borrows
+        for css_content in style_contents {
+            self.add_stylesheet(&css_content);
+        }
 
-            let mut fetch_futures = Vec::new();
-            for href in link_hrefs {
-                let absolute_url = match self.resolve_url(&href) {
-                    Ok(url) => url,
-                    Err(e) => {
-                        println!("Failed to resolve stylesheet URL {}: {}", href, e);
-                        continue;
+        let mut fetch_futures = Vec::new();
+        for href in link_hrefs {
+            let absolute_url = match self.resolve_url(&href) {
+                Ok(url) => url,
+                Err(e) => {
+                    println!("Failed to resolve stylesheet URL {}: {}", href, e);
+                    continue;
+                }
+            };
+            let http_client = &self.http_client;
+            fetch_futures.push(async move {
+                http_client.fetch_resource(&absolute_url).await
+            });
+        }
+
+        let results = futures::future::join_all(fetch_futures).await;
+
+        for result in results {
+            match result {
+                Ok(css_bytes) => {
+                    if let Ok(css_content) = String::from_utf8(css_bytes) {
+                        self.add_stylesheet(&css_content);
+                    } else {
+                        println!("Failed to decode fetched stylesheet as UTF-8");
                     }
-                };
-                let http_client = &self.http_client;
-                fetch_futures.push(async move {
-                    http_client.fetch_resource(&absolute_url).await
-                });
-            }
-
-            let results = futures::future::join_all(fetch_futures).await;
-
-            for result in results {
-                match result {
-                    Ok(css_bytes) => {
-                        if let Ok(css_content) = String::from_utf8(css_bytes) {
-                            self.add_stylesheet(&css_content);
-                        } else {
-                            println!("Failed to decode fetched stylesheet as UTF-8");
-                        }
-                    }
-                    Err(e) => {
-                        println!("Failed to fetch external stylesheet: {}", e);
-                    }
+                }
+                Err(e) => {
+                    println!("Failed to fetch external stylesheet: {}", e);
                 }
             }
         }
@@ -675,17 +669,15 @@ impl Engine {
 
     /// Initialize JavaScript runtime for the current document
     pub fn initialize_js_runtime(&mut self) {
-        if let Some(dom) = &self.dom {
-            let root = dom.get_root();
-            let user_agent = self.config.user_agent.clone();
-            match JsRuntime::new(root, user_agent) {
-                Ok(runtime) => {
-                    println!("JavaScript runtime initialized successfully");
-                    self.js_runtime = Some(runtime);
-                }
-                Err(e) => {
-                    eprintln!("Failed to initialize JavaScript runtime: {}", e);
-                }
+        let dom = self.dom_mut();
+        let user_agent = self.config.user_agent.clone();
+        match JsRuntime::new(dom, user_agent) {
+            Ok(runtime) => {
+                println!("JavaScript runtime initialized successfully");
+                self.js_runtime = Some(runtime);
+            }
+            Err(e) => {
+                eprintln!("Failed to initialize JavaScript runtime: {}", e);
             }
         }
     }
@@ -711,22 +703,22 @@ impl Engine {
         // Collect script contents and external URLs first to avoid borrow issues
         let mut script_items = Vec::new();
 
-        if let Some(dom) = &mut self.dom {
-            let script_elements = dom.query_selector("script");
+        let dom = &mut self.dom_mut();
+        let mut dom = dom.borrow_mut();
+        let script_elements = dom.query_selector("script");
 
-            for script_element in script_elements {
-                let script_node = script_element.borrow();
-                if let NodeType::Element(element_data) = &script_node.node_type {
-                    // Check for external scripts
-                    if let Some(src) = element_data.attributes.get("src") {
-                        println!("Found external script: {}", src);
-                        script_items.push((true, src.clone()));
-                    } else {
-                        // Get inline script content
-                        let script_content = script_node.text_content();
-                        if !script_content.trim().is_empty() {
-                            script_items.push((false, script_content));
-                        }
+        for script_element in script_elements {
+            let script_node = script_element.borrow();
+            if let NodeData::Element(element_data) = &script_node.data {
+                // Check for external scripts
+                if let Some(src) = element_data.attributes.get("src") {
+                    println!("Found external script: {}", src);
+                    script_items.push((true, src.clone()));
+                } else {
+                    // Get inline script content
+                    let script_content = script_node.text_content();
+                    if !script_content.trim().is_empty() {
+                        script_items.push((false, script_content));
                     }
                 }
             }
@@ -938,86 +930,89 @@ impl Engine {
     pub fn handle_key_event(&mut self, event_type: EventType, key: String, key_code: u32) {
         // For keyboard events, we typically fire them on the focused element
         // For now, we'll fire on the document root
-        if let Some(dom) = &self.dom {
-            let root = dom.get_root();
+        let dom = &self.dom_mut();
+        let dom = dom.borrow_mut();
 
-            if let Some(runtime) = &mut self.js_runtime {
-                let context = runtime.context_mut();
+        let root = dom.root_node();
 
-                println!("[Event] Firing {:?} event with key: {} (code: {})", event_type, key, key_code);
+        if let Some(runtime) = &mut self.js_runtime {
+            let context = runtime.context_mut();
 
-                if let Err(e) = EventDispatcher::dispatch_keyboard_event(
-                    &root,
-                    event_type,
-                    key,
-                    key_code,
-                    context,
-                ) {
-                    eprintln!("Error dispatching keyboard event: {}", e);
-                }
+            println!("[Event] Firing {:?} event with key: {} (code: {})", event_type, key, key_code);
+
+            if let Err(e) = EventDispatcher::dispatch_keyboard_event(
+                &root,
+                event_type,
+                key,
+                key_code,
+                context,
+            ) {
+                eprintln!("Error dispatching keyboard event: {}", e);
             }
         }
     }
 
     /// Handle a scroll event
     pub fn handle_scroll_event(&mut self) {
-        if let Some(dom) = &self.dom {
-            let root = dom.get_root();
+        let dom = self.dom();
+        let dom = dom.borrow();
+        let root = dom.root_node();
 
-            if let Some(runtime) = &mut self.js_runtime {
-                let context = runtime.context_mut();
+        if let Some(runtime) = &mut self.js_runtime {
+            let context = runtime.context_mut();
 
-                println!("[Event] Firing scroll event");
+            println!("[Event] Firing scroll event");
 
-                if let Err(e) = EventDispatcher::dispatch_simple_event(
-                    &root,
-                    EventType::Scroll,
-                    context,
-                ) {
-                    eprintln!("Error dispatching scroll event: {}", e);
-                }
+            if let Err(e) = EventDispatcher::dispatch_simple_event(
+                &root,
+                EventType::Scroll,
+                context,
+            ) {
+                eprintln!("Error dispatching scroll event: {}", e);
             }
         }
     }
 
     /// Handle a resize event
     pub fn handle_resize_event(&mut self) {
-        if let Some(dom) = &self.dom {
-            let root = dom.get_root();
+        let dom = &self.dom();
+        let dom = dom.borrow();
 
-            if let Some(runtime) = &mut self.js_runtime {
-                let context = runtime.context_mut();
+        let root = dom.root_node();
 
-                println!("[Event] Firing resize event");
+        if let Some(runtime) = &mut self.js_runtime {
+            let context = runtime.context_mut();
 
-                if let Err(e) = EventDispatcher::dispatch_simple_event(
-                    &root,
-                    EventType::Resize,
-                    context,
-                ) {
-                    eprintln!("Error dispatching resize event: {}", e);
-                }
+            println!("[Event] Firing resize event");
+
+            if let Err(e) = EventDispatcher::dispatch_simple_event(
+                &root,
+                EventType::Resize,
+                context,
+            ) {
+                eprintln!("Error dispatching resize event: {}", e);
             }
         }
     }
 
     /// Fire a load event (typically called after page is fully loaded)
     pub fn fire_load_event(&mut self) {
-        if let Some(dom) = &self.dom {
-            let root = dom.get_root();
+        let dom = self.dom();
+        let dom = dom.borrow();
 
-            if let Some(runtime) = &mut self.js_runtime {
-                let context = runtime.context_mut();
+        let root = dom.root_node();
 
-                println!("[Event] Firing load event");
+        if let Some(runtime) = &mut self.js_runtime {
+            let context = runtime.context_mut();
 
-                if let Err(e) = EventDispatcher::dispatch_simple_event(
-                    &root,
-                    EventType::Load,
-                    context,
-                ) {
-                    eprintln!("Error dispatching load event: {}", e);
-                }
+            println!("[Event] Firing load event");
+
+            if let Err(e) = EventDispatcher::dispatch_simple_event(
+                &root,
+                EventType::Load,
+                context,
+            ) {
+                eprintln!("Error dispatching load event: {}", e);
             }
         }
     }
@@ -1042,8 +1037,8 @@ impl Engine {
             if let Some(node_rc) = self.node_map.get(&current_id) {
                 if let Ok(node) = node_rc.try_borrow() {
                     // Check if this is an anchor element with an href attribute
-                    if let NodeType::Element(element_data) = &node.node_type {
-                        if element_data.tag_name == "a" {
+                    if let NodeData::Element(element_data) = &node.data {
+                        if element_data.name.local.to_string() == "a" {
                             if let Some(href) = element_data.attributes.get("href") {
                                 return Some(href.clone());
                             }

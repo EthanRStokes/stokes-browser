@@ -300,8 +300,11 @@ impl TabProcess {
             // Clear the canvas to prevent old frames from showing through
             canvas.clear(skia_safe::Color::WHITE);
 
-            // Render the engine content
-            self.engine.render(canvas, self.engine.viewport.hidpi_scale);
+            let engine = &mut self.engine;
+            if engine.dom.is_some() {
+            let dom = engine.dom();
+            engine.render(canvas, &dom, engine.viewport.hidpi_scale);
+                }
 
             // Copy the pixel data to shared memory
             if let Some(pixmap) = shared.surface.peek_pixels() {

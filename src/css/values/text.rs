@@ -1,5 +1,7 @@
 // CSS text-related values
 
+use html5ever::tendril::StrTendril;
+
 /// CSS text decoration types
 #[derive(Debug, Clone, PartialEq)]
 pub enum TextDecoration {
@@ -185,7 +187,7 @@ impl TextTransform {
     }
 
     /// Apply the text transformation to a string
-    pub fn apply(&self, text: &str) -> String {
+    pub fn apply(&self, text: &StrTendril) -> String {
         match self {
             TextTransform::None => text.to_string(),
             TextTransform::Uppercase => text.to_uppercase(),

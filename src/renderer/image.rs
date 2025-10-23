@@ -1,4 +1,4 @@
-use crate::dom::ImageData;
+use crate::dom::{DomNode, ImageData};
 use crate::dom::ImageLoadingState;
 use crate::layout::LayoutBox;
 // Image rendering functionality
@@ -6,7 +6,7 @@ use skia_safe::{Canvas, Color, FilterMode, Font, MipmapMode, Paint, Rect, Sampli
 use std::cell::RefCell;
 
 /// Render image content
-pub fn render_image_node(canvas: &Canvas, layout_box: &LayoutBox, image_data: &RefCell<ImageData>, scale_factor: f32, font: &Font) {
+pub fn render_image_node(canvas: &Canvas, node: &DomNode, layout_box: &LayoutBox, image_data: &RefCell<ImageData>, scale_factor: f32, font: &Font) {
     let image_data = image_data.borrow();
     let content_rect = layout_box.dimensions.content;
 

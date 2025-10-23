@@ -9,15 +9,16 @@ mod pseudo;
 
 use crate::css::transition_manager::TransitionManager;
 use crate::css::ComputedValues;
-use crate::dom::{DomNode, ElementData, NodeType};
+use crate::dom::{DomNode, ElementData, NodeData};
 use crate::layout::LayoutBox;
 use crate::renderer::background::BackgroundImageCache;
 use crate::renderer::font::FontManager;
 use crate::renderer::paint::DefaultPaints;
 use skia_safe::{Canvas, Color, Font, Paint, Rect};
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use crate::dom::node::Handle;
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer {
@@ -49,14 +50,15 @@ impl HtmlRenderer {
     pub fn render(
         &mut self,
         canvas: &Canvas,
-        layout: &LayoutBox,
+        node: &Rc<RefCell<DomNode>>,
+        layout_box: &LayoutBox,
         node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
-        style_map: &HashMap<usize, ComputedValues>,
         transition_manager: Option<&TransitionManager>,
         scroll_x: f32,
         scroll_y: f32,
         scale_factor: f32,
     ) {
+        let node = node.borrow();
         // Save the current canvas state
         canvas.save();
 
@@ -72,7 +74,7 @@ impl HtmlRenderer {
         );
 
         // Render the layout tree with styles, scale factor, and viewport culling
-        self.render_box(canvas, layout, node_map, style_map, transition_manager, scale_factor, &viewport_rect);
+        self.render_box(canvas, &node, layout_box, node_map, transition_manager, scale_factor, &viewport_rect);
 
         // Restore the canvas state
         canvas.restore();
@@ -82,9 +84,9 @@ impl HtmlRenderer {
     fn render_box(
         &mut self,
         canvas: &Canvas,
+        node: &DomNode,
         layout_box: &LayoutBox,
         node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
-        style_map: &HashMap<usize, ComputedValues>,
         transition_manager: Option<&TransitionManager>,
         scale_factor: f32,
         viewport_rect: &Rect,
@@ -96,23 +98,22 @@ impl HtmlRenderer {
         //}
 
         // Get base computed styles for this node
-        let base_styles = style_map.get(&layout_box.node_id);
+        let base_styles = &node.style;
 
-        // Get interpolated styles if transitions are active
-        let computed_styles = if let (Some(manager), Some(base)) = (transition_manager, base_styles) {
-            let interpolated = manager.get_interpolated_styles(layout_box.node_id, base);
+        // TODO Get interpolated styles if transitions are active
+        let computed_styles = base_styles;
+        /*let computed_styles = if let (Some(manager), Some(base)) = (transition_manager, base_styles) {
+            let interpolated = manager.get_interpolated_styles(node.node_id, base);
             Some(interpolated)
         } else {
             base_styles.cloned()
-        };
+        };*/
 
         // Check visibility - if hidden, skip rendering visual aspects but still render children
-        let is_visible = computed_styles.as_ref()
-            .map(|styles| matches!(styles.visibility, crate::css::Visibility::Visible))
-            .unwrap_or(true);
+        let is_visible = computed_styles.visibility == crate::css::Visibility::Visible;
 
         // Get the DOM node for this layout box
-        if let Some(dom_node_rc) = node_map.get(&layout_box.node_id) {
+        if let Some(dom_node_rc) = node_map.get(&node.id) {
             let dom_node = dom_node_rc.borrow();
 
             // Check if this node should be skipped from rendering
@@ -122,28 +123,30 @@ impl HtmlRenderer {
 
             // Only render visual aspects if visible
             if is_visible {
-                match &dom_node.node_type {
-                    NodeType::Element(element_data) => {
-                        self.render_element(canvas, layout_box, element_data, computed_styles.as_ref(), scale_factor);
+                match &dom_node.data {
+                    NodeData::Element(element_data) => {
+                        self.render_element(canvas, node, layout_box, element_data, &computed_styles, scale_factor);
                     },
-                    NodeType::Text(_) => {
+                    NodeData::Text { contents } => {
                         // Check if text node is inside a non-visual element
                         if !is_inside_non_visual_element(&dom_node) {
                             text::render_text_node(
                                 canvas,
+                                node,
                                 layout_box,
-                                computed_styles.as_ref(),
+                                contents,
+                                &computed_styles,
                                 &self.font_manager,
                                 &self.paints.text_paint,
                                 scale_factor,
                             );
                         }
                     },
-                    NodeType::Image(image_data) => {
+                    NodeData::Image(image_data) => {
                         let placeholder_font = self.font_manager.placeholder_font_for_size(12.0 * scale_factor as f32);
-                        image::render_image_node(canvas, layout_box, image_data, scale_factor, &placeholder_font);
+                        image::render_image_node(canvas, node, layout_box, image_data, scale_factor, &placeholder_font);
                     },
-                    NodeType::Document => {
+                    NodeData::Document => {
                         // Just render children for document
                     },
                     _ => {
@@ -154,25 +157,31 @@ impl HtmlRenderer {
         }
 
         // Render children regardless of visibility (they may have their own visibility settings)
-        if let Some(dom_node_rc) = node_map.get(&layout_box.node_id) {
+        if let Some(dom_node_rc) = node_map.get(&node.id) {
             let dom_node = dom_node_rc.borrow();
             if !should_skip_rendering(&dom_node) {
                 // Sort children by z-index before rendering
-                let mut children_with_z: Vec<(&LayoutBox, i32)> = layout_box.children.iter()
+                /*let mut children_with_z: Vec<(&DomNode, i32)> = node.children.iter()
                     .map(|child| {
-                        let z_index = style_map.get(&child.node_id)
-                            .map(|styles| styles.z_index)
-                            .unwrap_or(0);
+                        let child = node.get_node(*child);
+                        let z_index = child.style.z_index;
                         (child, z_index)
+                    })
+                    .collect();*/
+                let mut children_with_z: Vec<(Ref<DomNode>, &LayoutBox, i32)> = layout_box.children.iter()
+                    .map(|child| {
+                        let node = node.get_node(child.node_id).borrow();
+                        let z_index = node.style.z_index;
+                        (node, child, z_index)
                     })
                     .collect();
 
                 // Sort by z-index (lower z-index rendered first, so they appear behind)
-                children_with_z.sort_by_key(|(_, z)| *z);
+                children_with_z.sort_by_key(|(_, _, z)| *z);
 
                 // Render children in z-index order
-                for (child, _) in children_with_z {
-                    self.render_box(canvas, child, node_map, style_map, transition_manager, scale_factor, viewport_rect);
+                for (child_node, child, _) in children_with_z {
+                    self.render_box(canvas, &*child_node, child, node_map, transition_manager, scale_factor, viewport_rect);
                 }
             }
         }
@@ -182,53 +191,42 @@ impl HtmlRenderer {
     fn render_element(
         &mut self,
         canvas: &Canvas,
+        node: &DomNode,
         layout_box: &LayoutBox,
         element_data: &ElementData,
-        computed_styles: Option<&ComputedValues>,
+        styles: &ComputedValues,
         scale_factor: f32,
     ) {
         let content_rect = layout_box.dimensions.content;
 
         // Get opacity value (default to 1.0 if no styles)
-        let opacity = computed_styles.map(|s| s.opacity).unwrap_or(1.0);
+        let opacity = styles.opacity;
 
         // Render ::before pseudo-element content
-        if let Some(styles) = computed_styles {
-            pseudo::render_pseudo_element_content(
-                canvas,
-                &content_rect,
-                element_data,
-                styles,
-                scale_factor,
-                true, // before
-                &self.font_manager,
-                &self.paints.text_paint,
-            );
-        }
+        pseudo::render_pseudo_element_content(
+            canvas,
+            &content_rect,
+            element_data,
+            styles,
+            scale_factor,
+            true, // before
+            &self.font_manager,
+            &self.paints.text_paint,
+        );
 
         // Render box shadows first (behind the element)
-        if let Some(styles) = computed_styles {
-            decorations::render_box_shadows(canvas, &content_rect, styles, scale_factor);
-        }
+        decorations::render_box_shadows(canvas, &content_rect, styles, scale_factor);
 
         // Create background paint with CSS colors
         let mut bg_paint = &mut self.paints.background_paint;
-        if let Some(styles) = computed_styles {
-            if let Some(bg_color) = &styles.background_color {
-                let mut color = bg_color.to_skia_color();
-                // Apply opacity to background color
-                color = color.with_a((color.a() as f32 * opacity) as u8);
-                bg_paint.set_color(color);
-            } else {
-                // Fallback to default background colors
-                background::set_default_background_color(&mut bg_paint, &element_data.tag_name);
-                // Apply opacity
-                let mut color = bg_paint.color();
-                color = color.with_a((color.a() as f32 * opacity) as u8);
-                bg_paint.set_color(color);
-            }
+        if let Some(bg_color) = &styles.background_color {
+            let mut color = bg_color.to_skia_color();
+            // Apply opacity to background color
+            color = color.with_a((color.a() as f32 * opacity) as u8);
+            bg_paint.set_color(color);
         } else {
-            background::set_default_background_color(&mut bg_paint, &element_data.tag_name);
+            // Fallback to default background colors
+            background::set_default_background_color(&mut bg_paint, &element_data.name.local);
             // Apply opacity
             let mut color = bg_paint.color();
             color = color.with_a((color.a() as f32 * opacity) as u8);
@@ -239,22 +237,20 @@ impl HtmlRenderer {
         let mut should_draw_border = false;
         let mut border_paint = self.paints.border_paint.clone();
 
-        if let Some(styles) = computed_styles {
-            // Check if border is specified in styles
-            if styles.border.top > 0.0 || styles.border.right > 0.0 ||
-               styles.border.bottom > 0.0 || styles.border.left > 0.0 {
-                should_draw_border = true;
-                // Use average border width for simplicity and apply scale factor
-                let avg_border_width = (styles.border.top + styles.border.right +
-                                      styles.border.bottom + styles.border.left) / 4.0;
-                let scaled_border_width = avg_border_width * scale_factor as f32;
-                border_paint.set_stroke_width(scaled_border_width);
-            }
+        // Check if border is specified in styles
+        if styles.border.top > 0.0 || styles.border.right > 0.0 ||
+            styles.border.bottom > 0.0 || styles.border.left > 0.0 {
+            should_draw_border = true;
+            // Use average border width for simplicity and apply scale factor
+            let avg_border_width = (styles.border.top + styles.border.right +
+                styles.border.bottom + styles.border.left) / 4.0;
+            let scaled_border_width = avg_border_width * scale_factor as f32;
+            border_paint.set_stroke_width(scaled_border_width);
         }
 
         // Default border for certain elements with scaling
         if !should_draw_border {
-            match element_data.tag_name.as_str() {
+            match element_data.name.local.to_string().as_str() {
                 "div" | "section" | "article" | "header" | "footer" => {
                     should_draw_border = true;
                     let scaled_border_width = 1.0 * scale_factor as f32;
@@ -272,7 +268,7 @@ impl HtmlRenderer {
         }
 
         // Add visual indicators for headings with scaled border width
-        if element_data.tag_name.starts_with('h') {
+        if element_data.name.local.starts_with('h') {
             let mut heading_paint = Paint::default();
             let mut heading_color = Color::from_rgb(50, 50, 150);
             heading_color = heading_color.with_a((255.0 * opacity) as u8);
@@ -284,38 +280,30 @@ impl HtmlRenderer {
         }
 
         // Render outline if specified
-        if let Some(styles) = computed_styles {
-            decorations::render_outline(canvas, &content_rect, styles, opacity, scale_factor);
-        }
+        decorations::render_outline(canvas, &content_rect, styles, opacity, scale_factor);
 
         // Render stroke if specified (CSS stroke property)
-        if let Some(styles) = computed_styles {
-            decorations::render_stroke(canvas, &content_rect, &styles.stroke, opacity, scale_factor);
-        }
+        decorations::render_stroke(canvas, &content_rect, &styles.stroke, opacity, scale_factor);
 
         // Render rounded corners if border radius is specified
-        if let Some(styles) = computed_styles {
-            let border_radius_px = styles.border_radius.to_px(styles.font_size, 400.0);
-            if border_radius_px.has_radius() {
-                decorations::render_rounded_element(
-                    canvas,
-                    content_rect,
-                    &border_radius_px,
-                    &bg_paint,
-                    if should_draw_border { Some(&border_paint) } else { None },
-                    scale_factor,
-                );
-                return; // Skip the regular rectangle drawing since we drew rounded shapes
-            }
+        let border_radius_px = styles.border_radius.to_px(styles.font_size, 400.0);
+        if border_radius_px.has_radius() {
+            decorations::render_rounded_element(
+                canvas,
+                content_rect,
+                &border_radius_px,
+                &bg_paint,
+                if should_draw_border { Some(&border_paint) } else { None },
+                scale_factor,
+            );
+            return; // Skip the regular rectangle drawing since we drew rounded shapes
         }
 
         // Draw background (only if no rounded corners)
         canvas.draw_rect(content_rect, &bg_paint);
 
         // Render background image if specified
-        if let Some(styles) = computed_styles {
-            background::render_background_image(canvas, &content_rect, styles, scale_factor, &self.background_image_cache);
-        }
+        background::render_background_image(canvas, &content_rect, styles, scale_factor, &self.background_image_cache);
 
         if should_draw_border {
             canvas.draw_rect(content_rect, &border_paint);
@@ -326,9 +314,10 @@ impl HtmlRenderer {
 /// Determine if rendering should be skipped for this node (and its children)
 fn should_skip_rendering(dom_node: &DomNode) -> bool {
     // Skip rendering for non-visual elements like <style>, <script>, etc.
-    match dom_node.node_type {
-        NodeType::Element(ref element_data) => {
-            let tag = element_data.tag_name.as_str();
+    match dom_node.data {
+        NodeData::Element(ref element_data) => {
+            let tag = element_data.name.local.to_string();
+            let tag = tag.as_str();
             // Skip if the tag is one of the non-visual elements
             tag == "style" || tag == "script" || tag == "head" || tag == "title"
         },
@@ -341,8 +330,8 @@ fn is_inside_non_visual_element(dom_node: &DomNode) -> bool {
     // Simple approach: just check if this is a text node and skip the parent traversal
     // Text nodes inside style/script tags should be filtered out during DOM building
     // or layout phase, not during rendering
-    match dom_node.node_type {
-        NodeType::Text(_) => {
+    match &dom_node.data {
+        NodeData::Text { contents } => {
             // For now, we'll be conservative and not traverse parents to avoid infinite loops
             // The better approach is to filter these out during layout building
             false

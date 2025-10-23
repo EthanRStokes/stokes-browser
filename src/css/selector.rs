@@ -1,5 +1,5 @@
 // CSS selector implementation
-use crate::dom::{DomNode, ElementData, NodeType};
+use crate::dom::{DomNode, ElementData, NodeData};
 
 /// CSS pseudo-class types
 #[derive(Debug, Clone, PartialEq)]
@@ -156,7 +156,7 @@ impl Selector {
 
     /// Check if this selector matches a DOM node
     pub fn matches(&self, node: &DomNode) -> bool {
-        if let NodeType::Element(element_data) = &node.node_type {
+        if let NodeData::Element(element_data) = &node.data {
             self.matches_element(element_data)
         } else {
             false
@@ -168,7 +168,7 @@ impl Selector {
         // First check if the base selector matches
         let base_matches = match &self.selector_type {
             SelectorType::Type(tag_name) => {
-                element_data.tag_name.to_lowercase() == tag_name.to_lowercase()
+                element_data.name.local.to_string() == tag_name.to_lowercase()
             }
             SelectorType::Class(class_name) => {
                 if let Some(class_attr) = element_data.attributes.get("class") {
@@ -212,7 +212,7 @@ impl Selector {
         match pseudo_class {
             PseudoClass::Link => {
                 // Link pseudo-class applies to unvisited links
-                element_data.tag_name.to_lowercase() == "a" &&
+                element_data.name.local.to_string() == "a" &&
                 element_data.attributes.contains_key("href")
             }
             PseudoClass::Visited => {

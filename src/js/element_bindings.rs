@@ -1,4 +1,4 @@
-use crate::dom::{DomNode, ElementData, EventType, NodeType};
+use crate::dom::{Dom, DomNode, ElementData, EventType, NodeData};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
 // Element bindings for JavaScript
@@ -6,19 +6,19 @@ use boa_engine::{object::builtins::JsArray, Context, JsResult as BoaResult, JsSt
 use boa_gc::{Finalize, Trace};
 use std::cell::RefCell;
 use std::rc::Rc;
-
+use html5ever::{ns, QualName};
 use super::register_node; // register nodes in global registry
 
 /// Wrapper for a DOM element that can be used in JavaScript
 #[derive(Debug, Clone, Trace, Finalize)]
 pub struct ElementWrapper {
     #[unsafe_ignore_trace]
-    pub node: Rc<RefCell<DomNode>>,
+    pub dom: Rc<RefCell<Dom>>,
 }
 
 impl ElementWrapper {
-    pub fn new(node: Rc<RefCell<DomNode>>) -> Self {
-        Self { node }
+    pub fn new(dom: Rc<RefCell<Dom>>) -> Self {
+        Self { dom }
     }
 
     /// Create a JavaScript object from a DOM element
@@ -28,7 +28,7 @@ impl ElementWrapper {
     ) -> BoaResult<JsValue> {
         let element = element_rc.borrow();
 
-        if let NodeType::Element(ref data) = element.node_type {
+        if let NodeData::Element(ref data) = element.data {
             // Clone the Rc for use in closures
             let node_for_get_attr = Rc::clone(element_rc);
             let node_for_set_attr = Rc::clone(element_rc);
@@ -72,7 +72,7 @@ impl ElementWrapper {
             let js_element = ObjectInitializer::new(context)
                 .property(
                     JsString::from("tagName"),
-                    JsValue::from(JsString::from(data.tag_name.to_uppercase())),
+                    JsValue::from(JsString::from(data.name.local.to_uppercase())),
                     boa_engine::property::Attribute::all(),
                 )
                 .property(
@@ -95,7 +95,7 @@ impl ElementWrapper {
                 )
                 .property(
                     JsString::from("nodeName"),
-                    JsValue::from(JsString::from(data.tag_name.to_uppercase())),
+                    JsValue::from(JsString::from(data.name.local.to_uppercase())),
                     boa_engine::property::Attribute::all(),
                 )
                 .property(
@@ -119,7 +119,7 @@ impl ElementWrapper {
                                 .unwrap_or_default();
 
                             let node = node_for_get_attr.borrow();
-                            if let NodeType::Element(ref element_data) = node.node_type {
+                            if let NodeData::Element(ref element_data) = node.data {
                                 if let Some(value) = element_data.attributes.get(&attr_name) {
                                     println!("[JS] element.getAttribute('{}') = '{}'", attr_name, value);
                                     Ok(JsValue::from(JsString::from(value.clone())))
@@ -149,7 +149,7 @@ impl ElementWrapper {
                                 .unwrap_or_default();
 
                             let mut node = node_for_set_attr.borrow_mut();
-                            if let NodeType::Element(ref mut element_data) = node.node_type {
+                            if let NodeData::Element(ref mut element_data) = node.data {
                                 element_data.attributes.insert(attr_name.clone(), attr_value.clone());
                                 println!("[JS] element.setAttribute('{}', '{}')", attr_name, attr_value);
                             }
@@ -169,7 +169,7 @@ impl ElementWrapper {
                                 .unwrap_or_default();
 
                             let mut node = node_for_remove_attr.borrow_mut();
-                            if let NodeType::Element(ref mut element_data) = node.node_type {
+                            if let NodeData::Element(ref mut element_data) = node.data {
                                 element_data.attributes.remove(&attr_name);
                                 println!("[JS] element.removeAttribute('{}')", attr_name);
                             }
@@ -189,7 +189,7 @@ impl ElementWrapper {
                                 .unwrap_or_default();
 
                             let node = node_for_has_attr.borrow();
-                            if let NodeType::Element(ref element_data) = node.node_type {
+                            if let NodeData::Element(ref element_data) = node.data {
                                 let has = element_data.attributes.contains_key(&attr_name);
                                 println!("[JS] element.hasAttribute('{}') = {}", attr_name, has);
                                 Ok(JsValue::from(has))
@@ -227,15 +227,17 @@ impl ElementWrapper {
                                         drop(parent_node);
 
                                         // Try to get the child's tag name to create a new node
-                                        let tag_key = JsString::from("tagName");
+                                        // TODO reimplement
+                                        /*let tag_key = JsString::from("tagName");
                                         if let Ok(tag_value) = child_obj.get(tag_key, context) {
                                             if let Some(tag_str) = tag_value.as_string() {
                                                 let tag_name = tag_str.to_std_string_escaped().to_lowercase();
                                                 println!("[JS] Appending child with tag: {}", tag_name);
 
                                                 // Create a new node and add it
-                                                let element_data = ElementData::new(&tag_name);
-                                                let new_child = DomNode::new(NodeType::Element(element_data), None);
+                                                let qual_name = QualName::new(None, ns!(), tag_name.into());
+                                                let element_data = ElementData::new(qual_name);
+                                                let new_child = DomNode::new(NodeData::Element(element_data), None);
 
                                                 let mut parent_node = node_for_append_child.borrow_mut();
                                                 let child_rc = parent_node.add_child(new_child);
@@ -246,7 +248,7 @@ impl ElementWrapper {
                                                 println!("[JS] Successfully appended child. Parent now has {} children",
                                                          parent_node.children.len());
                                             }
-                                        }
+                                        }*/
                                     }
                                 }
                             }
@@ -280,6 +282,8 @@ impl ElementWrapper {
                                         let initial_count = parent_node.children.len();
 
                                         parent_node.children.retain(|child| {
+                                            let parent = node_for_remove_child.borrow();
+                                            let child = parent.get_node(*child);
                                             let child_addr = Rc::as_ptr(child) as i64;
                                             child_addr != child_ptr_addr
                                         });
@@ -444,13 +448,20 @@ impl ElementWrapper {
     }
 
     /// Create a simple stub element (for document.createElement)
-    pub fn create_stub_element(tag_name: &str, context: &mut Context) -> BoaResult<JsValue> {
+    pub fn create_stub_element(&self, tag_name: &str, context: &mut Context) -> BoaResult<JsValue> {
+        ElementWrapper::create_stub_element_(tag_name, &self.dom, context)
+    }
+
+    /// Create a simple stub element (for document.createElement)
+    pub fn create_stub_element_(tag_name: &str, dom: &Rc<RefCell<Dom>>, context: &mut Context) -> BoaResult<JsValue> {
+        let mut dom = dom.borrow_mut();
         // Create a new element node
-        let element_data = ElementData::new(tag_name);
-        let new_node = DomNode::new(NodeType::Element(element_data), None);
-        let node_rc = Rc::new(RefCell::new(new_node));
+        let qual_name = QualName::new(None, ns!(), tag_name.into());
+        let element_data = ElementData::new(qual_name);
+        let new_node = dom.create_node(NodeData::Element(element_data));
+        let new_node = &dom.nodes[new_node];
 
         // Use the same create_js_element function for consistency
-        Self::create_js_element(&node_rc, context)
+        Self::create_js_element(&new_node, context)
     }
 }

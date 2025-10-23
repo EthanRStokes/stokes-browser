@@ -32,6 +32,8 @@ uds_windows = "1.1.0"
 rfd = "0.15"
 blitz-traits = "0.2.0"
 url = "2"
+taffy = "0.9.1"
+slab = "0.4.11"
 
 [dependencies.winit]
 git = "https://github.com/Treetrain1/winit.git"

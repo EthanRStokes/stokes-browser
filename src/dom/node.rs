@@ -4,6 +4,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
+use html5ever::{Attribute, QualName};
+use html5ever::tendril::StrTendril;
+use slab::Slab;
+use taffy::Style;
+use crate::css::ComputedValues;
+use crate::layout::LayoutBox;
 
 /// Callback type for layout invalidation
 pub type LayoutInvalidationCallback = Box<dyn Fn()>;
@@ -11,19 +17,22 @@ pub type LayoutInvalidationCallback = Box<dyn Fn()>;
 /// A map of attribute names to values
 pub type AttributeMap = HashMap<String, String>;
 
+pub type Handle = Rc<RefCell<DomNode>>;
+
 /// Represents the type of DOM node
-#[derive(Debug, Clone, PartialEq)]
-pub enum NodeType {
+#[derive(Debug, Clone)]
+pub enum NodeData {
+    /// The `Document` itself - the root node.
     Document,
-    DocumentType {
-        name: String,
-        public_id: String,
-        system_id: String,
+    DocType {
+        name: StrTendril,
+        public_id: StrTendril,
+        system_id: StrTendril,
     },
     DocumentFragment,
+    Text { contents: RefCell<StrTendril> },
+    Comment { contents: StrTendril },
     Element(ElementData),
-    Text(String),
-    Comment(String),
     ProcessingInstruction {
         target: String,
         data: String,
@@ -32,26 +41,30 @@ pub enum NodeType {
 }
 
 /// Data specific to element nodes
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct ElementData {
     /// Tag name of the element (e.g., "div", "span", "a")
-    pub tag_name: String,
+    pub name: QualName,
     /// Element attributes (e.g., id, class, href)
     pub attributes: AttributeMap,
+    /// For HTML <template> elements, holds the template contents
+    pub template_contents: RefCell<Option<Handle>>,
 }
 
 impl ElementData {
-    pub fn new(tag_name: &str) -> Self {
+    pub fn new(name: QualName) -> Self {
         Self {
-            tag_name: tag_name.to_lowercase(),
+            name,
             attributes: HashMap::new(),
+            template_contents: RefCell::new(None),
         }
     }
 
-    pub fn with_attributes(tag_name: &str, attributes: AttributeMap) -> Self {
+    pub fn with_attributes(name: QualName, attributes: AttributeMap) -> Self {
         Self {
-            tag_name: tag_name.to_lowercase(),
+            name,
             attributes,
+            template_contents: RefCell::new(None),
         }
     }
 
@@ -312,12 +325,20 @@ impl ImageData {
 /// A node in the DOM tree
 #[derive(Clone)]
 pub struct DomNode {
-    /// The type of node
-    pub node_type: NodeType,
+    // the tree this belongs to
+    tree: *mut Slab<Rc<RefCell<DomNode>>>,
+
+    pub id: usize,
     /// Parent node
     pub parent: Option<Weak<RefCell<DomNode>>>,
     /// Child nodes
-    pub children: Vec<Rc<RefCell<DomNode>>>,
+    pub children: Vec<usize>,
+
+    /// The type of node
+    pub data: NodeData,
+
+    pub style: ComputedValues,
+
     /// Event listener registry
     pub event_listeners: EventListenerRegistry,
     /// Optional callback to invalidate layout when tree structure changes
@@ -326,14 +347,34 @@ pub struct DomNode {
 
 impl DomNode {
     /// Create a new DOM node
-    pub fn new(node_type: NodeType, parent: Option<Weak<RefCell<DomNode>>>) -> Self {
+    pub fn new(
+        tree: *mut Slab<Rc<RefCell<DomNode>>>,
+        id: usize,
+        data: NodeData,
+    ) -> Self {
         Self {
-            node_type,
-            parent,
+            tree,
+
+            id,
+            parent: None,
             children: Vec::new(),
+            data,
+            style: ComputedValues::default(),
             event_listeners: EventListenerRegistry::new(),
             layout_invalidation_callback: None,
         }
+    }
+
+    pub fn tree(&self) -> &Slab<Rc<RefCell<DomNode>>> {
+        unsafe { &*self.tree }
+    }
+
+    pub fn tree_mut(&mut self) -> &mut Slab<Rc<RefCell<DomNode>>> {
+        unsafe { &mut *self.tree }
+    }
+
+    pub fn get_node(&self, id: usize) -> &Rc<RefCell<DomNode>> {
+        self.tree().get(id).unwrap()
     }
 
     /// Set the layout invalidation callback for this node and all its descendants
@@ -342,9 +383,8 @@ impl DomNode {
 
         // Recursively set for all children
         for child in &self.children {
-            if let Ok(mut child_node) = child.try_borrow_mut() {
-                child_node.set_layout_invalidation_callback(callback.clone());
-            }
+            let mut child_node = self.get_node(*child).borrow_mut();
+            child_node.set_layout_invalidation_callback(callback.clone());
         }
     }
 
@@ -356,10 +396,10 @@ impl DomNode {
     }
 
     /// Add a child node
-    pub fn add_child(&mut self, child: DomNode) -> Rc<RefCell<DomNode>> {
-        let child_rc = Rc::new(RefCell::new(child));
-        self.children.push(Rc::clone(&child_rc));
+    pub fn add_child(&mut self, child: usize) -> &Rc<RefCell<DomNode>> {
+        self.children.push(child);
 
+        let child_rc = self.get_node(child);
         // Set the layout invalidation callback on the new child
         if let Some(callback) = &self.layout_invalidation_callback {
             if let Ok(mut child_node) = child_rc.try_borrow_mut() {
@@ -375,12 +415,13 @@ impl DomNode {
 
     /// Get text content of this node and its descendants
     pub fn text_content(&self) -> String {
-        match &self.node_type {
-            NodeType::Text(content) => content.clone(),
+        match &self.data {
+            NodeData::Text { contents } => contents.borrow().to_string(),
             _ => {
                 // Concatenate text from all children
                 let mut result = String::new();
                 for child in &self.children {
+                    let child = self.get_node(*child);
                     result.push_str(&child.borrow().text_content());
                 }
                 result
@@ -392,9 +433,10 @@ impl DomNode {
     /// For text nodes, replaces the text content
     /// For element nodes, removes all children and creates a single text node child
     pub fn set_text_content(&mut self, text: &str) {
-        match &mut self.node_type {
-            NodeType::Text(content) => {
-                *content = text.to_string();
+        match &mut self.data {
+            NodeData::Text { contents } => {
+                let contents = contents.get_mut();
+                *contents = StrTendril::from(text);
                 // Invalidate layout since content changed
                 self.invalidate_layout();
             }
@@ -403,10 +445,10 @@ impl DomNode {
                 self.children.clear();
                 
                 // If text is not empty, add a single text node as child
-                if !text.is_empty() {
-                    let text_node = DomNode::new(NodeType::Text(text.to_string()), None);
+                /*if !text.is_empty() {
+                    let text_node = DomNode::new(NodeData::Text { contents: RefCell::new(StrTendril::from(text.to_string())) }, None);
                     self.add_child(text_node);
-                }
+                }*/
                 // Note: invalidate_layout is called in add_child, or here if text is empty
                 if text.is_empty() {
                     self.invalidate_layout();
@@ -422,7 +464,7 @@ impl DomNode {
 
     /// Check if a node matches a CSS selector
     fn matches_selector(&self, node: &DomNode, selector: &str) -> bool {
-        if let NodeType::Element(data) = &node.node_type {
+        if let NodeData::Element(data) = &node.data {
             // Handle different selector types
             if selector.starts_with('#') {
                 // ID selector
@@ -449,7 +491,7 @@ impl DomNode {
                 }
             } else {
                 // Tag selector
-                return data.tag_name == selector;
+                return data.name.local.to_string() == selector;
             }
         }
         false
@@ -479,7 +521,7 @@ impl DomNode {
         }
 
         let child_rc = Rc::new(RefCell::new(child));
-        self.children.insert(index, Rc::clone(&child_rc));
+        self.children.insert(index, child_rc.borrow().id);
 
         // Set the layout invalidation callback on the new child
         if let Some(callback) = &self.layout_invalidation_callback {
@@ -496,7 +538,7 @@ impl DomNode {
 
     /// Remove a child node
     pub fn remove_child(&mut self, child: &Rc<RefCell<DomNode>>) -> Result<(), &'static str> {
-        let position = self.children.iter().position(|c| Rc::ptr_eq(c, child));
+        let position = self.children.iter().position(|c| Rc::ptr_eq(self.get_node(*c), child));
         match position {
             Some(index) => {
                 self.children.remove(index);
@@ -511,6 +553,7 @@ impl DomNode {
     /// Check if this node contains another node as a descendant
     pub fn contains(&self, other: &Rc<RefCell<DomNode>>) -> bool {
         for child in &self.children {
+            let child = self.get_node(*child);
             if Rc::ptr_eq(child, other) {
                 return true;
             }
@@ -529,8 +572,9 @@ impl DomNode {
                 let mut found_self = false;
 
                 for child in &parent.children {
+                    let child = parent.get_node(*child);
                     if found_self {
-                        if let NodeType::Element(_) = child.borrow().node_type {
+                        if let NodeData::Element(_) = child.borrow().data {
                             return Some(Rc::clone(child));
                         }
                     } else if std::ptr::eq(self, &*child.borrow()) {
@@ -550,10 +594,11 @@ impl DomNode {
                 let mut previous_element: Option<Rc<RefCell<DomNode>>> = None;
 
                 for child in &parent.children {
+                    let child = parent.get_node(*child);
                     if std::ptr::eq(self, &*child.borrow()) {
                         return previous_element;
                     }
-                    if let NodeType::Element(_) = child.borrow().node_type {
+                    if let NodeData::Element(_) = child.borrow().data {
                         previous_element = Some(Rc::clone(child));
                     }
                 }
@@ -574,6 +619,7 @@ impl DomNode {
 
         // Recursively check children
         for child in &self.children {
+            let child = self.get_node(*child);
             let child_borrowed = child.borrow();
             if predicate(&*child_borrowed) {
                 result.push(Rc::clone(child));
@@ -592,10 +638,10 @@ impl DomNode {
 
 impl fmt::Debug for DomNode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.node_type {
-            NodeType::Document => write!(f, "Document"),
-            NodeType::Element(data) => {
-                write!(f, "<{}", data.tag_name)?;
+        match &self.data {
+            NodeData::Document => write!(f, "Document"),
+            NodeData::Element(data) => {
+                write!(f, "<{}", data.name.local)?;
                 
                 // Write attributes
                 for (name, value) in &data.attributes {
@@ -609,33 +655,35 @@ impl fmt::Debug for DomNode {
                     
                     // Write children
                     for child in &self.children {
+                        let child = self.get_node(*child);
                         write!(f, "{:?}", child.borrow())?;
                     }
                     
-                    write!(f, "</{}>", data.tag_name)
+                    write!(f, "</{}>", data.name.local)
                 }
             },
-            NodeType::Text(content) => {
-                let content = if content.len() > 50 {
-                    format!("{}...", &content[..50])
+            NodeData::Text { contents } => {
+                let contents = contents.borrow();
+                let content = if contents.len() > 50 {
+                    format!("{}...", &contents[..50])
                 } else {
-                    content.clone()
+                    contents.to_string()
                 };
                 write!(f, "{}", content)
             },
-            NodeType::Comment(content) => {
-                write!(f, "<!-- {} -->", content)
+            NodeData::Comment { contents } => {
+                write!(f, "<!-- {} -->", contents)
             },
-            NodeType::DocumentType { name, public_id, system_id } => {
+            NodeData::DocType { name, public_id, system_id } => {
                 write!(f, "<!DOCTYPE {} PUBLIC \"{}\" \"{}\">", name, public_id, system_id)
             },
-            NodeType::DocumentFragment => {
+            NodeData::DocumentFragment => {
                 write!(f, "<#document-fragment>")
             },
-            NodeType::ProcessingInstruction { target, data } => {
+            NodeData::ProcessingInstruction { target, data } => {
                 write!(f, "<?{} {}?>", target, data)
             },
-            NodeType::Image(data) => {
+            NodeData::Image(data) => {
                 let data = data.borrow();
                 write!(f, "<img src=\"{}\" alt=\"{}\"", data.src, data.alt)?;
                 if let Some(width) = data.width {

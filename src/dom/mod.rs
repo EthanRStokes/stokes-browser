@@ -1,26 +1,43 @@
 // DOM module for parsing and representing HTML content
 mod parser;
-mod node;
+pub(crate) mod node;
 mod events;
 
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
-
+use slab::Slab;
 pub use self::events::{EventDispatcher, EventType};
-pub use self::node::{AttributeMap, DomNode, ElementData, ImageData, ImageLoadingState, NodeType};
+pub use self::node::{AttributeMap, DomNode, ElementData, ImageData, ImageLoadingState, NodeData};
 pub use self::parser::HtmlParser;
 
 /// Represents a DOM tree
+#[derive(Debug)]
 pub struct Dom {
-    pub root: Rc<RefCell<DomNode>>,
+    pub(crate) nodes: Box<Slab<Rc<RefCell<DomNode>>>>,
 }
 
 impl Dom {
     /// Create a new empty DOM
     pub fn new() -> Self {
-        Self {
-            root: Rc::new(RefCell::from(DomNode::new(NodeType::Document, None))),
-        }
+        let mut dom = Self {
+            nodes: Box::new(Slab::new()),
+            //root: Rc::new(RefCell::from(DomNode::new(NodeData::Document, None))),
+        };
+
+        // Create the root document node
+        dom.create_node(NodeData::Document);
+
+        dom
+    }
+
+    pub(crate) fn create_node(&mut self, data: NodeData) -> usize {
+        let slab_ptr = self.nodes.as_mut() as *mut Slab<Rc<RefCell<DomNode>>>;
+
+        let entry = self.nodes.vacant_entry();
+        let id = entry.key();
+        entry.insert(Rc::new(RefCell::new(DomNode::new(slab_ptr, id, data))));
+
+        id
     }
 
     /// Parse HTML into a DOM
@@ -31,7 +48,7 @@ impl Dom {
 
     /// Find nodes by tag name
     pub fn query_selector(&mut self, selector: &str) -> Vec<Rc<RefCell<DomNode>>> {
-        self.get_mut_root().query_selector(selector)
+        self.root_node().borrow_mut().query_selector(selector)
     }
 
     /// Find nodes that match a predicate
@@ -39,7 +56,7 @@ impl Dom {
     where
         F: Fn(&DomNode) -> bool + Clone,
     {
-        self.get_mut_root().find_nodes(predicate)
+        self.root_node().borrow_mut().find_nodes(predicate)
     }
 
     /// Extract the page title
@@ -55,12 +72,11 @@ impl Dom {
         }
     }
 
-    /// Get the root node as Rc<RefCell<DomNode>>
-    pub fn get_root(&self) -> Rc<RefCell<DomNode>> {
-        Rc::clone(&self.root)
+    pub(crate) fn root_node(&self) -> &Rc<RefCell<DomNode>> {
+        &self.nodes[0]
     }
 
-    pub fn get_mut_root(&mut self) -> RefMut<'_, DomNode> {
-        self.root.borrow_mut()
+    pub(crate) fn root_node_mut(&mut self) -> &mut Rc<RefCell<DomNode>> {
+        &mut self.nodes[0]
     }
 }

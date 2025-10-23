@@ -1,7 +1,7 @@
 // Style resolver that computes final styles for DOM nodes
 use super::values::ComputedValues;
 use crate::css::{Selector, Stylesheet};
-use crate::dom::{DomNode, ElementData, NodeType};
+use crate::dom::{DomNode, ElementData, NodeData};
 
 /// Style resolver that computes final styles for DOM nodes
 pub struct StyleResolver {
@@ -27,9 +27,9 @@ impl StyleResolver {
 
     /// Resolve styles for a DOM node
     pub fn resolve_styles(&self, node: &DomNode, parent_values: Option<&ComputedValues>) -> ComputedValues {
-        let mut computed = match &node.node_type {
-            NodeType::Element(element_data) => {
-                ComputedValues::default_for_element(&element_data.tag_name)
+        let mut computed = match &node.data {
+            NodeData::Element(element_data) => {
+                ComputedValues::default_for_element(&element_data.name.local)
             }
             _ => ComputedValues::default(),
         };
@@ -42,7 +42,7 @@ impl StyleResolver {
         }
 
         // Apply matching CSS rules
-        if let NodeType::Element(element_data) = &node.node_type {
+        if let NodeData::Element(element_data) = &node.data {
             let matching_rules = self.find_matching_rules(element_data);
 
             // Sort by specificity (lower specificity first)

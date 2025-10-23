@@ -1,9 +1,9 @@
-use super::{AttributeMap, Dom, DomNode, ElementData, ImageData, NodeType};
+use super::{AttributeMap, Dom, DomNode, ElementData, ImageData, NodeData};
 // HTML parser using html5ever
-use html5ever::parse_document;
-use html5ever::tendril::TendrilSink;
+use html5ever::{ns, parse_document, LocalName, QualName};
+use html5ever::tendril::{StrTendril, TendrilSink};
 use markup5ever_rcdom as rcdom;
-use markup5ever_rcdom::{Handle, NodeData};
+use markup5ever_rcdom::{Handle, NodeData as EverNodeData};
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
@@ -23,7 +23,7 @@ impl HtmlParser {
 
         // Convert RcDom to our DOM structure
         let mut dom = Dom::new();
-        self.build_dom_from_handle(&rcdom.document, None, &mut dom.root);
+        self.build_dom_from_handle(&rcdom.document, None, &mut dom);
 
         dom
     }
@@ -33,8 +33,9 @@ impl HtmlParser {
         &self, 
         handle: &Handle, 
         parent: Option<Weak<RefCell<DomNode>>>, // Remove underscore since we'll use it
-        target_node: &mut Rc<RefCell<DomNode>>
+        dom: &mut Dom,
     ) {
+        let target_node = dom.root_node().clone();
         let mut target_node = target_node.borrow_mut();
         let node = handle;
 
@@ -43,11 +44,11 @@ impl HtmlParser {
 
         // Set the node type based on the html5ever node data
         match node.data {
-            NodeData::Document => {
+            EverNodeData::Document => {
                 // Document node, just process children
-                target_node.node_type = NodeType::Document;
+                target_node.data = NodeData::Document;
             },
-            NodeData::Element { ref name, ref attrs, .. } => {
+            EverNodeData::Element { ref name, ref attrs, .. } => {
                 // Element node
                 let tag_name = name.local.to_string();
                 
@@ -79,21 +80,21 @@ impl HtmlParser {
 
                     println!("Found image: src='{}', alt='{}', width={:?}, height={:?}",
                         image_data.src, image_data.alt, image_data.width, image_data.height);
-                    target_node.node_type = NodeType::Image(RefCell::new(image_data));
+                    target_node.data = NodeData::Image(RefCell::new(image_data));
                 } else {
-                    target_node.node_type = NodeType::Element(ElementData::with_attributes(&tag_name, attributes));
+                    target_node.data = NodeData::Element(ElementData::with_attributes(name.clone(), attributes));
                 }
             },
-            NodeData::Text { ref contents } => {
+            EverNodeData::Text { ref contents } => {
                 // Text node - process whitespace according to HTML rules
                 let raw_text = contents.borrow().to_string();
                 let processed_text = self.process_html_whitespace(&raw_text);
-                target_node.node_type = NodeType::Text(processed_text);
+                target_node.data = NodeData::Text { contents: RefCell::new(StrTendril::from(processed_text)) };
             },
-            NodeData::Comment { ref contents } => {
+            EverNodeData::Comment { ref contents } => {
                 // Comment node
                 let comment = contents.to_string();
-                target_node.node_type = NodeType::Comment(comment);
+                target_node.data = NodeData::Comment { contents: StrTendril::from(comment) };
             },
             // Ignore other node types
             _ => {}
@@ -102,21 +103,21 @@ impl HtmlParser {
         // Process children
         for child_handle in node.children.take().iter() {
             // Skip processing if this is a doctype node
-            if let NodeData::Doctype { .. } = child_handle.data {
+            if let EverNodeData::Doctype { .. } = child_handle.data {
                 continue;
             }
 
             // Create a new child node
-            let child_node = DomNode::new(NodeType::Document, None);  // Temporary type
+            let child_node = dom.create_node(NodeData::Document);  // Temporary type
 
             // Add the child to the parent first to get the Rc reference
-            let mut child_rc = target_node.add_child(child_node);
-            
+            let child_rc = target_node.add_child(child_node);
+
             // Create a weak reference to pass as parent to the recursive call
             let parent_weak = Some(Rc::downgrade(&child_rc));
 
             // Recursively build the DOM for this child, passing the current node as parent
-            self.build_dom_from_handle(child_handle, parent_weak, &mut child_rc);
+            self.build_dom_from_handle(child_handle, parent_weak, dom);
         }
     }
 
