@@ -55,7 +55,7 @@ impl HtmlRenderer {
         transition_manager: Option<&TransitionManager>,
         scroll_x: f32,
         scroll_y: f32,
-        scale_factor: f64,
+        scale_factor: f32,
     ) {
         // Save the current canvas state
         canvas.save();
@@ -86,7 +86,7 @@ impl HtmlRenderer {
         node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
         style_map: &HashMap<usize, ComputedValues>,
         transition_manager: Option<&TransitionManager>,
-        scale_factor: f64,
+        scale_factor: f32,
         viewport_rect: &Rect,
     ) {
         // TODO Early culling: Skip rendering if box is completely outside viewport
@@ -185,7 +185,7 @@ impl HtmlRenderer {
         layout_box: &LayoutBox,
         element_data: &ElementData,
         computed_styles: Option<&ComputedValues>,
-        scale_factor: f64,
+        scale_factor: f32,
     ) {
         let border_box = layout_box.dimensions.border_box();
 

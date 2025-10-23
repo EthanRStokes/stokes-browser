@@ -1,6 +1,7 @@
 // The core browser engine that coordinates between components
 mod config;
 
+pub use self::config::EngineConfig;
 use crate::css::transition_manager::TransitionManager;
 use crate::css::{ComputedValues, CssParser};
 use crate::dom::{Dom, DomNode, ImageData, ImageLoadingState, NodeType};
@@ -9,12 +10,11 @@ use crate::js::JsRuntime;
 use crate::layout::{LayoutBox, LayoutEngine};
 use crate::networking::{HttpClient, NetworkError};
 use crate::renderer::HtmlRenderer;
+use blitz_traits::shell::Viewport;
 use skia_safe::Canvas;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-
-pub use self::config::EngineConfig;
 
 /// The core browser engine that coordinates all browser activities
 pub struct Engine {
@@ -35,9 +35,7 @@ pub struct Engine {
     scroll_x: f32,
     content_height: f32,
     content_width: f32,
-    viewport_height: f32,
-    viewport_width: f32,
-    pub(crate) scale_factor: f64,
+    pub(crate) viewport: Viewport,
     // Add transition manager for CSS animations
     transition_manager: TransitionManager,
     // Store previous style map to detect changes for transitions
@@ -49,7 +47,7 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn new(config: EngineConfig, scale_factor: f64) -> Self {
+    pub fn new(config: EngineConfig, viewport: Viewport) -> Self {
         Self {
             config,
             http_client: HttpClient::new(),
@@ -67,9 +65,7 @@ impl Engine {
             scroll_x: 0.0,
             content_height: 0.0,
             content_width: 0.0,
-            viewport_height: 600.0,
-            viewport_width: 800.0,
-            scale_factor,
+            viewport,
             transition_manager: TransitionManager::new(),
             previous_style_map: HashMap::new(),
             js_runtime: None,
@@ -329,7 +325,7 @@ impl Engine {
     pub fn recalculate_layout(&mut self) {
         if let Some(dom) = &self.dom {
             let root = dom.get_root();
-            self.layout = Some(self.layout_engine.compute_layout(&root, self.scale_factor));
+            self.layout = Some(self.layout_engine.compute_layout(&root, self.viewport.hidpi_scale));
 
             // Update node map from layout engine
             self.node_map = self.layout_engine.get_node_map().clone();
@@ -354,8 +350,7 @@ impl Engine {
 
     /// Update the viewport size
     pub fn set_viewport_size(&mut self, width: f32, height: f32) {
-        self.viewport_width = width;
-        self.viewport_height = height;
+        self.viewport.window_size = (width as u32, height as u32);
         self.layout_engine.set_viewport(width, height);
 
         // Recalculate layout with new viewport
@@ -363,8 +358,19 @@ impl Engine {
     }
 
     /// Get the viewport size
-    pub fn viewport_size(&self) -> (f32, f32) {
-        (self.viewport_width, self.viewport_height)
+    #[inline]
+    pub fn viewport_size(&self) -> (u32, u32) {
+        self.viewport.window_size
+    }
+
+    #[inline]
+    pub fn viewport_width(&self) -> f32 {
+        self.viewport.window_size.0 as f32
+    }
+
+    #[inline]
+    pub fn viewport_height(&self) -> f32 {
+        self.viewport.window_size.1 as f32
     }
 
     /// Get the content dimensions
@@ -374,17 +380,14 @@ impl Engine {
 
     /// Resize the viewport
     pub fn resize(&mut self, width: f32, height: f32) {
-        self.viewport_width = width;
-        self.viewport_height = height;
-        self.layout_engine.set_viewport(width, height);
-        self.recalculate_layout();
+        self.set_viewport_size(width, height);
 
         // Update content dimensions after layout recalculation
         self.update_content_dimensions();
     }
 
     /// Render the current page to a canvas with transition support
-    pub fn render(&mut self, canvas: &Canvas, scale_factor: f64) {
+    pub fn render(&mut self, canvas: &Canvas, scale_factor: f32) {
         // Apply any pending layout changes from DOM modifications
         self.apply_pending_layout_changes();
 
@@ -568,7 +571,7 @@ impl Engine {
         self.scroll_y = (self.scroll_y + delta).max(0.0);
 
         // Don't scroll past the bottom of the content
-        let max_scroll = (self.content_height - self.viewport_height).max(0.0);
+        let max_scroll = (self.content_height - self.viewport_height()).max(0.0);
         self.scroll_y = self.scroll_y.min(max_scroll);
 
         // Return whether scroll position actually changed
@@ -581,7 +584,7 @@ impl Engine {
         self.scroll_x = (self.scroll_x + delta).max(0.0);
 
         // Don't scroll past the right edge of the content
-        let max_scroll = (self.content_width - self.viewport_width).max(0.0);
+        let max_scroll = (self.content_width - self.viewport_width()).max(0.0);
         self.scroll_x = self.scroll_x.min(max_scroll);
 
         // Return whether scroll position actually changed
@@ -595,8 +598,8 @@ impl Engine {
 
     /// Set scroll position directly
     pub fn set_scroll_position(&mut self, x: f32, y: f32) {
-        self.scroll_x = x.max(0.0).min((self.content_width - self.viewport_width).max(0.0));
-        self.scroll_y = y.max(0.0).min((self.content_height - self.viewport_height).max(0.0));
+        self.scroll_x = x.max(0.0).min((self.content_width - self.viewport_width()).max(0.0));
+        self.scroll_y = y.max(0.0).min((self.content_height - self.viewport_height()).max(0.0));
     }
 
     /// Update content dimensions based on layout

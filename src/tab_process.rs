@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
+use blitz_traits::shell::Viewport;
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
@@ -31,7 +32,7 @@ impl TabProcess {
     /// Create a new tab process and connect to the parent
     pub fn new(tab_id: String, socket_path: PathBuf, config: EngineConfig) -> io::Result<Self> {
         let channel = connect(&socket_path)?;
-        let engine = Engine::new(config, 1.0); // Default scale factor
+        let engine = Engine::new(config, Viewport::default()); // Default viewport, will be resized later
 
         Ok(Self {
             engine,
@@ -280,7 +281,7 @@ impl TabProcess {
                 self.render_frame()?;
             }
             ParentToTabMessage::SetScaleFactor(scale) => {
-                self.engine.scale_factor = scale;
+                self.engine.viewport.hidpi_scale = scale;
                 self.engine.recalculate_layout();
                 self.render_frame()?;
             }
@@ -300,7 +301,7 @@ impl TabProcess {
             canvas.clear(skia_safe::Color::WHITE);
 
             // Render the engine content
-            self.engine.render(canvas, self.engine.scale_factor);
+            self.engine.render(canvas, self.engine.viewport.hidpi_scale);
 
             // Copy the pixel data to shared memory
             if let Some(pixmap) = shared.surface.peek_pixels() {

@@ -1,7 +1,10 @@
 use glutin::display::GetGlDisplay;
 use glutin::surface::GlSurface;
 use std::num::NonZeroU32;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
+use blitz_traits::shell::Viewport;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -30,8 +33,8 @@ pub(crate) struct BrowserApp {
     tab_manager: TabManager,
     active_tab_index: usize,
     ui: BrowserUI,
+    viewport: Arc<RwLock<Viewport>>,
     cursor_position: (f64, f64),
-    scale_factor: f64,
     loading_spinner_angle: f32,
     last_spinner_update: Instant,
     tab_order: Vec<String>,
@@ -43,10 +46,15 @@ impl BrowserApp {
     pub(crate) async fn new(el: &EventLoop<()>) -> Self {
         let env = crate::window::create_window(el);
 
-        let scale_factor = env.window.scale_factor();
+        let viewport = Arc::new(RwLock::new(Viewport {
+            color_scheme: Default::default(),
+            window_size: env.window.inner_size().into(),
+            hidpi_scale: env.window.scale_factor() as f32,
+            zoom: 0.0,
+        }));
 
         // Initialize UI
-        let mut ui = BrowserUI::new(&env.gr_context, scale_factor);
+        let mut ui = BrowserUI::new(&env.gr_context, &viewport.read().unwrap());
         ui.initialize_renderer();
 
         // Create tab manager
@@ -60,7 +68,7 @@ impl BrowserApp {
             active_tab_index: 0,
             ui,
             cursor_position: (0.0, 0.0),
-            scale_factor,
+            viewport,
             loading_spinner_angle: 0.0,
             last_spinner_update: Instant::now(),
             tab_order: vec![],
@@ -98,7 +106,7 @@ impl BrowserApp {
                 width: size.width as f32,
                 height: size.height as f32
             });
-            let _ = self.tab_manager.send_to_tab(&new_tab_id, ParentToTabMessage::SetScaleFactor(self.scale_factor));
+            let _ = self.tab_manager.send_to_tab(&new_tab_id, ParentToTabMessage::SetScaleFactor(self.viewport.read().unwrap().hidpi_scale));
 
             self.ui.set_focus("address_bar");
         }
@@ -336,8 +344,10 @@ impl ApplicationHandler for BrowserApp {
                     NonZeroU32::new(width.max(1)).unwrap(),
                     NonZeroU32::new(height.max(1)).unwrap()
                 );
+                // Update viewport size
+                self.viewport.write().unwrap().window_size = new_size.into();
 
-                self.ui.update_layout(width as f32, height as f32);
+                self.ui.update_layout(&*self.viewport.read().unwrap());
 
                 // Notify all tabs of resize
                 for tab_id in &self.tab_order {
@@ -348,8 +358,11 @@ impl ApplicationHandler for BrowserApp {
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                self.scale_factor = scale_factor;
-                self.ui.set_scale_factor(scale_factor);
+                let scale_factor = scale_factor as f32;
+                let mut viewport = self.viewport.write().unwrap();
+                let old_scale = viewport.hidpi_scale;
+                viewport.hidpi_scale = scale_factor;
+                self.ui.update_scale(viewport.hidpi_scale, old_scale);
 
                 // Notify all tabs of scale factor change
                 for tab_id in &self.tab_order {

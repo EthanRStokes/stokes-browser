@@ -738,7 +738,7 @@ impl LayoutBox {
         let mut height = if let Some(css_height) = &self.css_height {
             // Use the CSS-specified height, converting to pixels and scaling
             let specified_height = css_height.to_px(16.0, container_height) * scale_factor;
-            
+
             // Apply box-sizing logic
             match self.box_sizing {
                 crate::css::BoxSizing::ContentBox => {

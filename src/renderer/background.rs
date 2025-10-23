@@ -46,7 +46,7 @@ pub fn render_background_image(
     canvas: &Canvas,
     rect: &Rect,
     styles: &ComputedValues,
-    scale_factor: f64,
+    scale_factor: f32,
     image_cache: &BackgroundImageCache,
 ) {
     // Check if background-image is specified

@@ -10,7 +10,7 @@ pub fn render_text_decorations(
     text_decoration: &TextDecoration,
     text_paint: &Paint,
     font_size: f32,
-    scale_factor: f64,
+    scale_factor: f32,
 ) {
     // Skip if no decorations
     if matches!(text_decoration, TextDecoration::None) {
@@ -24,7 +24,7 @@ pub fn render_text_decorations(
     // Create decoration paint based on text paint
     let mut decoration_paint = text_paint.clone();
     decoration_paint.set_stroke(true);
-    let decoration_thickness = (font_size / 16.0).max(1.0) * scale_factor as f32;
+    let decoration_thickness = (font_size / 16.0).max(1.0) * scale_factor;
     decoration_paint.set_stroke_width(decoration_thickness);
 
     // Render underline
@@ -65,13 +65,13 @@ pub fn render_rounded_element(
     border_radius_px: &BorderRadiusPx,
     bg_paint: &Paint,
     border_paint: Option<&Paint>,
-    scale_factor: f64,
+    scale_factor: f32,
 ) {
     // Apply scale factor to border radius values
-    let scaled_top_left = border_radius_px.top_left * scale_factor as f32;
-    let scaled_top_right = border_radius_px.top_right * scale_factor as f32;
-    let scaled_bottom_right = border_radius_px.bottom_right * scale_factor as f32;
-    let scaled_bottom_left = border_radius_px.bottom_left * scale_factor as f32;
+    let scaled_top_left = border_radius_px.top_left * scale_factor;
+    let scaled_top_right = border_radius_px.top_right * scale_factor;
+    let scaled_bottom_right = border_radius_px.bottom_right * scale_factor;
+    let scaled_bottom_left = border_radius_px.bottom_left * scale_factor;
 
     // For now, use uniform radius (average of all corners) for simplicity
     // Skia's add_round_rect method expects a tuple for radius
@@ -97,7 +97,7 @@ pub fn render_box_shadows(
     canvas: &Canvas,
     rect: &Rect,
     styles: &ComputedValues,
-    scale_factor: f64,
+    scale_factor: f32,
 ) {
     // Render each box shadow
     for shadow in &styles.box_shadow {
@@ -110,10 +110,10 @@ pub fn render_box_shadows(
         }
 
         // Apply scale factor to shadow properties
-        let scaled_offset_x = shadow_px.offset_x * scale_factor as f32;
-        let scaled_offset_y = shadow_px.offset_y * scale_factor as f32;
-        let scaled_blur_radius = shadow_px.blur_radius * scale_factor as f32;
-        let scaled_spread_radius = shadow_px.spread_radius * scale_factor as f32;
+        let scaled_offset_x = shadow_px.offset_x * scale_factor;
+        let scaled_offset_y = shadow_px.offset_y * scale_factor;
+        let scaled_blur_radius = shadow_px.blur_radius * scale_factor;
+        let scaled_spread_radius = shadow_px.spread_radius * scale_factor;
 
         // Create shadow paint
         let mut shadow_paint = Paint::default();
@@ -181,7 +181,7 @@ pub fn render_outline(
     rect: &Rect,
     styles: &ComputedValues,
     opacity: f32,
-    scale_factor: f64,
+    scale_factor: f32,
 ) {
     // Check if outline is visible
     if !styles.outline.is_visible() {
@@ -198,8 +198,8 @@ pub fn render_outline(
     let outline_offset_px = styles.outline_offset.to_px(styles.font_size, 400.0);
 
     // Apply scale factor
-    let scaled_outline_width = outline_width_px * scale_factor as f32;
-    let scaled_outline_offset = outline_offset_px * scale_factor as f32;
+    let scaled_outline_width = outline_width_px * scale_factor;
+    let scaled_outline_offset = outline_offset_px * scale_factor;
 
     // Calculate outline rectangle (outside the border box, with offset)
     let outline_rect = Rect::from_xywh(
@@ -277,7 +277,7 @@ pub fn render_stroke(
     rect: &Rect,
     stroke: &Stroke,
     opacity: f32,
-    scale_factor: f64,
+    scale_factor: f32,
 ) {
     // Only render if stroke is visible
     if !stroke.is_visible() {
@@ -291,7 +291,7 @@ pub fn render_stroke(
 
     // Get stroke width in pixels
     let stroke_width_px = stroke.width_px(16.0, 0.0);
-    let scaled_stroke_width = stroke_width_px * scale_factor as f32;
+    let scaled_stroke_width = stroke_width_px * scale_factor;
 
     // Create stroke paint
     let mut stroke_paint = Paint::default();

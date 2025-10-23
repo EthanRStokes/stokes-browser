@@ -10,7 +10,7 @@ pub fn render_pseudo_element_content(
     rect: &Rect,
     element_data: &ElementData,
     styles: &ComputedValues,
-    scale_factor: f64,
+    scale_factor: f32,
     is_before: bool,
     font_manager: &FontManager,
     default_text_paint: &Paint,

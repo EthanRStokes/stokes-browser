@@ -9,7 +9,7 @@ glutin-winit = "0.5.0"
 gl = "0.14.0"
 skia-safe = { version = "0.89.0", features = ["gpu", "gl"] }
 #winit = { version = "0.30.12", features = ["wayland"] }
-image = "0.25.8"
+image = "0.25.6"
 tokio = { version = "1.48.0", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"
 curl = "0.4"
@@ -30,6 +30,8 @@ bincode = "1.3"
 parking_lot = "0.12"
 uds_windows = "1.1.0"
 rfd = "0.15"
+blitz-traits = "0.2.0"
+url = "2"
 
 [dependencies.winit]
 git = "https://github.com/Treetrain1/winit.git"

@@ -6,7 +6,7 @@ use skia_safe::{Canvas, Color, FilterMode, Font, MipmapMode, Paint, Rect, Sampli
 use std::cell::RefCell;
 
 /// Render image content
-pub fn render_image_node(canvas: &Canvas, layout_box: &LayoutBox, image_data: &RefCell<ImageData>, scale_factor: f64, font: &Font) {
+pub fn render_image_node(canvas: &Canvas, layout_box: &LayoutBox, image_data: &RefCell<ImageData>, scale_factor: f32, font: &Font) {
     let image_data = image_data.borrow();
     let content_rect = layout_box.dimensions.content;
 
@@ -59,7 +59,7 @@ pub fn render_image_node(canvas: &Canvas, layout_box: &LayoutBox, image_data: &R
 }
 
 /// Render a placeholder for images (when not loaded, loading, or failed)
-pub fn render_image_placeholder(canvas: &Canvas, rect: &Rect, text: &str, scale_factor: f64, font: &Font) {
+pub fn render_image_placeholder(canvas: &Canvas, rect: &Rect, text: &str, scale_factor: f32, font: &Font) {
     // Draw a light gray background
     let mut bg_paint = Paint::default();
     bg_paint.set_color(Color::from_rgb(240, 240, 240));
@@ -69,7 +69,7 @@ pub fn render_image_placeholder(canvas: &Canvas, rect: &Rect, text: &str, scale_
     let mut border_paint = Paint::default();
     border_paint.set_color(Color::from_rgb(180, 180, 180));
     border_paint.set_stroke(true);
-    let scaled_border_width = 1.0 * scale_factor as f32;
+    let scaled_border_width = 1.0 * scale_factor;
     border_paint.set_stroke_width(scaled_border_width);
     canvas.draw_rect(*rect, &border_paint);
 

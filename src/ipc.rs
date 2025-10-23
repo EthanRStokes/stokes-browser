@@ -32,7 +32,7 @@ pub enum ParentToTabMessage {
     /// Request a frame render
     RequestFrame,
     /// Update scale factor
-    SetScaleFactor(f64),
+    SetScaleFactor(f32),
     /// Shutdown the tab process
     Shutdown,
 }

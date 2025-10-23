@@ -33,7 +33,7 @@ impl LayoutEngine {
     }
 
     /// Compute layout for a DOM tree
-    pub fn compute_layout(&mut self, root: &Rc<RefCell<DomNode>>, scale_factor: f64) -> LayoutBox {
+    pub fn compute_layout(&mut self, root: &Rc<RefCell<DomNode>>, scale_factor: f32) -> LayoutBox {
         // Clear previous layout
         self.node_map.clear();
         self.style_map.clear();
@@ -52,7 +52,7 @@ impl LayoutEngine {
         let available_height = self.viewport_height - ui_height;
 
         // Compute layout dimensions with scaled viewport
-        layout_root.layout(self.viewport_width, available_height, 0.0, content_start_y, scale_factor as f32);
+        layout_root.layout(self.viewport_width, available_height, 0.0, content_start_y, scale_factor);
 
         layout_root
     }

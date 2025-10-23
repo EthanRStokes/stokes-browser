@@ -11,7 +11,7 @@ pub fn render_text_node(
     computed_styles: Option<&ComputedValues>,
     font_manager: &FontManager,
     default_text_paint: &Paint,
-    scale_factor: f64,
+    scale_factor: f32,
 ) {
     if let Some(text) = &layout_box.content {
         let content_rect = layout_box.dimensions.content;

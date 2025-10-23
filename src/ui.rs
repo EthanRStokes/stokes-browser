@@ -1,3 +1,4 @@
+use blitz_traits::shell::Viewport;
 use skia_safe::{Canvas, Color, Font, FontStyle, Paint, Path, Rect, TextBlob};
 use std::f32::consts::PI;
 use std::time::{Duration, Instant};
@@ -83,8 +84,8 @@ pub enum IconType {
 
 impl UiComponent {
     /// Create a navigation button (back, forward, refresh)
-    pub fn navigation_button(id: &str, label: &str, x: f32, icon_type: IconType, tooltip_text: &str, scale_factor: f64) -> Self {
-        let scaled = |v: f32| v * scale_factor as f32;
+    pub fn navigation_button(id: &str, label: &str, x: f32, icon_type: IconType, tooltip_text: &str, scale_factor: f32) -> Self {
+        let scaled = |v: f32| v * scale_factor;
         UiComponent::Button {
             id: id.to_string(),
             label: label.to_string(),
@@ -104,8 +105,8 @@ impl UiComponent {
     }
 
     /// Create an address bar
-    pub fn address_bar(url: &str, x: f32, width: f32, scale_factor: f64) -> Self {
-        let scaled = |v: f32| v * scale_factor as f32;
+    pub fn address_bar(url: &str, x: f32, width: f32, scale_factor: f32) -> Self {
+        let scaled = |v: f32| v * scale_factor;
         UiComponent::TextField {
             id: "address_bar".to_string(),
             text: url.to_string(),
@@ -124,8 +125,8 @@ impl UiComponent {
     }
 
     /// Create a tab button
-    pub fn tab(id: &str, title: &str, x: f32, scale_factor: f64) -> Self {
-        let scaled = |v: f32| v * scale_factor as f32;
+    pub fn tab(id: &str, title: &str, x: f32, scale_factor: f32) -> Self {
+        let scaled = |v: f32| v * scale_factor;
         UiComponent::TabButton {
             id: id.to_string(),
             title: title.to_string(),
@@ -176,8 +177,7 @@ impl UiComponent {
 /// Represents the browser UI (chrome)
 pub struct BrowserUI {
     pub components: Vec<UiComponent>,
-    pub scale_factor: f64,
-    window_width: f32,
+    pub viewport: Viewport,
     tab_scroll_offset: f32,  // Horizontal scroll offset for tabs
 }
 
@@ -193,10 +193,11 @@ impl BrowserUI {
     const MIN_TAB_WIDTH: f32 = 80.0;   // Minimum width before scrolling kicks in
     const TAB_SPACING: f32 = 4.0;       // Spacing between tabs
 
-    pub fn new(_skia_context: &skia_safe::gpu::DirectContext, scale_factor: f64) -> Self {
+    pub fn new(_skia_context: &skia_safe::gpu::DirectContext, viewport: &Viewport) -> Self {
         // Default window width, will be updated on first resize
-        let window_width = 1024.0;
-        let scaled = |v: f32| v * scale_factor as f32;
+        let window_width = viewport.window_size.0 as f32;
+        let scale_factor = viewport.hidpi_scale;
+        let scaled = |v: f32| v * scale_factor;
 
         Self {
             components: vec![
@@ -208,18 +209,18 @@ impl BrowserUI {
                     scaled(Self::BUTTON_MARGIN * 4.0 + Self::BUTTON_SIZE * 3.0),
                     window_width - scaled(Self::BUTTON_MARGIN * 6.0 + Self::BUTTON_SIZE * 4.0), scale_factor)
             ],
-            scale_factor,
-            window_width,
+            viewport: viewport.clone(),
             tab_scroll_offset: 0.0,
         }
     }
 
     /// Update UI layout when window is resized
-    pub fn update_layout(&mut self, window_width: f32, window_height: f32) {
-        self.window_width = window_width;
-        let scaled = |v: f32| v * self.scale_factor as f32;
+    pub fn update_layout(&mut self, viewport: &Viewport) {
+        self.viewport = viewport.clone();
+        let scaled = |v: f32| v * self.viewport.hidpi_scale;
 
         // Update new tab button position (always on the right)
+        let window_width = self.viewport.window_size.0 as f32;
         for comp in &mut self.components {
             if let UiComponent::Button { id, x, .. } = comp {
                 if id == "new_tab" {
@@ -244,7 +245,12 @@ impl BrowserUI {
 
     /// Get the height of the chrome bar
     pub fn chrome_height(&self) -> f32 {
-        Self::CHROME_HEIGHT * self.scale_factor as f32
+        Self::CHROME_HEIGHT * self.viewport.hidpi_scale
+    }
+
+    #[inline]
+    fn window_width(&self) -> f32 {
+        self.viewport.window_size.0 as f32
     }
 
     /// Initialize rendering resources
@@ -259,21 +265,22 @@ impl BrowserUI {
             .count();
 
         if tab_count == 0 {
-            return Self::MAX_TAB_WIDTH * self.scale_factor as f32;
+            return Self::MAX_TAB_WIDTH * self.viewport.hidpi_scale;
         }
 
         // Available width for tabs (use scaled margin)
-        let scaled_margin = Self::BUTTON_MARGIN * self.scale_factor as f32;
-        let available_width = self.window_width - (scaled_margin * 2.0);
+        let window_width = self.window_width();
+        let scaled_margin = Self::BUTTON_MARGIN * self.viewport.hidpi_scale;
+        let available_width = window_width - (scaled_margin * 2.0);
 
         // Calculate width that would fit all tabs (use scaled spacing)
-        let scaled_spacing = Self::TAB_SPACING * self.scale_factor as f32;
+        let scaled_spacing = Self::TAB_SPACING * self.viewport.hidpi_scale;
         let total_spacing = (tab_count - 1) as f32 * scaled_spacing;
         let width_per_tab = (available_width - total_spacing) / tab_count as f32;
 
         // Clamp between MIN and MAX (scaled), if it goes below MIN we'll use scrolling
-        let scaled_min = Self::MIN_TAB_WIDTH * self.scale_factor as f32;
-        let scaled_max = Self::MAX_TAB_WIDTH * self.scale_factor as f32;
+        let scaled_min = Self::MIN_TAB_WIDTH * self.viewport.hidpi_scale;
+        let scaled_max = Self::MAX_TAB_WIDTH * self.viewport.hidpi_scale;
         width_per_tab.max(scaled_min).min(scaled_max)
     }
 
@@ -285,13 +292,13 @@ impl BrowserUI {
             .count();
 
         // Calculate total width needed for all tabs (use scaled spacing)
-        let scaled_spacing = Self::TAB_SPACING * self.scale_factor as f32;
+        let scaled_spacing = Self::TAB_SPACING * self.viewport.hidpi_scale;
         let total_tab_width = tab_count as f32 * tab_width +
                               (tab_count.saturating_sub(1)) as f32 * scaled_spacing;
 
         // Update scroll offset bounds (use scaled margin)
-        let scaled_margin = Self::BUTTON_MARGIN * self.scale_factor as f32;
-        let max_scroll = (total_tab_width - self.window_width + scaled_margin * 2.0).max(0.0);
+        let scaled_margin = Self::BUTTON_MARGIN * self.viewport.hidpi_scale;
+        let max_scroll = (total_tab_width - self.window_width() + scaled_margin * 2.0).max(0.0);
         self.tab_scroll_offset = self.tab_scroll_offset.min(max_scroll).max(0.0);
 
         // Update each tab's position and width
@@ -316,19 +323,19 @@ impl BrowserUI {
         }
 
         let tab_width = self.calculate_tab_width();
-        let scaled_spacing = Self::TAB_SPACING * self.scale_factor as f32;
+        let scaled_spacing = Self::TAB_SPACING * self.viewport.hidpi_scale;
         let total_tab_width = tab_count as f32 * tab_width +
                               (tab_count.saturating_sub(1)) as f32 * scaled_spacing;
 
         // Only allow scrolling if tabs overflow (use scaled margin)
-        let scaled_margin = Self::BUTTON_MARGIN * self.scale_factor as f32;
-        if total_tab_width > self.window_width - scaled_margin * 2.0 {
+        let scaled_margin = Self::BUTTON_MARGIN * self.viewport.hidpi_scale;
+        if total_tab_width > self.window_width() - scaled_margin * 2.0 {
             // Scroll by a portion of a tab width
             let scroll_amount = delta_y * 30.0; // Adjust sensitivity
             self.tab_scroll_offset -= scroll_amount;
 
             // Clamp scroll offset
-            let max_scroll = total_tab_width - self.window_width + scaled_margin * 2.0;
+            let max_scroll = total_tab_width - self.window_width() + scaled_margin * 2.0;
             self.tab_scroll_offset = self.tab_scroll_offset.clamp(0.0, max_scroll);
 
             // Update tab positions
@@ -413,7 +420,7 @@ impl BrowserUI {
 
         // Add the new tab as active
         let x = Self::BUTTON_MARGIN + (tab_count as f32 * 158.0); // 150 width + 8 spacing
-        let mut new_tab = UiComponent::tab(id, title, x, self.scale_factor);
+        let mut new_tab = UiComponent::tab(id, title, x, self.viewport.hidpi_scale);
         if let UiComponent::TabButton { is_active, color, .. } = &mut new_tab {
             *is_active = true;
             *color = [0.95, 0.95, 0.95];
@@ -563,8 +570,8 @@ impl BrowserUI {
             if let UiComponent::TabButton { id, x: tab_x, y: tab_y, width, height, is_active, .. } = comp {
                 if *is_active {
                     // Calculate close button bounds
-                    let close_button_size = 16.0 * self.scale_factor as f32;
-                    let close_button_x = tab_x + width - close_button_size - (4.0 * self.scale_factor as f32);
+                    let close_button_size = 16.0 * self.viewport.hidpi_scale;
+                    let close_button_x = tab_x + width - close_button_size - (4.0 * self.viewport.hidpi_scale);
                     let close_button_y = tab_y + (height / 2.0) - (close_button_size / 2.0);
 
                     // Check if click is within close button
@@ -675,38 +682,35 @@ impl BrowserUI {
     }
 
     /// Update scale factor for DPI changes
-    pub fn set_scale_factor(&mut self, scale_factor: f64) {
-        let old_scale = self.scale_factor;
-        self.scale_factor = scale_factor;
-
+    pub fn update_scale(&mut self, hidpi_scale: f32, old_hidpi_scale: f32) {
         // Rescale all components
-        let scale_ratio = scale_factor / old_scale;
+        let scale_ratio = hidpi_scale / old_hidpi_scale;
 
         for comp in &mut self.components {
             match comp {
                 UiComponent::Button { x, y, width, height, .. } => {
-                    *x *= scale_ratio as f32;
-                    *y *= scale_ratio as f32;
-                    *width *= scale_ratio as f32;
-                    *height *= scale_ratio as f32;
+                    *x *= scale_ratio;
+                    *y *= scale_ratio;
+                    *width *= scale_ratio;
+                    *height *= scale_ratio;
                 }
                 UiComponent::TextField { x, y, width, height, .. } => {
-                    *x *= scale_ratio as f32;
-                    *y *= scale_ratio as f32;
-                    *width *= scale_ratio as f32;
-                    *height *= scale_ratio as f32;
+                    *x *= scale_ratio;
+                    *y *= scale_ratio;
+                    *width *= scale_ratio;
+                    *height *= scale_ratio;
                 }
                 UiComponent::TabButton { x, y, width, height, .. } => {
-                    *x *= scale_ratio as f32;
-                    *y *= scale_ratio as f32;
-                    *width *= scale_ratio as f32;
-                    *height *= scale_ratio as f32;
+                    *x *= scale_ratio;
+                    *y *= scale_ratio;
+                    *width *= scale_ratio;
+                    *height *= scale_ratio
                 }
             }
         }
 
         // Update layout to recalculate positions properly
-        self.update_layout(self.window_width, 0.0);
+        self.update_layout(&self.viewport.clone());
     }
 
     /// Clear focus from all components
@@ -847,7 +851,7 @@ impl BrowserUI {
 
         // Apply scale factor to font size for proper DPI scaling
         let base_font_size = 14.0;
-        let scaled_font_size = base_font_size * self.scale_factor as f32;
+        let scaled_font_size = base_font_size * self.viewport.hidpi_scale;
         let font = Font::new(typeface.clone(), scaled_font_size);
 
         // Draw BROWSING WITH STOKES text in the top-right corner
@@ -859,7 +863,7 @@ impl BrowserUI {
                 .or_else(|| font_mgr.match_family_style("serif", FontStyle::default()))
                 .unwrap_or(typeface);
 
-            let custom_font_size = 18.0 * self.scale_factor as f32;
+            let custom_font_size = 18.0 * self.viewport.hidpi_scale;
             let mut custom_font = Font::new(times_typeface, custom_font_size);
 
             // Enable small-caps by setting font features
@@ -871,17 +875,17 @@ impl BrowserUI {
 
             if let Some(text_blob) = TextBlob::new(custom_text, &custom_font) {
                 let text_bounds = text_blob.bounds();
-                let text_x = canvas_width - text_bounds.width() - (20.0 * self.scale_factor as f32);
-                let text_y = 22.0 * self.scale_factor as f32;
+                let text_x = canvas_width - text_bounds.width() - (20.0 * self.viewport.hidpi_scale);
+                let text_y = 22.0 * self.viewport.hidpi_scale;
                 canvas.draw_text_blob(&text_blob, (text_x, text_y), &paint);
             }
         }
 
         // Scale other text rendering properties
-        let text_padding = 5.0 * self.scale_factor as f32;
-        let cursor_margin = 6.0 * self.scale_factor as f32;
-        let cursor_stroke_width = 1.5 * self.scale_factor as f32;
-        let shadow_offset = 2.0 * self.scale_factor as f32;
+        let text_padding = 5.0 * self.viewport.hidpi_scale;
+        let cursor_margin = 6.0 * self.viewport.hidpi_scale;
+        let cursor_stroke_width = 1.5 * self.viewport.hidpi_scale;
+        let shadow_offset = 2.0 * self.viewport.hidpi_scale;
 
         for comp in &self.components {
             match comp {
@@ -917,16 +921,16 @@ impl BrowserUI {
                         Color::from_rgb(180, 180, 180)
                     });
                     paint.set_stroke(true);
-                    paint.set_stroke_width(1.0 * self.scale_factor as f32);
+                    paint.set_stroke_width(1.0 * self.viewport.hidpi_scale);
                     canvas.draw_round_rect(rect, 4.0, 4.0, &paint);
                     paint.set_stroke(false);
 
                     // Draw custom icon instead of text
-                    Self::draw_icon(canvas, icon_type, rect, self.scale_factor);
+                    Self::draw_icon(canvas, icon_type, rect, self.viewport.hidpi_scale);
 
                     // Draw tooltip if visible
                     if tooltip.is_visible {
-                        Self::draw_tooltip(canvas, tooltip, *x, *y, &font, self.scale_factor);
+                        Self::draw_tooltip(canvas, tooltip, *x, *y, &font, self.viewport.hidpi_scale);
                     }
                 }
                 UiComponent::TextField { text, x, y, width, height, color, border_color, has_focus, cursor_position, .. } => {
@@ -958,7 +962,7 @@ impl BrowserUI {
                     };
                     paint.set_color(border_color);
                     paint.set_stroke(true);
-                    paint.set_stroke_width(if *has_focus { 2.0 * self.scale_factor as f32 } else { 1.0 * self.scale_factor as f32 });
+                    paint.set_stroke_width(if *has_focus { 2.0 * self.viewport.hidpi_scale } else { 1.0 * self.viewport.hidpi_scale });
                     canvas.draw_round_rect(rect, 2.0, 2.0, &paint);
                     paint.set_stroke(false);
 
@@ -1034,12 +1038,12 @@ impl BrowserUI {
                         Color::from_rgb(180, 180, 180)
                     });
                     paint.set_stroke(true);
-                    paint.set_stroke_width(if *is_active { 2.0 * self.scale_factor as f32 } else { 1.0 * self.scale_factor as f32 });
+                    paint.set_stroke_width(if *is_active { 2.0 * self.viewport.hidpi_scale } else { 1.0 * self.viewport.hidpi_scale });
                     canvas.draw_round_rect(rect, 4.0, 4.0, &paint);
                     paint.set_stroke(false);
 
                     // Calculate space needed for close button if active
-                    let close_button_space = if *is_active { 20.0 * self.scale_factor as f32 } else { 0.0 };
+                    let close_button_space = if *is_active { 20.0 * self.viewport.hidpi_scale } else { 0.0 };
 
                     // Truncate tab text to fit within the tab width (leaving space for close button)
                     let max_text_width = *width - (text_padding * 2.0) - close_button_space;
@@ -1056,8 +1060,8 @@ impl BrowserUI {
 
                     // Draw close button for active tab
                     if *is_active {
-                        let close_button_size = 16.0 * self.scale_factor as f32;
-                        let close_button_x = rect.right() - close_button_size - (4.0 * self.scale_factor as f32);
+                        let close_button_size = 16.0 * self.viewport.hidpi_scale;
+                        let close_button_x = rect.right() - close_button_size - (4.0 * self.viewport.hidpi_scale);
                         let close_button_y = rect.center_y() - (close_button_size / 2.0);
                         let close_button_rect = Rect::from_xywh(close_button_x, close_button_y, close_button_size, close_button_size);
 
@@ -1066,12 +1070,12 @@ impl BrowserUI {
                         canvas.draw_round_rect(close_button_rect, 2.0, 2.0, &paint);
 
                         // Draw X icon
-                        Self::draw_icon(canvas, &IconType::Close, close_button_rect, self.scale_factor);
+                        Self::draw_icon(canvas, &IconType::Close, close_button_rect, self.viewport.hidpi_scale);
                     }
 
                     // Draw tooltip if visible
                     if tooltip.is_visible {
-                        Self::draw_tooltip(canvas, tooltip, *x, *y, &font, self.scale_factor);
+                        Self::draw_tooltip(canvas, tooltip, *x, *y, &font, self.viewport.hidpi_scale);
                     }
                 }
             }
@@ -1162,11 +1166,11 @@ impl BrowserUI {
     }
 
     /// Draw a custom icon based on icon type
-    fn draw_icon(canvas: &Canvas, icon_type: &IconType, rect: Rect, scale_factor: f64) {
+    fn draw_icon(canvas: &Canvas, icon_type: &IconType, rect: Rect, hidpi_scale: f32) {
         let mut paint = Paint::default();
         paint.set_color(Color::from_rgb(60, 60, 60)); // Dark gray for icons
         paint.set_stroke(true);
-        paint.set_stroke_width(2.0 * scale_factor as f32);
+        paint.set_stroke_width(2.0 * hidpi_scale);
         paint.set_style(skia_safe::PaintStyle::Stroke);
         paint.set_stroke_cap(skia_safe::paint::Cap::Round);
         paint.set_stroke_join(skia_safe::paint::Join::Round);
@@ -1240,13 +1244,13 @@ impl BrowserUI {
     }
 
     /// Draw a tooltip
-    fn draw_tooltip(canvas: &Canvas, tooltip: &Tooltip, x: f32, y: f32, font: &Font, scale_factor: f64) {
+    fn draw_tooltip(canvas: &Canvas, tooltip: &Tooltip, x: f32, y: f32, font: &Font, hidpi_scale: f32) {
         if !tooltip.is_visible {
             return;
         }
 
         let mut paint = Paint::default();
-        let padding = 8.0 * scale_factor as f32;
+        let padding = 8.0 * hidpi_scale;
 
         // Measure text
         if let Some(text_blob) = TextBlob::new(&tooltip.text, font) {
@@ -1271,7 +1275,7 @@ impl BrowserUI {
             // Draw tooltip border
             paint.set_color(Color::from_rgb(180, 180, 140));
             paint.set_stroke(true);
-            paint.set_stroke_width(1.0 * scale_factor as f32);
+            paint.set_stroke_width(1.0 * hidpi_scale);
             canvas.draw_round_rect(tooltip_rect, 4.0, 4.0, &paint);
             paint.set_stroke(false);
 
@@ -1293,11 +1297,11 @@ impl BrowserUI {
             if let UiComponent::TextField { id, x, y, width, height, .. } = comp {
                 if id == "address_bar" {
                     // Position spinner at the right side of the address bar
-                    let spinner_size = 20.0 * self.scale_factor as f32;
-                    let spinner_x = x + width - spinner_size - (8.0 * self.scale_factor as f32);
+                    let spinner_size = 20.0 * self.viewport.hidpi_scale;
+                    let spinner_x = x + width - spinner_size - (8.0 * self.viewport.hidpi_scale);
                     let spinner_y = y + (height / 2.0);
 
-                    Self::draw_spinner(canvas, spinner_x, spinner_y, spinner_size / 2.0, angle, self.scale_factor);
+                    Self::draw_spinner(canvas, spinner_x, spinner_y, spinner_size / 2.0, angle, self.viewport.hidpi_scale);
                     break;
                 }
             }
@@ -1305,10 +1309,10 @@ impl BrowserUI {
     }
 
     /// Draw an animated spinner
-    fn draw_spinner(canvas: &Canvas, center_x: f32, center_y: f32, radius: f32, angle: f32, scale_factor: f64) {
+    fn draw_spinner(canvas: &Canvas, center_x: f32, center_y: f32, radius: f32, angle: f32, hidpi_scale: f32) {
         let mut paint = Paint::default();
         paint.set_stroke(true);
-        paint.set_stroke_width(2.5 * scale_factor as f32);
+        paint.set_stroke_width(2.5 * hidpi_scale);
         paint.set_style(skia_safe::PaintStyle::Stroke);
         paint.set_stroke_cap(skia_safe::paint::Cap::Round);
         paint.set_anti_alias(true);
