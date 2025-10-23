@@ -102,7 +102,9 @@ impl Engine {
             let callback = Rc::new(Box::new(move || {
                 *layout_flag.borrow_mut() = true;
             }) as Box<dyn Fn()>);
-            dom.root_node().borrow_mut().set_layout_invalidation_callback(callback);
+            let mut root_node = dom.root_node().borrow_mut();
+            root_node.set_layout_invalidation_callback(callback);
+            drop(root_node);
 
             // Store the DOM
             self.dom = Some(Rc::new(RefCell::new(dom)));
@@ -121,7 +123,8 @@ impl Engine {
             self.start_image_loading().await;
 
             // Execute JavaScript in the page after everything is loaded
-            self.execute_document_scripts().await;
+            // TODO readd javascript
+            //self.execute_document_scripts().await;
 
             Ok(())
         }.await;
@@ -486,6 +489,8 @@ impl Engine {
                 }
             }
         }
+
+        drop(dom); // Drop before stylesheets are added
 
         // Now process the collected data without holding DOM borrows
         for css_content in style_contents {

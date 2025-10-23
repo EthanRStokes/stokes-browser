@@ -397,7 +397,8 @@ impl ElementWrapper {
                             let results = node.query_selector(&selector);
 
                             if let Some(result_rc) = results.first() {
-                                drop(node); // Release borrow before creating JS element
+                                let result_rc = node.get_node(*result_rc);
+                                //drop(node); // Release borrow before creating JS element
                                 ElementWrapper::create_js_element(result_rc, context)
                             } else {
                                 Ok(JsValue::null())
@@ -423,6 +424,7 @@ impl ElementWrapper {
 
                             let array = JsArray::new(context);
                             for (i, result_rc) in results.iter().enumerate() {
+                                let result_rc = node.get_node(*result_rc);
                                 if let Ok(js_elem) = ElementWrapper::create_js_element(result_rc, context) {
                                     let _ = array.set(i, js_elem, true, context);
                                 }

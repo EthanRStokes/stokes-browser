@@ -149,6 +149,7 @@ impl DocumentWrapper {
         let elements = root.query_selector(&selector);
 
         if let Some(element_rc) = elements.first() {
+            let element_rc = root.get_node(*element_rc);
             let element = element_rc.borrow();
             if let NodeData::Element(ref data) = element.data {
                 let js_element = ObjectInitializer::new(context)
@@ -195,6 +196,7 @@ impl DocumentWrapper {
 
         let array = JsArray::new(context);
         for (i, element_rc) in elements.iter().enumerate() {
+            let element_rc = root.get_node(*element_rc);
             let element = element_rc.borrow();
             if let NodeData::Element(ref data) = element.data {
                 let js_element = ObjectInitializer::new(context)
@@ -954,7 +956,8 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<Dom>>
                     let node = node_rc.borrow();
                     let results = node.query_selector(&selector);
                     if let Some(res_rc) = results.first() {
-                        drop(node);
+                        let res_rc = node.get_node(*res_rc);
+                        //drop(node);
                         return ElementWrapper::create_js_element(res_rc, context);
                     }
                     return Ok(JsValue::null());
@@ -978,6 +981,7 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<Dom>>
                     let results = node.query_selector(&selector);
                     let array = JsArray::new(context);
                     for (i, result_rc) in results.iter().enumerate() {
+                        let result_rc = node.get_node(*result_rc);
                         if let Ok(js_elem) = ElementWrapper::create_js_element(result_rc, context) {
                             let _ = array.set(i, js_elem, true, context);
                         }
