@@ -139,12 +139,15 @@ impl TabProcess {
                 match self.engine.navigate(&url).await {
                     Ok(_) => {
                         let title = self.engine.page_title().to_string();
-                        self.channel.borrow_mut().send(&TabToParentMessage::NavigationCompleted {
+                        let mut channel = self.channel.borrow_mut();
+                        channel.send(&TabToParentMessage::NavigationCompleted {
                             url: url.clone(),
                             title: title.clone(),
                         })?;
-                        self.channel.borrow_mut().send(&TabToParentMessage::TitleChanged(title))?;
-                        self.channel.borrow_mut().send(&TabToParentMessage::LoadingStateChanged(false))?;
+                        channel.send(&TabToParentMessage::TitleChanged(title))?;
+                        channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+
+                        drop(channel);
                         self.render_frame()?;
                     }
                     Err(e) => {
@@ -162,11 +165,14 @@ impl TabProcess {
                     match self.engine.navigate(&url).await {
                         Ok(_) => {
                             let title = self.engine.page_title().to_string();
-                            self.channel.borrow_mut().send(&TabToParentMessage::NavigationCompleted {
+                            let mut channel = self.channel.borrow_mut();
+                            channel.send(&TabToParentMessage::NavigationCompleted {
                                 url: url.clone(),
                                 title,
                             })?;
-                            self.channel.borrow_mut().send(&TabToParentMessage::LoadingStateChanged(false))?;
+                            channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+
+                            drop(channel); // Release borrow before rendering
                             self.render_frame()?;
                         }
                         Err(e) => {

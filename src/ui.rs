@@ -606,12 +606,18 @@ impl BrowserUI {
     pub fn handle_text_input(&mut self, text: &str) {
         for comp in &mut self.components {
             if let UiComponent::TextField { has_focus: true, text: field_text, cursor_position, .. } = comp {
-                // Insert text at cursor position
+                // Ensure cursor is within bounds and at a char boundary
                 if *cursor_position > field_text.len() {
-                    println!("Error: cursor pos {} out of bounds for text length {}", cursor_position, field_text.len());
+                    *cursor_position = field_text.len();
                 }
+                if !field_text.is_char_boundary(*cursor_position) {
+                    *cursor_position = Self::prev_char_boundary(field_text, *cursor_position);
+                }
+
+                // Insert text at cursor position (safe because we are at a char boundary)
                 field_text.insert_str(*cursor_position, text);
-                *cursor_position += text.len();
+                // Advance cursor to after inserted text
+                *cursor_position = (*cursor_position).saturating_add(text.len());
                 break;
             }
         }
@@ -625,28 +631,45 @@ impl BrowserUI {
                 has_focus: true,
                 text: field_text,
                 cursor_position,
+                selection_start,
+                selection_end,
                 ..
             } = comp {
+                // Ensure cursor_position is within valid bounds and aligned to a char boundary
+                if *cursor_position > field_text.len() {
+                    *cursor_position = field_text.len();
+                }
+                while *cursor_position > 0 && !field_text.is_char_boundary(*cursor_position) {
+                    *cursor_position -= 1;
+                }
+
                 match key {
                     "Backspace" => {
                         if *cursor_position > 0 {
-                            field_text.remove(*cursor_position - 1);
-                            *cursor_position -= 1;
+                            let prev = Self::prev_char_boundary(field_text, *cursor_position);
+                            // Remove the previous character (range from prev..cursor)
+                            if prev < *cursor_position && *cursor_position <= field_text.len() {
+                                field_text.replace_range(prev..*cursor_position, "");
+                                *cursor_position = prev;
+                            }
                         }
                     }
                     "Delete" => {
                         if *cursor_position < field_text.len() {
-                            field_text.remove(*cursor_position);
+                            let next = Self::next_char_boundary(field_text, *cursor_position);
+                            if *cursor_position < next && next <= field_text.len() {
+                                field_text.replace_range(*cursor_position..next, "");
+                            }
                         }
                     }
                     "ArrowLeft" => {
                         if *cursor_position > 0 {
-                            *cursor_position -= 1;
+                            *cursor_position = Self::prev_char_boundary(field_text, *cursor_position);
                         }
                     }
                     "ArrowRight" => {
                         if *cursor_position < field_text.len() {
-                            *cursor_position += 1;
+                            *cursor_position = Self::next_char_boundary(field_text, *cursor_position);
                         }
                     }
                     "Home" => {
@@ -654,6 +677,10 @@ impl BrowserUI {
                     }
                     "End" => {
                         *cursor_position = field_text.len();
+                        // make sure it's on a char boundary
+                        while *cursor_position > 0 && !field_text.is_char_boundary(*cursor_position) {
+                            *cursor_position -= 1;
+                        }
                     }
                     "Enter" => {
                         // Return the field content for navigation
@@ -768,11 +795,20 @@ impl BrowserUI {
         for comp in &mut self.components {
             if let UiComponent::TextField { has_focus: true, text, selection_start, selection_end, cursor_position, .. } = comp {
                 if let (Some(&start), Some(&end)) = (selection_start.as_ref(), selection_end.as_ref()) {
-                    let start = start.min(end);
-                    let end = start.max(end);
-                    if start < end && end <= text.len() {
-                        text.replace_range(start..end, "");
-                        *cursor_position = start;
+                    let mut s = start.min(end);
+                    let mut e = start.max(end);
+                    if s > text.len() { s = text.len(); }
+                    if e > text.len() { e = text.len(); }
+                    // Align to char boundaries
+                    if !text.is_char_boundary(s) {
+                        s = Self::prev_char_boundary(text, s);
+                    }
+                    if !text.is_char_boundary(e) {
+                        e = Self::next_char_boundary(text, e);
+                    }
+                    if s < e && e <= text.len() {
+                        text.replace_range(s..e, "");
+                        *cursor_position = s;
                         *selection_start = None;
                         *selection_end = None;
                         return true;
@@ -790,11 +826,20 @@ impl BrowserUI {
             if let UiComponent::TextField { has_focus: true, text, selection_start, selection_end, cursor_position, .. } = comp {
                 // Delete selection if any
                 if let (Some(&start), Some(&end)) = (selection_start.as_ref(), selection_end.as_ref()) {
-                    let start = start.min(end);
-                    let end = start.max(end);
-                    if start < end && end <= text.len() {
-                        text.replace_range(start..end, "");
-                        *cursor_position = start;
+                    let mut s = start.min(end);
+                    let mut e = start.max(end);
+                    if s > text.len() { s = text.len(); }
+                    if e > text.len() { e = text.len(); }
+                    // Align to char boundaries
+                    if !text.is_char_boundary(s) {
+                        s = Self::prev_char_boundary(text, s);
+                    }
+                    if !text.is_char_boundary(e) {
+                        e = Self::next_char_boundary(text, e);
+                    }
+                    if s < e && e <= text.len() {
+                        text.replace_range(s..e, "");
+                        *cursor_position = s;
                         *selection_start = None;
                         *selection_end = None;
                     }
@@ -1339,5 +1384,34 @@ impl BrowserUI {
             path.add_arc(rect, start_angle, sweep_angle);
             canvas.draw_path(&path, &paint);
         }
+    }
+
+    // Helper: find previous character boundary strictly before or at byte_pos
+    fn prev_char_boundary(s: &str, byte_pos: usize) -> usize {
+        if byte_pos == 0 {
+            return 0;
+        }
+        // Walk char_indices and keep the last index < byte_pos
+        let mut prev = 0usize;
+        for (i, _) in s.char_indices() {
+            if i >= byte_pos {
+                break;
+            }
+            prev = i;
+        }
+        prev
+    }
+
+    // Helper: find next character boundary strictly after byte_pos, or s.len()
+    fn next_char_boundary(s: &str, byte_pos: usize) -> usize {
+        if byte_pos >= s.len() {
+            return s.len();
+        }
+        for (i, _) in s.char_indices() {
+            if i > byte_pos {
+                return i;
+            }
+        }
+        s.len()
     }
 }
