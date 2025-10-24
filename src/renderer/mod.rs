@@ -10,15 +10,13 @@ mod pseudo;
 use crate::css::transition_manager::TransitionManager;
 use crate::css::ComputedValues;
 use crate::dom::{DomNode, ElementData, NodeData};
-use crate::layout::LayoutBox;
 use crate::renderer::background::BackgroundImageCache;
 use crate::renderer::font::FontManager;
 use crate::renderer::paint::DefaultPaints;
 use skia_safe::{Canvas, Color, Font, Paint, Rect};
 use std::cell::{Ref, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
-use crate::dom::node::Handle;
+use taffy::Layout;
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer {
@@ -51,8 +49,7 @@ impl HtmlRenderer {
         &mut self,
         canvas: &Canvas,
         node: &Rc<RefCell<DomNode>>,
-        layout_box: &LayoutBox,
-        node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
+        layout_box: &Layout,
         transition_manager: Option<&TransitionManager>,
         scroll_x: f32,
         scroll_y: f32,
@@ -74,7 +71,7 @@ impl HtmlRenderer {
         );
 
         // Render the layout tree with styles, scale factor, and viewport culling
-        self.render_box(canvas, &node, layout_box, node_map, transition_manager, scale_factor, &viewport_rect);
+        self.render_box(canvas, &node, layout_box, transition_manager, scale_factor, &viewport_rect);
 
         // Restore the canvas state
         canvas.restore();
@@ -85,8 +82,7 @@ impl HtmlRenderer {
         &mut self,
         canvas: &Canvas,
         node: &DomNode,
-        layout_box: &LayoutBox,
-        node_map: &HashMap<usize, Rc<RefCell<DomNode>>>,
+        layout: &Layout,
         transition_manager: Option<&TransitionManager>,
         scale_factor: f32,
         viewport_rect: &Rect,
@@ -113,76 +109,73 @@ impl HtmlRenderer {
         let is_visible = computed_styles.visibility == crate::css::Visibility::Visible;
 
         // Get the DOM node for this layout box
-        if let Some(dom_node_rc) = node_map.get(&node.id) {
-            let dom_node = dom_node_rc.borrow();
+        let dom_node_rc = node.get_node(node.id);
+        let dom_node = dom_node_rc.borrow();
 
-            // Check if this node should be skipped from rendering
-            if should_skip_rendering(&dom_node) {
-                return; // Skip rendering this node and its children
-            }
+        // Check if this node should be skipped from rendering
+        if should_skip_rendering(&dom_node) {
+            return; // Skip rendering this node and its children
+        }
 
-            // Only render visual aspects if visible
-            if is_visible {
-                match &dom_node.data {
-                    NodeData::Element(element_data) => {
-                        self.render_element(canvas, node, layout_box, element_data, &computed_styles, scale_factor);
-                    },
-                    NodeData::Text { contents } => {
-                        // Check if text node is inside a non-visual element
-                        if !is_inside_non_visual_element(&dom_node) {
-                            text::render_text_node(
-                                canvas,
-                                node,
-                                layout_box,
-                                contents,
-                                &computed_styles,
-                                &self.font_manager,
-                                &self.paints.text_paint,
-                                scale_factor,
-                            );
-                        }
-                    },
-                    NodeData::Image(image_data) => {
-                        let placeholder_font = self.font_manager.placeholder_font_for_size(12.0 * scale_factor as f32);
-                        image::render_image_node(canvas, node, layout_box, image_data, scale_factor, &placeholder_font);
-                    },
-                    NodeData::Document => {
-                        // Just render children for document
-                    },
-                    _ => {
-                        // Skip other node types
+        // Only render visual aspects if visible
+        if is_visible {
+            match &dom_node.data {
+                NodeData::Element(element_data) => {
+                    self.render_element(canvas, node, layout, element_data, &computed_styles, scale_factor);
+                },
+                NodeData::Text { contents } => {
+                    // Check if text node is inside a non-visual element
+                    if !is_inside_non_visual_element(&dom_node) {
+                        text::render_text_node(
+                            canvas,
+                            node,
+                            layout,
+                            contents,
+                            &computed_styles,
+                            &self.font_manager,
+                            &self.paints.text_paint,
+                            scale_factor,
+                        );
                     }
+                },
+                NodeData::Image(image_data) => {
+                    let placeholder_font = self.font_manager.placeholder_font_for_size(12.0 * scale_factor as f32);
+                    image::render_image_node(canvas, node, layout, image_data, scale_factor, &placeholder_font);
+                },
+                NodeData::Document => {
+                    // Just render children for document
+                },
+                _ => {
+                    // Skip other node types
                 }
             }
         }
 
         // Render children regardless of visibility (they may have their own visibility settings)
-        if let Some(dom_node_rc) = node_map.get(&node.id) {
-            let dom_node = dom_node_rc.borrow();
-            if !should_skip_rendering(&dom_node) {
-                // Sort children by z-index before rendering
-                /*let mut children_with_z: Vec<(&DomNode, i32)> = node.children.iter()
-                    .map(|child| {
-                        let child = node.get_node(*child);
-                        let z_index = child.style.z_index;
-                        (child, z_index)
-                    })
-                    .collect();*/
-                let mut children_with_z: Vec<(Ref<DomNode>, &LayoutBox, i32)> = layout_box.children.iter()
-                    .map(|child| {
-                        let node = node.get_node(child.node_id).borrow();
-                        let z_index = node.style.z_index;
-                        (node, child, z_index)
-                    })
-                    .collect();
+        if !should_skip_rendering(&dom_node) {
+            // Sort children by z-index before rendering
+            /*let mut children_with_z: Vec<(&DomNode, i32)> = node.children.iter()
+                .map(|child| {
+                    let child = node.get_node(*child);
+                    let z_index = child.style.z_index;
+                    (child, z_index)
+                })
+                .collect();*/
+            let mut children_with_z: Vec<(Ref<DomNode>, Layout, i32)> = node.children.iter()
+                .map(|child| {
+                    let child_node = node.get_node(*child).borrow();
+                    let layout = child_node.final_layout;
+                    let z_index = child_node.style.z_index;
+                    (child_node, layout, z_index)
+                })
+                .collect();
 
-                // Sort by z-index (lower z-index rendered first, so they appear behind)
-                children_with_z.sort_by_key(|(_, _, z)| *z);
+            // Sort by z-index (lower z-index rendered first, so they appear behind)
+            children_with_z.sort_by_key(|(_, _, z)| *z);
 
-                // Render children in z-index order
-                for (child_node, child, _) in children_with_z {
-                    self.render_box(canvas, &*child_node, child, node_map, transition_manager, scale_factor, viewport_rect);
-                }
+            // Render children in z-index order
+            for (child_node, child_layout, _) in children_with_z {
+                self.render_box(canvas, &*child_node, &child_layout, transition_manager, scale_factor, viewport_rect);
             }
         }
     }
@@ -192,13 +185,17 @@ impl HtmlRenderer {
         &mut self,
         canvas: &Canvas,
         node: &DomNode,
-        layout_box: &LayoutBox,
+        layout: &Layout,
         element_data: &ElementData,
         styles: &ComputedValues,
         scale_factor: f32,
     ) {
-        let content_rect = layout_box.dimensions.content;
-
+        let content_rect = Rect::from_xywh(
+            layout.content_box_x(),
+            layout.content_box_y(),
+            layout.content_box_width(),
+            layout.content_box_height(),
+        );
         // Get opacity value (default to 1.0 if no styles)
         let opacity = styles.opacity;
 

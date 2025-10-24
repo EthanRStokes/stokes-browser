@@ -7,14 +7,15 @@ use crate::css::{ComputedValues, CssParser};
 use crate::dom::{Dom, DomNode, ImageData, ImageLoadingState, NodeData};
 use crate::dom::{EventDispatcher, EventType};
 use crate::js::JsRuntime;
-use crate::layout::{LayoutBox, LayoutEngine};
+use crate::layout::LayoutEngine;
 use crate::networking::{HttpClient, NetworkError};
 use crate::renderer::HtmlRenderer;
 use blitz_traits::shell::Viewport;
-use skia_safe::Canvas;
+use skia_safe::{Canvas, Rect};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use taffy::Layout;
 
 /// The core browser engine that coordinates all browser activities
 pub struct Engine {
@@ -24,17 +25,13 @@ pub struct Engine {
     page_title: String,
     is_loading: bool,
     pub(crate) dom: Option<Rc<RefCell<Dom>>>,
-    layout: Option<LayoutBox>,
     layout_engine: LayoutEngine,
-    node_map: HashMap<usize, Rc<RefCell<DomNode>>>,
     // Add cached renderer and style map
     renderer: HtmlRenderer,
     cached_style_map: HashMap<usize, ComputedValues>,
     style_map_dirty: bool,
     scroll_y: f32,
     scroll_x: f32,
-    content_height: f32,
-    content_width: f32,
     pub(crate) viewport: Viewport,
     // Add transition manager for CSS animations
     transition_manager: TransitionManager,
@@ -58,16 +55,12 @@ impl Engine {
             page_title: "New Tab".to_string(),
             is_loading: false,
             dom: None,
-            layout: None,
             layout_engine: LayoutEngine::new(800.0, 600.0), // Default viewport size
-            node_map: HashMap::new(),
             renderer: HtmlRenderer::new(),
             cached_style_map: HashMap::new(),
             style_map_dirty: false,
             scroll_y: 0.0,
             scroll_x: 0.0,
-            content_height: 0.0,
-            content_width: 0.0,
             viewport,
             transition_manager: TransitionManager::new(),
             previous_style_map: HashMap::new(),
@@ -356,15 +349,9 @@ impl Engine {
         let dom = dom.borrow();
 
         let root = dom.root_node();
-        self.layout = Some(self.layout_engine.compute_layout(&root, self.viewport.hidpi_scale));
-
-        // Update node map from layout engine
-        self.node_map = self.layout_engine.get_node_map().clone();
+        self.layout_engine.compute_layout(&root, self.viewport.hidpi_scale);
 
         self.style_map_dirty = true;
-
-        // Update content dimensions
-        self.update_content_dimensions();
 
         // Clear the recomputation flag since we just recomputed
         *self.layout_needs_recomputation.borrow_mut() = false;
@@ -403,17 +390,9 @@ impl Engine {
         self.viewport.window_size.1 as f32
     }
 
-    /// Get the content dimensions
-    pub fn content_size(&self) -> (f32, f32) {
-        (self.content_width, self.content_height)
-    }
-
     /// Resize the viewport
     pub fn resize(&mut self, width: f32, height: f32) {
         self.set_viewport_size(width, height);
-
-        // Update content dimensions after layout recalculation
-        self.update_content_dimensions();
     }
 
     /// Render the current page to a canvas with transition support
@@ -423,28 +402,27 @@ impl Engine {
         // Apply any pending layout changes from DOM modifications
         self.apply_pending_layout_changes();
 
-        if let Some(layout) = &self.layout {
-            // Clean up completed transitions
-            self.transition_manager.cleanup_completed_transitions();
+        let layout = node.borrow().final_layout;
+        // Clean up completed transitions
+        self.transition_manager.cleanup_completed_transitions();
 
-            // Use the renderer with transition support
-            let transition_manager_ref = if self.transition_manager.has_active_transitions() {
-                Some(&self.transition_manager)
-            } else {
-                None
-            };
+        // Use the renderer with transition support
+        let transition_manager_ref = if self.transition_manager.has_active_transitions() {
+            Some(&self.transition_manager)
+        } else {
+            None
+        };
 
-            self.renderer.render(
-                canvas,
-                node,
-                layout,
-                &self.node_map,
-                transition_manager_ref,
-                self.scroll_x,
-                self.scroll_y,
-                scale_factor
-            );
-        }
+
+        self.renderer.render(
+            canvas,
+            node,
+            &layout,
+            transition_manager_ref,
+            self.scroll_x,
+            self.scroll_y,
+            scale_factor
+        );
     }
 
     /// Add a CSS stylesheet to the engine
@@ -582,9 +560,9 @@ impl Engine {
         let old_scroll_y = self.scroll_y;
         self.scroll_y = (self.scroll_y + delta).max(0.0);
 
-        // Don't scroll past the bottom of the content
-        let max_scroll = (self.content_height - self.viewport_height()).max(0.0);
-        self.scroll_y = self.scroll_y.min(max_scroll);
+        // TODO Don't scroll past the bottom of the content
+        //let max_scroll = (self.content_height - self.viewport_height()).max(0.0);
+        self.scroll_y = self.scroll_y;
 
         // Return whether scroll position actually changed
         old_scroll_y != self.scroll_y
@@ -595,9 +573,9 @@ impl Engine {
         let old_scroll_x = self.scroll_x;
         self.scroll_x = (self.scroll_x + delta).max(0.0);
 
-        // Don't scroll past the right edge of the content
-        let max_scroll = (self.content_width - self.viewport_width()).max(0.0);
-        self.scroll_x = self.scroll_x.min(max_scroll);
+        // TODO Don't scroll past the right edge of the content
+        //let max_scroll = (self.content_width - self.viewport_width()).max(0.0);
+        self.scroll_x = self.scroll_x;
 
         // Return whether scroll position actually changed
         old_scroll_x != self.scroll_x
@@ -610,32 +588,8 @@ impl Engine {
 
     /// Set scroll position directly
     pub fn set_scroll_position(&mut self, x: f32, y: f32) {
-        self.scroll_x = x.max(0.0).min((self.content_width - self.viewport_width()).max(0.0));
-        self.scroll_y = y.max(0.0).min((self.content_height - self.viewport_height()).max(0.0));
-    }
-
-    /// Update content dimensions based on layout
-    fn update_content_dimensions(&mut self) {
-        if let Some(layout) = &self.layout {
-            // Calculate total content dimensions from the layout tree
-            let (width, height) = self.calculate_content_bounds(layout);
-            self.content_width = width;
-            self.content_height = height;
-        }
-    }
-
-    /// Recursively calculate content bounds
-    fn calculate_content_bounds(&self, layout_box: &LayoutBox) -> (f32, f32) {
-        let mut max_width = layout_box.dimensions.content.right();
-        let mut max_height = layout_box.dimensions.content.bottom();
-
-        for child in &layout_box.children {
-            let (child_width, child_height) = self.calculate_content_bounds(child);
-            max_width = max_width.max(child_width);
-            max_height = max_height.max(child_height);
-        }
-
-        (max_width, max_height)
+        self.scroll_x = x.max(0.0);
+        self.scroll_y = y.max(0.0);
     }
 
     /// Get the cursor style for the element at the given position
@@ -644,13 +598,16 @@ impl Engine {
         let adjusted_x = x + self.scroll_x;
         let adjusted_y = y + self.scroll_y;
 
+        let dom = self.dom();
+        let dom = dom.borrow();
+        let root = dom.root_node();
+        let layout = root.borrow().final_layout;
+
         // Find the topmost element at this position
-        if let Some(layout) = &self.layout {
-            if let Some(node_id) = self.find_element_at_position(layout, adjusted_x, adjusted_y) {
-                // Get the computed styles for this element
-                if let Some(styles) = self.cached_style_map.get(&node_id) {
-                    return styles.cursor.clone();
-                }
+        if let Some(node_id) = self.find_element_at_position(root, &layout, adjusted_x, adjusted_y) {
+            // Get the computed styles for this element
+            if let Some(styles) = self.cached_style_map.get(&node_id) {
+                return styles.cursor.clone();
             }
         }
 
@@ -659,22 +616,33 @@ impl Engine {
     }
 
     /// Recursively find the element at the given position (returns the deepest/topmost element)
-    fn find_element_at_position(&self, layout_box: &LayoutBox, x: f32, y: f32) -> Option<usize> {
-        let border_box = layout_box.dimensions.border_box();
+    fn find_element_at_position(&self, node: &Rc<RefCell<DomNode>>, layout_box: &Layout, x: f32, y: f32) -> Option<usize> {
+        let content_rect = Rect::from_xywh(
+            layout_box.content_box_x(),
+            layout_box.content_box_y(),
+            layout_box.content_box_width(),
+            layout_box.content_box_height(),
+        );
+
+        let node = node.borrow();
 
         // Check if position is within this box
-        if x >= border_box.left && x <= border_box.right &&
-            y >= border_box.top && y <= border_box.bottom {
+        if x >= content_rect.left && x <= content_rect.right &&
+            y >= content_rect.top && y <= content_rect.bottom {
+
+            let layout_children = &node.children;
 
             // Check children first (they are on top)
-            for child in &layout_box.children {
-                if let Some(child_node_id) = self.find_element_at_position(child, x, y) {
+            for child in layout_children {
+                let child_node = node.get_node(*child);
+                let child_layout = child_node.borrow().final_layout;
+                if let Some(child_node_id) = self.find_element_at_position(child_node, &child_layout, x, y) {
                     return Some(child_node_id);
                 }
             }
 
             // If no child matched, return this node
-            return Some(layout_box.node_id);
+            return Some(node.id);
         }
 
         None
@@ -831,14 +799,17 @@ impl Engine {
         let adjusted_y = y + self.scroll_y;
 
         // Find the element at this position
-        if let Some(layout) = &self.layout {
-            if let Some(node_id) = self.find_element_at_position(layout, adjusted_x, adjusted_y) {
-                // Fire click event on the element
-                self.fire_click_event(node_id, x as f64, y as f64);
+        let dom = self.dom();
+        let dom = dom.borrow();
+        let root = dom.root_node();
+        let layout = root.borrow().final_layout;
 
-                // Check if this element or any parent is an anchor tag
-                return self.find_link_href(node_id);
-            }
+        if let Some(node_id) = self.find_element_at_position(root, &layout, adjusted_x, adjusted_y) {
+            // Fire click event on the element
+            self.fire_click_event(node_id, x as f64, y as f64);
+
+            // Check if this element or any parent is an anchor tag
+            return self.find_link_href(root, node_id);
         }
 
         None
@@ -846,21 +817,24 @@ impl Engine {
 
     /// Fire a click event on a DOM node
     fn fire_click_event(&mut self, node_id: usize, x: f64, y: f64) {
-        if let Some(node_rc) = self.node_map.get(&node_id).cloned() {
-            if let Some(runtime) = &mut self.js_runtime {
-                let context = runtime.context_mut();
+        let dom = self.dom.as_ref().unwrap();
+        let dom = dom.borrow();
+        let root = dom.root_node();
+        let root_node = root.borrow();
+        let node = root_node.get_node(node_id);
+        if let Some(runtime) = &mut self.js_runtime {
+            let context = runtime.context_mut();
 
-                println!("[Event] Firing click event at ({}, {}) on node {}", x, y, node_id);
+            println!("[Event] Firing click event at ({}, {}) on node {}", x, y, node_id);
 
-                if let Err(e) = EventDispatcher::dispatch_mouse_event(
-                    &node_rc,
-                    EventType::Click,
-                    x,
-                    y,
-                    context,
-                ) {
-                    eprintln!("Error dispatching click event: {}", e);
-                }
+            if let Err(e) = EventDispatcher::dispatch_mouse_event(
+                &node,
+                EventType::Click,
+                x,
+                y,
+                context,
+            ) {
+                eprintln!("Error dispatching click event: {}", e);
             }
         }
     }
@@ -872,29 +846,36 @@ impl Engine {
         let adjusted_y = y + self.scroll_y;
 
         // Find the element at this position
-        if let Some(layout) = &self.layout {
-            if let Some(node_id) = self.find_element_at_position(layout, adjusted_x, adjusted_y) {
-                // Fire mouse move event on the element
-                self.fire_mouse_move_event(node_id, x as f64, y as f64);
-            }
+        let dom = self.dom();
+        let dom = dom.borrow();
+        let root = dom.root_node();
+        let layout = root.borrow().final_layout;
+
+        if let Some(node_id) = self.find_element_at_position(root, &layout, adjusted_x, adjusted_y) {
+            // Fire mouse move event on the element
+            self.fire_mouse_move_event(node_id, x as f64, y as f64);
         }
     }
 
     /// Fire a mouse move event on a DOM node
     fn fire_mouse_move_event(&mut self, node_id: usize, x: f64, y: f64) {
-        if let Some(node_rc) = self.node_map.get(&node_id).cloned() {
-            if let Some(runtime) = &mut self.js_runtime {
-                let context = runtime.context_mut();
+        let dom = self.dom.as_ref().unwrap();
+        let dom = dom.borrow();
+        let root = dom.root_node();
+        let root_node = root.borrow();
+        let node = root_node.get_node(node_id);
 
-                if let Err(e) = EventDispatcher::dispatch_mouse_event(
-                    &node_rc,
-                    EventType::MouseMove,
-                    x,
-                    y,
-                    context,
-                ) {
-                    eprintln!("Error dispatching mouse move event: {}", e);
-                }
+        if let Some(runtime) = &mut self.js_runtime {
+            let context = runtime.context_mut();
+
+            if let Err(e) = EventDispatcher::dispatch_mouse_event(
+                &node,
+                EventType::MouseMove,
+                x,
+                y,
+                context,
+            ) {
+                eprintln!("Error dispatching mouse move event: {}", e);
             }
         }
     }
@@ -904,10 +885,13 @@ impl Engine {
         let adjusted_x = x + self.scroll_x;
         let adjusted_y = y + self.scroll_y;
 
-        if let Some(layout) = &self.layout {
-            if let Some(node_id) = self.find_element_at_position(layout, adjusted_x, adjusted_y) {
-                self.fire_mouse_event(node_id, EventType::MouseDown, x as f64, y as f64);
-            }
+        let dom = self.dom();
+        let dom = dom.borrow();
+        let root = dom.root_node();
+        let layout = root.borrow().final_layout;
+
+        if let Some(node_id) = self.find_element_at_position(root, &layout, adjusted_x, adjusted_y) {
+            self.fire_mouse_event(node_id, EventType::MouseDown, x as f64, y as f64);
         }
     }
 
@@ -916,30 +900,37 @@ impl Engine {
         let adjusted_x = x + self.scroll_x;
         let adjusted_y = y + self.scroll_y;
 
-        if let Some(layout) = &self.layout {
-            if let Some(node_id) = self.find_element_at_position(layout, adjusted_x, adjusted_y) {
-                self.fire_mouse_event(node_id, EventType::MouseUp, x as f64, y as f64);
-            }
+        let dom = self.dom();
+        let dom = dom.borrow();
+        let root = dom.root_node();
+        let layout = root.borrow().final_layout;
+
+        if let Some(node_id) = self.find_element_at_position(root, &layout, adjusted_x, adjusted_y) {
+            self.fire_mouse_event(node_id, EventType::MouseUp, x as f64, y as f64);
         }
     }
 
     /// Fire a generic mouse event on a DOM node
     fn fire_mouse_event(&mut self, node_id: usize, event_type: EventType, x: f64, y: f64) {
-        if let Some(node_rc) = self.node_map.get(&node_id).cloned() {
-            if let Some(runtime) = &mut self.js_runtime {
-                let context = runtime.context_mut();
+        let dom = self.dom.as_ref().unwrap();
+        let dom = dom.borrow();
+        let root = dom.root_node();
+        let root_node = root.borrow();
+        let node_rc = root_node.get_node(node_id);
 
-                println!("[Event] Firing {:?} event at ({}, {}) on node {}", event_type, x, y, node_id);
+        if let Some(runtime) = &mut self.js_runtime {
+            let context = runtime.context_mut();
 
-                if let Err(e) = EventDispatcher::dispatch_mouse_event(
-                    &node_rc,
-                    event_type,
-                    x,
-                    y,
-                    context,
-                ) {
-                    eprintln!("Error dispatching mouse event: {}", e);
-                }
+            println!("[Event] Firing {:?} event at ({}, {}) on node {}", event_type, x, y, node_id);
+
+            if let Err(e) = EventDispatcher::dispatch_mouse_event(
+                &node_rc,
+                event_type,
+                x,
+                y,
+                context,
+            ) {
+                eprintln!("Error dispatching mouse event: {}", e);
             }
         }
     }
@@ -1036,7 +1027,7 @@ impl Engine {
     }
 
     /// Find the href of a link element by checking the node and its ancestors
-    fn find_link_href(&self, node_id: usize) -> Option<String> {
+    fn find_link_href(&self, root: &Rc<RefCell<DomNode>>, node_id: usize) -> Option<String> {
         // Walk up the DOM tree to find an anchor element
         let mut visited = std::collections::HashSet::new();
         let mut current_id = node_id;
@@ -1045,6 +1036,8 @@ impl Engine {
         let max_depth = 50;
         let mut depth = 0;
 
+        let root = root.borrow();
+
         loop {
             if depth >= max_depth || visited.contains(&current_id) {
                 break;
@@ -1052,35 +1045,23 @@ impl Engine {
             visited.insert(current_id);
             depth += 1;
 
-            if let Some(node_rc) = self.node_map.get(&current_id) {
-                if let Ok(node) = node_rc.try_borrow() {
-                    // Check if this is an anchor element with an href attribute
-                    if let NodeData::Element(element_data) = &node.data {
-                        if element_data.name.local.to_string() == "a" {
-                            if let Some(href) = element_data.attributes.get("href") {
-                                return Some(href.clone());
-                            }
+            let node_rc = root.get_node(current_id);
+            if let Ok(node) = node_rc.try_borrow() {
+                // Check if this is an anchor element with an href attribute
+                if let NodeData::Element(element_data) = &node.data {
+                    if element_data.name.local.to_string() == "a" {
+                        if let Some(href) = element_data.attributes.get("href") {
+                            return Some(href.clone());
                         }
                     }
+                }
 
-                    // Move to parent
-                    if let Some(parent_weak) = &node.parent {
-                        if let Some(parent_rc) = parent_weak.upgrade() {
-                            // Find the parent's id in node_map
-                            let mut found = false;
-                            for (&pid, pnode_rc) in &self.node_map {
-                                if Rc::ptr_eq(pnode_rc, &parent_rc) {
-                                    current_id = pid;
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if !found {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
+                // Move to parent
+                if let Some(parent_weak) = &node.parent {
+                    if let Some(parent_rc) = parent_weak.upgrade() {
+                        // Find the parent's id in node_map
+                        current_id = parent_rc.borrow().id;
+                        break;
                     } else {
                         break;
                     }

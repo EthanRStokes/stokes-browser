@@ -1,21 +1,18 @@
 use std::cell::RefCell;
 use html5ever::tendril::StrTendril;
 use super::font::FontManager;
-use crate::css::ComputedValues;
-use crate::layout::LayoutBox;
+use crate::css::{ComputedValues};
 // Text rendering functionality
-use skia_safe::{Canvas, Font, Paint};
-use skia_safe::textlayout::{
-    FontCollection, ParagraphBuilder, ParagraphStyle, TextAlign as SkiaTextAlign,
-    TextStyle,
-};
+use skia_safe::{BlurStyle, Canvas, Font, MaskFilter, Paint, Rect, TextBlob};
+use skia_safe::textlayout::{FontCollection, ParagraphBuilder, ParagraphStyle, TextStyle, TextAlign as SkiaTextAlign};
+use taffy::Layout;
 use crate::dom::DomNode;
 
 /// Render text with CSS styles applied and DPI scale factor using Skia's textlayout
 pub fn render_text_node(
     canvas: &Canvas,
-    _node: &DomNode,
-    layout_box: &LayoutBox,
+    node: &DomNode,
+    layout_box: &Layout,
     contents: &RefCell<StrTendril>,
     styles: &ComputedValues,
     font_manager: &FontManager,
@@ -23,7 +20,12 @@ pub fn render_text_node(
     scale_factor: f32,
 ) {
     let text = contents.borrow();
-    let content_rect = layout_box.dimensions.content;
+    let content_rect = Rect::from_xywh(
+        layout_box.content_box_x(),
+        layout_box.content_box_y(),
+        layout_box.content_box_width(),
+        layout_box.content_box_height(),
+    );
 
     // Apply text transformation to the content
     let transformed_text = styles.text_transform.apply(&text);

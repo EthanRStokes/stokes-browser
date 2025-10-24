@@ -1,14 +1,19 @@
 use crate::dom::{DomNode, ImageData};
 use crate::dom::ImageLoadingState;
-use crate::layout::LayoutBox;
 // Image rendering functionality
 use skia_safe::{Canvas, Color, FilterMode, Font, MipmapMode, Paint, Rect, SamplingOptions, TextBlob};
 use std::cell::RefCell;
+use taffy::Layout;
 
 /// Render image content
-pub fn render_image_node(canvas: &Canvas, node: &DomNode, layout_box: &LayoutBox, image_data: &RefCell<ImageData>, scale_factor: f32, font: &Font) {
+pub fn render_image_node(canvas: &Canvas, node: &DomNode, layout: &Layout, image_data: &RefCell<ImageData>, scale_factor: f32, font: &Font) {
     let image_data = image_data.borrow();
-    let content_rect = layout_box.dimensions.content;
+    let content_rect = Rect::from_xywh(
+        layout.content_box_x(),
+        layout.content_box_y(),
+        layout.content_box_width(),
+        layout.content_box_height(),
+    );
 
     // Early exit if content rect is too small
     if content_rect.width() < 1.0 || content_rect.height() < 1.0 {

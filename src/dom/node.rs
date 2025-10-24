@@ -1,5 +1,5 @@
 use crate::dom::events::EventListenerRegistry;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 // DOM node implementation for representing HTML elements
 use std::collections::HashMap;
 use std::fmt;
@@ -9,6 +9,7 @@ use html5ever::tendril::StrTendril;
 use skia_safe::FontMgr;
 use skia_safe::wrapper::PointerWrapper;
 use slab::Slab;
+use taffy::{Layout, NodeId};
 use crate::css::ComputedValues;
 
 /// Callback type for layout invalidation
@@ -340,6 +341,8 @@ pub struct DomNode {
     pub data: NodeData,
 
     pub style: ComputedValues,
+    pub layout_id: Option<NodeId>,
+    pub final_layout: Layout,
 
     /// Event listener registry
     pub event_listeners: EventListenerRegistry,
@@ -360,6 +363,8 @@ impl DomNode {
             id,
             parent: None,
             children: Vec::new(),
+            layout_id: None,
+            final_layout: Layout::new(),
             data,
             style: ComputedValues::default(),
             event_listeners: EventListenerRegistry::new(),
