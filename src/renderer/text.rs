@@ -1,17 +1,17 @@
 use std::cell::RefCell;
 use html5ever::tendril::StrTendril;
 use super::font::FontManager;
-use crate::css::{ComputedValues, TextShadow};
-use crate::layout::LayoutBox;
+use crate::css::{ComputedValues};
 // Text rendering functionality
-use skia_safe::{BlurStyle, Canvas, Font, MaskFilter, Paint, TextBlob};
+use skia_safe::{BlurStyle, Canvas, Font, MaskFilter, Paint, Rect, TextBlob};
+use taffy::Layout;
 use crate::dom::DomNode;
 
 /// Render text with CSS styles applied and DPI scale factor
 pub fn render_text_node(
     canvas: &Canvas,
     node: &DomNode,
-    layout_box: &LayoutBox,
+    layout_box: &Layout,
     contents: &RefCell<StrTendril>,
     styles: &ComputedValues,
     font_manager: &FontManager,
@@ -19,7 +19,12 @@ pub fn render_text_node(
     scale_factor: f32,
 ) {
     let text = contents.borrow();
-    let content_rect = layout_box.dimensions.content;
+    let content_rect = Rect::from_xywh(
+        layout_box.content_box_x(),
+        layout_box.content_box_y(),
+        layout_box.content_box_width(),
+        layout_box.content_box_height(),
+    );
 
     // Create text paint with CSS colors and font properties
     let mut text_paint = default_text_paint.clone();
