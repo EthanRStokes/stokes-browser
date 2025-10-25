@@ -1,5 +1,6 @@
 // Inter-Process Communication module for browser processes
 use serde::{Deserialize, Serialize};
+use bincode::{Encode, Decode};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
@@ -10,7 +11,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use uds_windows::{UnixListener, UnixStream};
 
 /// Messages sent from parent (browser UI) to child (tab process)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub enum ParentToTabMessage {
     /// Navigate to a URL
     Navigate(String),
@@ -38,7 +39,7 @@ pub enum ParentToTabMessage {
 }
 
 /// Type of keyboard input
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub enum KeyInputType {
     /// Regular character input
     Character(String),
@@ -49,7 +50,7 @@ pub enum KeyInputType {
 }
 
 /// Scroll direction for keyboard scrolling
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub enum ScrollDirection {
     Up,
     Down,
@@ -58,7 +59,7 @@ pub enum ScrollDirection {
 }
 
 /// Messages sent from child (tab process) to parent (browser UI)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub enum TabToParentMessage {
     /// Navigation started
     NavigationStarted(String),
@@ -86,7 +87,7 @@ pub enum TabToParentMessage {
     Alert(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct KeyModifiers {
     pub ctrl: bool,
     pub alt: bool,
@@ -94,7 +95,7 @@ pub struct KeyModifiers {
     pub meta: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub enum CursorType {
     Default,
     Pointer,
@@ -102,20 +103,23 @@ pub enum CursorType {
 }
 
 /// IPC channel for bidirectional communication
-#[derive(Debug)]
 pub struct IpcChannel {
     stream: UnixStream,
+    config: bincode::config::Configuration,
 }
 
 impl IpcChannel {
     /// Create a new IPC channel from a Unix stream
     pub fn new(stream: UnixStream) -> Self {
-        Self { stream }
+        Self {
+            stream,
+            config: bincode::config::standard(),
+        }
     }
 
     /// Send a message through the channel
-    pub fn send<T: Serialize>(&mut self, message: &T) -> io::Result<()> {
-        let encoded = bincode::serialize(message)
+    pub fn send<T: Encode>(&mut self, message: &T) -> io::Result<()> {
+        let encoded = bincode::encode_to_vec(message, self.config)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         // Send length prefix (4 bytes)
@@ -129,7 +133,10 @@ impl IpcChannel {
     }
 
     /// Receive a message from the channel
-    pub fn receive<T: for<'de> Deserialize<'de>>(&mut self) -> io::Result<T> {
+    pub fn receive<T>(&mut self) -> io::Result<T>
+    where
+        T: bincode::Decode<()>,
+    {
         // Read length prefix
         let mut len_bytes = [0u8; 4];
         self.stream.read_exact(&mut len_bytes)?;
@@ -139,13 +146,13 @@ impl IpcChannel {
         let mut buffer = vec![0u8; len];
         self.stream.read_exact(&mut buffer)?;
 
-        let decoded = bincode::deserialize(&buffer)
+        let (decoded, _) = bincode::decode_from_slice(&buffer, self.config)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         Ok(decoded)
     }
 
     /// Try to receive a message without blocking
-    pub fn try_receive<T: for<'de> Deserialize<'de>>(&mut self) -> io::Result<Option<T>> {
+    pub fn try_receive<T: for<'de> Encode + bincode::Decode<()>>(&mut self) -> io::Result<Option<T>> {
         self.stream.set_nonblocking(true)?;
         let result = self.receive();
         self.stream.set_nonblocking(false)?;
