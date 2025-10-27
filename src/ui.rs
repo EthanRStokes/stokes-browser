@@ -932,6 +932,9 @@ impl BrowserUI {
         let cursor_stroke_width = 1.5 * self.viewport.hidpi_scale;
         let shadow_offset = 2.0 * self.viewport.hidpi_scale;
 
+        // Collect tooltips to render them above everything else at the end
+        let mut tooltips_to_render: Vec<(&Tooltip, f32, f32)> = Vec::new();
+
         for comp in &self.components {
             match comp {
                 UiComponent::Button { x, y, width, height, color, hover_color, pressed_color, is_pressed, is_hover, tooltip, icon_type, .. } => {
@@ -973,9 +976,9 @@ impl BrowserUI {
                     // Draw custom icon instead of text
                     Self::draw_icon(canvas, icon_type, rect, self.viewport.hidpi_scale);
 
-                    // Draw tooltip if visible
+                    // Collect tooltip for later rendering (to render above everything)
                     if tooltip.is_visible {
-                        Self::draw_tooltip(canvas, tooltip, *x, *y, &font, self.viewport.hidpi_scale);
+                        tooltips_to_render.push((tooltip, *x, *y));
                     }
                 }
                 UiComponent::TextField { text, x, y, width, height, color, border_color, has_focus, cursor_position, .. } => {
@@ -1118,12 +1121,17 @@ impl BrowserUI {
                         Self::draw_icon(canvas, &IconType::Close, close_button_rect, self.viewport.hidpi_scale);
                     }
 
-                    // Draw tooltip if visible
+                    // Collect tooltip for later rendering (to render above everything)
                     if tooltip.is_visible {
-                        Self::draw_tooltip(canvas, tooltip, *x, *y, &font, self.viewport.hidpi_scale);
+                        tooltips_to_render.push((tooltip, *x, *y));
                     }
                 }
             }
+        }
+
+        // Render all tooltips last so they appear above everything else
+        for (tooltip, x, y) in tooltips_to_render {
+            Self::draw_tooltip(canvas, tooltip, x, y, &font, self.viewport.hidpi_scale);
         }
     }
 
@@ -1176,6 +1184,30 @@ impl BrowserUI {
                 _ => {}
             }
         }
+    }
+
+    /// Check tooltip timeouts and update visibility (returns true if any tooltip visibility changed)
+    pub fn update_tooltip_visibility(&mut self, current_time: Instant) -> bool {
+        let mut changed = false;
+
+        for comp in &mut self.components {
+            match comp {
+                UiComponent::Button { is_hover: true, tooltip, .. } |
+                UiComponent::TabButton { is_hover: true, tooltip, .. } => {
+                    if !tooltip.is_visible {
+                        if let Some(hover_start) = tooltip.hover_start {
+                            if current_time.duration_since(hover_start) >= tooltip.show_after {
+                                tooltip.is_visible = true;
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        changed
     }
 
     /// Handle mouse press
@@ -1296,6 +1328,8 @@ impl BrowserUI {
 
         let mut paint = Paint::default();
         let padding = 8.0 * hidpi_scale;
+        let canvas_width = canvas.image_info().width() as f32;
+        let canvas_height = canvas.image_info().height() as f32;
 
         // Measure text
         if let Some(text_blob) = TextBlob::new(&tooltip.text, font) {
@@ -1304,8 +1338,33 @@ impl BrowserUI {
             let tooltip_height = text_bounds.height() + padding * 2.0;
 
             // Position tooltip above the component
-            let tooltip_x = x;
-            let tooltip_y = y - tooltip_height - 5.0;
+            let mut tooltip_x = x;
+            let mut tooltip_y = y - tooltip_height - 5.0;
+
+            // Clamp tooltip position to keep it within canvas bounds
+            // Add some margin from the edge
+            let margin = 4.0 * hidpi_scale;
+
+            // Adjust horizontal position if tooltip would overflow right edge
+            if tooltip_x + tooltip_width > canvas_width - margin {
+                tooltip_x = canvas_width - tooltip_width - margin;
+            }
+
+            // Adjust horizontal position if tooltip would overflow left edge
+            if tooltip_x < margin {
+                tooltip_x = margin;
+            }
+
+            // Adjust vertical position if tooltip would overflow top edge
+            if tooltip_y < margin {
+                // If there's no room above, place it below the component
+                tooltip_y = y + 32.0 * hidpi_scale + 5.0; // Assuming button height ~32px
+            }
+
+            // Adjust vertical position if tooltip would overflow bottom edge
+            if tooltip_y + tooltip_height > canvas_height - margin {
+                tooltip_y = canvas_height - tooltip_height - margin;
+            }
 
             // Draw tooltip background with shadow
             let shadow_rect = Rect::from_xywh(tooltip_x + 2.0, tooltip_y + 2.0, tooltip_width, tooltip_height);

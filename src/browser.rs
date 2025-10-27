@@ -261,6 +261,11 @@ impl BrowserApp {
         // Process messages from tab processes
         self.process_tab_messages();
 
+        // Check tooltip timeouts and request redraw if any tooltip should now be visible
+        if self.ui.update_tooltip_visibility(Instant::now()) {
+            self.env.window.request_redraw();
+        }
+
         // Check if active tab is loading
         let is_loading = self.active_tab_id()
             .and_then(|id| self.tab_manager.get_tab(id))
@@ -377,16 +382,38 @@ impl ApplicationHandler for BrowserApp {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                // Update hover state before handling click
+                self.ui.update_mouse_hover(
+                    self.cursor_position.0 as f32,
+                    self.cursor_position.1 as f32,
+                    Instant::now()
+                );
                 self.handle_click(self.cursor_position.0 as f32, self.cursor_position.1 as f32, event_loop);
+            }
+            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                // Update hover state after mouse release
+                self.ui.update_mouse_hover(
+                    self.cursor_position.0 as f32,
+                    self.cursor_position.1 as f32,
+                    Instant::now()
+                );
+                self.env.window.request_redraw();
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_position = (position.x, position.y);
+
+                // Update UI hover state on cursor movement
+                self.ui.update_mouse_hover(position.x as f32, position.y as f32, Instant::now());
+
                 if let Some(tab_id) = self.active_tab_id().cloned() {
                     let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::MouseMove {
                         x: position.x as f32,
                         y: position.y as f32
                     });
                 }
+
+                // Request redraw to show hover effects
+                self.env.window.request_redraw();
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if let Some(tab_id) = self.active_tab_id().cloned() {
