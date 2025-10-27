@@ -69,6 +69,8 @@ pub enum UiComponent {
         is_active: bool,
         is_hover: bool,
         tooltip: Tooltip,
+        close_button_hover: bool,
+        close_button_tooltip: Tooltip,
     }
 }
 
@@ -139,6 +141,8 @@ impl UiComponent {
             is_active: title == "New Tab",
             is_hover: false,
             tooltip: Tooltip::new(&format!("Switch to {}", title)),
+            close_button_hover: false,
+            close_button_tooltip: Tooltip::new("Close tab"),
         }
     }
 
@@ -585,6 +589,20 @@ impl BrowserUI {
         None
     }
 
+    /// Check if a point is over the close button of an active tab
+    fn is_point_over_close_button(&self, x: f32, y: f32, tab_x: f32, tab_y: f32, tab_width: f32, tab_height: f32, is_active: bool) -> bool {
+        if !is_active {
+            return false;
+        }
+
+        let close_button_size = 16.0 * self.viewport.hidpi_scale;
+        let close_button_x = tab_x + tab_width - close_button_size - (4.0 * self.viewport.hidpi_scale);
+        let close_button_y = tab_y + (tab_height / 2.0) - (close_button_size / 2.0);
+
+        x >= close_button_x && x <= close_button_x + close_button_size &&
+        y >= close_button_y && y <= close_button_y + close_button_size
+    }
+
     /// Set focus to a specific component
     pub fn set_focus(&mut self, component_id: &str) {
         for comp in &mut self.components {
@@ -974,7 +992,7 @@ impl BrowserUI {
                     paint.set_stroke(false);
 
                     // Draw custom icon instead of text
-                    Self::draw_icon(canvas, icon_type, rect, self.viewport.hidpi_scale);
+                    Self::draw_icon(canvas, icon_type, rect, *is_hover, self.viewport.hidpi_scale);
 
                     // Collect tooltip for later rendering (to render above everything)
                     if tooltip.is_visible {
@@ -1055,7 +1073,7 @@ impl BrowserUI {
                         paint.set_stroke(false);
                     }
                 }
-                UiComponent::TabButton { title, x, y, width, height, color, hover_color, is_active, is_hover, tooltip, .. } => {
+                UiComponent::TabButton { title, x, y, width, height, color, hover_color, is_active, is_hover, tooltip, close_button_hover, close_button_tooltip, .. } => {
                     let rect = Rect::from_xywh(*x, *y, *width, *height);
 
                     // Draw tab shadow
@@ -1113,17 +1131,28 @@ impl BrowserUI {
                         let close_button_y = rect.center_y() - (close_button_size / 2.0);
                         let close_button_rect = Rect::from_xywh(close_button_x, close_button_y, close_button_size, close_button_size);
 
-                        // Draw close button background (subtle)
-                        paint.set_color(Color::from_argb(20, 0, 0, 0));
+                        // Draw close button background with different color when hovering
+                        if *close_button_hover {
+                            paint.set_color(Color::from_argb(100, 255, 100, 100)); // Reddish highlight when hovering
+                        } else {
+                            paint.set_color(Color::from_argb(20, 0, 0, 0)); // Subtle background
+                        }
                         canvas.draw_round_rect(close_button_rect, 2.0, 2.0, &paint);
 
-                        // Draw X icon
-                        Self::draw_icon(canvas, &IconType::Close, close_button_rect, self.viewport.hidpi_scale);
+                        // Draw X icon with different color when hovering
+                        Self::draw_icon(canvas, &IconType::Close, close_button_rect, *close_button_hover, self.viewport.hidpi_scale);
                     }
 
                     // Collect tooltip for later rendering (to render above everything)
                     if tooltip.is_visible {
                         tooltips_to_render.push((tooltip, *x, *y));
+                    }
+
+                    // Collect close button tooltip if visible
+                    if close_button_tooltip.is_visible {
+                        let close_button_size = 16.0 * self.viewport.hidpi_scale;
+                        let close_button_x = *x + *width - close_button_size - (4.0 * self.viewport.hidpi_scale);
+                        tooltips_to_render.push((close_button_tooltip, close_button_x, *y));
                     }
                 }
             }
@@ -1161,19 +1190,54 @@ impl BrowserUI {
                         }
                     }
                 }
-                UiComponent::TabButton { is_hover, tooltip, .. } => {
-                    if is_hovering && !*is_hover {
-                        // Just started hovering
+                UiComponent::TabButton { x: tab_x, y: tab_y, width, height, is_active, is_hover, tooltip, close_button_hover, close_button_tooltip, .. } => {
+                    // Check if hovering over close button specifically (inline calculation to avoid borrowing issues)
+                    let is_over_close_button = if *is_active {
+                        let close_button_size = 16.0 * self.viewport.hidpi_scale;
+                        let close_button_x = *tab_x + *width - close_button_size - (4.0 * self.viewport.hidpi_scale);
+                        let close_button_y = *tab_y + (*height / 2.0) - (close_button_size / 2.0);
+                        x >= close_button_x && x <= close_button_x + close_button_size &&
+                        y >= close_button_y && y <= close_button_y + close_button_size
+                    } else {
+                        false
+                    };
+
+                    // Handle close button hover state
+                    if is_over_close_button && !*close_button_hover {
+                        // Just started hovering over close button
+                        *close_button_hover = true;
+                        close_button_tooltip.hover_start = Some(current_time);
+                        close_button_tooltip.is_visible = false;
+                        // Clear parent tab tooltip when over close button
+                        tooltip.is_visible = false;
+                        tooltip.hover_start = None;
+                    } else if !is_over_close_button && *close_button_hover {
+                        // Stopped hovering over close button
+                        *close_button_hover = false;
+                        close_button_tooltip.hover_start = None;
+                        close_button_tooltip.is_visible = false;
+                    } else if is_over_close_button && *close_button_hover {
+                        // Continue hovering over close button
+                        if let Some(hover_start) = close_button_tooltip.hover_start {
+                            if current_time.duration_since(hover_start) >= close_button_tooltip.show_after {
+                                close_button_tooltip.is_visible = true;
+                            }
+                        }
+                    }
+
+                    // Handle parent tab button hover state (only if not over close button)
+                    if is_hovering && !is_over_close_button && !*is_hover {
+                        // Just started hovering over tab (but not close button)
                         *is_hover = true;
                         tooltip.hover_start = Some(current_time);
                         tooltip.is_visible = false;
-                    } else if !is_hovering && *is_hover {
-                        // Stopped hovering
+                    } else if (!is_hovering || is_over_close_button) && *is_hover {
+                        // Stopped hovering over tab area
                         *is_hover = false;
                         tooltip.hover_start = None;
                         tooltip.is_visible = false;
-                    } else if is_hovering && *is_hover {
-                        // Continue hovering - check if tooltip should be shown
+                    } else if is_hovering && !is_over_close_button && *is_hover {
+                        // Continue hovering over tab - check if tooltip should be shown
                         if let Some(hover_start) = tooltip.hover_start {
                             if current_time.duration_since(hover_start) >= tooltip.show_after {
                                 tooltip.is_visible = true;
@@ -1192,12 +1256,31 @@ impl BrowserUI {
 
         for comp in &mut self.components {
             match comp {
-                UiComponent::Button { is_hover: true, tooltip, .. } |
-                UiComponent::TabButton { is_hover: true, tooltip, .. } => {
+                UiComponent::Button { is_hover: true, tooltip, .. } => {
                     if !tooltip.is_visible {
                         if let Some(hover_start) = tooltip.hover_start {
                             if current_time.duration_since(hover_start) >= tooltip.show_after {
                                 tooltip.is_visible = true;
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+                UiComponent::TabButton { is_hover, tooltip, close_button_hover, close_button_tooltip, .. } => {
+                    // Check parent tab tooltip
+                    if *is_hover && !tooltip.is_visible {
+                        if let Some(hover_start) = tooltip.hover_start {
+                            if current_time.duration_since(hover_start) >= tooltip.show_after {
+                                tooltip.is_visible = true;
+                                changed = true;
+                            }
+                        }
+                    }
+                    // Check close button tooltip
+                    if *close_button_hover && !close_button_tooltip.is_visible {
+                        if let Some(hover_start) = close_button_tooltip.hover_start {
+                            if current_time.duration_since(hover_start) >= close_button_tooltip.show_after {
+                                close_button_tooltip.is_visible = true;
                                 changed = true;
                             }
                         }
@@ -1243,7 +1326,7 @@ impl BrowserUI {
     }
 
     /// Draw a custom icon based on icon type
-    fn draw_icon(canvas: &Canvas, icon_type: &IconType, rect: Rect, hidpi_scale: f32) {
+    fn draw_icon(canvas: &Canvas, icon_type: &IconType, rect: Rect, is_hover: bool, hidpi_scale: f32) {
         let mut paint = Paint::default();
         paint.set_color(Color::from_rgb(60, 60, 60)); // Dark gray for icons
         paint.set_stroke(true);
@@ -1305,6 +1388,24 @@ impl BrowserUI {
                 );
             }
             IconType::Close => {
+                let mut paint = Paint::default();
+                // Use red color when hovering, dark gray otherwise
+                paint.set_color(if is_hover {
+                    Color::from_rgb(200, 50, 50) // Red when hovering
+                } else {
+                    Color::from_rgb(60, 60, 60) // Dark gray normally
+                });
+                paint.set_stroke(true);
+                paint.set_stroke_width(2.0 * hidpi_scale);
+                paint.set_style(skia_safe::PaintStyle::Stroke);
+                paint.set_stroke_cap(skia_safe::paint::Cap::Round);
+                paint.set_stroke_join(skia_safe::paint::Join::Round);
+
+                let center_x = rect.center_x();
+                let center_y = rect.center_y();
+                let icon_size = rect.width().min(rect.height()) * 0.6;
+                let half_size = icon_size / 2.0;
+
                 // Draw X
                 canvas.draw_line(
                     (center_x - half_size * 0.5, center_y - half_size * 0.5),
@@ -1319,6 +1420,7 @@ impl BrowserUI {
             }
         }
     }
+
 
     /// Draw a tooltip
     fn draw_tooltip(canvas: &Canvas, tooltip: &Tooltip, x: f32, y: f32, font: &Font, hidpi_scale: f32) {
