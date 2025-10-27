@@ -1,8 +1,7 @@
 use glutin::display::GetGlDisplay;
 use glutin::surface::GlSurface;
 use std::num::NonZeroU32;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use blitz_traits::shell::Viewport;
 use winit::application::ApplicationHandler;
@@ -243,6 +242,16 @@ impl BrowserApp {
             input::InputAction::ReloadPage => {
                 if let Some(tab_id) = self.active_tab_id().cloned() {
                     let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Reload);
+                }
+            }
+            input::InputAction::GoBack => {
+                if let Some(tab_id) = self.active_tab_id().cloned() {
+                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::GoBack);
+                }
+            }
+            input::InputAction::GoForward => {
+                if let Some(tab_id) = self.active_tab_id().cloned() {
+                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::GoForward);
                 }
             }
             input::InputAction::RequestRedraw => {}

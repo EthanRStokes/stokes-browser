@@ -16,6 +16,8 @@ pub enum InputAction {
     CloseTab(usize),
     SwitchTab(usize),
     ReloadPage,
+    GoBack,
+    GoForward,
     ForwardToTab(KeyboardInput),
 }
 
@@ -56,12 +58,10 @@ pub fn handle_mouse_click_ui(
         // Handle based on component
         if component_id == "back" {
             println!("Back button clicked");
-            // Back navigation would go here
-            return InputAction::RequestRedraw;
+            return InputAction::GoBack;
         } else if component_id == "forward" {
             println!("Forward button clicked");
-            // Forward navigation would go here
-            return InputAction::RequestRedraw;
+            return InputAction::GoForward;
         } else if component_id == "refresh" {
             println!("Refresh button clicked");
             return InputAction::ReloadPage;

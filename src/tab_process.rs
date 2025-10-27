@@ -182,6 +182,60 @@ impl TabProcess {
                     }
                 }
             }
+            ParentToTabMessage::GoBack => {
+                if self.engine.can_go_back() {
+                    let url = self.engine.current_url().to_string();
+                    self.channel.borrow_mut().send(&TabToParentMessage::NavigationStarted(url.clone()))?;
+                    self.engine.set_loading_state(true);
+
+                    match self.engine.go_back().await {
+                        Ok(_) => {
+                            let title = self.engine.page_title().to_string();
+                            let url = self.engine.current_url().to_string();
+                            let mut channel = self.channel.borrow_mut();
+                            channel.send(&TabToParentMessage::NavigationCompleted {
+                                url: url.clone(),
+                                title,
+                            })?;
+                            channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+
+                            drop(channel);
+                            self.render_frame()?;
+                        }
+                        Err(e) => {
+                            eprintln!("Go back failed: {}", e);
+                            self.channel.borrow_mut().send(&TabToParentMessage::LoadingStateChanged(false))?;
+                        }
+                    }
+                }
+            }
+            ParentToTabMessage::GoForward => {
+                if self.engine.can_go_forward() {
+                    let url = self.engine.current_url().to_string();
+                    self.channel.borrow_mut().send(&TabToParentMessage::NavigationStarted(url.clone()))?;
+                    self.engine.set_loading_state(true);
+
+                    match self.engine.go_forward().await {
+                        Ok(_) => {
+                            let title = self.engine.page_title().to_string();
+                            let url = self.engine.current_url().to_string();
+                            let mut channel = self.channel.borrow_mut();
+                            channel.send(&TabToParentMessage::NavigationCompleted {
+                                url: url.clone(),
+                                title,
+                            })?;
+                            channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+
+                            drop(channel);
+                            self.render_frame()?;
+                        }
+                        Err(e) => {
+                            eprintln!("Go forward failed: {}", e);
+                            self.channel.borrow_mut().send(&TabToParentMessage::LoadingStateChanged(false))?;
+                        }
+                    }
+                }
+            }
             ParentToTabMessage::Resize { width, height } => {
                 self.engine.resize(width, height);
                 self.init_shared_surface(width as u32, height as u32)?;

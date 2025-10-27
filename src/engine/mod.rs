@@ -44,6 +44,9 @@ pub struct Engine {
     js_runtime: Option<JsRuntime>,
     // Flag to track when layout needs recomputation due to DOM changes
     layout_needs_recomputation: Rc<RefCell<bool>>,
+    // Navigation history
+    history: Vec<String>,
+    history_index: Option<usize>,
 }
 
 impl Engine {
@@ -70,6 +73,8 @@ impl Engine {
             previous_style_map: HashMap::new(),
             js_runtime: None,
             layout_needs_recomputation: Rc::new(RefCell::new(false)),
+            history: Vec::new(),
+            history_index: None,
         }
     }
 
@@ -131,6 +136,12 @@ impl Engine {
 
         // Always reset loading state
         self.is_loading = false;
+        
+        // Add to history if navigation was successful
+        if result.is_ok() {
+            self.add_to_history(url.to_string());
+        }
+        
         result
     }
 
@@ -1109,5 +1120,99 @@ impl Engine {
         } else {
             None
         }
+    }
+
+    /// Add a URL to the navigation history
+    fn add_to_history(&mut self, url: String) {
+        // If we're not at the end of history, truncate everything after current position
+        if let Some(index) = self.history_index {
+            self.history.truncate(index + 1);
+        }
+        
+        // Add the new URL
+        self.history.push(url);
+        self.history_index = Some(self.history.len() - 1);
+    }
+
+    /// Check if we can navigate back
+    pub fn can_go_back(&self) -> bool {
+        if let Some(index) = self.history_index {
+            index > 0
+        } else {
+            false
+        }
+    }
+
+    /// Check if we can navigate forward
+    pub fn can_go_forward(&self) -> bool {
+        if let Some(index) = self.history_index {
+            index < self.history.len().saturating_sub(1)
+        } else {
+            false
+        }
+    }
+
+    /// Navigate back in history
+    pub async fn go_back(&mut self) -> Result<(), NetworkError> {
+        if !self.can_go_back() {
+            return Err(NetworkError::Curl("Cannot go back: no previous page".to_string()));
+        }
+
+        if let Some(index) = self.history_index {
+            self.history_index = Some(index - 1);
+            let url = self.history[index - 1].clone();
+            self.navigate_without_history(&url).await
+        } else {
+            Err(NetworkError::Curl("Invalid history state".to_string()))
+        }
+    }
+
+    /// Navigate forward in history
+    pub async fn go_forward(&mut self) -> Result<(), NetworkError> {
+        if !self.can_go_forward() {
+            return Err(NetworkError::Curl("Cannot go forward: no next page".to_string()));
+        }
+
+        if let Some(index) = self.history_index {
+            self.history_index = Some(index + 1);
+            let url = self.history[index + 1].clone();
+            self.navigate_without_history(&url).await
+        } else {
+            Err(NetworkError::Curl("Invalid history state".to_string()))
+        }
+    }
+
+    /// Navigate to a URL without adding to history (used for back/forward)
+    async fn navigate_without_history(&mut self, url: &str) -> Result<(), NetworkError> {
+        println!("Navigating to: {} (from history)", url);
+        self.is_loading = true;
+        self.current_url = url.to_string();
+
+        let result = async {
+            let html = self.http_client.fetch(url).await?;
+            let mut dom = Dom::parse_html(&html);
+            self.page_title = dom.get_title();
+
+            let layout_flag = Rc::clone(&self.layout_needs_recomputation);
+            let callback = Rc::new(Box::new(move || {
+                *layout_flag.borrow_mut() = true;
+            }) as Box<dyn Fn()>);
+            let mut root_node = dom.root_node().borrow_mut();
+            root_node.set_layout_invalidation_callback(callback);
+            drop(root_node);
+
+            self.dom = Some(Rc::new(RefCell::new(dom)));
+            self.scroll_x = 0.0;
+            self.scroll_y = 0.0;
+
+            self.parse_document_styles().await;
+            self.recalculate_layout();
+            self.start_image_loading().await;
+
+            Ok(())
+        }.await;
+
+        self.is_loading = false;
+        result
     }
 }

@@ -1,5 +1,4 @@
 // Inter-Process Communication module for browser processes
-use serde::{Deserialize, Serialize};
 use bincode::{Encode, Decode};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -17,6 +16,10 @@ pub enum ParentToTabMessage {
     Navigate(String),
     /// Reload the current page
     Reload,
+    /// Go back in history
+    GoBack,
+    /// Go forward in history
+    GoForward,
     /// Resize the rendering area
     Resize { width: f32, height: f32 },
     /// Scroll the page
