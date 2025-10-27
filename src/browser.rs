@@ -174,7 +174,17 @@ impl BrowserApp {
 
         // Forward click to active tab process
         if let Some(tab_id) = self.active_tab_id().cloned() {
-            let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Click { x, y });
+            let key_modifiers = ipc::KeyModifiers {
+                ctrl: self.modifiers.state().control_key(),
+                alt: self.modifiers.state().alt_key(),
+                shift: self.modifiers.state().shift_key(),
+                meta: self.modifiers.state().super_key(),
+            };
+            let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Click {
+                x,
+                y,
+                modifiers: key_modifiers,
+            });
         }
     }
 
@@ -246,6 +256,15 @@ impl BrowserApp {
                     if Some(&tab_id) == self.active_tab_id() {
                         self.ui.update_address_bar(&url);
                     }
+                }
+                TabToParentMessage::NavigateRequestInNewTab(url) => {
+                    // Handle navigation request in a new tab (e.g., Ctrl+click on link)
+                    println!("Handling navigation request in new tab to: {}", url);
+                    let tab_index = self.active_tab_index;
+                    self.add_tab();
+                    self.navigate_to_url(&*url);
+
+                    self.switch_to_tab(tab_index);
                 }
                 TabToParentMessage::Alert(message) => {
                     // Display alert dialog using native dialog

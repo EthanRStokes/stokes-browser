@@ -150,6 +150,10 @@ impl TabManager {
                     tab.url = url.clone();
                     // The actual navigation will be handled by sending Navigate message back to the tab
                 }
+                TabToParentMessage::NavigateRequestInNewTab(_url) => {
+                    // Navigate in new tab request is handled by the browser process, not the tab manager
+                    // This is just here for exhaustive pattern matching
+                }
                 TabToParentMessage::Alert(_message) => {
                     // Alert is handled by the browser process, not the tab manager
                     // This is just here for exhaustive pattern matching

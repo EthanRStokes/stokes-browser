@@ -22,7 +22,7 @@ pub enum ParentToTabMessage {
     /// Scroll the page
     Scroll { delta_x: f32, delta_y: f32 },
     /// Click at position
-    Click { x: f32, y: f32 },
+    Click { x: f32, y: f32, modifiers: KeyModifiers },
     /// Mouse move
     MouseMove { x: f32, y: f32 },
     /// Keyboard input (character or named key)
@@ -83,6 +83,8 @@ pub enum TabToParentMessage {
     Ready,
     /// Request navigation to a URL (e.g., from clicking a link)
     NavigateRequest(String),
+    /// Request navigation to a URL in a new tab (e.g., from Ctrl+clicking a link)
+    NavigateRequestInNewTab(String),
     /// Show an alert dialog
     Alert(String),
 }

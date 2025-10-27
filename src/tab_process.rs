@@ -191,7 +191,7 @@ impl TabProcess {
                 self.engine.scroll(delta_x, delta_y);
                 self.render_frame()?;
             }
-            ParentToTabMessage::Click { x, y } => {
+            ParentToTabMessage::Click { x, y, modifiers } => {
                 // Handle click and check if a link was clicked
                 if let Some(href) = self.engine.handle_click(x, y) {
                     println!("[Tab Process] Link clicked: {}", href);
@@ -200,13 +200,23 @@ impl TabProcess {
                     match self.engine.resolve_url(&href) {
                         Ok(resolved_url) => {
                             println!("[Tab Process] Resolved to: {}", resolved_url);
-                            // Send navigation request to parent
-                            self.channel.borrow_mut().send(&TabToParentMessage::NavigateRequest(resolved_url))?;
+                            // Check if Ctrl key was pressed - open in new tab
+                            if modifiers.ctrl {
+                                println!("[Tab Process] Ctrl+click detected, opening in new tab");
+                                self.channel.borrow_mut().send(&TabToParentMessage::NavigateRequestInNewTab(resolved_url))?;
+                            } else {
+                                // Send navigation request to parent
+                                self.channel.borrow_mut().send(&TabToParentMessage::NavigateRequest(resolved_url))?;
+                            }
                         }
                         Err(e) => {
                             eprintln!("[Tab Process] Failed to resolve URL '{}': {}", href, e);
                             // Try with the raw href as fallback
-                            self.channel.borrow_mut().send(&TabToParentMessage::NavigateRequest(href))?;
+                            if modifiers.ctrl {
+                                self.channel.borrow_mut().send(&TabToParentMessage::NavigateRequestInNewTab(href))?;
+                            } else {
+                                self.channel.borrow_mut().send(&TabToParentMessage::NavigateRequest(href))?;
+                            }
                         }
                     }
                 }
