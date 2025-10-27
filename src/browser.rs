@@ -188,6 +188,38 @@ impl BrowserApp {
         }
     }
 
+    fn handle_middle_click(&mut self, x: f32, y: f32, event_loop: &ActiveEventLoop) {
+        // Get tab info for UI
+        let tabs: Vec<(String, String)> = self.tab_order.iter()
+            .filter_map(|id| {
+                self.tab_manager.get_tab(id).map(|t| (id.clone(), t.title.clone()))
+            })
+            .collect();
+
+        // Handle middle-click on UI elements (like tabs)
+        let action = input::handle_middle_click(
+            x, y, &mut self.ui, &tabs
+        );
+
+        self.handle_input_action(action, event_loop);
+
+        // Forward middle-click to active tab process with Ctrl modifier set
+        // This will make links open in new tab
+        if let Some(tab_id) = self.active_tab_id().cloned() {
+            let key_modifiers = ipc::KeyModifiers {
+                ctrl: true,  // Middle-click should behave like Ctrl+click
+                alt: self.modifiers.state().alt_key(),
+                shift: self.modifiers.state().shift_key(),
+                meta: self.modifiers.state().super_key(),
+            };
+            let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Click {
+                x,
+                y,
+                modifiers: key_modifiers,
+            });
+        }
+    }
+
     fn handle_input_action(&mut self, action: input::InputAction, event_loop: &ActiveEventLoop) {
         match action {
             input::InputAction::CloseTab(tab_index) => {
@@ -417,6 +449,10 @@ impl ApplicationHandler for BrowserApp {
                     Instant::now()
                 );
                 self.env.window.request_redraw();
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Middle, .. } => {
+                // Handle middle-click (open link in new tab)
+                self.handle_middle_click(self.cursor_position.0 as f32, self.cursor_position.1 as f32, event_loop);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_position = (position.x, position.y);
