@@ -40,7 +40,7 @@ pub(crate) fn create_window(el: &EventLoop<()>) -> Env {
     let window_attrs = WindowAttributes::default()
         .with_title("Web Browser")
         .with_inner_size(LogicalSize::new(1024, 768))
-        .with_min_inner_size(LogicalSize::new(500, 0))
+        .with_min_inner_size(LogicalSize::new(500, crate::ui::BrowserUI::CHROME_HEIGHT as i32))
         .with_window_icon(Some(icon));
 
     let template = ConfigTemplateBuilder::new()
