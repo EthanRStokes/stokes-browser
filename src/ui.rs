@@ -208,10 +208,26 @@ impl BrowserUI {
                 UiComponent::navigation_button("back", "<", scaled(Self::BUTTON_MARGIN), IconType::Back, "Back", scale_factor),
                 UiComponent::navigation_button("forward", ">", scaled(Self::BUTTON_MARGIN * 2.0 + Self::BUTTON_SIZE), IconType::Forward, "Forward", scale_factor),
                 UiComponent::navigation_button("refresh", "⟳", scaled(Self::BUTTON_MARGIN * 3.0 + Self::BUTTON_SIZE * 2.0), IconType::Refresh, "Refresh", scale_factor),
-                UiComponent::navigation_button("new_tab", "+", window_width - scaled(Self::BUTTON_MARGIN + Self::BUTTON_SIZE), IconType::NewTab, "New Tab", scale_factor),
                 UiComponent::address_bar("",
                     scaled(Self::BUTTON_MARGIN * 4.0 + Self::BUTTON_SIZE * 3.0),
-                    window_width - scaled(Self::BUTTON_MARGIN * 6.0 + Self::BUTTON_SIZE * 4.0), scale_factor)
+                    window_width - scaled(Self::BUTTON_MARGIN * 5.0 + Self::BUTTON_SIZE * 3.0), scale_factor),
+                // New Tab button - positioned in the tab row, will be updated in update_tab_layout
+                UiComponent::Button {
+                    id: "new_tab".to_string(),
+                    label: "+".to_string(),
+                    x: scaled(Self::BUTTON_MARGIN),
+                    y: scaled(8.0),  // Tab row
+                    width: scaled(Self::BUTTON_SIZE),
+                    height: scaled(Self::BUTTON_SIZE),
+                    color: [0.95, 0.95, 0.95],
+                    hover_color: [0.85, 0.9, 1.0],
+                    pressed_color: [0.75, 0.8, 0.95],
+                    is_hover: false,
+                    is_pressed: false,
+                    is_active: false,
+                    tooltip: Tooltip::new("New Tab"),
+                    icon_type: IconType::NewTab,
+                },
             ],
             viewport: viewport.clone(),
             tab_scroll_offset: 0.0,
@@ -222,28 +238,19 @@ impl BrowserUI {
     pub fn update_layout(&mut self, viewport: &Viewport) {
         self.viewport = viewport.clone();
         let scaled = |v: f32| v * self.viewport.hidpi_scale;
-
-        // Update new tab button position (always on the right)
-        let window_width = self.viewport.window_size.0 as f32;
-        for comp in &mut self.components {
-            if let UiComponent::Button { id, x, .. } = comp {
-                if id == "new_tab" {
-                    *x = window_width - scaled(Self::BUTTON_MARGIN + Self::BUTTON_SIZE);
-                }
-            }
-        }
+        let window_width = self.window_width();
 
         // Update address bar width
         for comp in &mut self.components {
             if let UiComponent::TextField { id, width, is_flexible: true, .. } = comp {
                 if id == "address_bar" {
-                    let available_width = window_width - scaled(Self::BUTTON_MARGIN * 6.0 + Self::BUTTON_SIZE * 4.0);
+                    let available_width = window_width - scaled(Self::BUTTON_MARGIN * 5.0 + Self::BUTTON_SIZE * 3.0);
                     *width = available_width.max(scaled(Self::MIN_ADDRESS_BAR_WIDTH));
                 }
             }
         }
 
-        // Update tab layout with dynamic sizing
+        // Update tab layout with dynamic sizing (this will also position the new tab button)
         self.update_tab_layout();
     }
 
@@ -272,10 +279,10 @@ impl BrowserUI {
             return Self::MAX_TAB_WIDTH * self.viewport.hidpi_scale;
         }
 
-        // Available width for tabs (use scaled margin)
-        let window_width = self.window_width();
+        // Available width for tabs (use scaled margin and reserve space for new tab button)
         let scaled_margin = Self::BUTTON_MARGIN * self.viewport.hidpi_scale;
-        let available_width = window_width - (scaled_margin * 2.0);
+        let new_tab_button_width = Self::BUTTON_SIZE * self.viewport.hidpi_scale;
+        let available_width = self.window_width() - (scaled_margin * 3.0) - new_tab_button_width;
 
         // Calculate width that would fit all tabs (use scaled spacing)
         let scaled_spacing = Self::TAB_SPACING * self.viewport.hidpi_scale;
@@ -290,19 +297,27 @@ impl BrowserUI {
 
     /// Update all tab positions and widths based on current state
     fn update_tab_layout(&mut self) {
+        let scaled_margin = Self::BUTTON_MARGIN * self.viewport.hidpi_scale;
+        let scaled_spacing = Self::TAB_SPACING * self.viewport.hidpi_scale;
+        let new_tab_button_width = Self::BUTTON_SIZE * self.viewport.hidpi_scale;
+
+        // Calculate available width for tabs (reserve space for the new tab button)
+        let available_width_for_tabs = self.window_width() - (scaled_margin * 3.0) - new_tab_button_width;
+
         let tab_width = self.calculate_tab_width();
         let tab_count = self.components.iter()
             .filter(|c| matches!(c, UiComponent::TabButton { .. }))
             .count();
 
         // Calculate total width needed for all tabs (use scaled spacing)
-        let scaled_spacing = Self::TAB_SPACING * self.viewport.hidpi_scale;
-        let total_tab_width = tab_count as f32 * tab_width +
-                              (tab_count.saturating_sub(1)) as f32 * scaled_spacing;
+        let total_tab_width = if tab_count > 0 {
+            tab_count as f32 * tab_width + (tab_count.saturating_sub(1)) as f32 * scaled_spacing
+        } else {
+            0.0
+        };
 
-        // Update scroll offset bounds (use scaled margin)
-        let scaled_margin = Self::BUTTON_MARGIN * self.viewport.hidpi_scale;
-        let max_scroll = (total_tab_width - self.window_width() + scaled_margin * 2.0).max(0.0);
+        // Update scroll offset bounds
+        let max_scroll = (total_tab_width - available_width_for_tabs).max(0.0);
         self.tab_scroll_offset = self.tab_scroll_offset.min(max_scroll).max(0.0);
 
         // Update each tab's position and width
@@ -312,6 +327,16 @@ impl BrowserUI {
                 *x = tab_x;
                 *width = tab_width;
                 tab_x += tab_width + scaled_spacing;
+            }
+        }
+
+        // Position the "New Tab" button to the right of all tabs
+        let new_tab_button_x = scaled_margin + total_tab_width - self.tab_scroll_offset + scaled_spacing;
+        for comp in &mut self.components {
+            if let UiComponent::Button { id, x, .. } = comp {
+                if id == "new_tab" {
+                    *x = new_tab_button_x;
+                }
             }
         }
     }
@@ -331,15 +356,18 @@ impl BrowserUI {
         let total_tab_width = tab_count as f32 * tab_width +
                               (tab_count.saturating_sub(1)) as f32 * scaled_spacing;
 
-        // Only allow scrolling if tabs overflow (use scaled margin)
+        // Only allow scrolling if tabs overflow (use scaled margin and account for new tab button)
         let scaled_margin = Self::BUTTON_MARGIN * self.viewport.hidpi_scale;
-        if total_tab_width > self.window_width() - scaled_margin * 2.0 {
+        let new_tab_button_width = Self::BUTTON_SIZE * self.viewport.hidpi_scale;
+        let available_width = self.window_width() - (scaled_margin * 3.0) - new_tab_button_width;
+
+        if total_tab_width > available_width {
             // Scroll by a portion of a tab width
             let scroll_amount = delta_y * 30.0; // Adjust sensitivity
             self.tab_scroll_offset -= scroll_amount;
 
             // Clamp scroll offset
-            let max_scroll = total_tab_width - self.window_width() + scaled_margin * 2.0;
+            let max_scroll = total_tab_width - available_width;
             self.tab_scroll_offset = self.tab_scroll_offset.clamp(0.0, max_scroll);
 
             // Update tab positions
