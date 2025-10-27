@@ -355,9 +355,20 @@ pub fn handle_keyboard_input(
             }
             Key::Named(NamedKey::Tab) => {
                 // Ctrl+Tab: Switch to next tab (always browser-level)
-                println!("Switch tab shortcut (Ctrl+Tab)");
-                let next_index = (active_tab_index + 1) % num_tabs;
-                return InputAction::SwitchTab(next_index);
+                // Ctrl+Shift+Tab: Switch to previous tab
+                if modifiers.state().shift_key() {
+                    println!("Switch tab shortcut (Ctrl+Shift+Tab)");
+                    let next_index = if active_tab_index == 0 {
+                        num_tabs - 1
+                    } else {
+                        active_tab_index - 1
+                    };
+                    return InputAction::SwitchTab(next_index);
+                } else {
+                    println!("Switch tab shortcut (Ctrl+Tab)");
+                    let next_index = (active_tab_index + 1) % num_tabs;
+                    return InputAction::SwitchTab(next_index);
+                }
             }
             _ => {}
         }
