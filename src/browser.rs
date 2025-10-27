@@ -170,21 +170,23 @@ impl BrowserApp {
             x, y, &mut self.ui, &tabs, self.active_tab_index
         );
 
-        self.handle_input_action(action, event_loop);
+        self.handle_input_action(&action, event_loop);
 
-        // Forward click to active tab process
-        if let Some(tab_id) = self.active_tab_id().cloned() {
-            let key_modifiers = ipc::KeyModifiers {
-                ctrl: self.modifiers.state().control_key(),
-                alt: self.modifiers.state().alt_key(),
-                shift: self.modifiers.state().shift_key(),
-                meta: self.modifiers.state().super_key(),
-            };
-            let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Click {
-                x,
-                y,
-                modifiers: key_modifiers,
-            });
+        // Only forward click to active tab process if UI didn't handle it
+        if action == input::InputAction::None {
+            if let Some(tab_id) = self.active_tab_id().cloned() {
+                let key_modifiers = ipc::KeyModifiers {
+                    ctrl: self.modifiers.state().control_key(),
+                    alt: self.modifiers.state().alt_key(),
+                    shift: self.modifiers.state().shift_key(),
+                    meta: self.modifiers.state().super_key(),
+                };
+                let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Click {
+                    x,
+                    y,
+                    modifiers: key_modifiers,
+                });
+            }
         }
     }
 
@@ -201,29 +203,31 @@ impl BrowserApp {
             x, y, &mut self.ui, &tabs
         );
 
-        self.handle_input_action(action, event_loop);
+        self.handle_input_action(&action, event_loop);
 
-        // Forward middle-click to active tab process with Ctrl modifier set
+        // Only forward middle-click to active tab process if UI didn't handle it
         // This will make links open in new tab
-        if let Some(tab_id) = self.active_tab_id().cloned() {
-            let key_modifiers = ipc::KeyModifiers {
-                ctrl: true,  // Middle-click should behave like Ctrl+click
-                alt: self.modifiers.state().alt_key(),
-                shift: self.modifiers.state().shift_key(),
-                meta: self.modifiers.state().super_key(),
-            };
-            let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Click {
-                x,
-                y,
-                modifiers: key_modifiers,
-            });
+        if action == input::InputAction::None {
+            if let Some(tab_id) = self.active_tab_id().cloned() {
+                let key_modifiers = ipc::KeyModifiers {
+                    ctrl: true,  // Middle-click should behave like Ctrl+click
+                    alt: self.modifiers.state().alt_key(),
+                    shift: self.modifiers.state().shift_key(),
+                    meta: self.modifiers.state().super_key(),
+                };
+                let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Click {
+                    x,
+                    y,
+                    modifiers: key_modifiers,
+                });
+            }
         }
     }
 
-    fn handle_input_action(&mut self, action: input::InputAction, event_loop: &ActiveEventLoop) {
+    fn handle_input_action(&mut self, action: &input::InputAction, event_loop: &ActiveEventLoop) {
         match action {
             input::InputAction::CloseTab(tab_index) => {
-                if self.close_tab(tab_index) == TabCloseResult::QuitApp {
+                if self.close_tab(*tab_index) == TabCloseResult::QuitApp {
                     event_loop.exit();
                 }
             }
@@ -231,7 +235,7 @@ impl BrowserApp {
                 self.navigate_to_url(&url);
             }
             input::InputAction::SwitchTab(tab_index) => {
-                self.switch_to_tab(tab_index);
+                self.switch_to_tab(*tab_index);
             }
             input::InputAction::AddTab => {
                 self.add_tab();
@@ -548,7 +552,7 @@ impl ApplicationHandler for BrowserApp {
                     }
                     _ => {
                         // Handle non-forwarding actions
-                        self.handle_input_action(action, event_loop);
+                        self.handle_input_action(&action, event_loop);
                     }
                 }
             }
