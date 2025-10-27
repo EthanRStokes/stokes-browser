@@ -417,13 +417,20 @@ impl ApplicationHandler for BrowserApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if let Some(tab_id) = self.active_tab_id().cloned() {
-                    let (delta_x, delta_y) = match delta {
+                    let (mut delta_x, mut delta_y) = match delta {
                         winit::event::MouseScrollDelta::LineDelta(x, y) => (x * 20.0, y * 20.0),
                         winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
                     };
+
+                    // If shift is held, convert vertical scroll to horizontal scroll with increased speed
+                    if self.modifiers.state().shift_key() {
+                        delta_x = -delta_y * 5.0;
+                        delta_y = 0.0;
+                    }
+
                     let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Scroll {
                         delta_x,
-                        delta_y: -delta_y
+                        delta_y: -delta_y * 2.0
                     });
                 }
                 self.env.window.request_redraw();
