@@ -350,14 +350,14 @@ impl BrowserApp {
         let frame_to_render = self.active_tab_id()
             .and_then(|id| self.tab_manager.get_tab(id))
             .and_then(|tab| tab.rendered_frame.as_ref())
-            .map(|frame| frame.image.clone());
+            .map(|frame| &frame.image);
 
         let canvas = self.env.surface.canvas();
         canvas.clear(Color::WHITE);
 
         // Render the active tab's frame from shared memory
         if let Some(image) = frame_to_render {
-            canvas.draw_image(&image, (0.0, 0.0), None);
+            canvas.draw_image(image, (0.0, 0.0), None);
         }
 
         // Render UI on top
