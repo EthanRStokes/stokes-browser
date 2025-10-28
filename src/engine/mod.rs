@@ -128,8 +128,9 @@ impl Engine {
             self.start_image_loading().await;
 
             // Execute JavaScript in the page after everything is loaded
-            // TODO readd javascript
-            //self.execute_document_scripts().await;
+            if self.config.enable_javascript {
+                self.execute_document_scripts().await;
+            }
 
             Ok(())
         }.await;
@@ -1096,6 +1097,7 @@ impl Engine {
 
     /// Process pending JavaScript timers (setTimeout/setInterval)
     /// Returns true if any timers were executed
+    #[inline]
     pub fn process_timers(&mut self) -> bool {
         if let Some(runtime) = &mut self.js_runtime {
             runtime.process_timers()
@@ -1105,6 +1107,7 @@ impl Engine {
     }
 
     /// Check if there are any active timers
+    #[inline]
     pub fn has_active_timers(&self) -> bool {
         if let Some(runtime) = &self.js_runtime {
             runtime.has_active_timers()
@@ -1135,6 +1138,7 @@ impl Engine {
     }
 
     /// Check if we can navigate back
+    #[inline]
     pub fn can_go_back(&self) -> bool {
         if let Some(index) = self.history_index {
             index > 0
@@ -1144,6 +1148,7 @@ impl Engine {
     }
 
     /// Check if we can navigate forward
+    #[inline]
     pub fn can_go_forward(&self) -> bool {
         if let Some(index) = self.history_index {
             index < self.history.len().saturating_sub(1)

@@ -78,11 +78,13 @@ impl TabManager {
     }
 
     /// Get a tab by ID
+    #[inline]
     pub fn get_tab(&self, tab_id: &str) -> Option<&ManagedTab> {
         self.tabs.get(tab_id)
     }
 
     /// Get a mutable tab by ID
+    #[inline]
     pub fn get_tab_mut(&mut self, tab_id: &str) -> Option<&mut ManagedTab> {
         self.tabs.get_mut(tab_id)
     }
@@ -220,6 +222,7 @@ impl TabManager {
     }
 
     /// Get tab count
+    #[inline]
     pub fn tab_count(&self) -> usize {
         self.tabs.len()
     }

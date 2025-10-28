@@ -179,17 +179,20 @@ impl LayoutEngine {
     }
 
     /// Get the node map for renderers
+    #[inline]
     pub fn get_node_map(&self) -> &HashMap<usize, Rc<RefCell<DomNode>>> {
         &self.node_map
     }
 
     /// Update viewport size
+    #[inline]
     pub fn set_viewport(&mut self, width: f32, height: f32) {
         self.viewport_width = width;
         self.viewport_height = height;
     }
 
     /// Add a stylesheet to the style resolver
+    #[inline]
     pub fn add_stylesheet(&mut self, stylesheet: Stylesheet) {
         self.style_resolver.add_stylesheet(stylesheet);
     }

@@ -74,8 +74,7 @@ impl BrowserApp {
         }
     }
 
-
-
+    #[inline]
     fn active_tab_id(&self) -> Option<&String> {
         self.tab_order.get(self.active_tab_index)
     }

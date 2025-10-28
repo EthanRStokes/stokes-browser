@@ -192,6 +192,7 @@ impl IpcServer {
     }
 
     /// Get the socket path
+    #[inline]
     pub fn socket_path(&self) -> &PathBuf {
         &self.socket_path
     }
