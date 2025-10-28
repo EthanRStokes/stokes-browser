@@ -392,6 +392,10 @@ impl ApplicationHandler for BrowserApp {
         self.env.window.request_redraw();
     }
 
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.env.window.request_redraw();
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
