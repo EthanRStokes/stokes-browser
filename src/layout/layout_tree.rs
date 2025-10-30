@@ -2,6 +2,7 @@
 use super::box_model::{Dimensions, EdgeSizes};
 use crate::dom::ImageData;
 use skia_safe::Rect;
+use skia_safe::textlayout::{FontCollection, ParagraphBuilder, ParagraphStyle, TextStyle};
 use std::cell::RefCell;
 
 /// Tracks active floats in a formatting context
@@ -396,25 +397,26 @@ impl LayoutBox {
         self.layout_block((container_width).min(200.0 * scale_factor), container_height, offset_x, offset_y, scale_factor);
     }
 
-    /// Layout text nodes with position offset
+    /// Layout text nodes with position offset using Skia's textlayout (skparagraph)
     fn layout_text(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
         if let Some(text) = &self.content {
-            // Handle newlines and calculate proper text dimensions - scale for high DPI
-            let char_width = 8.0 * scale_factor; // Average character width, scaled
-            let line_height = 16.0 * scale_factor; // Line height, scaled
+            // Use Skia's Paragraph API for accurate text measurement
+            // Default font size scaled for high DPI
+            let scaled_font_size = 16.0 * scale_factor;
 
-            // Wrap text to fit within container width
-            let wrapped_lines = self.wrap_text(text, container_width, char_width);
-            let num_lines = wrapped_lines.len().max(1);
+            // Measure text using Skia's textlayout
+            let (measured_width, measured_height) = self.measure_text_with_skia(
+                text,
+                container_width,
+                scaled_font_size,
+            );
 
-            // Calculate width based on the longest wrapped line
-            let max_line_width = wrapped_lines.iter()
-                .map(|line| line.len() as f32 * char_width)
-                .fold(0.0, f32::max)
-                .min(container_width);
-            
-            let auto_text_width = if text.trim().is_empty() { 0.0 } else { max_line_width };
-            let auto_text_height = num_lines as f32 * line_height;
+            let auto_text_width = if text.trim().is_empty() { 0.0 } else { measured_width };
+            let auto_text_height = if text.trim().is_empty() {
+                scaled_font_size
+            } else {
+                measured_height
+            };
 
             // Use CSS dimensions if specified, otherwise use calculated dimensions
             let final_text_width = if let Some(css_width) = &self.css_width {
@@ -475,103 +477,39 @@ impl LayoutBox {
         }
     }
 
-    /// Helper function to wrap text into lines that fit within a given width
-    fn wrap_text(&self, text: &str, max_width: f32, char_width: f32) -> Vec<String> {
-        let mut wrapped_lines = Vec::new();
+    /// Measure text dimensions using Skia's textlayout (skparagraph and skshaper)
+    // TODO pass font properties from CSS
+    fn measure_text_with_skia(&self, text: &str, max_width: f32, font_size: f32) -> (f32, f32) {
+        // Set up font collection
+        let mut font_collection = FontCollection::new();
+        font_collection.set_default_font_manager(skia_safe::FontMgr::new(), None);
 
-        // Split by explicit newlines first
-        let paragraphs: Vec<&str> = text.split('\n').collect();
+        // Create paragraph style
+        let paragraph_style = ParagraphStyle::new();
 
-        for paragraph in paragraphs {
-            if paragraph.is_empty() {
-                wrapped_lines.push(String::new());
-                continue;
-            }
+        // Create text style with font properties
+        let mut text_style = TextStyle::new();
+        text_style.set_font_size(font_size);
 
-            // Calculate max characters per line based on actual character count
-            let max_chars = (max_width / char_width).floor() as usize;
+        // Use a default font family
+        text_style.set_font_families(&["Arial", "sans-serif"]);
 
-            if max_chars == 0 {
-                // If width is too small, just add the paragraph as-is
-                wrapped_lines.push(paragraph.to_string());
-                continue;
-            }
+        // Build the paragraph using Skia's textlayout
+        let mut paragraph_builder = ParagraphBuilder::new(&paragraph_style, font_collection);
+        paragraph_builder.push_style(&text_style);
+        paragraph_builder.add_text(text);
 
-            // Split paragraph into words
-            let words: Vec<&str> = paragraph.split_whitespace().collect();
+        let mut paragraph = paragraph_builder.build();
 
-            if words.is_empty() {
-                wrapped_lines.push(String::new());
-                continue;
-            }
+        // Layout the paragraph with the available width
+        let layout_width = max_width.max(1.0);
+        paragraph.layout(layout_width);
 
-            let mut current_line = String::new();
-            let mut current_char_count = 0;
+        // Get the actual dimensions from the laid out paragraph
+        let measured_width = paragraph.max_intrinsic_width().min(layout_width);
+        let measured_height = paragraph.height();
 
-            for word in words {
-                let word_char_count = word.chars().count();
-
-                // Calculate the character count if we add this word
-                let test_char_count = if current_line.is_empty() {
-                    word_char_count
-                } else {
-                    current_char_count + 1 + word_char_count // +1 for space
-                };
-
-                if test_char_count <= max_chars {
-                    // Add word to current line
-                    if current_line.is_empty() {
-                        current_line.push_str(word);
-                        current_char_count = word_char_count;
-                    } else {
-                        current_line.push(' ');
-                        current_line.push_str(word);
-                        current_char_count = test_char_count;
-                    }
-                } else {
-                    // Word doesn't fit on current line
-                    if !current_line.is_empty() {
-                        // Save current line and start new line with this word
-                        wrapped_lines.push(current_line);
-                        current_line = String::new();
-                        current_char_count = 0;
-                    }
-
-                    // Check if word itself is too long and needs to be broken
-                    if word_char_count > max_chars {
-                        // Break the word across multiple lines
-                        let chars: Vec<char> = word.chars().collect();
-                        let mut start = 0;
-
-                        while start < chars.len() {
-                            let end = (start + max_chars).min(chars.len());
-                            let chunk: String = chars[start..end].iter().collect();
-                            wrapped_lines.push(chunk);
-                            start = end;
-                        }
-
-                        current_line = String::new();
-                        current_char_count = 0;
-                    } else {
-                        // Word fits within max_chars, start new line with it
-                        current_line.push_str(word);
-                        current_char_count = word_char_count;
-                    }
-                }
-            }
-
-            // Add the last line if it's not empty
-            if !current_line.is_empty() {
-                wrapped_lines.push(current_line);
-            }
-        }
-
-        // Return at least one empty line if everything was empty
-        if wrapped_lines.is_empty() {
-            wrapped_lines.push(String::new());
-        }
-
-        wrapped_lines
+        (measured_width, measured_height)
     }
 
     /// Layout image nodes with position offset
