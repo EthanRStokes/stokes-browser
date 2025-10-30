@@ -67,42 +67,33 @@ impl LayoutEngine {
         // Store reference for renderer
         self.node_map.insert(node_id, Rc::clone(dom_node));
 
+        let style = borrowed.style.clone();
         let mut layout_box = match &borrowed.data {
             NodeData::Document => {
-                LayoutBox::new(BoxType::Block, node_id)
+                LayoutBox::new(BoxType::Block, node_id, style)
             },
             NodeData::Element(data) => {
                 let box_type = self.determine_box_type(&data.name.local);
-                LayoutBox::new(box_type, node_id)
+                LayoutBox::new(box_type, node_id, style)
             },
             NodeData::Text { contents } => {
-                let mut text_box = LayoutBox::new(BoxType::Text, node_id);
-                text_box.content = Some(contents.borrow().to_string());
+                let mut text_box = LayoutBox::new(BoxType::Text, node_id, style);
+                text_box.content = Some(LayoutContent::Text { content: contents.borrow().to_string(), paragraph: None });
                 text_box
             },
             NodeData::Image(data) => {
                 // TODO can i make this better?
-                LayoutBox::new(BoxType::Image(data.clone()), node_id)
+                LayoutBox::new(BoxType::Image(data.clone()), node_id, style)
             },
             _ => {
                 // Skip other node types for now
-                LayoutBox::new(BoxType::Block, node_id)
+                LayoutBox::new(BoxType::Block, node_id, style)
             }
         };
 
         // Apply CSS styles if available
         let computed_styles = &borrowed.style;
-        // Apply margin and padding from computed styles
-        layout_box.dimensions.margin = computed_styles.margin.clone();
-        layout_box.dimensions.padding = computed_styles.padding.clone();
-        layout_box.dimensions.border = computed_styles.border.clone();
 
-        // Apply box-sizing property
-        layout_box.box_sizing = computed_styles.box_sizing.clone();
-
-        // Apply float and clear properties
-        layout_box.float = computed_styles.float.clone();
-        layout_box.clear = computed_styles.clear.clone();
 
         // Apply width and height constraints
         if let Some(width) = &computed_styles.width {
@@ -116,12 +107,6 @@ impl LayoutEngine {
             let computed_height = height.to_px(computed_styles.font_size, parent_height);
             layout_box.dimensions.content.bottom = layout_box.dimensions.content.top + computed_height;
         }
-
-        layout_box.css_height = computed_styles.height.clone();
-        layout_box.css_width = computed_styles.width.clone();
-
-        // Set display type from computed styles
-        layout_box.display_type = computed_styles.display.clone();
 
         // Override box type based on display property
         match computed_styles.display {

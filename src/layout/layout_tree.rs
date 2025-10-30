@@ -2,8 +2,10 @@
 use super::box_model::{Dimensions, EdgeSizes};
 use crate::dom::ImageData;
 use skia_safe::Rect;
-use skia_safe::textlayout::{FontCollection, ParagraphBuilder, ParagraphStyle, TextStyle};
+use skia_safe::textlayout::{FontCollection, Paragraph, ParagraphBuilder, ParagraphStyle, TextStyle};
 use std::cell::RefCell;
+use std::rc::Rc;
+use crate::css::ComputedValues;
 
 /// Tracks active floats in a formatting context
 #[derive(Debug, Clone)]
@@ -103,59 +105,45 @@ pub enum BoxType {
     Image(RefCell<ImageData>),
 }
 
+#[derive(Debug)]
+pub enum LayoutContent {
+    Text { content: String, paragraph: Option<Paragraph> },
+}
+
 /// A box in the layout tree
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LayoutBox {
     pub box_type: BoxType,
     pub dimensions: Dimensions,
     pub children: Vec<LayoutBox>,
     pub node_id: usize,
-    pub content: Option<String>, // For text nodes
-    pub css_width: Option<crate::css::Length>, // CSS specified width
-    pub css_height: Option<crate::css::Length>, // CSS specified height
-    pub css_max_width: Option<crate::css::Length>, // CSS specified max-width
-    pub css_min_width: Option<crate::css::Length>, // CSS specified min-width
-    pub css_max_height: Option<crate::css::Length>, // CSS specified max-height
-    pub css_min_height: Option<crate::css::Length>, // CSS specified min-height
-    pub box_sizing: crate::css::BoxSizing, // CSS box-sizing property
-    pub flex_grow: crate::css::FlexGrow, // CSS flex-grow property
-    pub flex_shrink: crate::css::FlexShrink, // CSS flex-shrink property
-    pub flex_basis: crate::css::FlexBasis, // CSS flex-basis property
-    pub gap: crate::css::Gap, // CSS gap property (row-gap and column-gap)
-    pub display_type: crate::css::computed::DisplayType, // CSS display property
-    pub float: crate::css::Float, // CSS float property
-    pub clear: crate::css::Clear, // CSS clear property
+    pub content: Option<LayoutContent>, // custom data
+    pub style: ComputedValues,
 }
 
 impl LayoutBox {
-    pub fn new(box_type: BoxType, node_id: usize) -> Self {
+    pub fn new(box_type: BoxType, node_id: usize, style: ComputedValues) -> Self {
+        let mut dimensions = Dimensions::new();
+
+        // Apply margin and padding from computed styles
+        dimensions.margin = style.margin.clone();
+        dimensions.padding = style.padding.clone();
+        dimensions.border = style.border.clone();
+
         Self {
             box_type,
-            dimensions: Dimensions::new(),
+            dimensions,
             children: Vec::new(),
             node_id,
             content: None,
-            css_width: None,
-            css_height: None,
-            css_max_width: None,
-            css_min_width: None,
-            css_max_height: None,
-            css_min_height: None,
-            box_sizing: crate::css::BoxSizing::ContentBox, // Default value
-            flex_grow: crate::css::FlexGrow::default(), // Default value
-            flex_shrink: crate::css::FlexShrink::default(), // Default value
-            flex_basis: crate::css::FlexBasis::Auto, // Default value
-            gap: crate::css::Gap::default(), // Default value
-            display_type: crate::css::computed::DisplayType::Block, // Default value
-            float: crate::css::Float::None, // Default value
-            clear: crate::css::Clear::None, // Default value
+            style,
         }
     }
 
     /// Calculate layout
     pub fn layout(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
         // Check if this is a flex container
-        if self.display_type == crate::css::computed::DisplayType::Flex {
+        if self.style.display == crate::css::computed::DisplayType::Flex {
             self.layout_flex(container_width, container_height, offset_x, offset_y, scale_factor);
             return;
         }
@@ -184,7 +172,7 @@ impl LayoutBox {
         let content_y = offset_y + self.dimensions.margin.top + self.dimensions.border.top + self.dimensions.padding.top;
 
         // Center horizontally if CSS width is specified
-        let content_x = if self.css_width.is_some() {
+        let content_x = if self.style.width.is_some() {
             let available_width = container_width - self.dimensions.margin.left - self.dimensions.margin.right
                 - self.dimensions.border.left - self.dimensions.border.right
                 - self.dimensions.padding.left - self.dimensions.padding.right;
@@ -203,7 +191,7 @@ impl LayoutBox {
         let mut float_context = FloatContext::new();
 
         // Calculate gap spacing (row-gap for vertical stacking)
-        let row_gap = self.gap.row.to_px(16.0, container_width) * scale_factor;
+        let row_gap = self.style.gap.row.to_px(16.0, container_width) * scale_factor;
 
         // Layout children vertically, handling floats and gap
         for (i, child) in self.children.iter_mut().enumerate() {
@@ -213,12 +201,12 @@ impl LayoutBox {
             }
 
             // Handle clear property - move past floats if needed
-            if child.clear != crate::css::Clear::None {
-                current_y = float_context.get_clear_y(&child.clear, current_y);
+            if child.style.clear != crate::css::Clear::None {
+                current_y = float_context.get_clear_y(&child.style.clear, current_y);
             }
 
             // Check if this child is floated
-            match child.float {
+            match child.style.float {
                 crate::css::Float::Left => {
                     // Layout the child first to get its dimensions
                     child.layout(available_width, container_height, content_x, current_y, scale_factor);
@@ -308,7 +296,7 @@ impl LayoutBox {
         let final_content_height = self.calculate_used_height(container_height, scale_factor, auto_content_height);
 
         // Center vertically if CSS height is specified
-        let final_content_y = if self.css_height.is_some() {
+        let final_content_y = if self.style.height.is_some() {
             let available_height = container_height - self.dimensions.margin.top - self.dimensions.margin.bottom
                 - self.dimensions.border.top - self.dimensions.border.bottom
                 - self.dimensions.padding.top - self.dimensions.padding.bottom;
@@ -340,7 +328,7 @@ impl LayoutBox {
         let default_width = container_width - self.dimensions.padding.left - self.dimensions.padding.right;
 
         // Use CSS dimensions if specified
-        let content_width = if let Some(css_width) = &self.css_width {
+        let content_width = if let Some(css_width) = &self.style.width {
             css_width.to_px(16.0, container_width) * scale_factor
         } else {
             default_width
@@ -349,7 +337,7 @@ impl LayoutBox {
         let final_height = self.calculate_used_height(container_height, scale_factor, default_height);
 
         // Center horizontally if CSS width is specified
-        let content_x = if self.css_width.is_some() {
+        let content_x = if self.style.width.is_some() {
             let centering_offset = (default_width - content_width) / 2.0;
             base_content_x + centering_offset.max(0.0)
         } else {
@@ -357,7 +345,7 @@ impl LayoutBox {
         };
 
         // Center vertically if CSS height is specified
-        let content_y = if self.css_height.is_some() {
+        let content_y = if self.style.height.is_some() {
             let available_height = container_height - self.dimensions.padding.top - self.dimensions.padding.bottom;
             let centering_offset = (available_height - final_height) / 2.0;
             base_content_y + centering_offset.max(0.0)
@@ -373,7 +361,7 @@ impl LayoutBox {
         );
 
         // Calculate gap spacing (column-gap for horizontal flow)
-        let column_gap = self.gap.column.to_px(16.0, container_width) * scale_factor;
+        let column_gap = self.style.gap.column.to_px(16.0, container_width) * scale_factor;
 
         // Layout children horizontally with column-gap
         let mut current_x = content_x;
@@ -399,87 +387,90 @@ impl LayoutBox {
 
     /// Layout text nodes with position offset using Skia's textlayout (skparagraph)
     fn layout_text(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
-        if let Some(text) = &self.content {
-            // Use Skia's Paragraph API for accurate text measurement
-            // Default font size scaled for high DPI
-            let scaled_font_size = 16.0 * scale_factor;
+        match &self.content {
+            Some(LayoutContent::Text { content: text, paragraph }) => {
+                // Use Skia's Paragraph API for accurate text measurement
+                // Default font size scaled for high DPI
+                let scaled_font_size = 16.0 * scale_factor;
 
-            // Measure text using Skia's textlayout
-            let (measured_width, measured_height) = self.measure_text_with_skia(
-                text,
-                container_width,
-                scaled_font_size,
-            );
+                // Measure text using Skia's textlayout
+                let (measured_width, measured_height, paragraph) = self.measure_text_with_skia(
+                    text,
+                    container_width,
+                    scaled_font_size,
+                );
 
-            let auto_text_width = if text.trim().is_empty() { 0.0 } else { measured_width };
-            let auto_text_height = if text.trim().is_empty() {
-                scaled_font_size
-            } else {
-                measured_height
-            };
+                let auto_text_width = if text.trim().is_empty() { 0.0 } else { measured_width };
+                let auto_text_height = if text.trim().is_empty() {
+                    scaled_font_size
+                } else {
+                    measured_height
+                };
 
-            // Use CSS dimensions if specified, otherwise use calculated dimensions
-            let final_text_width = if let Some(css_width) = &self.css_width {
-                css_width.to_px(16.0, container_width) * scale_factor
-            } else {
-                auto_text_width
-            };
+                // Use CSS dimensions if specified, otherwise use calculated dimensions
+                let final_text_width = if let Some(css_width) = &self.style.width {
+                    css_width.to_px(16.0, container_width) * scale_factor
+                } else {
+                    auto_text_width
+                };
 
-            let final_text_height = self.calculate_used_height(container_height, scale_factor, auto_text_height);
+                let final_text_height = self.calculate_used_height(container_height, scale_factor, auto_text_height);
 
-            // Center horizontally if CSS width is specified
-            let final_x = if self.css_width.is_some() {
-                let centering_offset = (container_width - final_text_width) / 2.0;
-                offset_x + centering_offset.max(0.0)
-            } else {
-                offset_x
-            };
+                // Center horizontally if CSS width is specified
+                let final_x = if self.style.width.is_some() {
+                    let centering_offset = (container_width - final_text_width) / 2.0;
+                    offset_x + centering_offset.max(0.0)
+                } else {
+                    offset_x
+                };
 
-            // Center vertically if CSS height is specified
-            let final_y = if self.css_height.is_some() {
-                let centering_offset = (container_height - final_text_height) / 2.0;
-                offset_y + centering_offset.max(0.0)
-            } else {
-                offset_y
-            };
+                // Center vertically if CSS height is specified
+                let final_y = if self.style.height.is_some() {
+                    let centering_offset = (container_height - final_text_height) / 2.0;
+                    offset_y + centering_offset.max(0.0)
+                } else {
+                    offset_y
+                };
 
-            self.dimensions.content = Rect::from_xywh(
-                final_x,
-                final_y,
-                final_text_width,
-                final_text_height
-            );
-        } else {
-            // Empty text node - use CSS dimensions if specified
-            let final_width = if let Some(css_width) = &self.css_width {
-                css_width.to_px(16.0, container_width) * scale_factor
-            } else {
-                0.0
-            };
-            let final_height = self.calculate_used_height(container_height, scale_factor, 0.0);
+                self.dimensions.content = Rect::from_xywh(
+                    final_x,
+                    final_y,
+                    final_text_width,
+                    final_text_height
+                );
+            },
+            _ => {
+                // Empty text node - use CSS dimensions if specified
+                let final_width = if let Some(css_width) = &self.style.width {
+                    css_width.to_px(16.0, container_width) * scale_factor
+                } else {
+                    0.0
+                };
+                let final_height = self.calculate_used_height(container_height, scale_factor, 0.0);
 
-            // Center if CSS dimensions are specified
-            let final_x = if self.css_width.is_some() {
-                let centering_offset = (container_width - final_width) / 2.0;
-                offset_x + centering_offset.max(0.0)
-            } else {
-                offset_x
-            };
+                // Center if CSS dimensions are specified
+                let final_x = if self.style.width.is_some() {
+                    let centering_offset = (container_width - final_width) / 2.0;
+                    offset_x + centering_offset.max(0.0)
+                } else {
+                    offset_x
+                };
 
-            let final_y = if self.css_height.is_some() {
-                let centering_offset = (container_height - final_height) / 2.0;
-                offset_y + centering_offset.max(0.0)
-            } else {
-                offset_y
-            };
+                let final_y = if self.style.height.is_some() {
+                    let centering_offset = (container_height - final_height) / 2.0;
+                    offset_y + centering_offset.max(0.0)
+                } else {
+                    offset_y
+                };
 
-            self.dimensions.content = Rect::from_xywh(final_x, final_y, final_width, final_height);
+                self.dimensions.content = Rect::from_xywh(final_x, final_y, final_width, final_height);
+            }
         }
     }
 
     /// Measure text dimensions using Skia's textlayout (skparagraph and skshaper)
     // TODO pass font properties from CSS
-    fn measure_text_with_skia(&self, text: &str, max_width: f32, font_size: f32) -> (f32, f32) {
+    fn measure_text_with_skia(&self, text: &str, max_width: f32, font_size: f32) -> (f32, f32, Paragraph) {
         // Set up font collection
         let mut font_collection = FontCollection::new();
         font_collection.set_default_font_manager(skia_safe::FontMgr::new(), None);
@@ -509,7 +500,7 @@ impl LayoutBox {
         let measured_width = paragraph.max_intrinsic_width().min(layout_width);
         let measured_height = paragraph.height();
 
-        (measured_width, measured_height)
+        (measured_width, measured_height, paragraph)
     }
 
     /// Layout image nodes with position offset
@@ -524,13 +515,13 @@ impl LayoutBox {
         let base_image_height = data.height.unwrap_or(default_height) as f32;
 
         // Apply CSS dimensions if specified, otherwise use HTML attributes or defaults
-        let final_image_width = if let Some(css_width) = &self.css_width {
+        let final_image_width = if let Some(css_width) = &self.style.width {
             css_width.to_px(16.0, container_width) * scale_factor
         } else {
             base_image_width * scale_factor
         };
 
-        let final_image_height = if let Some(css_height) = &self.css_height {
+        let final_image_height = if let Some(css_height) = &self.style.height {
             css_height.to_px(16.0, container_height) * scale_factor
         } else {
             base_image_height * scale_factor
@@ -550,7 +541,7 @@ impl LayoutBox {
         let base_y = offset_y + self.dimensions.margin.top;
 
         // Center horizontally if CSS width is specified
-        let final_x = if self.css_width.is_some() {
+        let final_x = if self.style.width.is_some() {
             let available_width = container_width - self.dimensions.margin.left - self.dimensions.margin.right;
             let centering_offset = (available_width - final_image_width) / 2.0;
             base_x + centering_offset.max(0.0)
@@ -559,7 +550,7 @@ impl LayoutBox {
         };
 
         // Center vertically if CSS height is specified
-        let final_y = if self.css_height.is_some() {
+        let final_y = if self.style.height.is_some() {
             let available_height = container_height - self.dimensions.margin.top - self.dimensions.margin.bottom;
             let centering_offset = (available_height - final_image_height) / 2.0;
             base_y + centering_offset.max(0.0)
@@ -578,13 +569,13 @@ impl LayoutBox {
     /// Calculate the actual width this box should use, respecting CSS width values, flex-basis, and box-sizing
     fn calculate_used_width(&self, container_width: f32, scale_factor: f32) -> f32 {
         // Determine the base width: prioritize flex-basis, then width, then auto
-        let mut width = match &self.flex_basis {
+        let mut width = match &self.style.flex_basis {
             crate::css::FlexBasis::Length(length) => {
                 // flex-basis with explicit length takes precedence
                 let specified_width = length.to_px(16.0, container_width) * scale_factor;
 
                 // Apply box-sizing logic
-                match self.box_sizing {
+                match self.style.box_sizing {
                     crate::css::BoxSizing::ContentBox => specified_width,
                     crate::css::BoxSizing::BorderBox => {
                         specified_width
@@ -595,11 +586,11 @@ impl LayoutBox {
             }
             crate::css::FlexBasis::Auto => {
                 // When flex-basis is auto, fall back to width property
-                if let Some(css_width) = &self.css_width {
+                if let Some(css_width) = &self.style.width {
                     let specified_width = css_width.to_px(16.0, container_width) * scale_factor;
 
                     // Apply box-sizing logic
-                    match self.box_sizing {
+                    match self.style.box_sizing {
                         crate::css::BoxSizing::ContentBox => specified_width,
                         crate::css::BoxSizing::BorderBox => {
                             specified_width
@@ -617,9 +608,9 @@ impl LayoutBox {
             crate::css::FlexBasis::Content => {
                 // Content-based sizing - use intrinsic content size
                 // For now, fallback to width or auto (future: calculate from content)
-                if let Some(css_width) = &self.css_width {
+                if let Some(css_width) = &self.style.width {
                     let specified_width = css_width.to_px(16.0, container_width) * scale_factor;
-                    match self.box_sizing {
+                    match self.style.box_sizing {
                         crate::css::BoxSizing::ContentBox => specified_width,
                         crate::css::BoxSizing::BorderBox => {
                             specified_width
@@ -637,9 +628,9 @@ impl LayoutBox {
         };
 
         // Apply max-width constraint if specified
-        if let Some(css_max_width) = &self.css_max_width {
+        if let Some(css_max_width) = &self.style.max_width {
             let max_width = css_max_width.to_px(16.0, container_width) * scale_factor;
-            let max_width_content = match self.box_sizing {
+            let max_width_content = match self.style.box_sizing {
                 crate::css::BoxSizing::ContentBox => max_width,
                 crate::css::BoxSizing::BorderBox => {
                     max_width
@@ -651,9 +642,9 @@ impl LayoutBox {
         }
 
         // Apply min-width constraint if specified
-        if let Some(css_min_width) = &self.css_min_width {
+        if let Some(css_min_width) = &self.style.min_width {
             let min_width = css_min_width.to_px(16.0, container_width) * scale_factor;
-            let min_width_content = match self.box_sizing {
+            let min_width_content = match self.style.box_sizing {
                 crate::css::BoxSizing::ContentBox => min_width,
                 crate::css::BoxSizing::BorderBox => {
                     min_width
@@ -673,12 +664,12 @@ impl LayoutBox {
         // For vertical flex containers, flex-basis would control height
         // For now, we support it but height property takes precedence in non-flex contexts
 
-        let mut height = if let Some(css_height) = &self.css_height {
+        let mut height = if let Some(css_height) = &self.style.height {
             // Use the CSS-specified height, converting to pixels and scaling
             let specified_height = css_height.to_px(16.0, container_height) * scale_factor;
 
             // Apply box-sizing logic
-            match self.box_sizing {
+            match self.style.box_sizing {
                 crate::css::BoxSizing::ContentBox => {
                     // Default behavior: height applies to content box only
                     specified_height
@@ -700,9 +691,9 @@ impl LayoutBox {
         };
 
         // Apply max-height constraint if specified
-        if let Some(css_max_height) = &self.css_max_height {
+        if let Some(css_max_height) = &self.style.max_height {
             let max_height = css_max_height.to_px(16.0, container_height) * scale_factor;
-            let max_height_content = match self.box_sizing {
+            let max_height_content = match self.style.box_sizing {
                 crate::css::BoxSizing::ContentBox => max_height,
                 crate::css::BoxSizing::BorderBox => {
                     max_height
@@ -714,9 +705,9 @@ impl LayoutBox {
         }
 
         // Apply min-height constraint if specified
-        if let Some(css_min_height) = &self.css_min_height {
+        if let Some(css_min_height) = &self.style.min_height {
             let min_height = css_min_height.to_px(16.0, container_height) * scale_factor;
-            let min_height_content = match self.box_sizing {
+            let min_height_content = match self.style.box_sizing {
                 crate::css::BoxSizing::ContentBox => min_height,
                 crate::css::BoxSizing::BorderBox => {
                     min_height
@@ -769,7 +760,7 @@ impl LayoutBox {
         self.dimensions.content = Rect::from_xywh(content_x, content_y, content_width, 0.0);
 
         // Calculate gap spacing (column-gap for horizontal flex layout)
-        let column_gap = self.gap.column.to_px(16.0, container_width) * scale_factor;
+        let column_gap = self.style.gap.column.to_px(16.0, container_width) * scale_factor;
 
         // Calculate total gap space
         let total_gap = if self.children.len() > 1 {
@@ -786,14 +777,14 @@ impl LayoutBox {
 
         for child in &self.children {
             // Determine the flex base size according to flex-basis
-            let base_size = match &child.flex_basis {
+            let base_size = match &child.style.flex_basis {
                 crate::css::FlexBasis::Length(length) => {
                     // Explicit length value (including 0px from "flex: 1")
                     length.to_px(16.0, content_width) * scale_factor
                 }
                 crate::css::FlexBasis::Auto => {
                     // If flex-basis is auto, use the item's main size (width) if specified
-                    if let Some(css_width) = &child.css_width {
+                    if let Some(css_width) = &child.style.width {
                         css_width.to_px(16.0, content_width) * scale_factor
                     } else {
                         // Use content size - for now, we'll use a minimum size
@@ -809,7 +800,7 @@ impl LayoutBox {
                 }
             };
 
-            flex_items.push((base_size, child.flex_grow.0, child.flex_shrink.0));
+            flex_items.push((base_size, child.style.flex_grow.0, child.style.flex_shrink.0));
         }
 
         // Step 2: Calculate total base size
@@ -909,34 +900,14 @@ impl LayoutBox {
     }
 
     /// Apply CSS styles to this layout box
-    pub fn apply_styles(&mut self, styles: &crate::css::ComputedValues) {
+    pub fn apply_styles(&mut self, style: ComputedValues) {
         // Apply margin, padding, and border from computed styles
-        self.dimensions.margin = styles.margin.clone();
-        self.dimensions.padding = styles.padding.clone();
-        self.dimensions.border = styles.border.clone();
+        self.dimensions.margin = style.margin.clone();
+        self.dimensions.padding = style.padding.clone();
+        self.dimensions.border = style.border.clone();
 
-        // Store CSS width and height values
-        self.css_width = styles.width.clone();
-        self.css_height = styles.height.clone();
-        self.css_max_width = styles.max_width.clone();
-        self.css_min_width = styles.min_width.clone();
-        self.css_max_height = styles.max_height.clone();
-        self.css_min_height = styles.min_height.clone();
-
-        // Store box-sizing value
-        self.box_sizing = styles.box_sizing.clone();
-
-        // Store flex properties
-        self.flex_grow = styles.flex_grow.clone();
-        self.flex_shrink = styles.flex_shrink.clone();
-        self.flex_basis = styles.flex_basis.clone();
-
-        // Store gap value
-        self.gap = styles.gap.clone();
-
-        // Store float and clear properties
-        self.float = styles.float.clone();
-        self.clear = styles.clear.clone();
+        // Store CSS
+        self.style = style;
 
         // Note: Other style properties like colors, fonts are handled in the renderer
         // Scale factor will be applied during layout phase
