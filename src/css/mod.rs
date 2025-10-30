@@ -10,7 +10,7 @@ pub use self::computed::{ComputedValues, StyleResolver};
 pub use self::parser::CssParser;
 pub use self::selector::Selector;
 pub use self::stylesheet::{Declaration, Rule, Stylesheet};
-pub use values::{BackgroundImage, BorderRadius, BorderRadiusPx, BoxShadow, BoxSizing, Clear, Color, ContentValue, CssValue, Cursor, Flex, FlexBasis, FlexGrow, FlexShrink, Float, FontStyle, FontVariant, Gap, Length, LineHeight, ListStyleType, Outline, OutlineStyle, Overflow, Stroke, TextAlign, TextDecoration, TextShadow, TextTransform, TimingFunction, TransitionSpec, VerticalAlign, Visibility, WhiteSpace};
+pub use values::{BackgroundImage, BorderRadius, BorderRadiusPx, BoxShadow, BoxSizing, Clear, Color, ContentValue, CssValue, Cursor, Flex, FlexBasis, FlexGrow, FlexShrink, Float, FontStyle, FontVariant, Gap, Length, LineHeight, ListStyleType, Outline, OutlineStyle, Overflow, Stroke, TextAlign, TextDecoration, TextDecorationType, TextShadow, TextTransform, TimingFunction, TransitionSpec, VerticalAlign, Visibility, WhiteSpace};
 
 /// CSS property names
 #[derive(Debug, Clone, PartialEq, Hash)]

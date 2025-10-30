@@ -23,7 +23,7 @@ pub use length::Length;
 pub use list::ListStyleType;
 pub use shadow::{BoxShadow, TextShadow};
 pub use stroke::Stroke;
-pub use text::{TextAlign, TextDecoration, TextTransform, WhiteSpace};
+pub use text::{TextAlign, TextDecoration, TextDecorationType, TextTransform, WhiteSpace};
 pub use transition::{TimingFunction, TransitionSpec};
 
 use std::fmt;

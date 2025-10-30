@@ -6,6 +6,8 @@ use std::fmt;
 use std::rc::{Rc, Weak};
 use html5ever::QualName;
 use html5ever::tendril::StrTendril;
+use skia_safe::FontMgr;
+use skia_safe::wrapper::PointerWrapper;
 use slab::Slab;
 use crate::css::ComputedValues;
 
@@ -240,6 +242,7 @@ impl ImageData {
     }
 
     /// Decode SVG data into a Skia image
+    // TODO use Skia's SVG support when available
     fn decode_svg_data(svg_bytes: &[u8]) -> Option<skia_safe::Image> {
         // Convert bytes to string
         let svg_str = match std::str::from_utf8(svg_bytes) {
