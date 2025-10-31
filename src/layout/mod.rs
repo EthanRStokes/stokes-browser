@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use taffy::prelude::*;
-use taffy::TaffyTree;
+use taffy::{Overflow, Point, TaffyTree, TextAlign};
 
 /// Layout engine responsible for computing element positions and sizes
 pub struct LayoutEngine {
@@ -120,7 +120,7 @@ impl LayoutEngine {
         let borrowed = dom_node.borrow();
 
         // Convert CSS styles to Taffy style
-        let style = self.css_to_taffy_style(&borrowed.style);
+        let style = borrowed.style.clone();
 
         // Determine if this is a leaf node that needs a measure function
         let is_text_node = matches!(borrowed.data, NodeData::Text { .. });
@@ -367,6 +367,25 @@ impl LayoutEngine {
             crate::css::computed::DisplayType::None => Display::None,
         };
 
+        style.box_sizing = match css.box_sizing {
+            crate::css::BoxSizing::ContentBox => BoxSizing::ContentBox,
+            crate::css::BoxSizing::BorderBox => BoxSizing::BorderBox,
+        };
+
+        let overflow_x = match css.overflow_x {
+            crate::css::Overflow::Visible => Overflow::Visible,
+            crate::css::Overflow::Hidden => Overflow::Hidden,
+            crate::css::Overflow::Scroll => Overflow::Scroll,
+            crate::css::Overflow::Auto => Overflow::Clip,
+        };
+        let overflow_y = match css.overflow_y {
+            crate::css::Overflow::Visible => Overflow::Visible,
+            crate::css::Overflow::Hidden => Overflow::Hidden,
+            crate::css::Overflow::Scroll => Overflow::Scroll,
+            crate::css::Overflow::Auto => Overflow::Clip,
+        };
+        style.overflow = Point { x: overflow_x, y: overflow_y };
+
         // Size
         if let Some(width) = &css.width {
             let w = width.to_px(css.font_size, self.viewport_width);
@@ -461,12 +480,6 @@ impl LayoutEngine {
         }
     }
 
-    /// Get the node map for renderers
-    #[inline]
-    pub fn get_node_map(&self) -> &HashMap<usize, Rc<RefCell<DomNode>>> {
-        &self.node_map
-    }
-
     /// Update viewport size
     #[inline]
     pub fn set_viewport(&mut self, width: f32, height: f32) {
@@ -485,7 +498,9 @@ impl LayoutEngine {
         let mut borrowed = node.borrow_mut();
         // Compute styles for this node
         let computed_styles = self.style_resolver.resolve_styles(&*borrowed, parent_styles);
-        borrowed.style = computed_styles.clone();
+        borrowed.style = self.css_to_taffy_style(&computed_styles);
+
+        borrowed.final_layout.order = computed_styles.z_index as u32;
 
         // Process children
         let children = &borrowed.children;

@@ -9,7 +9,7 @@ use html5ever::tendril::StrTendril;
 use skia_safe::FontMgr;
 use skia_safe::wrapper::PointerWrapper;
 use slab::Slab;
-use taffy::{Layout, NodeId};
+use taffy::{Layout, NodeId, Style};
 use crate::css::ComputedValues;
 
 /// Callback type for layout invalidation
@@ -340,7 +340,7 @@ pub struct DomNode {
     /// The type of node
     pub data: NodeData,
 
-    pub style: ComputedValues,
+    pub style: Style,
     pub layout_id: Option<NodeId>,
     pub final_layout: Layout,
 
@@ -366,7 +366,7 @@ impl DomNode {
             layout_id: None,
             final_layout: Layout::new(),
             data,
-            style: ComputedValues::default(),
+            style: Style::default(),
             event_listeners: EventListenerRegistry::new(),
             layout_invalidation_callback: None,
         }

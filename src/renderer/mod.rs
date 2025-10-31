@@ -16,7 +16,7 @@ use crate::renderer::paint::DefaultPaints;
 use skia_safe::{Canvas, Color, Font, Paint, Rect};
 use std::cell::{Ref, RefCell};
 use std::rc::Rc;
-use taffy::Layout;
+use taffy::{Layout, Style};
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer {
@@ -106,7 +106,8 @@ impl HtmlRenderer {
         };*/
 
         // Check visibility - if hidden, skip rendering visual aspects but still render children
-        let is_visible = computed_styles.visibility == crate::css::Visibility::Visible;
+        // TODO
+        //let is_visible = computed_styles.visibility == crate::css::Visibility::Visible;
 
         // Get the DOM node for this layout box
         let dom_node_rc = node.get_node(node.id);
@@ -118,7 +119,7 @@ impl HtmlRenderer {
         }
 
         // Only render visual aspects if visible
-        if is_visible {
+        //TODO if is_visible {
             match &dom_node.data {
                 NodeData::Element(element_data) => {
                     self.render_element(canvas, node, layout, element_data, &computed_styles, scale_factor);
@@ -149,7 +150,7 @@ impl HtmlRenderer {
                     // Skip other node types
                 }
             }
-        }
+        //TODO }
 
         // Render children regardless of visibility (they may have their own visibility settings)
         if !should_skip_rendering(&dom_node) {
@@ -161,11 +162,11 @@ impl HtmlRenderer {
                     (child, z_index)
                 })
                 .collect();*/
-            let mut children_with_z: Vec<(Ref<DomNode>, Layout, i32)> = node.children.iter()
+            let mut children_with_z: Vec<(Ref<DomNode>, Layout, u32)> = node.children.iter()
                 .map(|child| {
                     let child_node = node.get_node(*child).borrow();
                     let layout = child_node.final_layout;
-                    let z_index = child_node.style.z_index;
+                    let z_index = layout.order;
                     (child_node, layout, z_index)
                 })
                 .collect();
@@ -187,7 +188,7 @@ impl HtmlRenderer {
         node: &DomNode,
         layout: &Layout,
         element_data: &ElementData,
-        styles: &ComputedValues,
+        style: &Style,
         scale_factor: f32,
     ) {
         let content_rect = Rect::from_xywh(
@@ -197,14 +198,14 @@ impl HtmlRenderer {
             layout.content_box_height(),
         );
         // Get opacity value (default to 1.0 if no styles)
-        let opacity = styles.opacity;
+        let opacity = style.opacity;
 
         // Render ::before pseudo-element content
         pseudo::render_pseudo_element_content(
             canvas,
             &content_rect,
             element_data,
-            styles,
+            style,
             scale_factor,
             true, // before
             &self.font_manager,
@@ -212,11 +213,11 @@ impl HtmlRenderer {
         );
 
         // Render box shadows first (behind the element)
-        decorations::render_box_shadows(canvas, &content_rect, styles, scale_factor);
+        decorations::render_box_shadows(canvas, &content_rect, style, scale_factor);
 
         // Create background paint with CSS colors
         let mut bg_paint = &mut self.paints.background_paint;
-        if let Some(bg_color) = &styles.background_color {
+        if let Some(bg_color) = &style.background_color {
             let mut color = bg_color.to_skia_color();
             // Apply opacity to background color
             color = color.with_a((color.a() as f32 * opacity) as u8);
@@ -235,12 +236,12 @@ impl HtmlRenderer {
         let mut border_paint = self.paints.border_paint.clone();
 
         // Check if border is specified in styles
-        if styles.border.top > 0.0 || styles.border.right > 0.0 ||
-            styles.border.bottom > 0.0 || styles.border.left > 0.0 {
+        if style.border.top > 0.0 || style.border.right > 0.0 ||
+            style.border.bottom > 0.0 || style.border.left > 0.0 {
             should_draw_border = true;
             // Use average border width for simplicity and apply scale factor
-            let avg_border_width = (styles.border.top + styles.border.right +
-                styles.border.bottom + styles.border.left) / 4.0;
+            let avg_border_width = (style.border.top + style.border.right +
+                style.border.bottom + style.border.left) / 4.0;
             let scaled_border_width = avg_border_width * scale_factor as f32;
             border_paint.set_stroke_width(scaled_border_width);
         }
@@ -277,13 +278,13 @@ impl HtmlRenderer {
         }
 
         // Render outline if specified
-        decorations::render_outline(canvas, &content_rect, styles, opacity, scale_factor);
+        decorations::render_outline(canvas, &content_rect, style, opacity, scale_factor);
 
         // Render stroke if specified (CSS stroke property)
-        decorations::render_stroke(canvas, &content_rect, &styles.stroke, opacity, scale_factor);
+        decorations::render_stroke(canvas, &content_rect, &style.stroke, opacity, scale_factor);
 
         // Render rounded corners if border radius is specified
-        let border_radius_px = styles.border_radius.to_px(styles.font_size, 400.0);
+        let border_radius_px = style.border_radius.to_px(style.font_size, 400.0);
         if border_radius_px.has_radius() {
             decorations::render_rounded_element(
                 canvas,
@@ -300,7 +301,7 @@ impl HtmlRenderer {
         canvas.draw_rect(content_rect, &bg_paint);
 
         // Render background image if specified
-        background::render_background_image(canvas, &content_rect, styles, scale_factor, &self.background_image_cache);
+        background::render_background_image(canvas, &content_rect, style, scale_factor, &self.background_image_cache);
 
         if should_draw_border {
             canvas.draw_rect(content_rect, &border_paint);
