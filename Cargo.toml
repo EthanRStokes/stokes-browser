@@ -34,6 +34,9 @@ blitz-traits = "0.2.0"
 url = "2"
 taffy = "0.9.1"
 slab = "0.4.11"
+stylo = "0.8.0"
+stylo_dom = "0.8.0"
+stylo_atoms = "0.8.0"
 
 [dependencies.winit]
 git = "https://github.com/Treetrain1/winit.git"
