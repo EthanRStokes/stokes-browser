@@ -12,6 +12,7 @@ use slab::Slab;
 use crate::css::ComputedValues;
 use style::data::ElementData as StyleElementData;
 use style::shared_lock::SharedRwLock;
+use stylo_dom::ElementState;
 
 /// Callback type for layout invalidation
 pub type LayoutInvalidationCallback = Box<dyn Fn()>;
@@ -45,13 +46,37 @@ pub enum NodeData {
 }
 
 impl NodeData {
-    pub fn is_element_with_tag_name(&self, tag_name: &impl PartialEq<LocalName>) -> bool {
+    pub fn element(&self) -> Option<&ElementData> {
         match self {
-            NodeData::Element(data) | NodeData::AnonymousBlock(data) => {
-                *tag_name == data.name.local
-            }
-            _ => false,
+            NodeData::Element(data) | NodeData::AnonymousBlock(data) => Some(data),
+            _ => None,
         }
+    }
+
+    pub fn element_mut(&mut self) -> Option<&mut ElementData> {
+        match self {
+            NodeData::Element(data) | NodeData::AnonymousBlock(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    pub fn attrs(&self) -> Option<&AttributeMap> {
+        Some(&self.element()?.attributes)
+    }
+
+    pub fn attr(&self, name: &String) -> Option<&String> {
+        self.element()?.attributes.get(&name)
+    }
+
+    pub fn has_attr(&self, name: &String) -> bool {
+        self.element().is_some_and(|element| element.attributes.contains_key(&name))
+    }
+
+    pub fn is_element_with_tag_name(&self, tag_name: &impl PartialEq<LocalName>) -> bool {
+        let Some(element) = self.element() else {
+            return false;
+        };
+        *tag_name == element.name.local
     }
 }
 
@@ -355,6 +380,7 @@ pub struct DomNode {
 
     pub stylo_data: RefCell<Option<StyleElementData>>,
     pub lock: SharedRwLock,
+    pub element_state: ElementState,
     pub style: ComputedValues,
 
     /// Event listener registry
@@ -373,6 +399,8 @@ impl PartialEq for DomNode {
     }
 }
 
+impl Eq for DomNode {}
+
 impl DomNode {
     /// Create a new DOM node
     pub fn new(
@@ -390,6 +418,7 @@ impl DomNode {
             data,
             stylo_data: Default::default(),
             lock,
+            element_state: ElementState::empty(),
             style: ComputedValues::default(),
             event_listeners: EventListenerRegistry::new(),
             layout_invalidation_callback: None,
@@ -402,6 +431,13 @@ impl DomNode {
 
     pub fn tree_mut(&mut self) -> &mut Slab<Rc<RefCell<DomNode>>> {
         unsafe { &mut *self.tree }
+    }
+
+    pub fn element_data(&self) -> Option<&ElementData> {
+        match &self.data {
+            NodeData::Element(data) | NodeData::AnonymousBlock(data) => Some(data),
+            _ => None,
+        }
     }
 
     pub fn index(&self) -> Option<usize> {

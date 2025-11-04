@@ -1,21 +1,20 @@
+use std::hash::{Hash, Hasher};
 use std::ptr::NonNull;
 use boa_engine::ast::expression::Identifier;
-use markup5ever::{LocalName, Namespace};
+use markup5ever::{local_name, LocalName, LocalNameStaticSet, Namespace, NamespaceStaticSet};
 use selectors::{OpaqueElement};
-use selectors::attr::{AttrSelectorOperation, CaseSensitivity, NamespaceConstraint};
+use selectors::attr::{AttrSelectorOperation, AttrSelectorOperator, CaseSensitivity, NamespaceConstraint};
 use selectors::bloom::BloomFilter;
 use selectors::context::MatchingContext;
 use selectors::matching::ElementSelectorFlags;
 use style::context::QuirksMode;
 use style::dom::{NodeInfo, OpaqueNode, TDocument, TElement, TNode, TShadowRoot};
-use style::selector_parser::SelectorImpl;
+use style::selector_parser::{NonTSPseudoClass, PseudoElement, SelectorImpl};
 use style::shared_lock::SharedRwLock;
 use style::stylist::CascadeData;
+use style::values::{AtomString, GenericAtomIdent};
+use stylo_dom::ElementState;
 use crate::dom::{DomNode, NodeData};
-
-impl DomNode {
-
-}
 
 type Node<'a> = &'a DomNode;
 
@@ -190,23 +189,106 @@ impl selectors::Element for Node<'_> {
     }
 
     fn has_namespace(&self, ns: &Namespace) -> bool {
-        todo!()
+        self.element_data().expect("Not an element").name.ns == *ns
     }
 
     fn is_same_type(&self, other: &Self) -> bool {
-        todo!()
+        self.local_name() == other.local_name() && self.namespace() == other.namespace()
     }
 
-    fn attr_matches(&self, ns: &NamespaceConstraint<&<Self::Impl as SelectorImpl>::NamespaceUrl>, local_name: &<Self::Impl as SelectorImpl>::LocalName, operation: &AttrSelectorOperation<&<Self::Impl as SelectorImpl>::AttrValue>) -> bool {
-        todo!()
+    fn attr_matches(
+        &self,
+        ns: &NamespaceConstraint<&GenericAtomIdent<NamespaceStaticSet>>,
+        local_name: &GenericAtomIdent<LocalNameStaticSet>,
+        operation: &AttrSelectorOperation<&AtomString>
+    ) -> bool {
+        let Some(attr) = self.data.attr(&local_name.0.to_string()) else {
+            return false;
+        };
+
+        match operation {
+            AttrSelectorOperation::Exists => true,
+            AttrSelectorOperation::WithValue {
+                operator,
+                case_sensitivity: _,
+                value,
+            } => {
+                let value = value.as_ref();
+
+                match operator {
+                    AttrSelectorOperator::Equal => attr == value,
+                    AttrSelectorOperator::Includes => attr
+                        .split_ascii_whitespace()
+                        .any(|word| word == value),
+                    AttrSelectorOperator::DashMatch => {
+                        attr.starts_with(value) && (attr.len() == value.len() || attr.chars().nth(value.len()) == Some('-'))
+                    }
+                    AttrSelectorOperator::Prefix => attr.starts_with(value),
+                    AttrSelectorOperator::Substring => attr.contains(value),
+                    AttrSelectorOperator::Suffix => attr.ends_with(value),
+                }
+            }
+        }
     }
 
-    fn match_non_ts_pseudo_class(&self, pc: &<Self::Impl as SelectorImpl>::NonTSPseudoClass, context: &mut MatchingContext<Self::Impl>) -> bool {
-        todo!()
+    fn match_non_ts_pseudo_class(
+        &self,
+        pc: &<Self::Impl as selectors::SelectorImpl>::NonTSPseudoClass,
+        context: &mut MatchingContext<Self::Impl>
+    ) -> bool {
+        match *pc {
+            NonTSPseudoClass::Active => self.element_state.contains(ElementState::ACTIVE),
+            NonTSPseudoClass::AnyLink => self.data.element().map(|element| {
+                (element.name.local == local_name!("a") || element.name.local == local_name!("area")) && element.attributes.get("href").is_some()
+            }).unwrap_or(false),
+            NonTSPseudoClass::Autofill => false,
+            NonTSPseudoClass::Checked => false, // TODO support checkboxes
+            NonTSPseudoClass::CustomState(_) => false,
+            NonTSPseudoClass::Default => false,
+            NonTSPseudoClass::Defined => false,
+            NonTSPseudoClass::Disabled => false,
+            NonTSPseudoClass::Enabled => false,
+            NonTSPseudoClass::Focus => self.element_state.contains(ElementState::FOCUS),
+            NonTSPseudoClass::FocusWithin => false,
+            NonTSPseudoClass::FocusVisible => false,
+            NonTSPseudoClass::Fullscreen => false,
+            NonTSPseudoClass::Hover => self.element_state.contains(ElementState::HOVER),
+            NonTSPseudoClass::InRange => false,
+            NonTSPseudoClass::Indeterminate => false,
+            NonTSPseudoClass::Invalid => false,
+            NonTSPseudoClass::Lang(_) => false,
+            NonTSPseudoClass::Link => self.data.element().map(|element| {
+                (element.name.local == local_name!("a") || element.name.local == local_name!("area")) && element.attributes.get("href").is_some()
+            }).unwrap_or(false),
+            NonTSPseudoClass::Modal => false,
+            NonTSPseudoClass::MozMeterOptimum => false,
+            NonTSPseudoClass::MozMeterSubOptimum => false,
+            NonTSPseudoClass::MozMeterSubSubOptimum => false,
+            NonTSPseudoClass::Optional => false,
+            NonTSPseudoClass::OutOfRange => false,
+            NonTSPseudoClass::PlaceholderShown => false,
+            NonTSPseudoClass::PopoverOpen => false,
+            NonTSPseudoClass::ReadOnly => false,
+            NonTSPseudoClass::ReadWrite => false,
+            NonTSPseudoClass::Required => false,
+            NonTSPseudoClass::ServoNonZeroBorder => false,
+            NonTSPseudoClass::Target => false,
+            NonTSPseudoClass::UserInvalid => false,
+            NonTSPseudoClass::UserValid => false,
+            NonTSPseudoClass::Valid => false,
+            NonTSPseudoClass::Visited => false
+        }
     }
 
-    fn match_pseudo_element(&self, pe: &<Self::Impl as SelectorImpl>::PseudoElement, context: &mut MatchingContext<Self::Impl>) -> bool {
-        todo!()
+    fn match_pseudo_element(
+        &self,
+        pe: &PseudoElement,
+        context: &mut MatchingContext<Self::Impl>
+    ) -> bool {
+        match self.data {
+            NodeData::AnonymousBlock(_) => *pe == PseudoElement::ServoAnonymousBox,
+            _ => false,
+        }
     }
 
     fn apply_selector_flags(&self, flags: ElementSelectorFlags) {
@@ -214,48 +296,61 @@ impl selectors::Element for Node<'_> {
     }
 
     fn is_link(&self) -> bool {
-        todo!()
+        self.data.is_element_with_tag_name(&local_name!("a"))
     }
 
     fn is_html_slot_element(&self) -> bool {
+        false
+    }
+
+    fn has_id(
+        &self,
+        id: &<Self::Impl as selectors::SelectorImpl>::Identifier,
+        case_sensitivity: CaseSensitivity
+    ) -> bool {
+        self.element_data()
+            .and_then(|data| data.id())
+            .map(|id_attribute| case_sensitivity.eq(id_attribute.as_ref(), id.as_ref().as_ref()))
+            .unwrap_or(false)
+    }
+
+    fn has_class(
+        &self,
+        name: &<Self::Impl as selectors::SelectorImpl>::Identifier,
+        case_sensitivity: CaseSensitivity
+    ) -> bool {
         todo!()
     }
 
-    fn has_id(&self, id: &<Self::Impl as SelectorImpl>::Identifier, case_sensitivity: CaseSensitivity) -> bool {
-        todo!()
+    fn has_custom_state(&self, name: &<Self::Impl as selectors::SelectorImpl>::Identifier) -> bool {
+        false
     }
 
-    fn has_class(&self, name: &<Self::Impl as SelectorImpl>::Identifier, case_sensitivity: CaseSensitivity) -> bool {
-        todo!()
+    fn imported_part(&self, name: &<Self::Impl as selectors::SelectorImpl>::Identifier) -> Option<<Self::Impl as SelectorImpl>::Identifier> {
+        None
     }
 
-    fn has_custom_state(&self, name: &<Self::Impl as SelectorImpl>::Identifier) -> bool {
-        todo!()
-    }
-
-    fn imported_part(&self, name: &<Self::Impl as SelectorImpl>::Identifier) -> Option<<Self::Impl as SelectorImpl>::Identifier> {
-        todo!()
-    }
-
-    fn is_part(&self, name: &<Self::Impl as SelectorImpl>::Identifier) -> bool {
-        todo!()
+    fn is_part(&self, name: &<Self::Impl as selectors::SelectorImpl>::Identifier) -> bool {
+        false
     }
 
     fn is_empty(&self) -> bool {
-        todo!()
+        self.dom_children().next().is_none()
     }
 
     fn is_root(&self) -> bool {
-        todo!()
+        self.parent_node().and_then(|parent| parent.parent_node()).is_none()
     }
 
     fn add_element_unique_hashes(&self, filter: &mut BloomFilter) -> bool {
-        todo!()
+        false
     }
 }
 
 impl<'a> TElement for Node<'a> {
     type ConcreteNode = Node<'a>;
+
+    type TraversalChildrenIterator = NodeTraverser<'a>;
 
     fn as_node(&self) -> Self::ConcreteNode {
         self
@@ -275,5 +370,27 @@ impl<'a> TElement for Node<'a> {
         } else {
             panic!("Not an element node");
         }
+    }
+}
+
+pub struct NodeTraverser<'a> {
+    parent: Node<'a>,
+    child_index: usize,
+}
+
+impl<'a> Iterator for NodeTraverser<'a> {
+    type Item = Node<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let node_id = self.parent.children.get(self.child_index);
+        let node = self.parent.get_node(*node_id);
+        self.child_index += 1;
+        Some(node)
+    }
+}
+
+impl Hash for Node<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_usize(self.id)
     }
 }
