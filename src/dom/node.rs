@@ -4,12 +4,14 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
-use html5ever::QualName;
+use html5ever::{LocalName, QualName};
 use html5ever::tendril::StrTendril;
 use skia_safe::FontMgr;
 use skia_safe::wrapper::PointerWrapper;
 use slab::Slab;
 use crate::css::ComputedValues;
+use style::data::ElementData as StyleElementData;
+use style::shared_lock::SharedRwLock;
 
 /// Callback type for layout invalidation
 pub type LayoutInvalidationCallback = Box<dyn Fn()>;
@@ -33,11 +35,24 @@ pub enum NodeData {
     Text { contents: RefCell<StrTendril> },
     Comment { contents: StrTendril },
     Element(ElementData),
+    // TODO better pseudo element support
+    AnonymousBlock(ElementData),
     ProcessingInstruction {
         target: String,
         data: String,
     },
     Image(RefCell<ImageData>),
+}
+
+impl NodeData {
+    pub fn is_element_with_tag_name(&self, tag_name: &impl PartialEq<LocalName>) -> bool {
+        match self {
+            NodeData::Element(data) | NodeData::AnonymousBlock(data) => {
+                *tag_name == data.name.local
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Data specific to element nodes
@@ -324,7 +339,6 @@ impl ImageData {
 }
 
 /// A node in the DOM tree
-#[derive(Clone)]
 #[allow(dead_code)] // Allow unused warnings for this struct
 pub struct DomNode {
     // the tree this belongs to
@@ -332,13 +346,15 @@ pub struct DomNode {
 
     pub id: usize,
     /// Parent node
-    pub parent: Option<Weak<RefCell<DomNode>>>,
+    pub parent: Option<usize>,
     /// Child nodes
     pub children: Vec<usize>,
 
     /// The type of node
     pub data: NodeData,
 
+    pub stylo_data: RefCell<Option<StyleElementData>>,
+    pub lock: SharedRwLock,
     pub style: ComputedValues,
 
     /// Event listener registry
@@ -347,11 +363,22 @@ pub struct DomNode {
     pub layout_invalidation_callback: Option<Rc<LayoutInvalidationCallback>>,
 }
 
+unsafe impl Send for DomNode {}
+
+unsafe impl Sync for DomNode {}
+
+impl PartialEq for DomNode {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
 impl DomNode {
     /// Create a new DOM node
     pub fn new(
         tree: *mut Slab<Rc<RefCell<DomNode>>>,
         id: usize,
+        lock: SharedRwLock,
         data: NodeData,
     ) -> Self {
         Self {
@@ -361,6 +388,8 @@ impl DomNode {
             parent: None,
             children: Vec::new(),
             data,
+            stylo_data: Default::default(),
+            lock,
             style: ComputedValues::default(),
             event_listeners: EventListenerRegistry::new(),
             layout_invalidation_callback: None,
@@ -373,6 +402,29 @@ impl DomNode {
 
     pub fn tree_mut(&mut self) -> &mut Slab<Rc<RefCell<DomNode>>> {
         unsafe { &mut *self.tree }
+    }
+
+    pub fn index(&self) -> Option<usize> {
+        self.tree()[self.parent?].borrow()
+            .children
+            .iter()
+            .position(|i| *i == self.id)
+    }
+
+    pub fn backward(&self, num: usize) -> Option<&Rc<RefCell<DomNode>>> {
+        let index = self.index()?;
+        self.tree()[self.parent?].borrow()
+            .children
+            .get(index - num)
+            .map(|id| self.get_node(*id))
+    }
+
+    pub fn forward(&self, num: usize) -> Option<&Rc<RefCell<DomNode>>> {
+        let index = self.index()?;
+        self.tree()[self.parent?].borrow()
+            .children
+            .get(index + num)
+            .map(|id| self.get_node(*id))
     }
 
     pub fn get_node(&self, id: usize) -> &Rc<RefCell<DomNode>> {
@@ -569,49 +621,6 @@ impl DomNode {
         false
     }
 
-    /// Get the next sibling element
-    pub fn next_element_sibling(&self) -> Option<Rc<RefCell<DomNode>>> {
-        if let Some(parent_weak) = &self.parent {
-            if let Some(parent_rc) = parent_weak.upgrade() {
-                let parent = parent_rc.borrow();
-                let mut found_self = false;
-
-                for child in &parent.children {
-                    let child = parent.get_node(*child);
-                    if found_self {
-                        if let NodeData::Element(_) = child.borrow().data {
-                            return Some(Rc::clone(child));
-                        }
-                    } else if std::ptr::eq(self, &*child.borrow()) {
-                        found_self = true;
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Get the previous sibling element
-    pub fn previous_element_sibling(&self) -> Option<Rc<RefCell<DomNode>>> {
-        if let Some(parent_weak) = &self.parent {
-            if let Some(parent_rc) = parent_weak.upgrade() {
-                let parent = parent_rc.borrow();
-                let mut previous_element: Option<Rc<RefCell<DomNode>>> = None;
-
-                for child in &parent.children {
-                    let child = parent.get_node(*child);
-                    if std::ptr::eq(self, &*child.borrow()) {
-                        return previous_element;
-                    }
-                    if let NodeData::Element(_) = child.borrow().data {
-                        previous_element = Some(Rc::clone(child));
-                    }
-                }
-            }
-        }
-        None
-    }
-
     /// Find nodes that match a predicate, returning owned references
     pub fn find_nodes<F>(&self, predicate: F) -> Vec<usize>
     where
@@ -666,6 +675,9 @@ impl fmt::Debug for DomNode {
                     
                     write!(f, "</{}>", data.name.local)
                 }
+            },
+            NodeData::AnonymousBlock(data) => {
+                write!(f, "<#anonymous-block {}>", data.name.local)
             },
             NodeData::Text { contents } => {
                 let contents = contents.borrow();
