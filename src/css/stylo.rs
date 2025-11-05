@@ -1,20 +1,30 @@
 use std::hash::{Hash, Hasher};
 use std::ptr::NonNull;
+use atomic_refcell::{AtomicRef, AtomicRefMut};
 use boa_engine::ast::expression::Identifier;
 use markup5ever::{local_name, LocalName, LocalNameStaticSet, Namespace, NamespaceStaticSet};
 use selectors::{OpaqueElement};
 use selectors::attr::{AttrSelectorOperation, AttrSelectorOperator, CaseSensitivity, NamespaceConstraint};
 use selectors::bloom::BloomFilter;
-use selectors::context::MatchingContext;
+use selectors::context::{MatchingContext, VisitedHandlingMode};
 use selectors::matching::ElementSelectorFlags;
-use style::context::QuirksMode;
-use style::dom::{NodeInfo, OpaqueNode, TDocument, TElement, TNode, TShadowRoot};
-use style::selector_parser::{NonTSPseudoClass, PseudoElement, SelectorImpl};
-use style::shared_lock::SharedRwLock;
+use selectors::sink::Push;
+use skia_safe::wrapper::NativeTransmutableWrapper;
+use style::animation::AnimationSetKey;
+use style::applicable_declarations::ApplicableDeclarationBlock;
+use style::context::{QuirksMode, SharedStyleContext};
+use style::data::ElementData;
+use style::dom::{LayoutIterator, NodeInfo, OpaqueNode, TDocument, TElement, TNode, TShadowRoot};
+use style::properties::PropertyDeclarationBlock;
+use style::selector_parser::{AttrValue, Lang, NonTSPseudoClass, PseudoElement, SelectorImpl};
+use style::servo_arc::{Arc, ArcBorrow};
+use style::shared_lock::{Locked, SharedRwLock};
 use style::stylist::CascadeData;
-use style::values::{AtomString, GenericAtomIdent};
+use style::values::{AtomIdent, AtomString, GenericAtomIdent};
+use style::values::computed::{Au, Display};
+use stylo_atoms::Atom;
 use stylo_dom::ElementState;
-use crate::dom::{DomNode, NodeData};
+use crate::dom::{damage, DomNode, NodeData};
 
 type Node<'a> = &'a DomNode;
 
@@ -163,6 +173,7 @@ impl selectors::Element for Node<'_> {
             }
             n += 1;
         }
+        None
     }
 
     fn next_sibling_element(&self) -> Option<Self> {
@@ -173,6 +184,7 @@ impl selectors::Element for Node<'_> {
             }
             n += 1;
         }
+        None
     }
 
     fn first_element_child(&self) -> Option<Self> {
@@ -181,7 +193,7 @@ impl selectors::Element for Node<'_> {
     }
 
     fn is_html_element_in_html_document(&self) -> bool {
-        todo!()
+        true
     }
 
     fn has_local_name(&self, local_name: &LocalName) -> bool {
@@ -326,7 +338,7 @@ impl selectors::Element for Node<'_> {
         false
     }
 
-    fn imported_part(&self, name: &<Self::Impl as selectors::SelectorImpl>::Identifier) -> Option<<Self::Impl as SelectorImpl>::Identifier> {
+    fn imported_part(&self, name: &<Self::Impl as selectors::SelectorImpl>::Identifier) -> Option<<Self::Impl as selectors::SelectorImpl>::Identifier> {
         None
     }
 
@@ -356,20 +368,218 @@ impl<'a> TElement for Node<'a> {
         self
     }
 
-    fn tag_name(&self) -> &str {
-        if let NodeData::Element { name, .. } = &self.data {
-            &name.local
-        } else {
-            ""
+    fn traversal_children(&self) -> LayoutIterator<Self::TraversalChildrenIterator> {
+        LayoutIterator(NodeTraverser {
+            parent: self,
+            child_index: 0,
+        })
+    }
+
+    fn is_html_element(&self) -> bool {
+        self.is_element()
+    }
+
+    fn is_mathml_element(&self) -> bool {
+        false // Not implemented
+    }
+
+    fn is_svg_element(&self) -> bool {
+        false // idk
+    }
+
+    fn style_attribute(&self) -> Option<ArcBorrow<'_, Locked<PropertyDeclarationBlock>>> {
+        self.element_data().expect("Not an element").style_attribute.as_ref().map(|block| block.borrow_arc())
+    }
+
+    fn animation_rule(&self, _: &SharedStyleContext) -> Option<Arc<Locked<PropertyDeclarationBlock>>> {
+        todo!()
+    }
+
+    fn transition_rule(&self, context: &SharedStyleContext) -> Option<Arc<Locked<PropertyDeclarationBlock>>> {
+        todo!()
+    }
+
+    fn state(&self) -> ElementState {
+        self.element_state
+    }
+
+    fn has_part_attr(&self) -> bool {
+        false
+    }
+
+    fn exports_any_part(&self) -> bool {
+        false
+    }
+
+    fn id(&self) -> Option<&Atom> {
+        self.element_data().and_then(|data| data.id.as_ref())
+    }
+
+    fn each_class<F>(&self, mut callback: F)
+    where
+        F: FnMut(&AtomIdent)
+    {
+        let class = self.data.attr(&"class".to_string());
+        if let Some(class) = class {
+            for class_name in class.split_ascii_whitespace() {
+                let atom = Atom::from(class_name);
+                callback(AtomIdent::cast(&atom));
+            }
         }
     }
 
-    fn attributes(&self) -> &std::collections::HashMap<String, String> {
-        if let NodeData::Element { attributes, .. } = &self.data {
-            attributes
-        } else {
-            panic!("Not an element node");
+    fn each_custom_state<F>(&self, callback: F)
+    where
+        F: FnMut(&AtomIdent)
+    {
+        todo!()
+    }
+
+    fn each_attr_name<F>(&self, mut callback: F)
+    where
+        F: FnMut(&style::LocalName)
+    {
+        if let Some(attrs) = self.data.attrs() {
+            for attr in attrs.keys() {
+                callback(&GenericAtomIdent(LocalName::from(attr.clone())));
+            }
         }
+
+    }
+
+    fn has_dirty_descendants(&self) -> bool {
+        true
+    }
+
+    fn has_snapshot(&self) -> bool {
+        self.has_snapshot
+    }
+
+    fn handled_snapshot(&self) -> bool {
+        todo!()
+    }
+
+    unsafe fn set_handled_snapshot(&self) {
+        todo!()
+    }
+
+    unsafe fn set_dirty_descendants(&self) {}
+
+    unsafe fn unset_dirty_descendants(&self) {
+    }
+
+    fn store_children_to_process(&self, n: isize) {
+        unimplemented!()
+    }
+
+    fn did_process_child(&self) -> isize {
+        unimplemented!()
+    }
+
+    unsafe fn ensure_data(&self) -> AtomicRefMut<'_, ElementData> {
+        let mut stylo_data = self.stylo_data.borrow_mut();
+        if stylo_data.is_none() {
+            *stylo_data = Some(ElementData {
+                damage: damage::ALL_DAMAGE,
+                ..Default::default()
+            });
+        }
+        AtomicRefMut::map(stylo_data, |sd| sd.as_mut().unwrap())
+    }
+
+    unsafe fn clear_data(&self) {
+        *self.stylo_data.borrow_mut() = None;
+    }
+
+    fn has_data(&self) -> bool {
+        self.stylo_data.borrow().is_some()
+    }
+
+    fn borrow_data(&self) -> Option<AtomicRef<'_, ElementData>> {
+        let stylo_data = self.stylo_data.borrow();
+        if stylo_data.is_some() {
+            Some(AtomicRef::map(stylo_data, |sd| sd.as_ref().unwrap()))
+        } else {
+            None
+        }
+    }
+
+    fn mutate_data(&self) -> Option<AtomicRefMut<'_, ElementData>> {
+        let stylo_data = self.stylo_data.borrow_mut();
+        if stylo_data.is_some() {
+            Some(AtomicRefMut::map(stylo_data, |sd| sd.as_mut().unwrap()))
+        } else {
+            None
+        }
+    }
+
+    fn skip_item_display_fixup(&self) -> bool {
+        false
+    }
+
+    fn may_have_animations(&self) -> bool {
+        true
+    }
+
+    fn has_animations(&self, context: &SharedStyleContext) -> bool {
+        self.has_css_animations(context, None) || self.has_css_transitions(context, None)
+    }
+
+    fn has_css_animations(&self, context: &SharedStyleContext, pseudo_element: Option<PseudoElement>) -> bool {
+        let key = AnimationSetKey::new(TNode::opaque(&TElement::as_node(self)), pseudo_element);
+        context.animations.has_active_animations(&key)
+    }
+
+    fn has_css_transitions(&self, context: &SharedStyleContext, pseudo_element: Option<PseudoElement>) -> bool {
+        let key = AnimationSetKey::new(TNode::opaque(&TElement::as_node(self)), pseudo_element);
+        context.animations.has_active_transitions(&key)
+    }
+
+    fn shadow_root(&self) -> Option<<Self::ConcreteNode as TNode>::ConcreteShadowRoot> {
+        None
+    }
+
+    fn containing_shadow(&self) -> Option<<Self::ConcreteNode as TNode>::ConcreteShadowRoot> {
+        None
+    }
+
+    fn lang_attr(&self) -> Option<AttrValue> {
+        None
+    }
+
+    fn match_element_lang(&self, override_lang: Option<Option<AttrValue>>, value: &Lang) -> bool {
+        false
+    }
+
+    fn is_html_document_body_element(&self) -> bool {
+        todo!()
+    }
+
+    fn synthesize_presentational_hints_for_legacy_attributes<V>(&self, visited_handling: VisitedHandlingMode, hints: &mut V)
+    where
+        V: Push<ApplicableDeclarationBlock>
+    {
+        todo!()
+    }
+
+    fn local_name(&self) -> &<SelectorImpl as selectors::SelectorImpl>::BorrowedLocalName {
+        todo!()
+    }
+
+    fn namespace(&self) -> &<SelectorImpl as selectors::SelectorImpl>::BorrowedNamespaceUrl {
+        todo!()
+    }
+
+    fn query_container_size(&self, display: &Display) -> euclid::default::Size2D<Option<Au>> {
+        todo!()
+    }
+
+    fn has_selector_flags(&self, flags: ElementSelectorFlags) -> bool {
+        todo!()
+    }
+
+    fn relative_selector_search_direction(&self) -> ElementSelectorFlags {
+        todo!()
     }
 }
 
@@ -383,7 +593,7 @@ impl<'a> Iterator for NodeTraverser<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let node_id = self.parent.children.get(self.child_index);
-        let node = self.parent.get_node(*node_id);
+        let node = self.parent.get_node(*node_id.unwrap());
         self.child_index += 1;
         Some(node)
     }

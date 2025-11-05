@@ -6,6 +6,7 @@ use markup5ever_rcdom as rcdom;
 use markup5ever_rcdom::{Handle, NodeData as EverNodeData};
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
+use crate::dom::config::DomConfig;
 
 /// HTML Parser for converting HTML strings into DOM structures
 pub struct HtmlParser;
@@ -22,7 +23,7 @@ impl HtmlParser {
         let rcdom = parser.one(html);
 
         // Convert RcDom to our DOM structure
-        let mut dom = Dom::new();
+        let mut dom = Dom::new(DomConfig::default());
         self.build_dom_from_handle(&rcdom.document, None, &mut dom);
 
         dom
@@ -32,7 +33,7 @@ impl HtmlParser {
     fn build_dom_from_handle(
         &self, 
         handle: &Handle, 
-        parent: Option<Weak<RefCell<DomNode>>>, // Remove underscore since we'll use it
+        parent: Option<&mut DomNode>, // Remove underscore since we'll use it
         dom: &mut Dom,
     ) {
         // Determine node type from rcdom
@@ -41,10 +42,10 @@ impl HtmlParser {
                 // Our Dom already has a root Document node at id 0
                 let root_id = 0usize;
                 // Recurse into children of the document, setting parent to root
-                let parent_weak = Some(Rc::downgrade(&dom.nodes[root_id]));
+                let parent_weak = Some(&mut dom.nodes[root_id]);
                 let children = handle.children.borrow();
                 for child in children.iter() {
-                    self.build_dom_from_handle(child, parent_weak.clone(), dom);
+                    self.build_dom_from_handle(child, parent_weak, dom);
                 }
             }
             EverNodeData::Doctype { name, public_id, system_id } => {
@@ -56,13 +57,11 @@ impl HtmlParser {
                 };
                 let id = dom.create_node(data);
                 // Attach to parent if provided
-                if let Some(p) = parent {
-                    if let Some(parent_rc) = p.upgrade() {
+                if let Some(mut p) = parent {
                         // set parent on new node and add as child
-                        let node_rc = dom.nodes[id].clone();
-                        node_rc.borrow_mut().parent = Some(Rc::downgrade(&parent_rc));
-                        parent_rc.borrow_mut().children.push(id);
-                    }
+                        let mut node_rc = dom.nodes[id];
+                        node_rc.parent = Some(p.id);
+                        p.children.push(id)
                 }
             }
             EverNodeData::Text { contents } => {
@@ -74,22 +73,18 @@ impl HtmlParser {
                 let data = NodeData::Text { contents: RefCell::new(StrTendril::from(processed)) };
                 let id = dom.create_node(data);
                 if let Some(p) = parent {
-                    if let Some(parent_rc) = p.upgrade() {
-                        let node_rc = dom.nodes[id].clone();
-                        node_rc.borrow_mut().parent = Some(Rc::downgrade(&parent_rc));
-                        parent_rc.borrow_mut().children.push(id);
-                    }
+                    let node_rc = &mut dom.nodes[id];
+                    node_rc.parent = Some(p.id);
+                    p.children.push(id);
                 }
             }
             EverNodeData::Comment { contents } => {
                 let data = NodeData::Comment { contents: contents.clone() };
                 let id = dom.create_node(data);
-                if let Some(p) = parent {
-                    if let Some(parent_rc) = p.upgrade() {
-                        let node_rc = dom.nodes[id].clone();
-                        node_rc.borrow_mut().parent = Some(Rc::downgrade(&parent_rc));
-                        parent_rc.borrow_mut().children.push(id);
-                    }
+                if let Some(parent) = parent {
+                    let mut node_rc = &mut dom.nodes[id];
+                    node_rc.parent = Some(parent.id);
+                    parent.children.push(id);
                 }
             }
             EverNodeData::Element { name, attrs, template_contents, .. } => {
@@ -116,54 +111,56 @@ impl HtmlParser {
                 let id = dom.create_node(node_kind);
 
                 // Attach to parent
-                if let Some(p) = &parent {
-                    if let Some(parent_rc) = p.upgrade() {
-                        let node_rc = dom.nodes[id].clone();
-                        node_rc.borrow_mut().parent = Some(Rc::downgrade(&parent_rc));
-                        parent_rc.borrow_mut().children.push(id);
-                    }
+                if let Some(parent) = parent {
+                    let node_rc = &mut dom.nodes[id];
+                    node_rc.parent = Some(parent.id);
+                    parent.children.push(id);
                 }
 
                 // If element has template contents (e.g., <template>), recurse into them and attach to the created element's template_contents
                 if let Some(template_handle) = template_contents.borrow().as_ref() {
                     // Recurse but with parent being the new element
-                    let new_parent = Some(Rc::downgrade(&dom.nodes[id]));
+                    let new_parent = Some(&mut dom.nodes[id]);
                     // Build a DocumentFragment to hold template children
                     let frag_id = dom.create_node(NodeData::DocumentFragment);
                     // attach fragment as child of the element
                     {
-                        let elem_rc = dom.nodes[id].clone();
-                        let frag_rc = dom.nodes[frag_id].clone();
-                        frag_rc.borrow_mut().parent = Some(Rc::downgrade(&elem_rc));
-                        elem_rc.borrow_mut().children.push(frag_id);
-                        // set the element's template_contents to the fragment handle
-                        if let NodeData::Element(ed) = &elem_rc.borrow().data {
-                            *ed.template_contents.borrow_mut() = Some(frag_rc.clone());
+                        {
+                            let elem_rc = dom.nodes.get_mut(id).unwrap();
+                            let id = elem_rc.id.clone();
+                            let frag_rc = dom.nodes.get_mut(frag_id).unwrap();
+                            frag_rc.parent = Some(id);
+                        }
+                        {
+                            let elem_rc = &mut dom.nodes[id];
+                            elem_rc.children.push(frag_id);
+                            // set the element's template_contents to the fragment handle
+                            if let NodeData::Element(ed) = &mut elem_rc.data {
+                                ed.template_contents = Some(frag_id);
+                            }
                         }
                     }
                     // Recurse children of template into the fragment
                     let children = template_handle.children.borrow();
                     for child in children.iter() {
-                        self.build_dom_from_handle(child, Some(Rc::downgrade(&dom.nodes[frag_id])), dom);
+                        self.build_dom_from_handle(child, Some(&mut dom.nodes[frag_id]), dom);
                     }
                 }
 
                 // Recurse into children (normal child nodes)
-                let new_parent = Some(Rc::downgrade(&dom.nodes[id]));
+                let new_parent = Some(&mut dom.nodes[id]);
                 let children = handle.children.borrow();
                 for child in children.iter() {
-                    self.build_dom_from_handle(child, new_parent.clone(), dom);
+                    self.build_dom_from_handle(child, new_parent, dom);
                 }
             }
             EverNodeData::ProcessingInstruction { target, contents } => {
                 let data = NodeData::ProcessingInstruction { target: target.to_string(), data: contents.to_string() };
                 let id = dom.create_node(data);
-                if let Some(p) = parent {
-                    if let Some(parent_rc) = p.upgrade() {
-                        let node_rc = dom.nodes[id].clone();
-                        node_rc.borrow_mut().parent = Some(Rc::downgrade(&parent_rc));
-                        parent_rc.borrow_mut().children.push(id);
-                    }
+                if let Some(parent) = parent {
+                    let node_rc = &mut dom.nodes[id];
+                    node_rc.parent = Some(parent.id);
+                    parent.children.push(id);
                 }
             }
             _ => {

@@ -8,6 +8,7 @@ use crate::css::{ComputedValues, StyleResolver, Stylesheet};
 use crate::dom::{DomNode, NodeData};
 use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::rc::Rc;
 
 // Add taffy imports
@@ -18,7 +19,6 @@ use taffy::geometry::Size as TaffySize;
 pub struct LayoutEngine {
     viewport_width: f32,
     viewport_height: f32,
-    node_map: HashMap<usize, Rc<RefCell<DomNode>>>,
     next_node_id: usize,
     style_resolver: StyleResolver,
 }
@@ -28,24 +28,22 @@ impl LayoutEngine {
         Self {
             viewport_width,
             viewport_height,
-            node_map: HashMap::new(),
             next_node_id: 0,
             style_resolver: StyleResolver::new(),
         }
     }
 
     /// Compute layout for a DOM tree
-    pub fn compute_layout(&mut self, root: &Rc<RefCell<DomNode>>, scale_factor: f32) -> LayoutBox {
-        // Clear previous layout
-        self.node_map.clear();
+    pub fn compute_layout(&mut self, root: &mut DomNode, scale_factor: f32) -> LayoutBox {
         self.next_node_id = 0;
 
         // First pass: compute styles for all nodes
-        self.compute_styles_recursive(root, None);
+        let root_cell = RefCell::new(root);
+        self.compute_styles_recursive(&root_cell, None);
         self.next_node_id = 0; // Reset for layout tree building
 
         // Second pass: build layout tree from DOM with styles applied
-        let mut layout_root = self.build_layout_tree(root);
+        let mut layout_root = self.build_layout_tree(root_cell);
 
         // Reserve space for browser UI at the top (address bar, tabs, etc.)
         let ui_height = 0.0;
@@ -59,13 +57,10 @@ impl LayoutEngine {
     }
 
     /// Build layout tree from DOM tree
-    fn build_layout_tree(&mut self, dom_node: &Rc<RefCell<DomNode>>) -> LayoutBox {
-        let borrowed = dom_node.borrow_mut();
+    fn build_layout_tree(&mut self, dom_node: RefCell<&mut DomNode>) -> LayoutBox {
+        let borrowed = dom_node.borrow();
         let node_id = self.next_node_id;
         self.next_node_id += 1;
-
-        // Store reference for renderer
-        self.node_map.insert(node_id, Rc::clone(dom_node));
 
         let style = borrowed.style.clone();
         let mut layout_box = match &borrowed.data {
@@ -135,8 +130,11 @@ impl LayoutEngine {
 
         // Process children
         for child in &borrowed.children {
-            let child = borrowed.get_node(*child);
-            let child_layout = self.build_layout_tree(child);
+            let mut borrowed = dom_node.borrow_mut();
+            let child = borrowed.get_node_mut(*child);
+
+            let child_layout = self.build_layout_tree(RefCell::new(child));
+            drop(borrowed);
             layout_box.children.push(child_layout);
         }
 
@@ -163,12 +161,6 @@ impl LayoutEngine {
         }
     }
 
-    /// Get the node map for renderers
-    #[inline]
-    pub fn get_node_map(&self) -> &HashMap<usize, Rc<RefCell<DomNode>>> {
-        &self.node_map
-    }
-
     /// Update viewport size
     #[inline]
     pub fn set_viewport(&mut self, width: f32, height: f32) {
@@ -183,17 +175,20 @@ impl LayoutEngine {
     }
 
     /// Recursively compute styles for DOM nodes
-    fn compute_styles_recursive(&self, node: &Rc<RefCell<DomNode>>, parent_styles: Option<&ComputedValues>) {
+    fn compute_styles_recursive(&self, node: &RefCell<&mut DomNode>, parent_styles: Option<&ComputedValues>) {
         let mut borrowed = node.borrow_mut();
         // Compute styles for this node
-        let computed_styles = self.style_resolver.resolve_styles(&*borrowed, parent_styles);
+        let computed_styles = self.style_resolver.resolve_styles(borrowed.deref(), parent_styles);
         borrowed.style = computed_styles.clone();
 
+        drop(borrowed);
+        let borrowed = node.borrow();
         // Process children
         let children = &borrowed.children;
         for child in children {
-            let child = borrowed.get_node(*child);
-            self.compute_styles_recursive(child, Some(&computed_styles));
-        }
+            let mut borrowed = node.borrow_mut();
+            let child = borrowed.get_node_mut(*child);
+            self.compute_styles_recursive(&RefCell::from(child), Some(&computed_styles));
+        };
     }
 }

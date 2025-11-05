@@ -21,8 +21,10 @@ pub struct JsRuntime {
 
 impl JsRuntime {
     /// Create a new JavaScript runtime
-    pub fn new(document_root: Rc<RefCell<Dom>>, user_agent: String) -> JsResult<Self> {
+    pub fn new(mut document_root: *mut Dom, user_agent: String) -> JsResult<Self> {
         let mut context = Context::default();
+        let document_root = unsafe { *document_root };
+        let document_root = Rc::new(RefCell::new(document_root));
 
         // Initialize browser bindings
         initialize_bindings(&mut context, document_root.clone(), user_agent.clone())?;

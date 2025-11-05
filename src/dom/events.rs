@@ -473,7 +473,7 @@ impl EventDispatcher {
             if event.propagation_stopped {
                 break;
             }
-            event.current_target = Some(Rc::as_ptr(ancestor) as usize);
+            event.current_target = Some(**ancestor);
             Self::fire_listeners(ancestor, &event, true, context)?;
         }
 
@@ -500,38 +500,38 @@ impl EventDispatcher {
     }
 
     /// Get all ancestors of a node
-    fn get_ancestors(node: &Rc<RefCell<DomNode>>) -> Vec<Rc<RefCell<DomNode>>> {
+    fn get_ancestors(node: &Rc<RefCell<DomNode>>) -> Vec<&usize> {
         use std::collections::HashSet;
 
-        let mut ancestors = Vec::new();
-        let mut current = Rc::clone(node);
+        let mut ancestors: Vec<&usize> = Vec::new();
+        let mut current = node.borrow().id;
         let mut visited = HashSet::new();
 
         // Track the starting node to prevent infinite loops
-        visited.insert(Rc::as_ptr(&current) as usize);
+        visited.insert(current);
 
         loop {
             let parent_rc = {
-                let node_borrowed = current.borrow();
+                let current_borrowed = node.borrow();
+                let node_borrowed = current_borrowed;
                 match &node_borrowed.parent {
-                    Some(parent_weak) => parent_weak.upgrade(),
+                    Some(parent_weak) => Some(parent_weak),
                     None => None,
                 }
             };
 
             match parent_rc {
                 Some(parent) => {
-                    let parent_ptr = Rc::as_ptr(&parent) as usize;
 
                     // Check for circular reference
-                    if visited.contains(&parent_ptr) {
+                    if visited.contains(parent) {
                         eprintln!("Warning: Circular reference detected in DOM tree parent chain");
                         break;
                     }
 
-                    visited.insert(parent_ptr);
-                    ancestors.push(Rc::clone(&parent));
-                    current = parent;
+                    visited.insert(*parent);
+                    ancestors.push(parent);
+                    current = *parent;
                 }
                 None => break,
             }
@@ -584,7 +584,7 @@ impl EventDispatcher {
 
     /// Dispatch a mouse event
     pub fn dispatch_mouse_event(
-        target: &Rc<RefCell<DomNode>>,
+        target: &DomNode,
         event_type: EventType,
         x: f64,
         y: f64,
@@ -596,7 +596,7 @@ impl EventDispatcher {
 
     /// Dispatch a keyboard event
     pub fn dispatch_keyboard_event(
-        target: &Rc<RefCell<DomNode>>,
+        target: &DomNode,
         event_type: EventType,
         key: String,
         key_code: u32,
@@ -608,7 +608,7 @@ impl EventDispatcher {
 
     /// Dispatch a simple event (no mouse/keyboard data)
     pub fn dispatch_simple_event(
-        target: &Rc<RefCell<DomNode>>,
+        target: &DomNode,
         event_type: EventType,
         context: &mut Context,
     ) -> Result<(), String> {

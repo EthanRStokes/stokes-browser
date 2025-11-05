@@ -5,12 +5,13 @@ use boa_engine::property::Attribute;
 use boa_engine::{object::builtins::JsArray, Context, JsResult as BoaResult, JsString, JsValue, NativeFunction};
 use boa_gc::{Finalize, Trace};
 use std::cell::RefCell;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use html5ever::{ns, QualName};
 use super::register_node; // register nodes in global registry
 
 /// Wrapper for a DOM element that can be used in JavaScript
-#[derive(Debug, Clone, Trace, Finalize)]
+#[derive(Clone, Trace, Finalize)]
 pub struct ElementWrapper {
     #[unsafe_ignore_trace]
     pub dom: Rc<RefCell<Dom>>,
@@ -23,28 +24,28 @@ impl ElementWrapper {
 
     /// Create a JavaScript object from a DOM element
     pub fn create_js_element(
-        element_rc: &Rc<RefCell<DomNode>>,
+        node_rc: &Rc<RefCell<DomNode>>,
         context: &mut Context,
     ) -> BoaResult<JsValue> {
-        let element = element_rc.borrow();
+        let node = node_rc.borrow();
+        if let NodeData::Element(ref data) = node.data {
 
-        if let NodeData::Element(ref data) = element.data {
             // Clone the Rc for use in closures
-            let node_for_get_attr = Rc::clone(element_rc);
-            let node_for_set_attr = Rc::clone(element_rc);
-            let node_for_remove_attr = Rc::clone(element_rc);
-            let node_for_has_attr = Rc::clone(element_rc);
-            let node_for_append_child = Rc::clone(element_rc);
-            let node_for_remove_child = Rc::clone(element_rc);
-            let node_for_insert_before = Rc::clone(element_rc);
-            let node_for_query_selector = Rc::clone(element_rc);
-            let node_for_query_selector_all = Rc::clone(element_rc);
-            let node_for_add_event_listener = Rc::clone(element_rc);
-            let node_for_remove_event_listener = Rc::clone(element_rc);
-            let node_for_text_content_get = Rc::clone(element_rc);
-            let node_for_text_content_set = Rc::clone(element_rc);
+            let node_for_get_attr = Rc::clone(&node_rc);
+            let node_for_set_attr = Rc::clone(&node_rc);
+            let node_for_remove_attr = Rc::clone(&node_rc);
+            let node_for_has_attr = Rc::clone(&node_rc);
+            let node_for_append_child = Rc::clone(&node_rc);
+            let node_for_remove_child = Rc::clone(&node_rc);
+            let node_for_insert_before = Rc::clone(&node_rc);
+            let node_for_query_selector = Rc::clone(&node_rc);
+            let node_for_query_selector_all = Rc::clone(&node_rc);
+            let node_for_add_event_listener = Rc::clone(&node_rc);
+            let node_for_remove_event_listener = Rc::clone(&node_rc);
+            let node_for_text_content_get = Rc::clone(&node_rc);
+            let node_for_text_content_set = Rc::clone(&node_rc);
             // Store the node reference for child manipulation
-            let node_ref_for_storage = Rc::clone(element_rc);
+            let node_ref_for_storage = Rc::clone(&node_rc);
 
             // Create accessor functions before ObjectInitializer to avoid borrow conflicts
             let text_content_getter = unsafe {
@@ -282,9 +283,9 @@ impl ElementWrapper {
                                         let initial_count = parent_node.children.len();
 
                                         parent_node.children.retain(|child| {
-                                            let parent = node_for_remove_child.borrow();
-                                            let child = parent.get_node(*child);
-                                            let child_addr = Rc::as_ptr(child) as i64;
+                                            let mut parent = node_for_remove_child.borrow_mut();
+                                            let child = parent.get_node_mut(*child);
+                                            let child_addr = (&raw mut *child) as i64;
                                             child_addr != child_ptr_addr
                                         });
 
@@ -336,7 +337,7 @@ impl ElementWrapper {
 
                             if let Some(callback_obj) = callback {
                                 let event_type = EventType::from_str(&event_type_str);
-                                let mut node = node_for_add_event_listener.borrow_mut();
+                                let node = node_for_add_event_listener.borrow_mut();
                                 let listener_id = node.event_listeners.add_listener(event_type, callback_obj, use_capture);
                                 println!("[JS] Event listener added with ID: {}", listener_id);
                             } else {
@@ -393,16 +394,18 @@ impl ElementWrapper {
 
                             println!("[JS] element.querySelector('{}') called", selector);
 
-                            let node = node_for_query_selector.borrow();
+                            let mut node = node_for_query_selector.borrow_mut();
                             let results = node.query_selector(&selector);
 
-                            if let Some(result_rc) = results.first() {
-                                let result_rc = node.get_node(*result_rc);
+                            let result = if let Some(result_rc) = results.first() {
+                                let result_rc = node.get_node_mut(*result_rc);
                                 //drop(node); // Release borrow before creating JS element
                                 ElementWrapper::create_js_element(result_rc, context)
                             } else {
                                 Ok(JsValue::null())
-                            }
+                            };
+                            drop(node);
+                            result
                         })
                     },
                     JsString::from("querySelector"),
@@ -424,10 +427,12 @@ impl ElementWrapper {
 
                             let array = JsArray::new(context);
                             for (i, result_rc) in results.iter().enumerate() {
-                                let result_rc = node.get_node(*result_rc);
+                                let mut node = node_for_query_selector_all.borrow_mut();
+                                let result_rc = node.get_node_mut(*result_rc);
                                 if let Ok(js_elem) = ElementWrapper::create_js_element(result_rc, context) {
                                     let _ = array.set(i, js_elem, true, context);
                                 }
+                                drop(node)
                             }
 
                             println!("[JS] element.querySelectorAll found {} elements", results.len());
@@ -461,9 +466,9 @@ impl ElementWrapper {
         let qual_name = QualName::new(None, ns!(), tag_name.into());
         let element_data = ElementData::new(qual_name);
         let new_node = dom.create_node(NodeData::Element(element_data));
-        let new_node = &dom.nodes[new_node];
+        let new_node = &mut dom.nodes[new_node];
 
         // Use the same create_js_element function for consistency
-        Self::create_js_element(&new_node, context)
+        Self::create_js_element(new_node, context)
     }
 }
