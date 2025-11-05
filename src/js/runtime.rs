@@ -14,20 +14,21 @@ const RED_ZONE: usize = 32 * 1024;
 /// JavaScript runtime that manages execution context
 pub struct JsRuntime {
     context: Context,
-    document_root: Rc<RefCell<Dom>>,
+    //document_root: Rc<RefCell<Dom>>,
     timer_manager: Rc<TimerManager>,
     user_agent: String,
 }
 
 impl JsRuntime {
     /// Create a new JavaScript runtime
-    pub fn new(mut document_root: *mut Dom, user_agent: String) -> JsResult<Self> {
+    pub fn new(/*TODO mut document_root: *mut Dom, */user_agent: String) -> JsResult<Self> {
         let mut context = Context::default();
-        let document_root = unsafe { *document_root };
-        let document_root = Rc::new(RefCell::new(document_root));
+        //let document_root = unsafe { *document_root };
+        //let document_root = Rc::new(RefCell::new(document_root));
 
         // Initialize browser bindings
-        initialize_bindings(&mut context, document_root.clone(), user_agent.clone())?;
+        // TODO reimplement javascript
+        //initialize_bindings(&mut context, document_root.clone(), user_agent.clone())?;
 
         // Create and set up timer manager
         let timer_manager = Rc::new(TimerManager::new());
@@ -35,7 +36,7 @@ impl JsRuntime {
 
         Ok(Self {
             context,
-            document_root,
+        //    document_root,
             timer_manager,
             user_agent,
         })

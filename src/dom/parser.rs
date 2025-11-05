@@ -1,11 +1,10 @@
-use super::{AttributeMap, Dom, DomNode, ElementData, ImageData, NodeData};
+use super::{AttributeMap, Dom, ElementData, ImageData, NodeData};
 // HTML parser using html5ever
 use html5ever::parse_document;
 use html5ever::tendril::{StrTendril, TendrilSink};
 use markup5ever_rcdom as rcdom;
 use markup5ever_rcdom::{Handle, NodeData as EverNodeData};
 use std::cell::RefCell;
-use std::rc::{Rc, Weak};
 use crate::dom::config::DomConfig;
 
 /// HTML Parser for converting HTML strings into DOM structures
@@ -33,7 +32,7 @@ impl HtmlParser {
     fn build_dom_from_handle(
         &self, 
         handle: &Handle, 
-        parent: Option<&mut DomNode>, // Remove underscore since we'll use it
+        parent_id: Option<usize>,
         dom: &mut Dom,
     ) {
         // Determine node type from rcdom
@@ -42,10 +41,9 @@ impl HtmlParser {
                 // Our Dom already has a root Document node at id 0
                 let root_id = 0usize;
                 // Recurse into children of the document, setting parent to root
-                let parent_weak = Some(&mut dom.nodes[root_id]);
                 let children = handle.children.borrow();
                 for child in children.iter() {
-                    self.build_dom_from_handle(child, parent_weak, dom);
+                    self.build_dom_from_handle(child, Some(root_id), dom);
                 }
             }
             EverNodeData::Doctype { name, public_id, system_id } => {
@@ -57,11 +55,10 @@ impl HtmlParser {
                 };
                 let id = dom.create_node(data);
                 // Attach to parent if provided
-                if let Some(mut p) = parent {
-                        // set parent on new node and add as child
-                        let mut node_rc = dom.nodes[id];
-                        node_rc.parent = Some(p.id);
-                        p.children.push(id)
+                if let Some(pid) = parent_id {
+                    // set parent on new node and add as child
+                    dom.nodes[id].parent = Some(pid);
+                    dom.nodes[pid].children.push(id);
                 }
             }
             EverNodeData::Text { contents } => {
@@ -72,19 +69,17 @@ impl HtmlParser {
                 }
                 let data = NodeData::Text { contents: RefCell::new(StrTendril::from(processed)) };
                 let id = dom.create_node(data);
-                if let Some(p) = parent {
-                    let node_rc = &mut dom.nodes[id];
-                    node_rc.parent = Some(p.id);
-                    p.children.push(id);
+                if let Some(pid) = parent_id {
+                    dom.nodes[id].parent = Some(pid);
+                    dom.nodes[pid].children.push(id);
                 }
             }
             EverNodeData::Comment { contents } => {
                 let data = NodeData::Comment { contents: contents.clone() };
                 let id = dom.create_node(data);
-                if let Some(parent) = parent {
-                    let mut node_rc = &mut dom.nodes[id];
-                    node_rc.parent = Some(parent.id);
-                    parent.children.push(id);
+                if let Some(pid) = parent_id {
+                    dom.nodes[id].parent = Some(pid);
+                    dom.nodes[pid].children.push(id);
                 }
             }
             EverNodeData::Element { name, attrs, template_contents, .. } => {
@@ -111,56 +106,43 @@ impl HtmlParser {
                 let id = dom.create_node(node_kind);
 
                 // Attach to parent
-                if let Some(parent) = parent {
-                    let node_rc = &mut dom.nodes[id];
-                    node_rc.parent = Some(parent.id);
-                    parent.children.push(id);
+                if let Some(pid) = parent_id {
+                    dom.nodes[id].parent = Some(pid);
+                    dom.nodes[pid].children.push(id);
                 }
 
                 // If element has template contents (e.g., <template>), recurse into them and attach to the created element's template_contents
                 if let Some(template_handle) = template_contents.borrow().as_ref() {
-                    // Recurse but with parent being the new element
-                    let new_parent = Some(&mut dom.nodes[id]);
                     // Build a DocumentFragment to hold template children
                     let frag_id = dom.create_node(NodeData::DocumentFragment);
                     // attach fragment as child of the element
                     {
-                        {
-                            let elem_rc = dom.nodes.get_mut(id).unwrap();
-                            let id = elem_rc.id.clone();
-                            let frag_rc = dom.nodes.get_mut(frag_id).unwrap();
-                            frag_rc.parent = Some(id);
-                        }
-                        {
-                            let elem_rc = &mut dom.nodes[id];
-                            elem_rc.children.push(frag_id);
-                            // set the element's template_contents to the fragment handle
-                            if let NodeData::Element(ed) = &mut elem_rc.data {
-                                ed.template_contents = Some(frag_id);
-                            }
+                        dom.nodes[frag_id].parent = Some(id);
+                        dom.nodes[id].children.push(frag_id);
+                        // set the element's template_contents to the fragment handle
+                        if let NodeData::Element(ed) = &mut dom.nodes[id].data {
+                            ed.template_contents = Some(frag_id);
                         }
                     }
                     // Recurse children of template into the fragment
                     let children = template_handle.children.borrow();
                     for child in children.iter() {
-                        self.build_dom_from_handle(child, Some(&mut dom.nodes[frag_id]), dom);
+                        self.build_dom_from_handle(child, Some(frag_id), dom);
                     }
                 }
 
                 // Recurse into children (normal child nodes)
-                let new_parent = Some(&mut dom.nodes[id]);
                 let children = handle.children.borrow();
                 for child in children.iter() {
-                    self.build_dom_from_handle(child, new_parent, dom);
+                    self.build_dom_from_handle(child, Some(id), dom);
                 }
             }
             EverNodeData::ProcessingInstruction { target, contents } => {
                 let data = NodeData::ProcessingInstruction { target: target.to_string(), data: contents.to_string() };
                 let id = dom.create_node(data);
-                if let Some(parent) = parent {
-                    let node_rc = &mut dom.nodes[id];
-                    node_rc.parent = Some(parent.id);
-                    parent.children.push(id);
+                if let Some(pid) = parent_id {
+                    dom.nodes[id].parent = Some(pid);
+                    dom.nodes[pid].children.push(id);
                 }
             }
             _ => {

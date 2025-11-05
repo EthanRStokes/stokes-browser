@@ -1,4 +1,4 @@
-use super::element_bindings::ElementWrapper;
+/*use super::element_bindings::ElementWrapper;
 use crate::dom::{Dom, DomNode, NodeData};
 use base64::Engine;
 // DOM bindings for JavaScript
@@ -378,7 +378,8 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<Dom>>
     // Create closures that use the DocumentWrapper methods
     let get_element_by_id_fn = unsafe {
         NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
-            doc_wrapper.get_element_by_id(args, context)
+            //TODO doc_wrapper.get_element_by_id(args, context)
+            Ok(JsValue::null())
         })
     };
 
@@ -670,7 +671,7 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<Dom>>
     context.register_global_property(JsString::from("Polymer"), polymer, boa_engine::property::Attribute::all())
         .map_err(|e| format!("Failed to register Polymer object: {}", e))?;
 
-    let element_ctor_wrapper = ElementWrapper::new(RefCell::from(document_root));
+    let element_ctor_wrapper = ElementWrapper::new(document_root);
     // Create Element constructor with common constants
     let element_ctor: JsValue = unsafe {
         NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
@@ -699,7 +700,7 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<Dom>>
     context.register_global_property(JsString::from("Element"), element_ctor.clone(), boa_engine::property::Attribute::all())
         .map_err(|e| format!("Failed to register Element constructor: {}", e))?;
 
-    let html_element_ctor_wrapper = ElementWrapper::new(RefCell::from(document_root));
+    let html_element_ctor_wrapper = ElementWrapper::new(document_root);
     // Create HTMLElement constructor as alias of Element (most behavior is same for now)
     let html_element_ctor: JsValue = unsafe {
         NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
@@ -943,9 +944,8 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<Dom>>
                     let mut node = node_rc.borrow();
                     let results = node.query_selector(&selector);
                     if let Some(res_rc) = results.first() {
-                        let res_rc = node.get_node_mut(*res_rc);
                         //drop(node);
-                        return ElementWrapper::create_js_element(res_rc, context);
+                        return ElementWrapper::create_js_element(&sigma, *res_rc, context);
                     }
                     return Ok(JsValue::null());
                 }
@@ -1060,3 +1060,4 @@ pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<Dom>>
     println!("[JS] DOM bindings initialized");
     Ok(())
 }
+*/

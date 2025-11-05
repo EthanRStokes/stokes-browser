@@ -673,7 +673,8 @@ impl Engine {
         let user_agent = self.config.user_agent.clone();
         let dom = self.dom_mut();
         let dom = dom as *mut Dom;
-        match JsRuntime::new(dom, user_agent) {
+        // TODO reimplement JavaScript
+        match JsRuntime::new(/*dom, */user_agent) {
             Ok(runtime) => {
                 println!("JavaScript runtime initialized successfully");
                 self.js_runtime = Some(runtime);
@@ -1048,18 +1049,24 @@ impl Engine {
             }
 
             // Move to parent
-            let parent = node.parent_node()?;
-            let parent_id = parent.id;
-            if parent_id != current_id {
+            if let Some(parent) = node.parent_node() {
+                let parent_id = parent.id;
+                if parent_id == current_id {
+                    // Safety check: prevent infinite loop if node is its own parent
+                    break;
+                }
                 current_id = parent_id;
-                break
+            } else {
+                // No parent, we've reached the root
+                break;
             }
         }
 
         None
     }
 
-    /// Process pending JavaScript timers (setTimeout/setInterval)
+    // TODO reimplement javascript
+    /*/// Process pending JavaScript timers (setTimeout/setInterval)
     /// Returns true if any timers were executed
     #[inline]
     pub fn process_timers(&mut self) -> bool {
@@ -1087,7 +1094,7 @@ impl Engine {
         } else {
             None
         }
-    }
+    }*/
 
     /// Add a URL to the navigation history
     fn add_to_history(&mut self, url: String) {

@@ -4,7 +4,7 @@ use super::font::FontManager;
 use crate::css::ComputedValues;
 use crate::layout::LayoutBox;
 // Text rendering functionality
-use skia_safe::{Canvas, Font, Paint};
+use skia_safe::{BlurStyle, Canvas, Font, MaskFilter, Paint, TextBlob};
 use skia_safe::textlayout::{
     FontCollection, ParagraphBuilder, ParagraphStyle, TextAlign as SkiaTextAlign,
     TextStyle,
@@ -19,10 +19,130 @@ pub fn render_text_node(
     contents: &RefCell<StrTendril>,
     styles: &ComputedValues,
     font_manager: &FontManager,
-    _default_text_paint: &Paint,
+    default_text_paint: &Paint,
     scale_factor: f32,
 ) {
     let text = contents.borrow();
+    let content_rect = layout_box.dimensions.content;
+
+    // Create text paint with CSS colors and font properties
+    let mut text_paint = default_text_paint.clone();
+    let font_size = &styles.font_size;
+    let text_align = &styles.text_align;
+    let font_style = &styles.font_style;
+    let font_family = &styles.font_family;
+    let font_weight = &styles.font_weight;
+    let line_height_value = &styles.line_height;
+    let vertical_align = &styles.vertical_align;
+    let text_transform = &styles.text_transform;
+    let white_space = &styles.white_space;
+    let text_shadows = &styles.text_shadow;
+
+    // Apply CSS color
+    if let Some(text_color) = &styles.color {
+        let mut color = text_color.to_skia_color();
+        // Apply opacity to text color
+        color = color.with_a((color.a() as f32 * styles.opacity) as u8);
+        text_paint.set_color(color);
+    }
+
+    // Apply text transformation to the content
+    let transformed_text = text_transform.apply(&text);
+
+    // Apply DPI scaling to font size
+    let scaled_font_size = font_size * scale_factor as f32;
+
+    // Calculate line height based on CSS line-height property
+    let line_height = line_height_value.to_px(scaled_font_size);
+
+    // Calculate vertical alignment offset
+    let vertical_align_offset = vertical_align.to_px(scaled_font_size, line_height) * scale_factor as f32;
+
+    // Get or create font with the scaled size, family, weight, and style
+    let font = font_manager.get_font(&font_family, scaled_font_size, &font_weight, &font_style);
+
+    // TODO: Wrap text based on actual font metrics, container width, and white-space property
+    let wrapped_lines: Vec<&str> = transformed_text.split('\n')
+        .map(|line| line.trim_start()) // Remove leading whitespace from each line
+        .collect();
+
+    // Position text within the content area with scaled padding
+    let scaled_padding = 2.0 * scale_factor as f32;
+    let mut current_y = content_rect.top + scaled_font_size; // Start at baseline position
+
+    // Render each line separately
+    for line in wrapped_lines {
+        if let Some(text_blob) = TextBlob::new(&line, &font) {
+            let text_bounds = text_blob.bounds();
+            let text_width = text_bounds.width();
+
+            // Calculate x position based on text-align
+            let start_x = match text_align {
+                crate::css::TextAlign::Left => content_rect.left + scaled_padding,
+                crate::css::TextAlign::Right => content_rect.right - text_width - scaled_padding,
+                crate::css::TextAlign::Center => content_rect.left + (content_rect.width() - text_width) / 2.0,
+                crate::css::TextAlign::Justify => {
+                    // For now, justify is treated as left-align
+                    // Full justify implementation would require word spacing adjustments
+                    content_rect.left + scaled_padding
+                }
+            };
+
+            // Apply vertical alignment offset to the y position
+            let adjusted_y = current_y + vertical_align_offset;
+
+            // Render text shadows first (so they appear behind the text)
+            for shadow in text_shadows {
+                let shadow_px = shadow.to_px(scaled_font_size, 0.0);
+
+                // Skip shadow if it has no effect
+                if !shadow_px.has_shadow() {
+                    continue;
+                }
+
+                // Create shadow paint
+                let mut shadow_paint = text_paint.clone();
+
+                // Apply shadow color with opacity
+                let mut shadow_color = shadow_px.color.to_skia_color();
+                shadow_color = shadow_color.with_a((shadow_color.a() as f32 * styles.opacity) as u8);
+                shadow_paint.set_color(shadow_color);
+
+                // Apply blur if specified
+                if shadow_px.blur_radius > 0.0 {
+                    let blur_sigma = shadow_px.blur_radius / 2.0;
+                    if let Some(mask_filter) = MaskFilter::blur(BlurStyle::Normal, blur_sigma, None) {
+                        shadow_paint.set_mask_filter(mask_filter);
+                    }
+                }
+
+                // Draw shadow at offset position
+                let shadow_x = start_x + shadow_px.offset_x * scale_factor as f32;
+                let shadow_y = adjusted_y + shadow_px.offset_y * scale_factor as f32;
+                canvas.draw_text_blob(&text_blob, (shadow_x, shadow_y), &shadow_paint);
+            }
+
+            // Render the actual text on top of shadows
+            canvas.draw_text_blob(&text_blob, (start_x, adjusted_y), &text_paint);
+
+            // Render text decorations if specified (with opacity applied)
+            // Create decoration paint with opacity
+            let decoration_paint = text_paint.clone();
+            super::decorations::render_text_decorations(
+                canvas,
+                &text_blob,
+                (start_x, adjusted_y),
+                &styles.text_decoration,
+                &decoration_paint,
+                scaled_font_size,
+                scale_factor,
+            );
+        }
+        current_y += line_height; // Move to next line using computed line height
+    }
+
+    // TODO take another look at skia paragraphs
+    /*let text = contents.borrow();
     let content_rect = layout_box.dimensions.content;
 
     // Apply text transformation to the content
@@ -203,7 +323,7 @@ pub fn render_text_node(
     let x = content_rect.left;
     let y = content_rect.top + vertical_align_offset;
 
-    paragraph.paint(canvas, (x, y));
+    paragraph.paint(canvas, (x, y));*/
 }
 
 /// Wrap text based on actual font metrics and available width using Skia's Paragraph API

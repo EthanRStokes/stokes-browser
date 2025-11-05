@@ -6,14 +6,12 @@ pub use self::layout_tree::*;
 
 use crate::css::{ComputedValues, StyleResolver, Stylesheet};
 use crate::dom::{DomNode, NodeData};
-use std::cell::{RefCell, RefMut};
-use std::collections::HashMap;
+use slab::Slab;
+use std::cell::RefCell;
 use std::ops::Deref;
-use std::rc::Rc;
 
 // Add taffy imports
 use taffy::prelude::*;
-use taffy::geometry::Size as TaffySize;
 
 /// Layout engine responsible for computing element positions and sizes
 pub struct LayoutEngine {
@@ -129,12 +127,20 @@ impl LayoutEngine {
         }
 
         // Process children
-        for child in &borrowed.children {
-            let mut borrowed = dom_node.borrow_mut();
-            let child = borrowed.get_node_mut(*child);
+        let children = borrowed.children.clone();
+        drop(borrowed);
+        for child in children {
+            let tree_ptr = {
+                let borrowed = dom_node.borrow();
+                borrowed.tree() as *const Slab<DomNode>
+            };
+
+            let child = unsafe {
+                let tree_mut_ptr = tree_ptr as *mut Slab<DomNode>;
+                (*tree_mut_ptr).get_mut(child).unwrap()
+            };
 
             let child_layout = self.build_layout_tree(RefCell::new(child));
-            drop(borrowed);
             layout_box.children.push(child_layout);
         }
 
@@ -176,19 +182,46 @@ impl LayoutEngine {
 
     /// Recursively compute styles for DOM nodes
     fn compute_styles_recursive(&self, node: &RefCell<&mut DomNode>, parent_styles: Option<&ComputedValues>) {
-        let mut borrowed = node.borrow_mut();
-        // Compute styles for this node
-        let computed_styles = self.style_resolver.resolve_styles(borrowed.deref(), parent_styles);
-        borrowed.style = computed_styles.clone();
-
-        drop(borrowed);
-        let borrowed = node.borrow();
-        // Process children
-        let children = &borrowed.children;
-        for child in children {
+        let computed_styles = {
             let mut borrowed = node.borrow_mut();
-            let child = borrowed.get_node_mut(*child);
-            self.compute_styles_recursive(&RefCell::from(child), Some(&computed_styles));
+            // Compute styles for this node
+            let computed_styles = self.style_resolver.resolve_styles(borrowed.deref(), parent_styles);
+            borrowed.style = computed_styles.clone();
+            computed_styles
         };
+
+        // Collect children IDs first
+        let children_ids: Vec<usize> = {
+            let borrowed = node.borrow();
+            borrowed.children.clone()
+        };
+
+        // Process children - must ensure borrow is dropped before recursive call
+        for child_id in children_ids {
+            // We need to get the tree pointer, drop the parent borrow, then access the child.
+            // This is safe because:
+            // 1) Each node in the slab is at a different memory location
+            // 2) We're not modifying the parent during the child's recursion
+            // 3) The tree pointer remains valid for the lifetime of this operation
+            let tree_ptr = {
+                let borrowed = node.borrow();
+                // Get the raw pointer to the tree from the immutable reference
+                // The tree is internally stored as a raw pointer in DomNode
+                borrowed.tree() as *const Slab<DomNode>
+            }; // parent borrow is dropped here
+
+            // SAFETY: We know that:
+            // - The tree pointer is valid (it comes from a valid DomNode)
+            // - We're accessing a different entry in the slab (child_id != parent id)
+            // - No other code can invalidate the slab during this operation
+            // - The tree is fundamentally stored as a raw *mut pointer in DomNode
+            // - We immediately wrap it in a RefCell for borrowing tracking
+            let child = unsafe {
+                let tree_mut_ptr = tree_ptr as *mut Slab<DomNode>;
+                (*tree_mut_ptr).get_mut(child_id).unwrap()
+            };
+            let child_cell = RefCell::new(child);
+            self.compute_styles_recursive(&child_cell, Some(&computed_styles));
+        }
     }
 }

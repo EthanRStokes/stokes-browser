@@ -38,7 +38,7 @@ pub fn initialize_bindings(context: &mut Context, document_root: Rc<RefCell<Dom>
     console::setup_console(context)?;
     
     // Set up DOM bindings
-    dom_bindings::setup_dom_bindings(context, document_root, user_agent)?;
+    //TODO dom_bindings::setup_dom_bindings(context, document_root, user_agent)?;
     
     // Set up fetch API
     fetch::setup_fetch(context)?;

@@ -389,7 +389,24 @@ impl LayoutBox {
     fn layout_text(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
         match &self.content {
             Some(LayoutContent::Text { content: text, paragraph }) => {
-                // Use Skia's Paragraph API for accurate text measurement
+                // Handle newlines and calculate proper text dimensions - scale for high DPI
+                let char_width = 8.0 * scale_factor; // Average character width, scaled
+                let line_height = 16.0 * scale_factor; // Line height, scaled
+
+                // Wrap text to fit within container width
+                let wrapped_lines = self.legacy_wrap_text(text, container_width, char_width);
+                let num_lines = wrapped_lines.len().max(1);
+
+                // Calculate width based on the longest wrapped line
+                let max_line_width = wrapped_lines.iter()
+                    .map(|line| line.len() as f32 * char_width)
+                    .fold(0.0, f32::max)
+                    .min(container_width);
+
+                let auto_text_width = if text.trim().is_empty() { 0.0 } else { max_line_width };
+                let auto_text_height = num_lines as f32 * line_height;
+
+                /*// Use Skia's Paragraph API for accurate text measurement
                 // Default font size scaled for high DPI
                 let scaled_font_size = 16.0 * scale_factor;
 
@@ -405,7 +422,7 @@ impl LayoutBox {
                     scaled_font_size
                 } else {
                     measured_height
-                };
+                };*/
 
                 // Use CSS dimensions if specified, otherwise use calculated dimensions
                 let final_text_width = if let Some(css_width) = &self.style.width {
@@ -501,6 +518,105 @@ impl LayoutBox {
         let measured_height = paragraph.height();
 
         (measured_width, measured_height, paragraph)
+    }
+
+    /// Helper function to wrap text into lines that fit within a given width
+    fn legacy_wrap_text(&self, text: &str, max_width: f32, char_width: f32) -> Vec<String> {
+        let mut wrapped_lines = Vec::new();
+
+        // Split by explicit newlines first
+        let paragraphs: Vec<&str> = text.split('\n').collect();
+
+        for paragraph in paragraphs {
+            if paragraph.is_empty() {
+                wrapped_lines.push(String::new());
+                continue;
+            }
+
+            // Calculate max characters per line based on actual character count
+            let max_chars = (max_width / char_width).floor() as usize;
+
+            if max_chars == 0 {
+                // If width is too small, just add the paragraph as-is
+                wrapped_lines.push(paragraph.to_string());
+                continue;
+            }
+
+            // Split paragraph into words
+            let words: Vec<&str> = paragraph.split_whitespace().collect();
+
+            if words.is_empty() {
+                wrapped_lines.push(String::new());
+                continue;
+            }
+
+            let mut current_line = String::new();
+            let mut current_char_count = 0;
+
+            for word in words {
+                let word_char_count = word.chars().count();
+
+                // Calculate the character count if we add this word
+                let test_char_count = if current_line.is_empty() {
+                    word_char_count
+                } else {
+                    current_char_count + 1 + word_char_count // +1 for space
+                };
+
+                if test_char_count <= max_chars {
+                    // Add word to current line
+                    if current_line.is_empty() {
+                        current_line.push_str(word);
+                        current_char_count = word_char_count;
+                    } else {
+                        current_line.push(' ');
+                        current_line.push_str(word);
+                        current_char_count = test_char_count;
+                    }
+                } else {
+                    // Word doesn't fit on current line
+                    if !current_line.is_empty() {
+                        // Save current line and start new line with this word
+                        wrapped_lines.push(current_line);
+                        current_line = String::new();
+                        current_char_count = 0;
+                    }
+
+                    // Check if word itself is too long and needs to be broken
+                    if word_char_count > max_chars {
+                        // Break the word across multiple lines
+                        let chars: Vec<char> = word.chars().collect();
+                        let mut start = 0;
+
+                        while start < chars.len() {
+                            let end = (start + max_chars).min(chars.len());
+                            let chunk: String = chars[start..end].iter().collect();
+                            wrapped_lines.push(chunk);
+                            start = end;
+                        }
+
+                        current_line = String::new();
+                        current_char_count = 0;
+                    } else {
+                        // Word fits within max_chars, start new line with it
+                        current_line.push_str(word);
+                        current_char_count = word_char_count;
+                    }
+                }
+            }
+
+            // Add the last line if it's not empty
+            if !current_line.is_empty() {
+                wrapped_lines.push(current_line);
+            }
+        }
+
+        // Return at least one empty line if everything was empty
+        if wrapped_lines.is_empty() {
+            wrapped_lines.push(String::new());
+        }
+
+        wrapped_lines
     }
 
     /// Layout image nodes with position offset

@@ -458,12 +458,12 @@ pub struct EventDispatcher;
 impl EventDispatcher {
     /// Dispatch an event on a target node with event bubbling
     pub fn dispatch_event(
-        target: &Rc<RefCell<DomNode>>,
+        target: &DomNode,
         mut event: Event,
         context: &mut Context,
     ) -> Result<(), String> {
         // Set target
-        event.target = Some(Rc::as_ptr(target) as usize);
+        event.target = Some(target.id);
 
         // Phase 1: Capturing phase
         let ancestors = Self::get_ancestors(target);
@@ -473,14 +473,14 @@ impl EventDispatcher {
             if event.propagation_stopped {
                 break;
             }
-            event.current_target = Some(**ancestor);
+            event.current_target = Some(target.id);
             Self::fire_listeners(ancestor, &event, true, context)?;
         }
 
         // Phase 2: At target
         if !event.propagation_stopped {
             event.phase = EventPhase::AtTarget;
-            event.current_target = Some(Rc::as_ptr(target) as usize);
+            event.current_target = Some(target.id);
             Self::fire_listeners(target, &event, false, context)?;
         }
 
@@ -491,7 +491,7 @@ impl EventDispatcher {
                 if event.propagation_stopped {
                     break;
                 }
-                event.current_target = Some(Rc::as_ptr(ancestor) as usize);
+                event.current_target = Some(ancestor.id);
                 Self::fire_listeners(ancestor, &event, false, context)?;
             }
         }
@@ -500,41 +500,31 @@ impl EventDispatcher {
     }
 
     /// Get all ancestors of a node
-    fn get_ancestors(node: &Rc<RefCell<DomNode>>) -> Vec<&usize> {
+    fn get_ancestors(node: &DomNode) -> Vec<&DomNode> {
         use std::collections::HashSet;
 
-        let mut ancestors: Vec<&usize> = Vec::new();
-        let mut current = node.borrow().id;
+        let mut ancestors: Vec<&DomNode> = Vec::new();
+        let mut current = node.id;
         let mut visited = HashSet::new();
 
         // Track the starting node to prevent infinite loops
         visited.insert(current);
 
         loop {
-            let parent_rc = {
-                let current_borrowed = node.borrow();
-                let node_borrowed = current_borrowed;
-                match &node_borrowed.parent {
-                    Some(parent_weak) => Some(parent_weak),
-                    None => None,
-                }
+            let parent = match &node.parent {
+                Some(parent) => parent,
+                None => break,
             };
 
-            match parent_rc {
-                Some(parent) => {
-
-                    // Check for circular reference
-                    if visited.contains(parent) {
-                        eprintln!("Warning: Circular reference detected in DOM tree parent chain");
-                        break;
-                    }
-
-                    visited.insert(*parent);
-                    ancestors.push(parent);
-                    current = *parent;
-                }
-                None => break,
+            // Check for circular reference
+            if visited.contains(parent) {
+                eprintln!("Warning: Circular reference detected in DOM tree parent chain");
+                break;
             }
+
+            visited.insert(*parent);
+            ancestors.push(node.get_node(*parent));
+            current = *parent;
         }
 
         ancestors
@@ -542,23 +532,20 @@ impl EventDispatcher {
 
     /// Fire event listeners on a specific node
     fn fire_listeners(
-        node: &Rc<RefCell<DomNode>>,
+        node: &DomNode,
         event: &Event,
         capture_phase: bool,
         context: &mut Context,
     ) -> Result<(), String> {
-        let node_borrowed = node.borrow();
 
         // Get listeners for this event type
-        if let Some(listeners) = node_borrowed.event_listeners.get_listeners(&event.event_type) {
+        if let Some(listeners) = node.event_listeners.get_listeners(&event.event_type) {
             // Clone the listeners to avoid borrow issues
             let listeners_to_fire: Vec<_> = listeners
                 .iter()
                 .filter(|l| l.use_capture == capture_phase)
                 .map(|l| l.callback.clone())
                 .collect();
-
-            drop(node_borrowed); // Release the borrow
 
             // Convert event to JS object
             let js_event = event.to_js_object(context)

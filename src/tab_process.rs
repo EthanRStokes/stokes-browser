@@ -91,11 +91,12 @@ impl TabProcess {
     pub async fn run(&mut self) -> io::Result<()> {
         // Set up alert callback to send alerts via IPC
         let channel_for_alert = self.channel.clone();
-        js::set_alert_callback(move |message: String| {
+        // TODO reimplement javascript
+        /*js::set_alert_callback(move |message: String| {
             if let Ok(mut channel) = channel_for_alert.try_borrow_mut() {
                 let _ = channel.send(&TabToParentMessage::Alert(message));
             }
-        });
+        });*/
 
         // Send ready message
         self.channel.borrow_mut().send(&TabToParentMessage::Ready)?;
@@ -118,11 +119,11 @@ impl TabProcess {
                 }
             }
 
-            // Process engine timers
-            if self.engine.process_timers() {
+            // TODO Process engine timers
+            /*if self.engine.process_timers() {
                 // If timers executed, render a new frame
                 self.render_frame()?;
-            }
+            }*/
 
             // Small sleep to prevent CPU spinning
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;

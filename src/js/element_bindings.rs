@@ -1,4 +1,4 @@
-use crate::dom::{Dom, DomNode, ElementData, EventType, NodeData};
+/*use crate::dom::{Dom, DomNode, ElementData, EventType, NodeData};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
 // Element bindings for JavaScript
@@ -24,7 +24,8 @@ impl ElementWrapper {
 
     /// Create a JavaScript object from a DOM element
     pub fn create_js_element(
-        node_rc: &Rc<RefCell<DomNode>>,
+        dom: &Rc<RefCell<Dom>>,
+        node_rc: usize,
         context: &mut Context,
     ) -> BoaResult<JsValue> {
         let node = node_rc.borrow();
@@ -472,3 +473,4 @@ impl ElementWrapper {
         Self::create_js_element(new_node, context)
     }
 }
+*/
