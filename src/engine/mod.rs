@@ -467,12 +467,14 @@ impl Engine {
 
     /// Extract and parse CSS from <style> tags and <link> tags in the current DOM
     pub async fn parse_document_styles(&mut self) {
-        let dom = self.dom_mut();
+        let dom = self.dom.as_mut().unwrap();
 
         let lock = &dom.lock;
+        let author = lock.read();
+        let ua_or_user = lock.read();
         let guards = StylesheetGuards {
-            author: &lock.read(),
-            ua_or_user: &lock.read(),
+            author: &author,
+            ua_or_user: &ua_or_user,
         };
         {
             let root = &dom.nodes[0];
@@ -486,25 +488,29 @@ impl Engine {
             }
         }
 
-        let context = SharedStyleContext {
-            stylist: &dom.stylist,
-            visited_styles_enabled: false,
-            options: GLOBAL_STYLE_DATA.options.clone(),
-            guards: guards,
-            current_time_for_animations: 0.0, // TODO animations
-            traversal_flags: TraversalFlags::empty(),
-            snapshot_map: &dom.snapshots,
-            animations: Default::default(),
-            registered_speculative_painters: &Painters,
-        };
+        {
+            let context = SharedStyleContext {
+                stylist: &dom.stylist,
+                visited_styles_enabled: false,
+                options: GLOBAL_STYLE_DATA.options.clone(),
+                guards: guards,
+                current_time_for_animations: 0.0, // TODO animations
+                traversal_flags: TraversalFlags::empty(),
+                snapshot_map: &dom.snapshots,
+                animations: Default::default(),
+                registered_speculative_painters: &Painters,
+            };
 
-        let root = dom.root_element();
-        let token = RecalcStyle::pre_traverse(root, &context);
+            let root = dom.root_element();
+            let token = RecalcStyle::pre_traverse(root, &context);
 
-        if token.should_traverse() {
-            let traverser = RecalcStyle::new(context);
-            style::driver::traverse_dom(&traverser, token, None);
+            if token.should_traverse() {
+                let traverser = RecalcStyle::new(context);
+                style::driver::traverse_dom(&traverser, token, None);
+            }
         }
+        drop(author);
+        drop(ua_or_user);
 
         // Collect style contents first
         let mut style_contents = Vec::new();
