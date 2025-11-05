@@ -602,8 +602,8 @@ impl<'a> Iterator for NodeTraverser<'a> {
     type Item = Node<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let node_id = self.parent.children.get(self.child_index);
-        let node = self.parent.get_node(*node_id.unwrap());
+        let node_id = self.parent.children.get(self.child_index)?;
+        let node = self.parent.get_node(*node_id);
         self.child_index += 1;
         Some(node)
     }
