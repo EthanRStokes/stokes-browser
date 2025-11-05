@@ -17,10 +17,12 @@ use blitz_traits::shell::Viewport;
 use euclid::Size2D;
 use parley::FontContext;
 use parley::fontique::Blob;
+use selectors::Element;
 use selectors::matching::QuirksMode;
 use slab::Slab;
 use style::animation::DocumentAnimationSet;
 use style::data::ElementStyles;
+use style::dom::{TDocument, TNode};
 use style::font_metrics::FontMetrics;
 use style::media_queries::{Device, MediaList, MediaType};
 use style::properties::ComputedValues;
@@ -260,5 +262,13 @@ impl Dom {
 
     pub(crate) fn root_node_mut(&mut self) -> &mut DomNode {
         &mut self.nodes[0]
+    }
+
+    pub(crate) fn root_element(&self) -> &DomNode {
+        TDocument::as_node(&self.root_node())
+            .first_element_child()
+            .unwrap()
+            .as_element()
+            .unwrap()
     }
 }

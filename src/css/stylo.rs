@@ -12,7 +12,7 @@ use selectors::sink::Push;
 use skia_safe::wrapper::NativeTransmutableWrapper;
 use style::animation::AnimationSetKey;
 use style::applicable_declarations::ApplicableDeclarationBlock;
-use style::context::{QuirksMode, SharedStyleContext};
+use style::context::{QuirksMode, SharedStyleContext, StyleContext};
 use style::data::ElementData;
 use style::dom::{LayoutIterator, NodeInfo, OpaqueNode, TDocument, TElement, TNode, TShadowRoot};
 use style::properties::PropertyDeclarationBlock;
@@ -20,6 +20,7 @@ use style::selector_parser::{AttrValue, Lang, NonTSPseudoClass, PseudoElement, S
 use style::servo_arc::{Arc, ArcBorrow};
 use style::shared_lock::{Locked, SharedRwLock};
 use style::stylist::CascadeData;
+use style::traversal::{recalc_style_at, DomTraversal, PerLevelTraversalData};
 use style::values::{AtomIdent, AtomString, GenericAtomIdent};
 use style::values::computed::{Au, Display};
 use stylo_atoms::Atom;
@@ -602,5 +603,43 @@ impl<'a> Iterator for NodeTraverser<'a> {
 impl Hash for Node<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.write_usize(self.id)
+    }
+}
+
+pub struct RecalcStyle<'a> {
+    context: SharedStyleContext<'a>,
+}
+
+impl<'a> RecalcStyle<'a> {
+    pub fn new(context: SharedStyleContext<'a>) -> Self {
+        Self { context }
+    }
+}
+
+impl<E> DomTraversal<E> for RecalcStyle<'_>
+where
+    E: TElement,
+{
+    fn process_preorder<F>(&self, traversal_data: &PerLevelTraversalData, context: &mut StyleContext<E>, node: E::ConcreteNode, node_child: F)
+    where
+        F: FnMut(E::ConcreteNode)
+    {
+        if node.is_text_node() {
+            return;
+        }
+
+        let el = node.as_element().unwrap();
+        let mut data = unsafe { el.ensure_data() };
+        recalc_style_at(self, traversal_data, context, el, &mut data, node_child);
+
+        unsafe { el.unset_dirty_descendants() };
+    }
+
+    fn process_postorder(&self, contect: &mut StyleContext<E>, node: E::ConcreteNode) {
+        todo!()
+    }
+
+    fn shared_context(&self) -> &SharedStyleContext<'_> {
+        todo!()
     }
 }
