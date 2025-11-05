@@ -4,11 +4,13 @@ pub(crate) mod node;
 mod events;
 mod config;
 pub(crate) mod damage;
+mod url;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Debug, Formatter};
 use std::rc::Rc;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use blitz_traits::shell::Viewport;
@@ -20,20 +22,21 @@ use slab::Slab;
 use style::animation::DocumentAnimationSet;
 use style::data::ElementStyles;
 use style::font_metrics::FontMetrics;
-use style::media_queries::{Device, MediaType};
+use style::media_queries::{Device, MediaList, MediaType};
 use style::properties::ComputedValues;
 use style::properties::style_structs::Font;
 use style::queries::values::PrefersColorScheme;
 use style::selector_parser::SnapshotMap;
 use style::servo::media_queries::FontMetricsProvider;
 use style::shared_lock::SharedRwLock;
-use style::stylesheets::DocumentStyleSheet;
+use style::stylesheets::{AllowImportRules, DocumentStyleSheet, Origin, Stylesheet};
 use style::stylist::Stylist;
 use style::values::computed::{Au, CSSPixelLength, Length};
 use style::values::computed::font::{GenericFontFamily, QueryFontMetricsFlags};
 use taffy::Point;
 use crate::dom::config::DomConfig;
 use crate::dom::node::DomNodeFlags;
+use crate::dom::url::DocUrl;
 pub use self::events::{EventDispatcher, EventType};
 pub use self::node::{AttributeMap, DomNode, ElementData, ImageData, ImageLoadingState, NodeData};
 pub use self::parser::HtmlParser;
@@ -45,6 +48,7 @@ pub struct Dom {
     /// ID of the DOM
     id: usize,
 
+    pub(crate) url: DocUrl,
     // Viewport information (dimensions, HiDPI scale, zoom)
     pub(crate) viewport: Viewport,
     // Scroll position in the viewport
@@ -64,6 +68,7 @@ pub struct Dom {
 
     pub(crate) nodes_to_id: HashMap<String, usize>,
     pub(crate) nodes_to_stylesheet: BTreeMap<usize, DocumentStyleSheet>,
+    pub(crate) stylesheets: HashMap<String, DocumentStyleSheet>,
 }
 
 pub(crate) fn device(viewport: &Viewport, font_ctx: Arc<Mutex<FontContext>>) -> Device {
@@ -132,8 +137,11 @@ impl Dom {
         stylo_config::set_bool("layout.unimplemented", true);
         stylo_config::set_bool("layout.columns.enabled", true);
 
+        let base_url = config.base_url.and_then(|url| DocUrl::from_str(&url).ok()).unwrap_or_default();
+
         let mut dom = Self {
             id,
+            url: base_url,
             viewport,
             viewport_scroll: ZERO,
             nodes: Box::new(Slab::new()),
@@ -146,12 +154,23 @@ impl Dom {
             has_canvas: false,
             nodes_to_id: Default::default(),
             nodes_to_stylesheet: Default::default(),
+            stylesheets: Default::default(),
         };
 
         // Create the root document node
         dom.create_node(NodeData::Document);
-        let node = dom.root_node_mut();
-        node.flags.insert(DomNodeFlags::IS_IN_DOCUMENT);
+        dom.root_node_mut().flags.insert(DomNodeFlags::IS_IN_DOCUMENT);
+
+        match config.stylesheets {
+            Some(stylesheets) => {
+                for sheet in &stylesheets {
+                    dom.add_stylesheet(sheet);
+                }
+            }
+            None => {
+                dom.add_stylesheet(DEFAULT_CSS);
+            }
+        }
 
         let stylo_element_data = style::data::ElementData {
             styles: ElementStyles {
@@ -160,7 +179,7 @@ impl Dom {
             },
             ..Default::default()
         };
-        *node.stylo_data.borrow_mut() = Some(stylo_element_data);
+        *dom.root_node().stylo_data.borrow_mut() = Some(stylo_element_data);
 
         dom
     }
@@ -179,6 +198,28 @@ impl Dom {
     pub fn parse_html(html: &str) -> Self {
         let parser = HtmlParser::new();
         parser.parse(html)
+    }
+
+    pub fn add_stylesheet(&mut self, css: &str) {
+        let sheet = self.make_stylesheet(css, Origin::UserAgent);
+        self.stylesheets.insert(css.to_string(), sheet.clone());
+        self.stylist.append_stylesheet(sheet, &self.lock.read());
+    }
+
+    pub fn make_stylesheet(&self, css: impl AsRef<str>, origin: Origin) -> DocumentStyleSheet {
+        let data = Stylesheet::from_str(
+            css.as_ref(),
+            self.url.url_extra_data(),
+            origin,
+            style::servo_arc::Arc::new(self.lock.wrap(MediaList::empty())),
+            self.lock.clone(),
+            None, // todo
+            None,
+            QuirksMode::NoQuirks,
+            AllowImportRules::Yes
+        );
+
+        DocumentStyleSheet(style::servo_arc::Arc::new(data))
     }
 
     /// Find nodes by tag name

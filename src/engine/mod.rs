@@ -439,6 +439,7 @@ impl Engine {
     pub fn add_stylesheet(&mut self, css_content: &str) {
         let parser = CssParser::new();
         let stylesheet = parser.parse(css_content);
+        self.dom_mut().add_stylesheet(css_content);
         self.layout_engine.add_stylesheet(stylesheet);
 
         // Recalculate layout with new styles if DOM exists
