@@ -3,7 +3,7 @@ use std::ptr::NonNull;
 use atomic_refcell::{AtomicRef, AtomicRefMut};
 use boa_engine::ast::expression::Identifier;
 use markup5ever::{local_name, LocalName, LocalNameStaticSet, Namespace, NamespaceStaticSet};
-use selectors::{OpaqueElement};
+use selectors::{Element, OpaqueElement};
 use selectors::attr::{AttrSelectorOperation, AttrSelectorOperator, CaseSensitivity, NamespaceConstraint};
 use selectors::bloom::BloomFilter;
 use selectors::context::{MatchingContext, VisitedHandlingMode};
@@ -21,6 +21,7 @@ use style::servo_arc::{Arc, ArcBorrow};
 use style::shared_lock::{Locked, SharedRwLock};
 use style::stylist::CascadeData;
 use style::traversal::{recalc_style_at, DomTraversal, PerLevelTraversalData};
+use style::traversal_flags::TraversalFlags;
 use style::values::{AtomIdent, AtomString, GenericAtomIdent};
 use style::values::computed::{Au, Display};
 use stylo_atoms::Atom;
@@ -553,7 +554,15 @@ impl<'a> TElement for Node<'a> {
     }
 
     fn is_html_document_body_element(&self) -> bool {
-        todo!()
+        let is_body_element = self.data.is_element_with_tag_name(&local_name!("body"));
+
+        if !is_body_element {
+            return false;
+        }
+
+        let root_node = &self.tree()[0];
+        let root_element = TDocument::as_node(&root_node).first_element_child().unwrap();
+        root_element.children.contains(&self.id)
     }
 
     fn synthesize_presentational_hints_for_legacy_attributes<V>(&self, visited_handling: VisitedHandlingMode, hints: &mut V)
@@ -564,15 +573,15 @@ impl<'a> TElement for Node<'a> {
     }
 
     fn local_name(&self) -> &<SelectorImpl as selectors::SelectorImpl>::BorrowedLocalName {
-        todo!()
+        &self.element_data().expect("Not an element").name.local
     }
 
     fn namespace(&self) -> &<SelectorImpl as selectors::SelectorImpl>::BorrowedNamespaceUrl {
-        todo!()
+        &self.element_data().expect("Not an element").name.ns
     }
 
     fn query_container_size(&self, display: &Display) -> euclid::default::Size2D<Option<Au>> {
-        todo!()
+        Default::default() // TODO impl
     }
 
     fn has_selector_flags(&self, flags: ElementSelectorFlags) -> bool {
@@ -635,11 +644,17 @@ where
         unsafe { el.unset_dirty_descendants() };
     }
 
-    fn process_postorder(&self, contect: &mut StyleContext<E>, node: E::ConcreteNode) {
-        todo!()
+    #[inline]
+    fn needs_postorder_traversal() -> bool {
+        false
     }
 
+    fn process_postorder(&self, contect: &mut StyleContext<E>, node: E::ConcreteNode) {
+        unimplemented!()
+    }
+
+    #[inline]
     fn shared_context(&self) -> &SharedStyleContext<'_> {
-        todo!()
+        &self.context
     }
 }
