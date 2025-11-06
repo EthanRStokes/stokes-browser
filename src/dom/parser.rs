@@ -92,7 +92,9 @@ impl HtmlParser {
                     attributes.set(local, &*val);
                 }
 
-                let elem_data = ElementData::new(name.clone(), attributes);
+                let mut elem_data = ElementData::new(name.clone(), attributes);
+
+                elem_data.flush_style_attribute(&dom.lock, &dom.url.url_extra_data());
 
                 // Special handling for <img> to create Image node variant, otherwise Element
                 let node_kind = if name.local.as_ref().eq_ignore_ascii_case("img") {

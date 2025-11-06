@@ -454,11 +454,6 @@ impl Engine {
         let stylesheet = parser.parse(css_content);
         self.dom_mut().add_stylesheet(css_content);
         self.layout_engine.add_stylesheet(stylesheet);
-
-        // Recalculate layout with new styles if DOM exists
-        if self.dom.is_some() {
-            self.recalculate_layout();
-        }
     }
 
     /// Add a CSS stylesheet from a URL
@@ -475,50 +470,7 @@ impl Engine {
     pub async fn parse_document_styles(&mut self) {
         let dom = self.dom.as_mut().unwrap();
 
-        let lock = &dom.lock;
-        let author = lock.read();
-        let ua_or_user = lock.read();
-        let guards = StylesheetGuards {
-            author: &author,
-            ua_or_user: &ua_or_user,
-        };
-        {
-            let root = &dom.nodes[0];
-            dom.stylist.flush(&guards, Some(root), Some(&dom.snapshots));
-        }
-
-        struct Painters;
-        impl RegisteredSpeculativePainters for Painters {
-            fn get(&self, name: &Atom) -> Option<&dyn RegisteredSpeculativePainter> {
-                None
-            }
-        }
-
-        {
-            let context = SharedStyleContext {
-                stylist: &dom.stylist,
-                visited_styles_enabled: false,
-                options: GLOBAL_STYLE_DATA.options.clone(),
-                guards: guards,
-                current_time_for_animations: 0.0, // TODO animations
-                traversal_flags: TraversalFlags::empty(),
-                snapshot_map: &dom.snapshots,
-                animations: Default::default(),
-                registered_speculative_painters: &Painters,
-            };
-
-            let root = dom.root_element();
-            let token = RecalcStyle::pre_traverse(root, &context);
-
-            if token.should_traverse() {
-                let traverser = RecalcStyle::new(context);
-                style::driver::traverse_dom(&traverser, token, None);
-            }
-        }
-        drop(author);
-        drop(ua_or_user);
-
-        // Collect style contents first
+        // Collect style contents and link hrefs before any processing
         let mut style_contents: Vec<String> = Vec::new();
         let style_elements = dom.query_selector("style");
         for style_element in style_elements {
@@ -528,7 +480,6 @@ impl Engine {
             }
         }
 
-        // Collect link hrefs first
         let mut link_hrefs: Vec<String> = Vec::new();
         let link_elements = dom.query_selector("link");
         for link_element in link_elements {
@@ -544,11 +495,12 @@ impl Engine {
             }
         }
 
-        // Now process the collected data without holding DOM borrows
+        // Add all inline stylesheets from <style> tags
         for css_content in style_contents {
             self.add_stylesheet(&css_content);
         }
 
+        // Load and add external stylesheets from <link> tags
         let mut fetch_futures = Vec::new();
         for href in link_hrefs {
             let absolute_url = match self.resolve_url(&href) {
@@ -580,6 +532,54 @@ impl Engine {
                 }
             }
         }
+
+        // Now that all stylesheets are loaded, flush the stylist and perform style traversal
+        let dom = self.dom.as_mut().unwrap();
+        let lock = &dom.lock;
+        let author = lock.read();
+        let ua_or_user = lock.read();
+        let guards = StylesheetGuards {
+            author: &author,
+            ua_or_user: &ua_or_user,
+        };
+
+        // Flush the stylist with all loaded stylesheets
+        {
+            let root = &dom.nodes[0];
+            dom.stylist.flush(&guards, Some(root), Some(&dom.snapshots));
+        }
+
+        struct Painters;
+        impl RegisteredSpeculativePainters for Painters {
+            fn get(&self, name: &Atom) -> Option<&dyn RegisteredSpeculativePainter> {
+                None
+            }
+        }
+
+        // Perform style traversal to compute styles for all elements
+        {
+            let context = SharedStyleContext {
+                stylist: &dom.stylist,
+                visited_styles_enabled: false,
+                options: GLOBAL_STYLE_DATA.options.clone(),
+                guards: guards,
+                current_time_for_animations: 0.0, // TODO animations
+                traversal_flags: TraversalFlags::empty(),
+                snapshot_map: &dom.snapshots,
+                animations: Default::default(),
+                registered_speculative_painters: &Painters,
+            };
+
+            let root = dom.root_element();
+            let token = RecalcStyle::pre_traverse(root, &context);
+
+            if token.should_traverse() {
+                let traverser = RecalcStyle::new(context);
+                style::driver::traverse_dom(&traverser, token, None);
+            }
+        }
+        drop(author);
+        drop(ua_or_user);
     }
 
     /// Get the current page title

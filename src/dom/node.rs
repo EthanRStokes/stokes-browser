@@ -10,13 +10,13 @@ use bitflags::bitflags;
 use html5ever::{LocalName, QualName};
 use html5ever::tendril::StrTendril;
 use markup5ever::local_name;
-use selectors::matching::ElementSelectorFlags;
+use selectors::matching::{ElementSelectorFlags, QuirksMode};
 use skia_safe::FontMgr;
 use skia_safe::wrapper::PointerWrapper;
 use slab::Slab;
 use crate::css::ComputedValues;
 use style::data::ElementData as StyleElementData;
-use style::properties::PropertyDeclarationBlock;
+use style::properties::{parse_style_attribute, PropertyDeclarationBlock};
 use style::servo_arc::{Arc as ServoArc, Arc};
 use style::shared_lock::{Locked, SharedRwLock};
 use stylo_atoms::Atom;
@@ -26,6 +26,8 @@ use style::invalidation::element::restyle_hints::RestyleHint;
 use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::properties::style_structs::Font;
 use style::selector_parser::RestyleDamage;
+use style::stylesheets::{CssRuleType, UrlExtraData};
+use taffy::Style;
 
 /// Callback type for layout invalidation
 pub type LayoutInvalidationCallback = Box<dyn Fn()>;
@@ -171,6 +173,18 @@ impl ElementData {
             style_attribute: Default::default(),
             template_contents: None,
         }
+    }
+
+    pub fn flush_style_attribute(&mut self, guard: &SharedRwLock, url_extra_data: &UrlExtraData) {
+        self.style_attribute = self.attr(local_name!("style")).map(|style| {
+            ServoArc::new(guard.wrap(parse_style_attribute(
+                style,
+                url_extra_data,
+                None,
+                QuirksMode::NoQuirks,
+                CssRuleType::Style
+            )))
+        })
     }
 
     /// Get the ID attribute
@@ -488,7 +502,10 @@ pub struct DomNode {
     pub selector_flags: AtomicRefCell<ElementSelectorFlags>,
     pub lock: SharedRwLock,
     pub element_state: ElementState,
+
+    // layout data:
     pub style: ComputedValues,
+    pub taffy_style: Style<Atom>,
 
     pub has_snapshot: bool,
 
@@ -531,6 +548,7 @@ impl DomNode {
             lock,
             element_state: ElementState::empty(),
             style: ComputedValues::default(),
+            taffy_style: Default::default(),
             has_snapshot: false,
             event_listeners: EventListenerRegistry::new(),
             layout_invalidation_callback: None,
