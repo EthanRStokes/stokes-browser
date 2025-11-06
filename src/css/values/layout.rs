@@ -2,6 +2,7 @@
 
 use super::length::Length;
 use crate::css::values::CssValue;
+use crate::dom::AttributeMap;
 
 /// CSS clear property
 #[derive(Debug, Clone, PartialEq)]
@@ -271,13 +272,13 @@ impl ContentValue {
     }
 
     /// Convert content value to display string
-    pub fn to_display_string(&self, element_attributes: Option<&std::collections::HashMap<String, String>>) -> String {
+    pub fn to_display_string(&self, element_attributes: Option<&AttributeMap>) -> String {
         match self {
             ContentValue::None | ContentValue::Normal => String::new(),
             ContentValue::String(s) => s.clone(),
             ContentValue::Attr(attr_name) => {
                 if let Some(attrs) = element_attributes {
-                    attrs.get(attr_name).cloned().unwrap_or_default()
+                    attrs.iter().find(|attr| &attr.name.local == attr_name).map(|attr| attr.value.clone()).unwrap_or_default()
                 } else {
                     String::new()
                 }

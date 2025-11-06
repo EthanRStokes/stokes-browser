@@ -15,10 +15,8 @@ use crate::renderer::background::BackgroundImageCache;
 use crate::renderer::font::FontManager;
 use crate::renderer::paint::DefaultPaints;
 use skia_safe::{Canvas, Color, Font, Paint, Rect};
-use std::cell::{Ref, RefCell};
-use std::collections::HashMap;
-use std::rc::Rc;
-use crate::dom::node::Handle;
+use style::properties::generated::ComputedValues as StyloComputedValues;
+use style::properties::generated::style_structs::Font as StyloFont;
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer {
@@ -88,6 +86,8 @@ impl HtmlRenderer {
         scale_factor: f32,
         viewport_rect: &Rect,
     ) {
+        let style = node.style_arc();
+
         // TODO Early culling: Skip rendering if box is completely outside viewport
         //let border_box = layout_box.dimensions.border_box();
         //if !viewport_rect.intersects(border_box) {

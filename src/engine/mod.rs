@@ -16,10 +16,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use futures::executor::block_on;
+use markup5ever::local_name;
 use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters, SharedStyleContext};
 use style::dom::TNode;
 use style::global_style_data::GLOBAL_STYLE_DATA;
 use style::shared_lock::StylesheetGuards;
+use style::thread_state::ThreadState;
 use style::traversal::DomTraversal;
 use style::traversal_flags::TraversalFlags;
 use stylo_atoms::Atom;
@@ -104,7 +106,7 @@ impl Engine {
             let html = self.http_client.fetch(url).await?;
 
             // Parse the HTML into our DOM
-            let mut dom = Dom::parse_html(&html);
+            let mut dom = Dom::parse_html(&html, self.viewport.clone());
 
             // Extract page title
             self.page_title = dom.get_title();
@@ -124,6 +126,7 @@ impl Engine {
             self.scroll_y = 0.0;
 
             // Parse and apply CSS styles from the document
+            style::thread_state::enter(ThreadState::LAYOUT);
             self.parse_document_styles().await;
 
             // Calculate layout with CSS styles applied
@@ -131,10 +134,13 @@ impl Engine {
 
             // Start loading images after layout is calculated
             self.start_image_loading().await;
+            style::thread_state::exit(ThreadState::LAYOUT);
 
             // Execute JavaScript in the page after everything is loaded
             if self.config.enable_javascript {
+                style::thread_state::enter(ThreadState::SCRIPT);
                 self.execute_document_scripts().await;
+                style::thread_state::exit(ThreadState::SCRIPT);
             }
 
             Ok(())
@@ -513,7 +519,7 @@ impl Engine {
         drop(ua_or_user);
 
         // Collect style contents first
-        let mut style_contents = Vec::new();
+        let mut style_contents: Vec<String> = Vec::new();
         let style_elements = dom.query_selector("style");
         for style_element in style_elements {
             let css_content = style_element.text_content();
@@ -523,16 +529,16 @@ impl Engine {
         }
 
         // Collect link hrefs first
-        let mut link_hrefs = Vec::new();
+        let mut link_hrefs: Vec<String> = Vec::new();
         let link_elements = dom.query_selector("link");
         for link_element in link_elements {
             if let NodeData::Element(element_data) = &link_element.data {
                 if let (Some(rel), Some(href)) = (
-                    element_data.attributes.get("rel"),
-                    element_data.attributes.get("href")
+                    element_data.attr(local_name!("rel")),
+                    element_data.attr(local_name!("href"))
                 ) {
                     if rel.to_lowercase() == "stylesheet" {
-                        link_hrefs.push(href.clone());
+                        link_hrefs.push(href.to_string());
                     }
                 }
             }
@@ -755,7 +761,7 @@ impl Engine {
         }
 
         // Collect script contents and external URLs first to avoid borrow issues
-        let mut script_items = Vec::new();
+        let mut script_items: Vec<(bool, String)> = Vec::new();
 
         let dom = self.dom();
         let script_elements = dom.query_selector("script");
@@ -763,9 +769,9 @@ impl Engine {
         for script_element in script_elements {
             if let NodeData::Element(element_data) = &script_element.data {
                 // Check for external scripts
-                if let Some(src) = element_data.attributes.get("src") {
+                if let Some(src) = element_data.attr(local_name!("src")) {
                     println!("Found external script: {}", src);
-                    script_items.push((true, src.clone()));
+                    script_items.push((true, src.to_string()));
                 } else {
                     // Get inline script content
                     let script_content = script_element.text_content();
@@ -1093,8 +1099,8 @@ impl Engine {
             // Check if this is an anchor element with an href attribute
             if let NodeData::Element(element_data) = &node.data {
                 if element_data.name.local.to_string() == "a" {
-                    if let Some(href) = element_data.attributes.get("href") {
-                        return Some(href.clone());
+                    if let Some(href) = element_data.attr(local_name!("href")) {
+                        return Some(href.to_string());
                     }
                 }
             }
@@ -1217,15 +1223,17 @@ impl Engine {
 
         let result = async {
             let html = self.http_client.fetch(url).await?;
-            let dom = Dom::parse_html(&html);
+            let dom = Dom::parse_html(&html, self.viewport.clone());
             self.page_title = dom.get_title();
 
             self.dom = Some(dom);
             self.scroll_x = 0.0;
             self.scroll_y = 0.0;
 
+            style::thread_state::enter(ThreadState::LAYOUT);
             self.parse_document_styles().await;
             self.recalculate_layout();
+            style::thread_state::exit(ThreadState::LAYOUT);
             self.start_image_loading().await;
 
             Ok(())

@@ -4110,6 +4110,7 @@ dependencies = [
  "stylo_atoms",
  "stylo_config",
  "stylo_dom",
+ "stylo_taffy",
  "stylo_traits",
  "taffy",
  "tiny-skia",
@@ -4274,6 +4275,17 @@ name = "stylo_static_prefs"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca4c89da4ab6ac0beda8b03db38216967c99f1f7287a0f3b0f366b45d34ac7c4"
+
+[[package]]
+name = "stylo_taffy"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b841aad2b770ef75dd134ba885aef0716f2ac3a83ccaf0fc31b09c8b02562e23"
+dependencies = [
+ "stylo",
+ "stylo_atoms",
+ "taffy",
+]
 
 [[package]]
 name = "stylo_traits"

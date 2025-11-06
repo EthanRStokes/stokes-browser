@@ -6,6 +6,10 @@ use skia_safe::textlayout::{FontCollection, Paragraph, ParagraphBuilder, Paragra
 use std::cell::RefCell;
 use std::rc::Rc;
 use crate::css::ComputedValues;
+use style::properties::generated::ComputedValues as StyloComputedValues;
+use style::properties::longhands;
+use style::servo_arc::Arc;
+use style::values::resolved::ToResolvedValue;
 
 /// Tracks active floats in a formatting context
 #[derive(Debug, Clone)]
@@ -119,10 +123,11 @@ pub struct LayoutBox {
     pub node_id: usize,
     pub content: Option<LayoutContent>, // custom data
     pub style: ComputedValues,
+    pub stylo: Arc<StyloComputedValues>,
 }
 
 impl LayoutBox {
-    pub fn new(box_type: BoxType, node_id: usize, style: ComputedValues) -> Self {
+    pub fn new(box_type: BoxType, node_id: usize, style: ComputedValues, stylo: Arc<StyloComputedValues>) -> Self {
         let mut dimensions = Dimensions::new();
 
         // Apply margin and padding from computed styles
@@ -137,13 +142,15 @@ impl LayoutBox {
             node_id,
             content: None,
             style,
+            stylo,
         }
     }
 
     /// Calculate layout
     pub fn layout(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
         // Check if this is a flex container
-        if self.style.display == crate::css::computed::DisplayType::Flex {
+        let style_box = self.stylo.get_box();
+        if style_box.display == longhands::display::computed_value::T::Flex {
             self.layout_flex(container_width, container_height, offset_x, offset_y, scale_factor);
             return;
         }
@@ -167,12 +174,13 @@ impl LayoutBox {
         // Use CSS width if specified, otherwise use available container width
         let content_width = self.calculate_used_width(container_width, scale_factor);
 
+        let position = self.stylo.get_position();
         // Calculate content area with proper offset positioning and centering
         let base_content_x = offset_x + self.dimensions.margin.left + self.dimensions.border.left + self.dimensions.padding.left;
         let content_y = offset_y + self.dimensions.margin.top + self.dimensions.border.top + self.dimensions.padding.top;
 
         // Center horizontally if CSS width is specified
-        let content_x = if self.style.width.is_some() {
+        let content_x = if !position.width.is_auto() {
             let available_width = container_width - self.dimensions.margin.left - self.dimensions.margin.right
                 - self.dimensions.border.left - self.dimensions.border.right
                 - self.dimensions.padding.left - self.dimensions.padding.right;
@@ -191,23 +199,28 @@ impl LayoutBox {
         let mut float_context = FloatContext::new();
 
         // Calculate gap spacing (row-gap for vertical stacking)
-        let row_gap = self.style.gap.row.to_px(16.0, container_width) * scale_factor;
+        let row_gap = stylo_taffy::convert::gap(&position.row_gap).into_raw().value();
+        //let row_gap = self.style.gap.row.to_px(16.0, container_width) * scale_factor;
 
         // Layout children vertically, handling floats and gap
+        if (row_gap != 0.0) {
+            println!("Poop fart")
+        }
         for (i, child) in self.children.iter_mut().enumerate() {
             // Add row-gap before each child except the first
             if i > 0 && row_gap > 0.0 {
                 current_y += row_gap;
             }
 
+            let style_box = child.stylo.get_box();
             // Handle clear property - move past floats if needed
-            if child.style.clear != crate::css::Clear::None {
+            if style_box.clear != longhands::clear::SpecifiedValue::None {
                 current_y = float_context.get_clear_y(&child.style.clear, current_y);
             }
 
             // Check if this child is floated
-            match child.style.float {
-                crate::css::Float::Left => {
+            match style_box.float {
+                longhands::float::SpecifiedValue::Left => {
                     // Layout the child first to get its dimensions
                     child.layout(available_width, container_height, content_x, current_y, scale_factor);
 
@@ -228,7 +241,7 @@ impl LayoutBox {
 
                     // Floats don't affect current_y for normal flow (they're taken out of flow)
                 }
-                crate::css::Float::Right => {
+                longhands::float::SpecifiedValue::Right => {
                     // Layout the child first to get its dimensions
                     child.layout(available_width, container_height, content_x, current_y, scale_factor);
 
@@ -249,7 +262,7 @@ impl LayoutBox {
 
                     // Floats don't affect current_y for normal flow (they're taken out of flow)
                 }
-                crate::css::Float::None => {
+                longhands::float::SpecifiedValue::None => {
                     // Normal flow element - position it considering active floats
                     // Get available width at current Y position
                     let (_left_edge, avail_width) = float_context.get_available_width(current_y, available_width, content_x);
@@ -270,7 +283,8 @@ impl LayoutBox {
 
                     // Advance current_y for the next normal flow element
                     current_y = actual_y + child.dimensions.total_height();
-                }
+                },
+                style::values::computed::Float::InlineStart | style::values::computed::Float::InlineEnd => todo!()
             }
         }
 

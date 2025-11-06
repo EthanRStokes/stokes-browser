@@ -1,3 +1,4 @@
+use markup5ever::{local_name, LocalName, QualName};
 // CSS selector implementation
 use crate::dom::{DomNode, ElementData, NodeData};
 
@@ -24,7 +25,7 @@ pub enum SelectorType {
     Type(String),         // element
     Class(String),        // .class
     Id(String),           // #id
-    Attribute(String, Option<String>), // [attr] or [attr=value]
+    Attribute(LocalName, Option<String>), // [attr] or [attr=value]
     Universal,            // *
 }
 
@@ -115,9 +116,9 @@ impl Selector {
                     .trim_matches('"')
                     .trim_matches('\'')
                     .to_string();
-                SelectorType::Attribute(attr_name, Some(attr_value))
+                SelectorType::Attribute(LocalName::from(attr_name), Some(attr_value))
             } else {
-                SelectorType::Attribute(attr_content.to_string(), None)
+                SelectorType::Attribute(LocalName::from(attr_content), None)
             }
         } else if base_selector == "*" {
             // Universal selector
@@ -171,19 +172,19 @@ impl Selector {
                 element_data.name.local.to_string() == tag_name.to_lowercase()
             }
             SelectorType::Class(class_name) => {
-                if let Some(class_attr) = element_data.attributes.get("class") {
+                if let Some(class_attr) = element_data.attr(local_name!("class")) {
                     class_attr.split_whitespace().any(|c| c == class_name)
                 } else {
                     false
                 }
             }
             SelectorType::Id(id_name) => {
-                element_data.attributes.get("id")
+                element_data.attr(local_name!("id"))
                     .map(|id| id == id_name)
                     .unwrap_or(false)
             }
             SelectorType::Attribute(attr_name, attr_value) => {
-                if let Some(element_value) = element_data.attributes.get(attr_name) {
+                if let Some(element_value) = element_data.attr(attr_name.clone()) {
                     match attr_value {
                         Some(expected_value) => element_value == expected_value,
                         None => true, // Just check for attribute presence
@@ -213,7 +214,7 @@ impl Selector {
             PseudoClass::Link => {
                 // Link pseudo-class applies to unvisited links
                 element_data.name.local.to_string() == "a" &&
-                element_data.attributes.contains_key("href")
+                element_data.has_attr(local_name!("href"))
             }
             PseudoClass::Visited => {
                 // For security reasons, we'll treat all links as unvisited in this simple implementation

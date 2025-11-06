@@ -3,29 +3,82 @@ use std::cell::RefCell;
 // DOM node implementation for representing HTML elements
 use std::collections::HashMap;
 use std::{fmt, ptr};
+use std::ops::{Deref, DerefMut};
 use std::rc::{Rc, Weak};
-use atomic_refcell::AtomicRefCell;
+use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut};
 use bitflags::bitflags;
 use html5ever::{LocalName, QualName};
 use html5ever::tendril::StrTendril;
+use markup5ever::local_name;
+use selectors::matching::ElementSelectorFlags;
 use skia_safe::FontMgr;
 use skia_safe::wrapper::PointerWrapper;
 use slab::Slab;
 use crate::css::ComputedValues;
 use style::data::ElementData as StyleElementData;
 use style::properties::PropertyDeclarationBlock;
-use style::servo_arc::Arc as ServoArc;
+use style::servo_arc::{Arc as ServoArc, Arc};
 use style::shared_lock::{Locked, SharedRwLock};
 use stylo_atoms::Atom;
 use stylo_dom::ElementState;
+use style::data::ElementData as StyloElementData;
+use style::invalidation::element::restyle_hints::RestyleHint;
+use style::properties::generated::ComputedValues as StyloComputedValues;
+use style::properties::style_structs::Font;
+use style::selector_parser::RestyleDamage;
 
 /// Callback type for layout invalidation
 pub type LayoutInvalidationCallback = Box<dyn Fn()>;
 
-/// A map of attribute names to values
-pub type AttributeMap = HashMap<String, String>;
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
+pub struct Attribute {
+    pub name: QualName,
+    pub value: String,
+}
 
-pub type Handle = Rc<RefCell<DomNode>>;
+/// A map of attribute names to values
+#[derive(Clone, Debug)]
+pub struct AttributeMap {
+    attrs: Vec<Attribute>
+}
+
+impl AttributeMap {
+    pub fn new(attrs: Vec<Attribute>) -> Self {
+        Self { attrs }
+    }
+
+    pub fn empty() -> Self {
+        Self { attrs: Vec::new() }
+    }
+
+    pub fn set(&mut self, name: QualName, value: &str) {
+        // existing attribute
+        let attr = self.attrs.iter_mut().find(|attr| attr.name == name);
+        if let Some(attr) = attr {
+            attr.value.clear();
+            attr.value.push_str(value);
+        } else {
+            self.attrs.push(Attribute { name, value: value.to_string() });
+        }
+    }
+
+    pub fn remove(&mut self, name: &QualName) -> Option<Attribute> {
+        let index = self.attrs.iter().position(|attr| attr.name == *name);
+        index.map(|index| self.attrs.remove(index))
+    }
+}
+
+impl Deref for AttributeMap {
+    type Target = Vec<Attribute>;
+    fn deref(&self) -> &Self::Target {
+        &self.attrs
+    }
+}
+impl DerefMut for AttributeMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.attrs
+    }
+}
 
 /// Represents the type of DOM node
 #[derive(Debug, Clone)]
@@ -69,12 +122,12 @@ impl NodeData {
         Some(&self.element()?.attributes)
     }
 
-    pub fn attr(&self, name: &String) -> Option<&String> {
-        self.element()?.attributes.get(name)
+    pub fn attr(&self, name: impl PartialEq<LocalName>) -> Option<&str> {
+        self.element()?.attr(name)
     }
 
-    pub fn has_attr(&self, name: &String) -> bool {
-        self.element().is_some_and(|element| element.attributes.contains_key(name))
+    pub fn has_attr(&self, name: &QualName) -> bool {
+        self.element().is_some_and(|element| element.has_attr(name.local.clone()))
     }
 
     pub fn is_element_with_tag_name(&self, tag_name: &impl PartialEq<LocalName>) -> bool {
@@ -104,23 +157,17 @@ pub struct ElementData {
 }
 
 impl ElementData {
-    pub fn new(name: QualName) -> Self {
-        Self {
-            name,
-            id: None,
-            attributes: HashMap::new(),
-            style_attribute: Default::default(),
-            template_contents: None,
-        }
-    }
-
-    pub fn with_attributes(name: QualName, attributes: AttributeMap) -> Self {
-        let id_atom = attributes.get("id").map(|id_str| Atom::from(id_str.as_str()));
+    pub fn new(name: QualName, attrs: AttributeMap) -> Self {
+        let id_attr_atom = attrs
+            .iter()
+            .find(|attr| &attr.name.local == "id")
+            .map(|attr| attr.value.as_ref())
+            .map(|value: &str| Atom::from(value));
 
         Self {
             name,
-            id: id_atom,
-            attributes,
+            id: id_attr_atom,
+            attributes: attrs,
             style_attribute: Default::default(),
             template_contents: None,
         }
@@ -128,15 +175,24 @@ impl ElementData {
 
     /// Get the ID attribute
     pub fn id(&self) -> Option<&str> {
-        self.attributes.get("id").map(|s| s.as_str())
+        self.attributes.iter().find(|attr| &attr.name.local == "id").map(|attr| attr.value.as_str())
     }
 
     /// Get the class attribute as a list of class names
     pub fn classes(&self) -> Vec<&str> {
-        match self.attributes.get("class") {
-            Some(classlist) => classlist.split_whitespace().collect(),
+        match self.attributes.iter().find(|attr| &attr.name.local == "class") {
+            Some(classlist) => classlist.value.split_whitespace().collect(),
             None => Vec::new(),
         }
+    }
+
+    pub fn attr(&self, attr_name: impl PartialEq<LocalName>) -> Option<&str> {
+        let attr = self.attributes.iter().find(|attr| attr_name == attr.name.local)?;
+        Some(&attr.value)
+    }
+
+    pub fn has_attr(&self, attr_name: impl PartialEq<LocalName>) -> bool {
+        self.attributes.iter().any(|attr| attr_name == attr.name.local)
     }
 }
 
@@ -429,6 +485,7 @@ pub struct DomNode {
     pub data: NodeData,
 
     pub stylo_data: AtomicRefCell<Option<StyleElementData>>,
+    pub selector_flags: AtomicRefCell<ElementSelectorFlags>,
     pub lock: SharedRwLock,
     pub element_state: ElementState,
     pub style: ComputedValues,
@@ -470,6 +527,7 @@ impl DomNode {
             flags: DomNodeFlags::empty(),
             data,
             stylo_data: Default::default(),
+            selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
             lock,
             element_state: ElementState::empty(),
             style: ComputedValues::default(),
@@ -502,7 +560,11 @@ impl DomNode {
     }
 
     pub fn backward(&self, num: usize) -> Option<&DomNode> {
-        let index = self.index()?;
+        let index = self.index().unwrap_or(0);
+        if index < num {
+            return None;
+        }
+
         self.tree()[self.parent?]
             .children
             .get(index - num)
@@ -510,7 +572,7 @@ impl DomNode {
     }
 
     pub fn forward(&self, num: usize) -> Option<&DomNode> {
-        let index = self.index()?;
+        let index = self.index().unwrap_or(0);
         self.tree()[self.parent?]
             .children
             .get(index + num)
@@ -536,12 +598,105 @@ impl DomNode {
     pub fn add_child(&mut self, child: usize) -> &DomNode {
         self.children.push(child);
 
+        if let Some(data) = &mut *self.stylo_data.borrow_mut() {
+            data.hint |= RestyleHint::restyle_subtree()
+        }
+
         // Invalidate layout since tree structure changed
         self.invalidate_layout();
 
         let child = self.get_node_mut(child);
 
         child
+    }
+
+    pub fn set_restyle_hint(&self, hint: RestyleHint) {
+        if let Some(element) = self.stylo_data.borrow_mut().as_mut() {
+            element.hint.insert(hint);
+        }
+    }
+
+    pub fn damage_mut(&self) -> Option<AtomicRefMut<'_, RestyleDamage>> {
+        let element = self.stylo_data.borrow_mut();
+        match *element {
+            Some(_) => Some(AtomicRefMut::map(
+                element,
+                |data: &mut Option<StyloElementData>| &mut data.as_mut().unwrap().damage,
+            )),
+            None => None,
+        }
+    }
+
+    pub fn damage(&mut self) -> Option<RestyleDamage> {
+        self.stylo_data.get_mut().as_ref().map(|data| data.damage)
+    }
+
+    pub fn set_damage(&self, damage: RestyleDamage) {
+        if let Some(element) = self.stylo_data.borrow_mut().as_mut() {
+            element.damage = damage;
+        }
+    }
+
+    pub fn insert_damage(&mut self, damage: RestyleDamage) {
+        if let Some(element) = self.stylo_data.borrow_mut().as_mut() {
+            element.damage |= damage;
+        }
+    }
+
+    pub fn remove_damage(&self, damage: RestyleDamage) {
+        if let Some(element) = self.stylo_data.borrow_mut().as_mut() {
+            element.damage -= damage;
+        }
+    }
+
+    pub fn clear_damage_mut(&mut self) {
+        if let Some(element) = self.stylo_data.borrow_mut().as_mut() {
+            element.damage = RestyleDamage::empty();
+        }
+    }
+
+    pub fn hover(&mut self) {
+        self.element_state.insert(ElementState::HOVER);
+        self.set_restyle_hint(RestyleHint::restyle_subtree())
+    }
+
+    pub fn unhover(&mut self) {
+        self.element_state.remove(ElementState::HOVER);
+        self.set_restyle_hint(RestyleHint::restyle_subtree())
+    }
+
+    pub fn is_hovered(&self) -> bool {
+        self.element_state.contains(ElementState::HOVER)
+    }
+
+    pub fn attrs(&self) -> Option<&[Attribute]> {
+        Some(&self.element_data()?.attributes)
+    }
+
+    pub fn attr(&self, name: LocalName) -> Option<&str> {
+        self.element_data()?.attr(name)
+    }
+
+    pub fn primary_styles(&self) -> Option<AtomicRef<'_, StyloComputedValues>> {
+        let stylo_data = self.stylo_data.borrow();
+        if stylo_data.as_ref().and_then(|data| data.styles.get_primary()).is_some() {
+            Some(AtomicRef::map(
+                stylo_data,
+                |data: &Option<StyloElementData>| -> &StyloComputedValues {
+                    data.as_ref().unwrap().styles.get_primary().unwrap()
+                },
+            ))
+        } else {
+            None
+        }
+    }
+
+    pub fn style_arc(&self) -> Arc<StyloComputedValues> {
+        self.stylo_data
+            .borrow()
+            .as_ref()
+            .map(|element_data| element_data.styles.primary().clone())
+            .unwrap_or(StyloComputedValues::initial_values_with_font_override(Font::initial_values())).to_arc()
     }
 
     /// Get text content of this node and its descendants
@@ -613,10 +768,10 @@ impl DomNode {
                         if let Some(eq_pos) = attr_part.find('=') {
                             let attr_name = &attr_part[..eq_pos];
                             let attr_value = &attr_part[eq_pos+1..].trim_matches('"');
-                            return data.attributes.get(attr_name) == Some(&attr_value.to_string());
+                            return data.attributes.iter().find(|attr| &attr.name.local == attr_name).map(|attr| &attr.value) == Some(&attr_value.to_string());
                         } else {
                             // Just check if attribute exists
-                            return data.attributes.contains_key(attr_part);
+                            return data.attributes.iter().any(|attr| &attr.name.local == attr_part);
                         }
                     }
                 }
@@ -728,8 +883,8 @@ impl fmt::Debug for DomNode {
                 write!(f, "<{}", data.name.local)?;
                 
                 // Write attributes
-                for (name, value) in &data.attributes {
-                    write!(f, " {}=\"{}\"", name, value)?;
+                for attr in data.attributes.iter() {
+                    write!(f, " {}=\"{}\"", attr.name.local, attr.value)?;
                 }
                 
                 if self.children.is_empty() {

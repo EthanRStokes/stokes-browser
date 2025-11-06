@@ -6,6 +6,7 @@ mod stylesheet;
 pub(crate) mod computed;
 pub mod transition_manager;
 pub(crate) mod stylo;
+mod parse;
 
 pub use self::computed::{ComputedValues, StyleResolver};
 pub use self::parser::CssParser;

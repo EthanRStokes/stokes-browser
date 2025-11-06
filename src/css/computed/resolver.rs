@@ -1,3 +1,4 @@
+use markup5ever::local_name;
 // Style resolver that computes final styles for DOM nodes
 use super::values::ComputedValues;
 use crate::css::{Selector, Stylesheet};
@@ -57,7 +58,7 @@ impl StyleResolver {
             }
 
             // Apply inline styles (highest specificity)
-            if let Some(style_attr) = element_data.attributes.get("style") {
+            if let Some(style_attr) = element_data.attr(local_name!("style")) {
                 let parser = crate::css::parser::CssParser::new();
                 let inline_declarations = parser.parse_inline_styles(style_attr);
                 for declaration in inline_declarations {

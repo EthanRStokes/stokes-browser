@@ -197,9 +197,12 @@ impl Dom {
     }
 
     /// Parse HTML into a DOM
-    pub fn parse_html(html: &str) -> Self {
+    pub fn parse_html(html: &str, viewport: Viewport) -> Self {
         let parser = HtmlParser::new();
-        parser.parse(html)
+        parser.parse(html, DomConfig {
+            viewport: Some(viewport),
+            ..Default::default()
+        })
     }
 
     pub fn add_stylesheet(&mut self, css: &str) {

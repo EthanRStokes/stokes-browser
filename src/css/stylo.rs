@@ -1,3 +1,7 @@
+// This file is heavily inspired by Blitz https://github.com/DioxusLabs/blitz
+// Blitz is dual licensed under Apache-2.0 and MIT
+// Blitz was used as a reference because it's the only good example of how Stylo can be used
+
 use std::hash::{Hash, Hasher};
 use std::ptr::NonNull;
 use atomic_refcell::{AtomicRef, AtomicRefMut};
@@ -12,20 +16,25 @@ use selectors::sink::Push;
 use skia_safe::wrapper::NativeTransmutableWrapper;
 use style::animation::AnimationSetKey;
 use style::applicable_declarations::ApplicableDeclarationBlock;
+use style::CaseSensitivityExt;
+use style::color::AbsoluteColor;
 use style::context::{QuirksMode, SharedStyleContext, StyleContext};
 use style::data::ElementData;
 use style::dom::{LayoutIterator, NodeInfo, OpaqueNode, TDocument, TElement, TNode, TShadowRoot};
-use style::properties::PropertyDeclarationBlock;
+use style::properties::{Importance, PropertyDeclaration, PropertyDeclarationBlock};
+use style::rule_tree::CascadeLevel;
 use style::selector_parser::{AttrValue, Lang, NonTSPseudoClass, PseudoElement, SelectorImpl};
 use style::servo_arc::{Arc, ArcBorrow};
 use style::shared_lock::{Locked, SharedRwLock};
+use style::stylesheets::layer_rule::LayerOrder;
 use style::stylist::CascadeData;
 use style::traversal::{recalc_style_at, DomTraversal, PerLevelTraversalData};
 use style::traversal_flags::TraversalFlags;
 use style::values::{AtomIdent, AtomString, GenericAtomIdent};
-use style::values::computed::{Au, Display};
+use style::values::computed::{Au, Display, Percentage};
 use stylo_atoms::Atom;
 use stylo_dom::ElementState;
+use crate::css::parse::{parse_color, parse_size};
 use crate::dom::{damage, DomNode, NodeData};
 
 type Node<'a> = &'a DomNode;
@@ -216,7 +225,7 @@ impl selectors::Element for Node<'_> {
         local_name: &GenericAtomIdent<LocalNameStaticSet>,
         operation: &AttrSelectorOperation<&AtomString>
     ) -> bool {
-        let Some(attr) = self.data.attr(&local_name.0.to_string()) else {
+        let Some(attr) = self.data.attr(local_name.0.clone()) else {
             return false;
         };
 
@@ -253,7 +262,7 @@ impl selectors::Element for Node<'_> {
         match *pc {
             NonTSPseudoClass::Active => self.element_state.contains(ElementState::ACTIVE),
             NonTSPseudoClass::AnyLink => self.data.element().map(|element| {
-                (element.name.local == local_name!("a") || element.name.local == local_name!("area")) && element.attributes.get("href").is_some()
+                (element.name.local == local_name!("a") || element.name.local == local_name!("area")) && element.has_attr(local_name!("href"))
             }).unwrap_or(false),
             NonTSPseudoClass::Autofill => false,
             NonTSPseudoClass::Checked => false, // TODO support checkboxes
@@ -272,7 +281,7 @@ impl selectors::Element for Node<'_> {
             NonTSPseudoClass::Invalid => false,
             NonTSPseudoClass::Lang(_) => false,
             NonTSPseudoClass::Link => self.data.element().map(|element| {
-                (element.name.local == local_name!("a") || element.name.local == local_name!("area")) && element.attributes.get("href").is_some()
+                (element.name.local == local_name!("a") || element.name.local == local_name!("area")) && element.has_attr(local_name!("href"))
             }).unwrap_or(false),
             NonTSPseudoClass::Modal => false,
             NonTSPseudoClass::MozMeterOptimum => false,
@@ -306,7 +315,19 @@ impl selectors::Element for Node<'_> {
     }
 
     fn apply_selector_flags(&self, flags: ElementSelectorFlags) {
-        todo!()
+        // self
+        let self_flags = flags.for_self();
+        if !self_flags.is_empty() {
+            *self.selector_flags.borrow_mut() = self_flags;
+        }
+
+        // parent
+        let parent_flags = flags.for_parent();
+        if !parent_flags.is_empty() {
+            if let Some(parent) = self.parent_node() {
+                *parent.selector_flags.borrow_mut() |= parent_flags;
+            }
+        }
     }
 
     fn is_link(&self) -> bool {
@@ -333,7 +354,16 @@ impl selectors::Element for Node<'_> {
         name: &<Self::Impl as selectors::SelectorImpl>::Identifier,
         case_sensitivity: CaseSensitivity
     ) -> bool {
-        todo!()
+        let attr = self.data.attr(local_name!("class"));
+        if let Some(attr) = attr {
+            for char in attr.split_ascii_whitespace() {
+                let atom = Atom::from(char);
+                if case_sensitivity.eq_atom(&atom, name) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     fn has_custom_state(&self, name: &<Self::Impl as selectors::SelectorImpl>::Identifier) -> bool {
@@ -393,12 +423,24 @@ impl<'a> TElement for Node<'a> {
         self.element_data().expect("Not an element").style_attribute.as_ref().map(|block| block.borrow_arc())
     }
 
-    fn animation_rule(&self, _: &SharedStyleContext) -> Option<Arc<Locked<PropertyDeclarationBlock>>> {
-        todo!()
+    fn animation_rule(&self, context: &SharedStyleContext) -> Option<Arc<Locked<PropertyDeclarationBlock>>> {
+        let opaque = TNode::opaque(&TElement::as_node(self));
+
+        context.animations.get_animation_declarations(
+            &AnimationSetKey::new_for_non_pseudo(opaque),
+            context.current_time_for_animations,
+            &self.lock
+        )
     }
 
     fn transition_rule(&self, context: &SharedStyleContext) -> Option<Arc<Locked<PropertyDeclarationBlock>>> {
-        todo!()
+        let opaque = TNode::opaque(&TElement::as_node(self));
+
+        context.animations.get_transition_declarations(
+            &AnimationSetKey::new_for_non_pseudo(opaque),
+            context.current_time_for_animations,
+            &self.lock
+        )
     }
 
     fn state(&self) -> ElementState {
@@ -421,7 +463,7 @@ impl<'a> TElement for Node<'a> {
     where
         F: FnMut(&AtomIdent)
     {
-        let class = self.data.attr(&"class".to_string());
+        let class = self.data.attr(local_name!("class"));
         if let Some(class) = class {
             for class_name in class.split_ascii_whitespace() {
                 let atom = Atom::from(class_name);
@@ -442,8 +484,8 @@ impl<'a> TElement for Node<'a> {
         F: FnMut(&style::LocalName)
     {
         if let Some(attrs) = self.data.attrs() {
-            for attr in attrs.keys() {
-                callback(&GenericAtomIdent(LocalName::from(attr.clone())));
+            for attr in attrs.iter() {
+                callback(&GenericAtomIdent(attr.name.local.clone()));
             }
         }
 
@@ -569,7 +611,82 @@ impl<'a> TElement for Node<'a> {
     where
         V: Push<ApplicableDeclarationBlock>
     {
-        todo!()
+        let Some(elem) = self.data.element() else {
+            return;
+        };
+        let tag = &elem.name.local;
+        let mut push_style = |decl: PropertyDeclaration| {
+            hints.push(ApplicableDeclarationBlock::from_declarations(
+                Arc::new(self.lock.wrap(PropertyDeclarationBlock::with_one(decl, Importance::Normal))),
+                CascadeLevel::PresHints,
+                LayerOrder::root(),
+            ));
+        };
+
+        for attr in elem.attributes.iter() {
+            let name = &attr.name.local;
+            let value = attr.value.as_str();
+
+            if *name == local_name!("align") {
+                use style::values::specified::TextAlign;
+                let keyword = match value {
+                    "left" => Some(style::values::computed::text::TextAlign::MozLeft),
+                    "right" => Some(style::values::computed::text::TextAlign::MozRight),
+                    "center" => Some(style::values::computed::text::TextAlign::MozCenter),
+                    _ => None,
+                };
+
+                if let Some(keyword) = keyword {
+                    push_style(PropertyDeclaration::TextAlign(TextAlign::Keyword(keyword)));
+                }
+            }
+
+            if *name == local_name!("width")
+                && (*tag == local_name!("table")
+                || *tag == local_name!("col")
+                || *tag == local_name!("tr")
+                || *tag == local_name!("td")
+                || *tag == local_name!("th")
+                || *tag == local_name!("hr"))
+            {
+                let is_table = *tag == local_name!("table");
+                if let Some(width) = parse_size(value, |v| !is_table || *v != 0.0) {
+                    use style::values::generics::{NonNegative, length::Size};
+
+                    push_style(PropertyDeclaration::Width(Size::LengthPercentage(
+                        NonNegative(width),
+                    )));
+                }
+            }
+
+            if *name == local_name!("height")
+                && (*tag == local_name!("table")
+                || *tag == local_name!("thead")
+                || *tag == local_name!("tbody")
+                || *tag == local_name!("tfoot"))
+            {
+                if let Some(height) = parse_size(value, |_| true) {
+                    use style::values::generics::{NonNegative, length::Size};
+                    push_style(PropertyDeclaration::Height(Size::LengthPercentage(
+                        NonNegative(height),
+                    )));
+                }
+            }
+
+            if *name == local_name!("bgcolor") {
+                use style::values::specified::Color;
+                if let Some((r, g, b, a)) = parse_color(value) {
+                    push_style(PropertyDeclaration::BackgroundColor(
+                        Color::from_absolute_color(AbsoluteColor::srgb_legacy(r, g, b, a)),
+                    ));
+                }
+            }
+
+            if *name == local_name!("hidden") {
+                use style::values::specified::Display;
+                push_style(PropertyDeclaration::Display(Display::None));
+            }
+        }
     }
 
     fn local_name(&self) -> &<SelectorImpl as selectors::SelectorImpl>::BorrowedLocalName {
@@ -585,11 +702,21 @@ impl<'a> TElement for Node<'a> {
     }
 
     fn has_selector_flags(&self, flags: ElementSelectorFlags) -> bool {
-        todo!()
+        self.selector_flags.borrow().contains(flags)
     }
 
     fn relative_selector_search_direction(&self) -> ElementSelectorFlags {
-        todo!()
+        let flags = self.selector_flags.borrow();
+
+        if flags.contains(ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR_SIBLING) {
+            ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR_SIBLING
+        } else if flags.contains(ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR) {
+            ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR
+        } else if flags.contains(ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_SIBLING) {
+            ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_SIBLING
+        } else {
+            ElementSelectorFlags::empty()
+        }
     }
 }
 

@@ -45,6 +45,7 @@ parley = "0.6.0"
 euclid = "0.22.11"
 bitflags = "2.10.0"
 atomic_refcell = "0.1.13"
+stylo_taffy = "0.2.0"
 
 [dependencies.winit]
 git = "https://github.com/Treetrain1/winit.git"

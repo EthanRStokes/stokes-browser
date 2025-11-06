@@ -5,6 +5,7 @@ use html5ever::tendril::{StrTendril, TendrilSink};
 use markup5ever_rcdom as rcdom;
 use markup5ever_rcdom::{Handle, NodeData as EverNodeData};
 use std::cell::RefCell;
+use markup5ever::local_name;
 use crate::dom::config::DomConfig;
 
 /// HTML Parser for converting HTML strings into DOM structures
@@ -16,13 +17,13 @@ impl HtmlParser {
     }
 
     /// Parse HTML string into a DOM structure
-    pub fn parse(&self, html: &str) -> Dom {
+    pub fn parse(&self, html: &str, config: DomConfig) -> Dom {
         // Parse with html5ever
         let parser = parse_document(rcdom::RcDom::default(), Default::default());
         let rcdom = parser.one(html);
 
         // Convert RcDom to our DOM structure
-        let mut dom = Dom::new(DomConfig::default());
+        let mut dom = Dom::new(config);
         self.build_dom_from_handle(&rcdom.document, None, &mut dom);
 
         dom
@@ -84,20 +85,20 @@ impl HtmlParser {
             }
             EverNodeData::Element { name, attrs, template_contents, .. } => {
                 // Convert attributes to AttributeMap
-                let mut attributes: AttributeMap = AttributeMap::new();
+                let mut attributes: AttributeMap = AttributeMap::empty();
                 for attr in attrs.borrow().iter() {
-                    let local = attr.name.local.to_string();
-                    let val = attr.value.to_string();
-                    attributes.insert(local, val);
+                    let local = attr.name.clone();
+                    let val = &attr.value;
+                    attributes.set(local, &*val);
                 }
 
-                let elem_data = ElementData::with_attributes(name.clone(), attributes.clone());
+                let elem_data = ElementData::new(name.clone(), attributes);
 
                 // Special handling for <img> to create Image node variant, otherwise Element
                 let node_kind = if name.local.as_ref().eq_ignore_ascii_case("img") {
                     // create ImageData from attributes
-                    let src = attributes.get("src").cloned().unwrap_or_default();
-                    let alt = attributes.get("alt").cloned().unwrap_or_default();
+                    let src = elem_data.attr(local_name!("src")).unwrap_or_default().to_string();
+                    let alt = elem_data.attr(local_name!("alt")).unwrap_or_default().to_string();
                     NodeData::Image(RefCell::new(ImageData::new(src, alt)))
                 } else {
                     NodeData::Element(elem_data)
