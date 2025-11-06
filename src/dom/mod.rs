@@ -13,6 +13,7 @@ use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use blitz_traits::net::{DummyNetProvider, NetProvider};
 use blitz_traits::shell::Viewport;
 use euclid::Size2D;
 use parley::FontContext;
@@ -39,6 +40,7 @@ use taffy::Point;
 use crate::dom::config::DomConfig;
 use crate::dom::node::DomNodeFlags;
 use crate::dom::url::DocUrl;
+use crate::networking::{Resource, StylesheetLoader};
 pub use self::events::{EventDispatcher, EventType};
 pub use self::node::{AttributeMap, DomNode, ElementData, ImageData, ImageLoadingState, NodeData};
 pub use self::parser::HtmlParser;
@@ -71,6 +73,8 @@ pub struct Dom {
     pub(crate) nodes_to_id: HashMap<String, usize>,
     pub(crate) nodes_to_stylesheet: BTreeMap<usize, DocumentStyleSheet>,
     pub(crate) stylesheets: HashMap<String, DocumentStyleSheet>,
+
+    pub net_provider: Arc<dyn NetProvider<Resource>>,
 }
 
 pub(crate) fn device(viewport: &Viewport, font_ctx: Arc<Mutex<FontContext>>) -> Device {
@@ -140,6 +144,7 @@ impl Dom {
         stylo_config::set_bool("layout.columns.enabled", true);
 
         let base_url = config.base_url.and_then(|url| DocUrl::from_str(&url).ok()).unwrap_or_default();
+        let net_provider = config.net_provider.unwrap_or_else(|| Arc::new(DummyNetProvider));
 
         let mut dom = Self {
             id,
@@ -157,6 +162,7 @@ impl Dom {
             nodes_to_id: Default::default(),
             nodes_to_stylesheet: Default::default(),
             stylesheets: Default::default(),
+            net_provider,
         };
 
         // Create the root document node
@@ -201,6 +207,7 @@ impl Dom {
         let parser = HtmlParser::new();
         parser.parse(html, DomConfig {
             viewport: Some(viewport),
+            net_provider: Some(Arc::new(DummyNetProvider)),
             ..Default::default()
         })
     }
@@ -218,7 +225,7 @@ impl Dom {
             origin,
             style::servo_arc::Arc::new(self.lock.wrap(MediaList::empty())),
             self.lock.clone(),
-            None, // todo
+            Some(&StylesheetLoader(self.id, self.net_provider.clone())), // todo
             None,
             QuirksMode::NoQuirks,
             AllowImportRules::Yes

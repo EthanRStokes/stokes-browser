@@ -30,22 +30,31 @@ bincode = "2.0.1"
 parking_lot = "0.12"
 uds_windows = "1.1.0"
 rfd = "0.15"
-blitz-traits = "0.2.0"
 url = "2"
 taffy = "0.9.1"
 slab = "0.4.11"
-stylo = "0.8.0"
-stylo_config = "0.8.0"
-stylo_dom = "0.8.0"
-stylo_atoms = "0.8.0"
-stylo_traits = "0.8.0"
-selectors = "0.32.0"
 markup5ever = "0.35.0"
 parley = "0.6.0"
 euclid = "0.22.11"
 bitflags = "2.10.0"
 atomic_refcell = "0.1.13"
-stylo_taffy = "0.2.0"
+
+# Stylo
+stylo = { git = "https://github.com/servo/stylo", rev = "85ae0b1" }
+stylo_traits = { git = "https://github.com/servo/stylo", rev = "85ae0b1" }
+stylo_atoms = { git = "https://github.com/servo/stylo", rev = "85ae0b1" }
+stylo_config = { git = "https://github.com/servo/stylo", rev = "85ae0b1" }
+stylo_dom = { git = "https://github.com/servo/stylo", rev = "85ae0b1" }
+selectors = { git = "https://github.com/servo/stylo", rev = "85ae0b1" }
+
+# Blitz
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "68738226" }
+blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "68738226" }
+stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "68738226" }
+bytes = "1.10.1"
+tracing = "0.1.41"
+woff = "0.6.2"
+wuff = "0.2.1"
 
 [dependencies.winit]
 git = "https://github.com/Treetrain1/winit.git"
