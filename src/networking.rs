@@ -227,9 +227,6 @@ impl NetHandler<Resource> for FontFaceHandler {
             FontFaceSourceFormatKeyword::Woff => {
                 tracing::info!("Decompressing woff1 font");
 
-                // Use woff crate to decompress font
-                let decompressed = woff::version1::decompress(&bytes);
-
                 // Use wuff crate to decompress font
                 let decompressed = wuff::decompress_woff1(&bytes).ok();
 
@@ -241,9 +238,6 @@ impl NetHandler<Resource> for FontFaceHandler {
             }
             FontFaceSourceFormatKeyword::Woff2 => {
                 tracing::info!("Decompressing woff2 font");
-
-                // Use woff crate to decompress font
-                let decompressed = woff::version2::decompress(&bytes);
 
                 // Use wuff crate to decompress font
                 let decompressed = wuff::decompress_woff2(&bytes).ok();

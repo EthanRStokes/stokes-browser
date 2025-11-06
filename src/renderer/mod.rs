@@ -17,6 +17,8 @@ use crate::renderer::paint::DefaultPaints;
 use skia_safe::{Canvas, Color, Font, Paint, Rect};
 use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::properties::generated::style_structs::Font as StyloFont;
+use style::properties::longhands;
+use style::servo_arc::Arc;
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer {
@@ -107,7 +109,8 @@ impl HtmlRenderer {
         };*/
 
         // Check visibility - if hidden, skip rendering visual aspects but still render children
-        let is_visible = computed_styles.visibility == crate::css::Visibility::Visible;
+        let inherited_box = style.get_inherited_box();
+        let is_visible = inherited_box.visibility == longhands::visibility::SpecifiedValue::Visible;
 
         // Get the DOM node for this layout box
         let dom_node = node.get_node(node.id);
@@ -121,7 +124,7 @@ impl HtmlRenderer {
         if is_visible {
             match &dom_node.data {
                 NodeData::Element(element_data) => {
-                    self.render_element(canvas, node, layout_box, element_data, &computed_styles, scale_factor);
+                    self.render_element(canvas, node, layout_box, element_data, &computed_styles, &style, scale_factor);
                 },
                 NodeData::Text { contents } => {
                     // Check if text node is inside a non-visual element
@@ -187,12 +190,14 @@ impl HtmlRenderer {
         layout_box: &LayoutBox,
         element_data: &ElementData,
         styles: &ComputedValues,
+        style: &Arc<StyloComputedValues>,
         scale_factor: f32,
     ) {
         let content_rect = layout_box.dimensions.content;
 
         // Get opacity value (default to 1.0 if no styles)
-        let opacity = styles.opacity;
+        let effects = style.get_effects();
+        let opacity = effects.opacity;
 
         // Render ::before pseudo-element content
         pseudo::render_pseudo_element_content(
@@ -200,6 +205,7 @@ impl HtmlRenderer {
             &content_rect,
             element_data,
             styles,
+            style,
             scale_factor,
             true, // before
             &self.font_manager,
@@ -211,6 +217,9 @@ impl HtmlRenderer {
 
         // Create background paint with CSS colors
         let mut bg_paint = &mut self.paints.background_paint;
+        let background = style.get_background();
+        let bg_color = &background.background_color;
+        // todo replace bg_color impl
         if let Some(bg_color) = &styles.background_color {
             let mut color = bg_color.to_skia_color();
             // Apply opacity to background color

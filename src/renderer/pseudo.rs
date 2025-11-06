@@ -3,6 +3,8 @@ use crate::css::{ComputedValues, ContentValue};
 use crate::dom::ElementData;
 // Pseudo-element rendering (::before, ::after)
 use skia_safe::{Canvas, Paint, Rect, TextBlob};
+use style::properties::generated::ComputedValues as StyloComputedValues;
+use style::servo_arc::Arc;
 
 /// Render pseudo-element generated content (::before or ::after)
 pub fn render_pseudo_element_content(
@@ -10,6 +12,7 @@ pub fn render_pseudo_element_content(
     rect: &Rect,
     element_data: &ElementData,
     styles: &ComputedValues,
+    style: &Arc<StyloComputedValues>,
     scale_factor: f32,
     is_before: bool,
     font_manager: &FontManager,

@@ -53,7 +53,6 @@ blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "68738226" }
 stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "68738226" }
 bytes = "1.10.1"
 tracing = "0.1.41"
-woff = "0.6.2"
 wuff = "0.2.1"
 
 [dependencies.winit]
