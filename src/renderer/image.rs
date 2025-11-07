@@ -22,24 +22,16 @@ pub fn render_image_node(painter: &mut TextPainter, node: &DomNode, layout_box: 
     }
 
     match &image_data.loading_state {
-        ImageLoadingState::Loaded(_) => {
+        ImageLoadingState::Loaded(data) => {
             // Try to get the cached decoded image
-            match &image_data.cached_image {
-                CachedImage::Raster(data) => {
-                    let inherited_box = style.get_inherited_box();
-                    let image_rendering = inherited_box.image_rendering;
+            let inherited_box = style.get_inherited_box();
+            let image_rendering = inherited_box.image_rendering;
 
-                    let transform = Affine::translate((content_rect.left as f64, content_rect.top as f64));
-                    // Draw the cached image scaled to fit the content rect
+            let transform = Affine::translate((content_rect.left as f64, content_rect.top as f64));
+            // Draw the cached image scaled to fit the content rect
 
-                    painter.draw_image(to_peniko_image(data, to_image_quality(image_rendering)).as_ref(), transform);
-                }
-                CachedImage::Svg(tree) => todo!(),
-                CachedImage::None => {
-                    // No cached image available, show placeholder indicating decoding issue
-                    render_image_placeholder(painter, &content_rect, "Image decoding failed", scale_factor, font);
-                }
-            }
+            painter.draw_image(to_peniko_image(data, to_image_quality(image_rendering)).as_ref(), transform);
+
         },
         ImageLoadingState::Loading => {
             // Show loading placeholder

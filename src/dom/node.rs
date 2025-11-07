@@ -225,7 +225,7 @@ pub struct ImageData {
 
 #[derive(Debug, Clone)]
 pub enum CachedImage {
-    Raster(RasterImageData),
+    Raster(Arc<RasterImageData>),
     Svg(Box<usvg::Tree>),
     None
 }
@@ -257,7 +257,7 @@ impl RasterImageData {
 pub enum ImageLoadingState {
     NotLoaded,
     Loading,
-    Loaded(Vec<u8>), // Raw image data
+    Loaded(Arc<RasterImageData>), // Raw image data
     Failed(String),  // Error message
 }
 
@@ -294,22 +294,8 @@ impl ImageData {
 
         // If we have loaded image data but no cached image, decode it
         if let ImageLoadingState::Loaded(image_bytes) = &self.loading_state {
-            if let Ok(image) = image::ImageReader::new(Cursor::new(image_bytes))
-                .with_guessed_format()
-                .expect("Failed to guess image format")
-                .decode()
-            {
-                let rgba_image = image.to_rgba8();
-                let (width, height) = rgba_image.dimensions();
-                let rgba_data = rgba_image.into_raw();
-
-                self.cached_image = CachedImage::Raster(RasterImageData::new(
-                    width,
-                    height,
-                    std::sync::Arc::new(rgba_data),
-                ));
-                return &self.cached_image;
-            }
+            self.cached_image = CachedImage::Raster(image_bytes.clone());
+            return &self.cached_image;
         }
 
         &CachedImage::None

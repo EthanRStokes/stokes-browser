@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use html5ever::tendril::StrTendril;
 use super::font::FontManager;
-use crate::css::ComputedValues;
 use crate::layout::LayoutBox;
 // Text rendering functionality
 use skia_safe::{BlurStyle, Canvas, Color, ColorSpace, Font, FontArguments, FontHinting, FontMgr, GlyphId, MaskFilter, Paint, PaintCap, PaintJoin, PaintStyle, Point, RRect, Rect, Shader, TextBlob, Typeface};
@@ -16,7 +15,11 @@ use color::{AlphaColor, Srgb};
 use kurbo::{Affine, Stroke};
 use peniko::{Fill, ImageBrushRef};
 use style::color::AbsoluteColor;
-use style::values::specified::TextDecorationLine;
+use style::properties::ComputedValues;
+use style::servo_arc::Arc;
+use style::values::computed::font::{GenericFontFamily, SingleFontFamily};
+use style::values::specified::text::TextTransformCase;
+use style::values::specified::{TextAlign, TextAlignKeyword, TextDecorationLine};
 
 /// Render text with CSS styles applied and DPI scale factor using Skia's textlayout
 pub fn render_text_node(
@@ -25,7 +28,7 @@ pub fn render_text_node(
     dom: &Dom,
     layout_box: &LayoutBox,
     contents: &RefCell<StrTendril>,
-    styles: &ComputedValues,
+    style: &Arc<ComputedValues>,
     font_manager: &FontManager,
     default_text_paint: &Paint,
     painter: &mut TextPainter,
@@ -38,7 +41,35 @@ pub fn render_text_node(
     let mut layout_ctx = dom.layout_ctx.lock().unwrap();
 
     // Apply text transformation to the content
-    let transformed_text = styles.text_transform.apply(&text);
+    let inherited_text = style.get_inherited_text();
+    let text_transform = inherited_text.text_transform.case();
+    let transformed_text: String = match text_transform {
+        TextTransformCase::None => {
+            text.to_string()
+        }
+        TextTransformCase::Uppercase => {
+            text.chars().flat_map(|c| c.to_uppercase()).collect()
+        }
+        TextTransformCase::Lowercase => {
+            text.chars().flat_map(|c| c.to_lowercase()).collect()
+        }
+        TextTransformCase::Capitalize => {
+            let mut capitalize_next = true;
+            text.chars()
+                .map(|c| {
+                    if c.is_whitespace() {
+                        capitalize_next = true;
+                        c
+                    } else if capitalize_next {
+                        capitalize_next = false;
+                        c.to_uppercase().next().unwrap_or(c)
+                    } else {
+                        c
+                    }
+                })
+                .collect()
+        }
+    };
 
     let mut builder = layout_ctx.ranged_builder(
         &mut font_ctx,
@@ -48,15 +79,35 @@ pub fn render_text_node(
     );
 
     // Extract CSS properties
-    let font_size = styles.font_size;
-    let text_align = &styles.text_align;
-    let font_weight_str = &styles.font_weight;
-    let line_height_value = &styles.line_height;
+    let font = style.get_font();
+    let font_size = font.font_size;
+    let font_size = font_size.computed_size.px();
+    let text_align = &inherited_text.text_align;
+    let font_weight = &font.font_weight.value();
+    let line_height_value = &font.line_height;
 
     // Set default font family - parse comma-separated list
-    let font_families: Vec<&str> = styles.font_family
-        .split(',')
-        .map(|s| s.trim().trim_matches(|c| c == '"' || c == '\''))
+    let families = font.font_family.families.iter().map(|family| {
+        match family {
+            SingleFontFamily::FamilyName(a) => {
+                let name = a.name.as_ref();
+                name
+            }
+            SingleFontFamily::Generic(b) => {
+                match b {
+                    GenericFontFamily::Serif => "serif",
+                    GenericFontFamily::SansSerif => "sans-serif",
+                    GenericFontFamily::Monospace => "monospace",
+                    GenericFontFamily::Cursive => "cursive",
+                    GenericFontFamily::Fantasy => "fantasy",
+                    GenericFontFamily::SystemUi => "system-ui",
+                    GenericFontFamily::None => "sans-serif"
+                }
+            }
+        }
+    }).collect::<Vec<&str>>();
+    let font_families: Vec<&str> = families
+        .iter().map(|s| s.trim().trim_matches(|c| c == '"' || c == '\''))
         .collect();
     
     // Use first font family or default to system UI
@@ -79,24 +130,21 @@ pub fn render_text_node(
     builder.push_default(StyleProperty::FontSize(font_size));
 
     // Set font weight
-    let font_weight = match font_weight_str.to_lowercase().as_str() {
-        "normal" => FontWeight::new(400.0),
-        "bold" => FontWeight::new(700.0),
-        "bolder" => FontWeight::new(900.0),
-        "lighter" => FontWeight::new(300.0),
-        weight_str => {
-            if let Ok(weight_num) = weight_str.parse::<f32>() {
-                FontWeight::new(weight_num)
-            } else {
-                FontWeight::new(400.0)
-            }
-        }
-    };
+    let font_weight = FontWeight::new(*font_weight);
     builder.push_default(StyleProperty::FontWeight(font_weight));
 
     // Set line height
-    let scaled_font_size = font_size * scale_factor;
-    let line_height_ratio = line_height_value.to_px(scaled_font_size) / scaled_font_size;
+    let line_height_ratio = match line_height_value {
+        style::values::computed::font::LineHeight::Normal => {
+            1.2 // Typical default line height ratio
+        }
+        style::values::computed::font::LineHeight::Number(num) => {
+            num.0
+        }
+        style::values::computed::font::LineHeight::Length(len) => {
+            len.px()
+        }
+    };
     builder.push_default(LineHeight::FontSizeRelative(line_height_ratio));
 
     // Build the layout
@@ -112,25 +160,20 @@ pub fn render_text_node(
 
     // Set text alignment
     let alignment = match text_align {
-        crate::css::TextAlign::Left => Alignment::Start,
-        crate::css::TextAlign::Right => Alignment::End,
-        crate::css::TextAlign::Center => Alignment::Center,
-        crate::css::TextAlign::Justify => Alignment::Justify,
+        TextAlignKeyword::Left => Alignment::Left,
+        TextAlignKeyword::Right => Alignment::Right,
+        TextAlignKeyword::Center => Alignment::Center,
+        TextAlignKeyword::Justify => Alignment::Justify,
+        TextAlignKeyword::Start => Alignment::Start,
+        TextAlignKeyword::End => Alignment::End,
+        TextAlignKeyword::MozCenter => Alignment::Center,
+        TextAlignKeyword::MozLeft => Alignment::Left,
+        TextAlignKeyword::MozRight => Alignment::Right,
     };
     layout.align(max_width, alignment, AlignmentOptions::default());
 
     // Get text color
-    let text_color: AlphaColor<Srgb> = if let Some(css_color) = &styles.color {
-        let skia_color = css_color.to_skia_color();
-        let r = skia_color.r() as f32 / 255.0;
-        let g = skia_color.g() as f32 / 255.0;
-        let b = skia_color.b() as f32 / 255.0;
-        let a = (skia_color.a() as f32 / 255.0) * styles.opacity;
-        AlphaColor::new([r, g, b, a])
-    } else {
-        AlphaColor::new([0.0, 0.0, 0.0, styles.opacity])
-    };
-
+    let text_color: AlphaColor<Srgb> = style.clone_color().as_color_color();
     // Create transform for text position
     let transform = Affine::translate((content_rect.left as f64, content_rect.top as f64));
 
@@ -770,7 +813,8 @@ impl TextPainter<'_> {
     }
 
     pub(crate) fn draw_image(&mut self, image: ImageBrushRef, transform: Affine) {
-        self.fill(
+        // TODO fix impl
+        /*self.fill(
             Fill::NonZero,
             transform,
             image,
@@ -781,7 +825,7 @@ impl TextPainter<'_> {
                 image.image.width as f64,
                 image.image.height as f64,
             ),
-        );
+        );*/
     }
 }
 

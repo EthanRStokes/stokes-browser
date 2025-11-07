@@ -202,6 +202,7 @@ impl Engine {
                 let mut image_data = image_data.borrow_mut();
                 match result {
                     Ok(image_bytes) => {
+                        let image_bytes = bytes::Bytes::from(image_bytes);
                         if let Ok(image) = image::ImageReader::new(Cursor::new(&image_bytes))
                             .with_guessed_format()
                             .expect("failed to read image")
@@ -211,16 +212,18 @@ impl Engine {
                             let (width, height) = rgba_image.dimensions();
                             let rgba_data = rgba_image.into_raw();
 
-                            image_data.cached_image = CachedImage::Raster(RasterImageData::new(
+                            let raster = style::servo_arc::Arc::new(RasterImageData::new(
                                 width,
                                 height,
                                 Arc::new(rgba_data),
                             ));
+                            image_data.cached_image = CachedImage::Raster(raster.clone());
+                            image_data.loading_state = ImageLoadingState::Loaded(raster);
                             println!("Successfully loaded and decoded image: {}", src);
                         } else {
                             println!("Successfully loaded but failed to decode image: {}", src);
-                        }
-                        image_data.loading_state = ImageLoadingState::Loaded(image_bytes);
+                            image_data.loading_state = ImageLoadingState::Failed("Failed to decode image".to_string());
+                        };
                     }
                     Err(err) => {
                         image_data.loading_state = ImageLoadingState::Failed(err.to_string());

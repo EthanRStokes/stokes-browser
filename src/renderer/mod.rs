@@ -141,7 +141,7 @@ impl HtmlRenderer {
                             dom,
                             layout_box,
                             contents,
-                            &computed_styles,
+                            &style,
                             &self.font_manager,
                             &self.paints.text_paint,
                             painter,
