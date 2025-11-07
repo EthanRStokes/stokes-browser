@@ -4,6 +4,7 @@ use std::num::NonZeroU32;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use blitz_traits::shell::Viewport;
+use parley::{FontContext, LayoutContext};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -11,10 +12,11 @@ use winit::window::WindowId;
 
 use crate::ipc::{ParentToTabMessage, TabToParentMessage};
 use crate::tab_manager::TabManager;
-use crate::ui::BrowserUI;
+use crate::ui::{BrowserUI, TextBrush};
 use crate::window::{create_surface, Env};
 use crate::{input, ipc};
 use skia_safe::Color;
+use crate::renderer::text::TextPainter;
 
 /// Result of closing a tab
 #[derive(Debug, PartialEq)]
@@ -37,6 +39,8 @@ pub(crate) struct BrowserApp {
     loading_spinner_angle: f32,
     last_spinner_update: Instant,
     tab_order: Vec<String>,
+    font_ctx: FontContext,
+    layout_ctx: LayoutContext<TextBrush>,
 }
 
 
@@ -71,6 +75,8 @@ impl BrowserApp {
             loading_spinner_angle: 0.0,
             last_spinner_update: Instant::now(),
             tab_order: vec![],
+            font_ctx: FontContext::new(),
+            layout_ctx: LayoutContext::new(),
         }
     }
 
@@ -361,7 +367,11 @@ impl BrowserApp {
         }
 
         // Render UI on top
-        self.ui.render(canvas);
+        let mut painter = TextPainter {
+            inner: canvas,
+            cache: &mut Default::default(),
+        };
+        self.ui.render(canvas, &mut self.font_ctx, &mut self.layout_ctx, &mut painter);
         self.ui.render_loading_indicator(canvas, is_loading, self.loading_spinner_angle);
 
         self.env.gr_context.flush_and_submit();

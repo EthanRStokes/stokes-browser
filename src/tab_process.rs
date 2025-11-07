@@ -9,6 +9,7 @@ use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
 use blitz_traits::shell::Viewport;
+use crate::renderer::text::TextPainter;
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
@@ -371,9 +372,14 @@ impl TabProcess {
             // Clear the canvas to prevent old frames from showing through
             canvas.clear(skia_safe::Color::WHITE);
 
+            let mut painter = TextPainter {
+                inner: canvas,
+                cache: &mut Default::default(),
+            };
+
             let engine = &mut self.engine;
             if engine.dom.is_some() {
-                engine.render(canvas, engine.viewport.hidpi_scale);
+                engine.render(canvas, &mut painter, engine.viewport.hidpi_scale);
             }
 
             // Copy the pixel data to shared memory

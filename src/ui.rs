@@ -1,7 +1,25 @@
 use blitz_traits::shell::Viewport;
-use skia_safe::{Canvas, Color, Font, FontStyle, Paint, Path, Rect, TextBlob};
+use skia_safe::{Canvas, Color, ColorSpace, Font, FontStyle, ImageInfo, Paint, Path, Pixmap, Point, Rect, TextBlob};
 use std::f32::consts::PI;
 use std::time::{Duration, Instant};
+use color::AlphaColor;
+use kurbo::Affine;
+use parley::{Alignment, AlignmentOptions, FontContext, FontWeight, GenericFamily, LayoutContext, LineHeight, PositionedLayoutItem, StyleProperty};
+use peniko::Fill;
+use skrifa::{FontRef, GlyphId, MetadataProvider};
+use skrifa::instance::NormalizedCoord;
+use crate::renderer::text::TextPainter;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TextBrush {
+    pub id: usize
+}
+
+impl TextBrush {
+    pub(crate) fn from_id(id: usize) -> Self {
+        Self { id }
+    }
+}
 
 /// Tooltip information
 #[derive(Debug, Clone)]
@@ -913,7 +931,7 @@ impl BrowserUI {
     }
 
     /// Render the UI
-    pub fn render(&self, canvas: &Canvas) {
+    pub fn render(&self, canvas: &Canvas, font_ctx: &mut FontContext, layout_ctx: &mut LayoutContext<TextBrush>, painter: &mut TextPainter) {
         let canvas_width = canvas.image_info().width() as f32;
         let canvas_height = canvas.image_info().height() as f32;
         let chrome_height = self.chrome_height();
@@ -947,6 +965,84 @@ impl BrowserUI {
 
         // Draw BROWSING WITH STOKES text in the top-right corner
         {
+            let text_x = canvas_width - 300.0 - (20.0 * self.viewport.hidpi_scale);
+            let text_y = 22.0 * self.viewport.hidpi_scale;
+            let pos = kurbo::Point {
+                x: text_x as f64,
+                y: text_y as f64,
+            };
+            let transform = Affine::translate((pos.x * self.viewport.hidpi_scale as f64, pos.y * self.viewport.hidpi_scale as f64));
+            let text = "BROWSING WITH STOKESFSHDPOIFHSDPIFHSDUIFIOSDHFUIOSHDFOIHSDOUIFHOSDIUHFOISDHIFOSHDOUISODUIHFUIOSFUIOSD";
+            let mut builder = layout_ctx.ranged_builder(font_ctx, &text, self.viewport.hidpi_scale, true);
+
+            builder.push_default(GenericFamily::SystemUi);
+            builder.push_default(LineHeight::FontSizeRelative(1.3));
+            builder.push_default(StyleProperty::FontSize(base_font_size));
+
+            let bold = FontWeight::new(600.0);
+            builder.push(StyleProperty::FontWeight(bold), 0..4);
+
+            let mut layout = builder.build(&text);
+
+            layout.break_all_lines(Some(canvas_width));
+            layout.align(Some(canvas_width), Alignment::Start, AlignmentOptions::default());
+            let width = layout.width().ceil() as u32;
+            let height = layout.height().ceil() as u32;
+            let padded_width = width + 40;
+            let padded_height = height + 40;
+
+            for line in layout.lines() {
+                for item in line.items() {
+                    match item {
+                        PositionedLayoutItem::GlyphRun(glyph_run) => {
+                            let mut run_x = glyph_run.offset();
+                            let run_y = glyph_run.baseline();
+
+                            let run = glyph_run.run();
+                            let font = run.font();
+                            let font_size = run.font_size();
+                            let metrics = run.metrics();
+                            let style = glyph_run.style();
+                            let synthesis = run.synthesis();
+                            let glyph_xform = synthesis.skew().map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
+
+
+
+                            painter.draw_glyphs(
+                                font,
+                                font_size,
+                                true,
+                                run.normalized_coords(),
+                                Fill::NonZero,
+                                &anyrender::Paint::from(AlphaColor::BLACK),
+                                1.0,
+                                transform,
+                                glyph_xform,
+                                glyph_run.glyphs().map(|glyph| {
+                                    let gx = run_x + glyph.x;
+                                    let gy = run_y - glyph.y;
+                                    run_x += glyph.advance;
+
+                                    anyrender::Glyph {
+                                        id: glyph.id as _,
+                                        x: gx,
+                                        y: gy,
+                                    }
+                                })
+                            );
+
+                            // For each glyph in the run, draw it at its position
+                            for glyph in glyph_run.glyphs() {
+                                let glyph_x = run_x + glyph.x + 20.0; // padding
+                                let glyph_y = run_y + 20.0; // padding
+                            }
+                        }
+                        PositionedLayoutItem::InlineBox(_) => {
+                        }
+                    }
+                }
+            }
+
             // Draw "browsing the web" text in small-caps 18px Times New Roman
             let times_typeface = font_mgr.match_family_style("Times New Roman", FontStyle::bold_italic())
                 .or_else(|| font_mgr.match_family_style("Liberation Serif", FontStyle::default()))
@@ -961,14 +1057,13 @@ impl BrowserUI {
             custom_font.set_subpixel(true);
 
             // Render text in small-caps style (manually convert to uppercase with smaller caps)
-            let custom_text = "BROWSING WITH STOKES";
             paint.set_color(Color::from_rgb(60, 60, 60));
 
-            if let Some(text_blob) = TextBlob::new(custom_text, &custom_font) {
+            if let Some(text_blob) = TextBlob::new(text, &custom_font) {
                 let text_bounds = text_blob.bounds();
                 let text_x = canvas_width - text_bounds.width() - (20.0 * self.viewport.hidpi_scale);
                 let text_y = 22.0 * self.viewport.hidpi_scale;
-                canvas.draw_text_blob(&text_blob, (text_x, text_y), &paint);
+                //canvas.draw_text_blob(&text_blob, (text_x, text_y), &paint);
             }
         }
 

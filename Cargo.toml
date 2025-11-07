@@ -38,6 +38,15 @@ parley = "0.6.0"
 euclid = "0.22.11"
 bitflags = "2.10.0"
 atomic_refcell = "0.1.13"
+skrifa = "0.37.0"
+kurbo = "0.12.0"
+bytes = "1.10.1"
+tracing = "0.1.41"
+wuff = "0.2.1"
+hashbrown = "0.16.0"
+peniko = "0.5.0"
+anyrender = "0.6.2"
+color = "0.3.2"
 
 # Stylo
 stylo = { git = "https://github.com/servo/stylo", rev = "85ae0b1" }
@@ -51,9 +60,6 @@ selectors = { git = "https://github.com/servo/stylo", rev = "85ae0b1" }
 blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "68738226" }
 blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "68738226" }
 stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "68738226" }
-bytes = "1.10.1"
-tracing = "0.1.41"
-wuff = "0.2.1"
 
 [dependencies.winit]
 git = "https://github.com/Treetrain1/winit.git"

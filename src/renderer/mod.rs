@@ -1,11 +1,12 @@
 // HTML renderer module - organized into logical components
 mod font;
 mod paint;
-mod text;
+pub(crate) mod text;
 mod image;
 mod background;
 mod decorations;
 mod pseudo;
+mod cache;
 
 use crate::css::transition_manager::TransitionManager;
 use crate::css::ComputedValues;
@@ -19,6 +20,7 @@ use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::properties::generated::style_structs::Font as StyloFont;
 use style::properties::longhands;
 use style::servo_arc::Arc;
+use crate::renderer::text::TextPainter;
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer {
@@ -53,6 +55,7 @@ impl HtmlRenderer {
         node: &DomNode,
         layout_box: &LayoutBox,
         transition_manager: Option<&TransitionManager>,
+        painter: &mut TextPainter,
         scroll_x: f32,
         scroll_y: f32,
         scale_factor: f32,
@@ -72,7 +75,7 @@ impl HtmlRenderer {
         );
 
         // Render the layout tree with styles, scale factor, and viewport culling
-        self.render_box(canvas, &node, layout_box, transition_manager, scale_factor, &viewport_rect);
+        self.render_box(canvas, &node, layout_box, transition_manager, painter, scale_factor, &viewport_rect);
 
         // Restore the canvas state
         canvas.restore();
@@ -85,6 +88,7 @@ impl HtmlRenderer {
         node: &DomNode,
         layout_box: &LayoutBox,
         transition_manager: Option<&TransitionManager>,
+        painter: &mut TextPainter,
         scale_factor: f32,
         viewport_rect: &Rect,
     ) {
@@ -137,6 +141,7 @@ impl HtmlRenderer {
                             &computed_styles,
                             &self.font_manager,
                             &self.paints.text_paint,
+                            painter,
                             scale_factor,
                         );
                     }
@@ -177,7 +182,7 @@ impl HtmlRenderer {
 
             // Render children in z-index order
             for (child_node, child, _) in children_with_z {
-                self.render_box(canvas, &*child_node, child, transition_manager, scale_factor, viewport_rect);
+                self.render_box(canvas, &*child_node, child, transition_manager, painter, scale_factor, viewport_rect);
             }
         }
     }

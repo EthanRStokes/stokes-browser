@@ -26,6 +26,7 @@ use style::traversal::DomTraversal;
 use style::traversal_flags::TraversalFlags;
 use stylo_atoms::Atom;
 use crate::css::stylo::RecalcStyle;
+use crate::renderer::text::TextPainter;
 
 /// The core browser engine that coordinates all browser activities
 pub struct Engine {
@@ -52,8 +53,6 @@ pub struct Engine {
     previous_style_map: HashMap<usize, ComputedValues>,
     // JavaScript runtime
     js_runtime: Option<JsRuntime>,
-    // Flag to track when layout needs recomputation due to DOM changes
-    layout_needs_recomputation: Rc<RefCell<bool>>,
     // Navigation history
     history: Vec<String>,
     history_index: Option<usize>,
@@ -81,7 +80,6 @@ impl Engine {
             transition_manager: TransitionManager::new(),
             previous_style_map: HashMap::new(),
             js_runtime: None,
-            layout_needs_recomputation: Rc::new(RefCell::new(false)),
             history: Vec::new(),
             history_index: None,
         }
@@ -110,13 +108,6 @@ impl Engine {
 
             // Extract page title
             self.page_title = dom.get_title();
-
-            // Set up layout invalidation callback on the DOM root
-            let layout_flag = Rc::clone(&self.layout_needs_recomputation);
-            let callback = Rc::new(Box::new(move || {
-                *layout_flag.borrow_mut() = true;
-            }) as Box<dyn Fn()>);
-            dom.root_node_mut();
 
             // Store the DOM
             self.dom = Some(dom);
@@ -364,17 +355,6 @@ impl Engine {
 
         // Update content dimensions
         self.update_content_dimensions();
-
-        // Clear the recomputation flag since we just recomputed
-        *self.layout_needs_recomputation.borrow_mut() = false;
-    }
-
-    /// Check if layout needs recomputation and apply it if needed
-    /// This should be called before rendering or when checking layout state
-    pub fn apply_pending_layout_changes(&mut self) {
-        if *self.layout_needs_recomputation.borrow() {
-            self.recalculate_layout();
-        }
     }
 
     /// Update the viewport size
@@ -416,12 +396,7 @@ impl Engine {
     }
 
     /// Render the current page to a canvas with transition support
-    pub fn render(&mut self, canvas: &Canvas, scale_factor: f32) {
-        {
-            // Apply any pending layout changes from DOM modifications
-            self.apply_pending_layout_changes();
-        }
-
+    pub fn render(&mut self, canvas: &Canvas, painter: &mut TextPainter, scale_factor: f32) {
         let dom = self.dom.as_ref().unwrap();
         let node = dom.root_node();
 
@@ -441,6 +416,7 @@ impl Engine {
                 node,
                 layout,
                 transition_manager_ref,
+                painter,
                 self.scroll_x,
                 self.scroll_y,
                 scale_factor
