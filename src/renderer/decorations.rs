@@ -1,10 +1,11 @@
 use crate::css::{BorderRadiusPx, ComputedValues, OutlineStyle, Stroke, TextDecoration};
+use crate::renderer::text::TextPainter;
 // Text decorations, borders, shadows, and outlines
-use skia_safe::{Canvas, Color, Paint, Rect, TextBlob};
+use skia_safe::{Color, Paint, Rect, TextBlob};
 
 /// Render text decorations (underline, overline, line-through)
 pub fn render_text_decorations(
-    canvas: &Canvas,
+    painter: &TextPainter,
     text_blob: &TextBlob,
     text_position: (f32, f32),
     text_decoration: &TextDecoration,
@@ -30,7 +31,7 @@ pub fn render_text_decorations(
     // Render underline
     if text_decoration.has_underline() {
         let underline_y = text_y + font_size * 0.1; // Position below baseline
-        canvas.draw_line(
+        painter.draw_line(
             (text_x, underline_y),
             (text_x + text_width, underline_y),
             &decoration_paint,
@@ -40,7 +41,7 @@ pub fn render_text_decorations(
     // Render overline
     if text_decoration.has_overline() {
         let overline_y = text_y - font_size * 0.8; // Position above text
-        canvas.draw_line(
+        painter.draw_line(
             (text_x, overline_y),
             (text_x + text_width, overline_y),
             &decoration_paint,
@@ -50,7 +51,7 @@ pub fn render_text_decorations(
     // Render line-through (strikethrough)
     if text_decoration.has_line_through() {
         let line_through_y = text_y - font_size * 0.3; // Position through middle of text
-        canvas.draw_line(
+        painter.draw_line(
             (text_x, line_through_y),
             (text_x + text_width, line_through_y),
             &decoration_paint,
@@ -60,7 +61,7 @@ pub fn render_text_decorations(
 
 /// Render an element with rounded corners
 pub fn render_rounded_element(
-    canvas: &Canvas,
+    painter: &TextPainter,
     rect: Rect,
     border_radius_px: &BorderRadiusPx,
     bg_paint: &Paint,
@@ -82,19 +83,19 @@ pub fn render_rounded_element(
     bg_path.add_round_rect(rect, (avg_radius, avg_radius), None);
 
     // Draw the background with rounded corners
-    canvas.draw_path(&bg_path, bg_paint);
+    painter.draw_path(&bg_path, bg_paint);
 
     // Draw border if specified
     if let Some(border_paint) = border_paint {
         let mut border_path = skia_safe::Path::new();
         border_path.add_round_rect(rect, (avg_radius, avg_radius), None);
-        canvas.draw_path(&border_path, border_paint);
+        painter.draw_path(&border_path, border_paint);
     }
 }
 
 /// Render box shadows for an element
 pub fn render_box_shadows(
-    canvas: &Canvas,
+    painter: &TextPainter,
     rect: &Rect,
     styles: &ComputedValues,
     scale_factor: f32,
@@ -166,18 +167,18 @@ pub fn render_box_shadows(
                     original_color.b(),
                 ));
 
-                canvas.draw_rect(blur_rect, &blur_paint);
+                painter.draw_rect(blur_rect, &blur_paint);
             }
         } else {
             // No blur, just draw the shadow directly
-            canvas.draw_rect(shadow_rect, &shadow_paint);
+            painter.draw_rect(shadow_rect, &shadow_paint);
         }
     }
 }
 
 /// Render outline for an element
 pub fn render_outline(
-    canvas: &Canvas,
+    painter: &TextPainter,
     rect: &Rect,
     styles: &ComputedValues,
     opacity: f32,
@@ -245,7 +246,7 @@ pub fn render_outline(
             // Draw outer outline
             let mut outer_paint = outline_paint.clone();
             outer_paint.set_stroke_width(inner_width);
-            canvas.draw_rect(outline_rect, &outer_paint);
+            painter.draw_rect(outline_rect, &outer_paint);
 
             // Draw inner outline
             let inner_rect = Rect::from_xywh(
@@ -254,7 +255,7 @@ pub fn render_outline(
                 outline_rect.width() - 2.0 * (gap + inner_width),
                 outline_rect.height() - 2.0 * (gap + inner_width),
             );
-            canvas.draw_rect(inner_rect, &outer_paint);
+            painter.draw_rect(inner_rect, &outer_paint);
             return; // Skip the main draw below
         }
         OutlineStyle::Groove | OutlineStyle::Ridge |
@@ -268,12 +269,12 @@ pub fn render_outline(
     }
 
     // Draw the outline
-    canvas.draw_rect(outline_rect, &outline_paint);
+    painter.draw_rect(outline_rect, &outline_paint);
 }
 
 /// Render stroke for an element (similar to SVG stroke)
 pub fn render_stroke(
-    canvas: &Canvas,
+    painter: &TextPainter,
     rect: &Rect,
     stroke: &Stroke,
     opacity: f32,
@@ -307,5 +308,5 @@ pub fn render_stroke(
     stroke_paint.set_anti_alias(true);
 
     // Draw the stroke around the element
-    canvas.draw_rect(*rect, &stroke_paint);
+    painter.draw_rect(*rect, &stroke_paint);
 }

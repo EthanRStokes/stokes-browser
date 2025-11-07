@@ -1030,12 +1030,6 @@ impl BrowserUI {
                                     }
                                 })
                             );
-
-                            // For each glyph in the run, draw it at its position
-                            for glyph in glyph_run.glyphs() {
-                                let glyph_x = run_x + glyph.x + 20.0; // padding
-                                let glyph_y = run_y + 20.0; // padding
-                            }
                         }
                         PositionedLayoutItem::InlineBox(_) => {
                         }
@@ -1115,7 +1109,7 @@ impl BrowserUI {
                     paint.set_stroke(false);
 
                     // Draw custom icon instead of text
-                    Self::draw_icon(canvas, icon_type, rect, *is_hover, self.viewport.hidpi_scale);
+                    Self::draw_icon(painter, icon_type, rect, *is_hover, self.viewport.hidpi_scale);
 
                     // Collect tooltip for later rendering (to render above everything)
                     if tooltip.is_visible {
@@ -1263,7 +1257,7 @@ impl BrowserUI {
                         canvas.draw_round_rect(close_button_rect, 2.0, 2.0, &paint);
 
                         // Draw X icon with different color when hovering
-                        Self::draw_icon(canvas, &IconType::Close, close_button_rect, *close_button_hover, self.viewport.hidpi_scale);
+                        Self::draw_icon(painter, &IconType::Close, close_button_rect, *close_button_hover, self.viewport.hidpi_scale);
                     }
 
                     // Collect tooltip for later rendering (to render above everything)
@@ -1283,7 +1277,7 @@ impl BrowserUI {
 
         // Render all tooltips last so they appear above everything else
         for (tooltip, x, y) in tooltips_to_render {
-            Self::draw_tooltip(canvas, tooltip, x, y, &font, self.viewport.hidpi_scale);
+            Self::draw_tooltip(painter, tooltip, x, y, &font, self.viewport.hidpi_scale, canvas_width, canvas_height);
         }
     }
 
@@ -1449,130 +1443,124 @@ impl BrowserUI {
     }
 
     /// Draw a custom icon based on icon type
-    fn draw_icon(canvas: &Canvas, icon_type: &IconType, rect: Rect, is_hover: bool, hidpi_scale: f32) {
-        let mut paint = Paint::default();
-        paint.set_color(Color::from_rgb(60, 60, 60)); // Dark gray for icons
-        paint.set_stroke(true);
-        paint.set_stroke_width(2.0 * hidpi_scale);
-        paint.set_style(skia_safe::PaintStyle::Stroke);
-        paint.set_stroke_cap(skia_safe::paint::Cap::Round);
-        paint.set_stroke_join(skia_safe::paint::Join::Round);
-
-        let center_x = rect.center_x();
-        let center_y = rect.center_y();
-        let icon_size = rect.width().min(rect.height()) * 0.6;
+    fn draw_icon(painter: &mut TextPainter, icon_type: &IconType, rect: Rect, is_hover: bool, hidpi_scale: f32) {
+        let center_x = rect.center_x() as f64;
+        let center_y = rect.center_y() as f64;
+        let icon_size = (rect.width().min(rect.height()) * 0.6) as f64;
         let half_size = icon_size / 2.0;
+
+        // Set up stroke style
+        let stroke_width = 2.0 * hidpi_scale as f64;
+        let stroke = kurbo::Stroke::new(stroke_width)
+            .with_caps(kurbo::Cap::Round)
+            .with_join(kurbo::Join::Round);
+
+        // Icon color (dark gray for most icons)
+        let icon_color = AlphaColor::from_rgba8(60, 60, 60, 255);
+        let hover_color = AlphaColor::from_rgba8(200, 50, 50, 255); // Red for close icon when hovering
+
+        let transform = Affine::IDENTITY;
 
         match icon_type {
             IconType::Back => {
                 // Draw left-pointing arrow
-                let mut path = Path::new();
+                let mut path = kurbo::BezPath::new();
                 path.move_to((center_x + half_size * 0.3, center_y - half_size * 0.6));
                 path.line_to((center_x - half_size * 0.3, center_y));
                 path.line_to((center_x + half_size * 0.3, center_y + half_size * 0.6));
-                canvas.draw_path(&path, &paint);
+                painter.stroke(&stroke, transform, icon_color, None, &path);
             }
             IconType::Forward => {
                 // Draw right-pointing arrow
-                let mut path = Path::new();
+                let mut path = kurbo::BezPath::new();
                 path.move_to((center_x - half_size * 0.3, center_y - half_size * 0.6));
                 path.line_to((center_x + half_size * 0.3, center_y));
                 path.line_to((center_x - half_size * 0.3, center_y + half_size * 0.6));
-                canvas.draw_path(&path, &paint);
+                painter.stroke(&stroke, transform, icon_color, None, &path);
             }
             IconType::Refresh => {
                 // Draw circular arrow
                 let radius = half_size * 0.7;
-                let mut path = Path::new();
-                path.add_arc(Rect::from_xywh(center_x - radius, center_y - radius, radius * 2.0, radius * 2.0),
-                           45.0, 270.0);
-                canvas.draw_path(&path, &paint);
+                let arc = kurbo::Arc {
+                    center: kurbo::Point::new(center_x, center_y),
+                    radii: kurbo::Vec2::new(radius, radius),
+                    start_angle: 45.0_f64.to_radians(),
+                    sweep_angle: 270.0_f64.to_radians(),
+                    x_rotation: 0.0,
+                };
+                painter.stroke(&stroke, transform, icon_color, None, &arc);
 
                 // Draw arrow head
                 let arrow_x = center_x + radius * 0.7;
                 let arrow_y = center_y - radius * 0.7;
-                let mut arrow_path = Path::new();
+                let mut arrow_path = kurbo::BezPath::new();
                 arrow_path.move_to((arrow_x - 4.0, arrow_y - 4.0));
                 arrow_path.line_to((arrow_x, arrow_y));
                 arrow_path.line_to((arrow_x + 4.0, arrow_y - 4.0));
-                canvas.draw_path(&arrow_path, &paint);
+                painter.stroke(&stroke, transform, icon_color, None, &arrow_path);
             }
             IconType::NewTab => {
-                // Draw plus sign
-                canvas.draw_line(
+                // Draw plus sign (horizontal line)
+                let h_line = kurbo::Line::new(
                     (center_x - half_size * 0.6, center_y),
-                    (center_x + half_size * 0.6, center_y),
-                    &paint
+                    (center_x + half_size * 0.6, center_y)
                 );
-                canvas.draw_line(
+                painter.stroke(&stroke, transform, icon_color, None, &h_line);
+
+                // Vertical line
+                let v_line = kurbo::Line::new(
                     (center_x, center_y - half_size * 0.6),
-                    (center_x, center_y + half_size * 0.6),
-                    &paint
+                    (center_x, center_y + half_size * 0.6)
                 );
+                painter.stroke(&stroke, transform, icon_color, None, &v_line);
             }
             IconType::Close => {
-                let mut paint = Paint::default();
                 // Use red color when hovering, dark gray otherwise
-                paint.set_color(if is_hover {
-                    Color::from_rgb(200, 50, 50) // Red when hovering
-                } else {
-                    Color::from_rgb(60, 60, 60) // Dark gray normally
-                });
-                paint.set_stroke(true);
-                paint.set_stroke_width(2.0 * hidpi_scale);
-                paint.set_style(skia_safe::PaintStyle::Stroke);
-                paint.set_stroke_cap(skia_safe::paint::Cap::Round);
-                paint.set_stroke_join(skia_safe::paint::Join::Round);
+                let color = if is_hover { hover_color } else { icon_color };
 
-                let center_x = rect.center_x();
-                let center_y = rect.center_y();
-                let icon_size = rect.width().min(rect.height()) * 0.6;
-                let half_size = icon_size / 2.0;
-
-                // Draw X
-                canvas.draw_line(
+                // Draw X (first diagonal)
+                let line1 = kurbo::Line::new(
                     (center_x - half_size * 0.5, center_y - half_size * 0.5),
-                    (center_x + half_size * 0.5, center_y + half_size * 0.5),
-                    &paint
+                    (center_x + half_size * 0.5, center_y + half_size * 0.5)
                 );
-                canvas.draw_line(
+                painter.stroke(&stroke, transform, color, None, &line1);
+
+                // Second diagonal
+                let line2 = kurbo::Line::new(
                     (center_x + half_size * 0.5, center_y - half_size * 0.5),
-                    (center_x - half_size * 0.5, center_y + half_size * 0.5),
-                    &paint
+                    (center_x - half_size * 0.5, center_y + half_size * 0.5)
                 );
+                painter.stroke(&stroke, transform, color, None, &line2);
             }
         }
     }
 
 
     /// Draw a tooltip
-    fn draw_tooltip(canvas: &Canvas, tooltip: &Tooltip, x: f32, y: f32, font: &Font, hidpi_scale: f32) {
+    fn draw_tooltip(painter: &mut TextPainter, tooltip: &Tooltip, x: f32, y: f32, font: &Font, hidpi_scale: f32, canvas_width: f32, canvas_height: f32) {
         if !tooltip.is_visible {
             return;
         }
 
-        let mut paint = Paint::default();
         let padding = 8.0 * hidpi_scale;
-        let canvas_width = canvas.image_info().width() as f32;
-        let canvas_height = canvas.image_info().height() as f32;
 
         // Measure text
         if let Some(text_blob) = TextBlob::new(&tooltip.text, font) {
             let text_bounds = text_blob.bounds();
-            let tooltip_width = text_bounds.width() + padding * 2.0;
-            let tooltip_height = text_bounds.height() + padding * 2.0;
+            let tooltip_width = (text_bounds.width() + padding * 2.0) as f64;
+            let tooltip_height = (text_bounds.height() + padding * 2.0) as f64;
 
             // Position tooltip above the component
-            let mut tooltip_x = x;
-            let mut tooltip_y = y - tooltip_height - 5.0;
+            let mut tooltip_x = x as f64;
+            let mut tooltip_y = y as f64 - tooltip_height - 5.0;
 
             // Clamp tooltip position to keep it within canvas bounds
             // Add some margin from the edge
-            let margin = 4.0 * hidpi_scale;
+            let margin = (4.0 * hidpi_scale) as f64;
 
             // Adjust horizontal position if tooltip would overflow right edge
-            if tooltip_x + tooltip_width > canvas_width - margin {
-                tooltip_x = canvas_width - tooltip_width - margin;
+            if tooltip_x + tooltip_width > canvas_width as f64 - margin {
+                tooltip_x = canvas_width as f64 - tooltip_width - margin;
             }
 
             // Adjust horizontal position if tooltip would overflow left edge
@@ -1583,40 +1571,48 @@ impl BrowserUI {
             // Adjust vertical position if tooltip would overflow top edge
             if tooltip_y < margin {
                 // If there's no room above, place it below the component
-                tooltip_y = y + 32.0 * hidpi_scale + 5.0; // Assuming button height ~32px
+                tooltip_y = y as f64 + 32.0 * hidpi_scale as f64 + 5.0; // Assuming button height ~32px
             }
 
             // Adjust vertical position if tooltip would overflow bottom edge
-            if tooltip_y + tooltip_height > canvas_height - margin {
-                tooltip_y = canvas_height - tooltip_height - margin;
+            if tooltip_y + tooltip_height > canvas_height as f64 - margin {
+                tooltip_y = canvas_height as f64 - tooltip_height - margin;
             }
 
+            let transform = Affine::IDENTITY;
+
             // Draw tooltip background with shadow
-            let shadow_rect = Rect::from_xywh(tooltip_x + 2.0, tooltip_y + 2.0, tooltip_width, tooltip_height);
-            paint.set_color(Color::from_argb(100, 0, 0, 0)); // Semi-transparent black shadow
-            canvas.draw_round_rect(shadow_rect, 4.0, 4.0, &paint);
+            let shadow_rect = kurbo::RoundedRect::from_rect(
+                kurbo::Rect::new(tooltip_x + 2.0, tooltip_y + 2.0, tooltip_x + tooltip_width + 2.0, tooltip_y + tooltip_height + 2.0),
+                4.0
+            );
+            let shadow_color = AlphaColor::from_rgba8(0, 0, 0, 100); // Semi-transparent black shadow
+            painter.fill(Fill::NonZero, transform, shadow_color, None, &shadow_rect);
 
             // Draw tooltip background
-            let tooltip_rect = Rect::from_xywh(tooltip_x, tooltip_y, tooltip_width, tooltip_height);
-            paint.set_color(Color::from_rgb(255, 255, 220)); // Light yellow background
-            canvas.draw_round_rect(tooltip_rect, 4.0, 4.0, &paint);
+            let tooltip_rect = kurbo::RoundedRect::from_rect(
+                kurbo::Rect::new(tooltip_x, tooltip_y, tooltip_x + tooltip_width, tooltip_y + tooltip_height),
+                4.0
+            );
+            let bg_color = AlphaColor::from_rgba8(255, 255, 220, 255); // Light yellow background
+            painter.fill(Fill::NonZero, transform, bg_color, None, &tooltip_rect);
 
             // Draw tooltip border
-            paint.set_color(Color::from_rgb(180, 180, 140));
-            paint.set_stroke(true);
-            paint.set_stroke_width(1.0 * hidpi_scale);
-            canvas.draw_round_rect(tooltip_rect, 4.0, 4.0, &paint);
-            paint.set_stroke(false);
+            let stroke = kurbo::Stroke::new(1.0 * hidpi_scale as f64);
+            let border_color = AlphaColor::from_rgba8(180, 180, 140, 255);
+            painter.stroke(&stroke, transform, border_color, None, &tooltip_rect);
 
-            // Draw tooltip text
+            // Draw tooltip text using canvas directly (TextBlob is Skia-specific)
+            painter.set_matrix(transform);
+            let mut paint = Paint::default();
             paint.set_color(Color::BLACK);
-            canvas.draw_text_blob(&text_blob, (tooltip_x + padding, tooltip_y + padding - text_bounds.top), &paint);
+            painter.inner.draw_text_blob(&text_blob, (tooltip_x as f32 + padding, tooltip_y as f32 + padding - text_bounds.top), &paint);
         }
     }
 
     /// Draw a loading spinner indicator
     /// `angle` is the current rotation angle in radians (0 to 2*PI)
-    pub fn render_loading_indicator(&self, canvas: &Canvas, is_loading: bool, angle: f32) {
+    pub fn render_loading_indicator(&self, painter: &mut TextPainter, is_loading: bool, angle: f32) {
         if !is_loading {
             return;
         }
@@ -1630,7 +1626,7 @@ impl BrowserUI {
                     let spinner_x = x + width - spinner_size - (8.0 * self.viewport.hidpi_scale);
                     let spinner_y = y + (height / 2.0);
 
-                    Self::draw_spinner(canvas, spinner_x, spinner_y, spinner_size / 2.0, angle, self.viewport.hidpi_scale);
+                    Self::draw_spinner(painter, spinner_x, spinner_y, spinner_size / 2.0, angle, self.viewport.hidpi_scale);
                     break;
                 }
             }
@@ -1638,35 +1634,32 @@ impl BrowserUI {
     }
 
     /// Draw an animated spinner
-    fn draw_spinner(canvas: &Canvas, center_x: f32, center_y: f32, radius: f32, angle: f32, hidpi_scale: f32) {
-        let mut paint = Paint::default();
-        paint.set_stroke(true);
-        paint.set_stroke_width(2.5 * hidpi_scale);
-        paint.set_style(skia_safe::PaintStyle::Stroke);
-        paint.set_stroke_cap(skia_safe::paint::Cap::Round);
-        paint.set_anti_alias(true);
+    fn draw_spinner(painter: &mut TextPainter, center_x: f32, center_y: f32, radius: f32, angle: f32, hidpi_scale: f32) {
+        let stroke_width = 2.5 * hidpi_scale as f64;
+        let stroke = kurbo::Stroke::new(stroke_width).with_caps(kurbo::Cap::Round);
 
         // Draw multiple arcs with varying opacity for a smooth spinner effect
         let num_segments = 8;
         for i in 0..num_segments {
-            let segment_angle = angle + (i as f32 * 2.0 * PI / num_segments as f32);
-            let start_angle = segment_angle * 180.0 / PI;
+            let segment_angle = angle as f64 + (i as f64 * 2.0 * PI as f64 / num_segments as f64);
+            let start_angle = segment_angle.to_degrees();
 
             // Fade out older segments
             let alpha = ((num_segments - i) as f32 / num_segments as f32 * 255.0) as u8;
-            paint.set_color(Color::from_argb(alpha, 50, 120, 255));
+            let color = AlphaColor::from_rgba8(50, 120, 255, alpha);
 
-            let sweep_angle = 30.0; // degrees
-            let rect = Rect::from_xywh(
-                center_x - radius,
-                center_y - radius,
-                radius * 2.0,
-                radius * 2.0
-            );
+            let sweep_angle = 30.0_f64.to_radians(); // Convert to radians for kurbo
 
-            let mut path = Path::new();
-            path.add_arc(rect, start_angle, sweep_angle);
-            canvas.draw_path(&path, &paint);
+            // Create arc using kurbo
+            let arc = kurbo::Arc {
+                center: kurbo::Point::new(center_x as f64, center_y as f64),
+                radii: kurbo::Vec2::new(radius as f64, radius as f64),
+                start_angle: start_angle.to_radians(),
+                sweep_angle,
+                x_rotation: 0.0,
+            };
+
+            painter.stroke(&stroke, Affine::IDENTITY, color, None, &arc);
         }
     }
 

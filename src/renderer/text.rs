@@ -5,21 +5,24 @@ use crate::css::ComputedValues;
 use crate::layout::LayoutBox;
 // Text rendering functionality
 use skia_safe::{BlurStyle, Canvas, Color, ColorSpace, Font, FontArguments, FontHinting, FontMgr, GlyphId, MaskFilter, Paint, PaintCap, PaintJoin, PaintStyle, Point, RRect, Rect, Shader, TextBlob, Typeface};
-use skia_safe::canvas::{GlyphPositions, SaveLayerRec};
+use skia_safe::canvas::{GlyphPositions, SaveLayerRec, SrcRectConstraint};
 use skia_safe::font::Edging;
 use skia_safe::font_arguments::variation_position::Coordinate;
 use skia_safe::font_arguments::VariationPosition;
-use skia_safe::textlayout::{
-    FontCollection, ParagraphBuilder, ParagraphStyle, TextAlign as SkiaTextAlign,
-    TextStyle,
-};
-use crate::dom::DomNode;
+use crate::dom::{Dom, DomNode};
 use crate::renderer::cache::{FontCacheKey, FontCacheKeyBorrowed, GenerationalCache, NormalizedTypefaceCacheKey, NormalizedTypefaceCacheKeyBorrowed};
+use parley::{Alignment, AlignmentOptions, FontWeight, GenericFamily, LineHeight, PositionedLayoutItem, StyleProperty};
+use color::{AlphaColor, Srgb};
+use kurbo::{Affine, Stroke};
+use peniko::{Fill, ImageBrushRef};
+use style::color::AbsoluteColor;
+use style::values::specified::TextDecorationLine;
 
 /// Render text with CSS styles applied and DPI scale factor using Skia's textlayout
 pub fn render_text_node(
     canvas: &Canvas,
-    _node: &DomNode,
+    node: &DomNode,
+    dom: &Dom,
     layout_box: &LayoutBox,
     contents: &RefCell<StrTendril>,
     styles: &ComputedValues,
@@ -31,368 +34,192 @@ pub fn render_text_node(
     let text = contents.borrow();
     let content_rect = layout_box.dimensions.content;
 
-    // Create text paint with CSS colors and font properties
-    let mut text_paint = default_text_paint.clone();
-    let font_size = &styles.font_size;
-    let text_align = &styles.text_align;
-    let font_style = &styles.font_style;
-    let font_family = &styles.font_family;
-    let font_weight = &styles.font_weight;
-    let line_height_value = &styles.line_height;
-    let vertical_align = &styles.vertical_align;
-    let text_transform = &styles.text_transform;
-    let white_space = &styles.white_space;
-    let text_shadows = &styles.text_shadow;
-
-    // Apply CSS color
-    if let Some(text_color) = &styles.color {
-        let mut color = text_color.to_skia_color();
-        // Apply opacity to text color
-        color = color.with_a((color.a() as f32 * styles.opacity) as u8);
-        text_paint.set_color(color);
-    }
-
-    // Apply text transformation to the content
-    let transformed_text = text_transform.apply(&text);
-
-    // Apply DPI scaling to font size
-    let scaled_font_size = font_size * scale_factor as f32;
-
-    // Calculate line height based on CSS line-height property
-    let line_height = line_height_value.to_px(scaled_font_size);
-
-    // Calculate vertical alignment offset
-    let vertical_align_offset = vertical_align.to_px(scaled_font_size, line_height) * scale_factor as f32;
-
-    // Get or create font with the scaled size, family, weight, and style
-    let font = font_manager.get_font(&font_family, scaled_font_size, &font_weight, &font_style);
-
-    // TODO: Wrap text based on actual font metrics, container width, and white-space property
-    let wrapped_lines: Vec<&str> = transformed_text.split('\n')
-        .map(|line| line.trim_start()) // Remove leading whitespace from each line
-        .collect();
-
-    // Position text within the content area with scaled padding
-    let scaled_padding = 2.0 * scale_factor as f32;
-    let mut current_y = content_rect.top + scaled_font_size; // Start at baseline position
-
-    // Render each line separately
-    for line in wrapped_lines {
-        if let Some(text_blob) = TextBlob::new(&line, &font) {
-            let text_bounds = text_blob.bounds();
-            let text_width = text_bounds.width();
-
-            // Calculate x position based on text-align
-            let start_x = match text_align {
-                crate::css::TextAlign::Left => content_rect.left + scaled_padding,
-                crate::css::TextAlign::Right => content_rect.right - text_width - scaled_padding,
-                crate::css::TextAlign::Center => content_rect.left + (content_rect.width() - text_width) / 2.0,
-                crate::css::TextAlign::Justify => {
-                    // For now, justify is treated as left-align
-                    // Full justify implementation would require word spacing adjustments
-                    content_rect.left + scaled_padding
-                }
-            };
-
-            // Apply vertical alignment offset to the y position
-            let adjusted_y = current_y + vertical_align_offset;
-
-            // Render text shadows first (so they appear behind the text)
-            for shadow in text_shadows {
-                let shadow_px = shadow.to_px(scaled_font_size, 0.0);
-
-                // Skip shadow if it has no effect
-                if !shadow_px.has_shadow() {
-                    continue;
-                }
-
-                // Create shadow paint
-                let mut shadow_paint = text_paint.clone();
-
-                // Apply shadow color with opacity
-                let mut shadow_color = shadow_px.color.to_skia_color();
-                shadow_color = shadow_color.with_a((shadow_color.a() as f32 * styles.opacity) as u8);
-                shadow_paint.set_color(shadow_color);
-
-                // Apply blur if specified
-                if shadow_px.blur_radius > 0.0 {
-                    let blur_sigma = shadow_px.blur_radius / 2.0;
-                    if let Some(mask_filter) = MaskFilter::blur(BlurStyle::Normal, blur_sigma, None) {
-                        shadow_paint.set_mask_filter(mask_filter);
-                    }
-                }
-
-                // Draw shadow at offset position
-                let shadow_x = start_x + shadow_px.offset_x * scale_factor as f32;
-                let shadow_y = adjusted_y + shadow_px.offset_y * scale_factor as f32;
-                canvas.draw_text_blob(&text_blob, (shadow_x, shadow_y), &shadow_paint);
-            }
-
-            // Render the actual text on top of shadows
-            canvas.draw_text_blob(&text_blob, (start_x, adjusted_y), &text_paint);
-
-            // Render text decorations if specified (with opacity applied)
-            // Create decoration paint with opacity
-            let decoration_paint = text_paint.clone();
-            super::decorations::render_text_decorations(
-                canvas,
-                &text_blob,
-                (start_x, adjusted_y),
-                &styles.text_decoration,
-                &decoration_paint,
-                scaled_font_size,
-                scale_factor,
-            );
-        }
-        current_y += line_height; // Move to next line using computed line height
-    }
-
-    // TODO take another look at skia paragraphs
-    /*let text = contents.borrow();
-    let content_rect = layout_box.dimensions.content;
+    let mut font_ctx = dom.font_ctx.lock().unwrap();
+    let mut layout_ctx = dom.layout_ctx.lock().unwrap();
 
     // Apply text transformation to the content
     let transformed_text = styles.text_transform.apply(&text);
 
-    // Apply DPI scaling to font size
-    let scaled_font_size = styles.font_size * scale_factor;
+    let mut builder = layout_ctx.ranged_builder(
+        &mut font_ctx,
+        &transformed_text,
+        scale_factor,
+        true,
+    );
 
-    // Calculate line height based on CSS line-height property
-    let line_height = styles.line_height.to_px(scaled_font_size);
+    // Extract CSS properties
+    let font_size = styles.font_size;
+    let text_align = &styles.text_align;
+    let font_weight_str = &styles.font_weight;
+    let line_height_value = &styles.line_height;
 
-    // Set up font collection
-    let mut font_collection = FontCollection::new();
-    font_collection.set_default_font_manager(font_manager.font_mgr.clone(), None);
-
-    // Create paragraph style with text alignment
-    let mut paragraph_style = ParagraphStyle::new();
-
-    // Map CSS text-align to Skia TextAlign
-    let skia_text_align = match styles.text_align {
-        crate::css::TextAlign::Left => SkiaTextAlign::Left,
-        crate::css::TextAlign::Right => SkiaTextAlign::Right,
-        crate::css::TextAlign::Center => SkiaTextAlign::Center,
-        crate::css::TextAlign::Justify => SkiaTextAlign::Justify,
-    };
-    paragraph_style.set_text_align(skia_text_align);
-
-    // Set line height
-    paragraph_style.set_height(line_height / scaled_font_size);
-
-    // Create text style with font properties
-    let mut text_style = TextStyle::new();
-    text_style.set_font_size(scaled_font_size);
-
-    // Set font families
-    let font_families: Vec<String> = styles.font_family
+    // Set default font family - parse comma-separated list
+    let font_families: Vec<&str> = styles.font_family
         .split(',')
-        .map(|s| s.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
+        .map(|s| s.trim().trim_matches(|c| c == '"' || c == '\''))
         .collect();
-    text_style.set_font_families(&font_families);
+    
+    // Use first font family or default to system UI
+    if let Some(first_family) = font_families.first() {
+        let generic_family = match first_family.to_lowercase().as_str() {
+            "serif" => GenericFamily::Serif,
+            "sans-serif" => GenericFamily::SansSerif,
+            "monospace" => GenericFamily::Monospace,
+            "cursive" => GenericFamily::Cursive,
+            "fantasy" => GenericFamily::Fantasy,
+            "system-ui" | "-apple-system" | "blinkmacsystemfont" => GenericFamily::SystemUi,
+            _ => GenericFamily::SystemUi,
+        };
+        builder.push_default(generic_family);
+    } else {
+        builder.push_default(GenericFamily::SystemUi);
+    }
+
+    // Set font size
+    builder.push_default(StyleProperty::FontSize(font_size));
 
     // Set font weight
-    let font_weight = super::font::parse_font_weight(&styles.font_weight);
-    text_style.set_font_style(skia_safe::FontStyle::new(
-        skia_safe::font_style::Weight::from(font_weight),
-        skia_safe::font_style::Width::NORMAL,
-        match styles.font_style {
-            crate::css::FontStyle::Normal => skia_safe::font_style::Slant::Upright,
-            crate::css::FontStyle::Italic => skia_safe::font_style::Slant::Italic,
-            crate::css::FontStyle::Oblique => skia_safe::font_style::Slant::Oblique,
-        },
-    ));
-
-    // Set text color with opacity
-    if let Some(text_color) = &styles.color {
-        let mut color = text_color.to_skia_color();
-        color = color.with_a((color.a() as f32 * styles.opacity) as u8);
-        text_style.set_color(color);
-    }
-
-    // Add text shadows
-    if !styles.text_shadow.is_empty() {
-        let mut shadows = Vec::new();
-        for shadow in &styles.text_shadow {
-            let shadow_px = shadow.to_px(scaled_font_size, 0.0);
-            if shadow_px.has_shadow() {
-                let mut shadow_color = shadow_px.color.to_skia_color();
-                shadow_color = shadow_color.with_a((shadow_color.a() as f32 * styles.opacity) as u8);
-
-                let text_shadow = skia_safe::textlayout::TextShadow::new(
-                    shadow_color,
-                    (shadow_px.offset_x * scale_factor, shadow_px.offset_y * scale_factor),
-                    (shadow_px.blur_radius / 2.0) as f64,
-                );
-                shadows.push(text_shadow);
+    let font_weight = match font_weight_str.to_lowercase().as_str() {
+        "normal" => FontWeight::new(400.0),
+        "bold" => FontWeight::new(700.0),
+        "bolder" => FontWeight::new(900.0),
+        "lighter" => FontWeight::new(300.0),
+        weight_str => {
+            if let Ok(weight_num) = weight_str.parse::<f32>() {
+                FontWeight::new(weight_num)
+            } else {
+                FontWeight::new(400.0)
             }
         }
-        if !shadows.is_empty() {
-            text_style.add_shadow(shadows[0]);
-            for shadow in &shadows[1..] {
-                text_style.add_shadow(*shadow);
-            }
-        }
-    }
+    };
+    builder.push_default(StyleProperty::FontWeight(font_weight));
 
-    // Add text decorations
-    match &styles.text_decoration {
-        crate::css::TextDecoration::None => {},
-        crate::css::TextDecoration::Underline => {
-            let color = if let Some(text_color) = &styles.color {
-                text_color.to_skia_color()
-            } else {
-                skia_safe::Color::BLACK
-            };
-            text_style.set_decoration(&skia_safe::textlayout::Decoration {
-                ty: skia_safe::textlayout::TextDecoration::UNDERLINE,
-                mode: skia_safe::textlayout::TextDecorationMode::Gaps,
-                color,
-                style: skia_safe::textlayout::TextDecorationStyle::Solid,
-                thickness_multiplier: 1.0,
-            });
-        },
-        crate::css::TextDecoration::Overline => {
-            let color = if let Some(text_color) = &styles.color {
-                text_color.to_skia_color()
-            } else {
-                skia_safe::Color::BLACK
-            };
-            text_style.set_decoration(&skia_safe::textlayout::Decoration {
-                ty: skia_safe::textlayout::TextDecoration::OVERLINE,
-                mode: skia_safe::textlayout::TextDecorationMode::Gaps,
-                color,
-                style: skia_safe::textlayout::TextDecorationStyle::Solid,
-                thickness_multiplier: 1.0,
-            });
-        },
-        crate::css::TextDecoration::LineThrough => {
-            let color = if let Some(text_color) = &styles.color {
-                text_color.to_skia_color()
-            } else {
-                skia_safe::Color::BLACK
-            };
-            text_style.set_decoration(&skia_safe::textlayout::Decoration {
-                ty: skia_safe::textlayout::TextDecoration::LINE_THROUGH,
-                mode: skia_safe::textlayout::TextDecorationMode::Gaps,
-                color,
-                style: skia_safe::textlayout::TextDecorationStyle::Solid,
-                thickness_multiplier: 1.0,
-            });
-        },
-        crate::css::TextDecoration::Multiple(decorations) => {
-            let mut decoration_flags = skia_safe::textlayout::TextDecoration::NO_DECORATION;
-            for dec in decorations {
-                match dec {
-                    crate::css::TextDecorationType::Underline => {
-                        decoration_flags |= skia_safe::textlayout::TextDecoration::UNDERLINE;
+    // Set line height
+    let scaled_font_size = font_size * scale_factor;
+    let line_height_ratio = line_height_value.to_px(scaled_font_size) / scaled_font_size;
+    builder.push_default(LineHeight::FontSizeRelative(line_height_ratio));
+
+    // Build the layout
+    let mut layout = builder.build(&transformed_text);
+
+    // Break lines based on content width
+    let max_width = if content_rect.width() > 0.0 {
+        Some(content_rect.width())
+    } else {
+        None
+    };
+    layout.break_all_lines(max_width);
+
+    // Set text alignment
+    let alignment = match text_align {
+        crate::css::TextAlign::Left => Alignment::Start,
+        crate::css::TextAlign::Right => Alignment::End,
+        crate::css::TextAlign::Center => Alignment::Center,
+        crate::css::TextAlign::Justify => Alignment::Justify,
+    };
+    layout.align(max_width, alignment, AlignmentOptions::default());
+
+    // Get text color
+    let text_color: AlphaColor<Srgb> = if let Some(css_color) = &styles.color {
+        let skia_color = css_color.to_skia_color();
+        let r = skia_color.r() as f32 / 255.0;
+        let g = skia_color.g() as f32 / 255.0;
+        let b = skia_color.b() as f32 / 255.0;
+        let a = (skia_color.a() as f32 / 255.0) * styles.opacity;
+        AlphaColor::new([r, g, b, a])
+    } else {
+        AlphaColor::new([0.0, 0.0, 0.0, styles.opacity])
+    };
+
+    // Create transform for text position
+    let transform = Affine::translate((content_rect.left as f64, content_rect.top as f64));
+
+    // Render each line
+    for line in layout.lines() {
+        for item in line.items() {
+            match item {
+                PositionedLayoutItem::GlyphRun(glyph_run) => {
+                    let mut run_x = glyph_run.offset();
+                    let run_y = glyph_run.baseline();
+
+                    let run = glyph_run.run();
+                    let font = run.font();
+                    let font_size = run.font_size();
+                    let metrics = run.metrics();
+                    let style = glyph_run.style();
+                    let synthesis = run.synthesis();
+                    let glyph_xform = synthesis.skew().map(|angle| {
+                        Affine::skew(angle.to_radians().tan() as f64, 0.0)
+                    });
+
+                    // style
+                    let style= dom.get_node(style.brush.id).unwrap().primary_styles().unwrap();
+                    let itext_style = style.get_inherited_text();
+                    let text_style = style.get_text();
+                    let text_color = itext_style.color.as_color_color();
+                    let text_decoration_color = text_style
+                        .text_decoration_color
+                        .as_absolute()
+                        .map(ToColorColor::as_color_color)
+                        .unwrap_or(text_color);
+                    let text_decoration_brush = anyrender::Paint::from(text_decoration_color);
+                    let text_decoration_line = text_style.text_decoration_line;
+                    let has_underline = text_decoration_line.contains(TextDecorationLine::UNDERLINE);
+                    let has_strikethrough =
+                        text_decoration_line.contains(TextDecorationLine::LINE_THROUGH);
+
+                    painter.draw_glyphs(
+                        font,
+                        font_size,
+                        true,
+                        run.normalized_coords(),
+                        Fill::NonZero,
+                        &anyrender::Paint::from(text_color),
+                        1.0,
+                        transform,
+                        glyph_xform,
+                        glyph_run.glyphs().map(|glyph| {
+                            let gx = run_x + glyph.x;
+                            let gy = run_y - glyph.y;
+                            run_x += glyph.advance;
+
+                            anyrender::Glyph {
+                                id: glyph.id as _,
+                                x: gx,
+                                y: gy,
+                            }
+                        })
+                    );
+
+                    let mut draw_decoration_line =
+                        |offset: f32, size: f32, brush: &anyrender::Paint| {
+                            let x = glyph_run.offset() as f64;
+                            let w = glyph_run.advance() as f64;
+                            let y = (glyph_run.baseline() - offset + size / 2.0) as f64;
+                            let line = kurbo::Line::new((x, y), (x + w, y));
+                            painter.stroke(&Stroke::new(size as f64), transform, brush, None, &line)
+                        };
+
+                    if has_underline {
+                        let offset = metrics.underline_offset;
+                        let size = metrics.underline_size;
+
+                        // TODO: intercept line when crossing an descending character like "gqy"
+                        draw_decoration_line(offset, size, &text_decoration_brush);
                     }
-                    crate::css::TextDecorationType::Overline => {
-                        decoration_flags |= skia_safe::textlayout::TextDecoration::OVERLINE;
-                    }
-                    crate::css::TextDecorationType::LineThrough => {
-                        decoration_flags |= skia_safe::textlayout::TextDecoration::LINE_THROUGH;
+                    if has_strikethrough {
+                        let offset = metrics.strikethrough_offset;
+                        let size = metrics.strikethrough_size;
+
+                        draw_decoration_line(offset, size, &text_decoration_brush);
                     }
                 }
-            }
-            let color = if let Some(text_color) = &styles.color {
-                text_color.to_skia_color()
-            } else {
-                skia_safe::Color::BLACK
-            };
-            text_style.set_decoration(&skia_safe::textlayout::Decoration {
-                ty: decoration_flags,
-                mode: skia_safe::textlayout::TextDecorationMode::Gaps,
-                color,
-                style: skia_safe::textlayout::TextDecorationStyle::Solid,
-                thickness_multiplier: 1.0,
-            });
-        }
-    }
-
-    paragraph_style.set_text_style(&text_style);
-
-    // Build the paragraph
-    let mut paragraph_builder = ParagraphBuilder::new(&paragraph_style, font_collection);
-    paragraph_builder.push_style(&text_style);
-    paragraph_builder.add_text(&transformed_text);
-
-    let mut paragraph = paragraph_builder.build();
-
-    // Layout the paragraph with the available width
-    let available_width = content_rect.width().max(0.0);
-    paragraph.layout(available_width);
-
-    // Calculate vertical alignment offset
-    let vertical_align_offset = styles.vertical_align.to_px(scaled_font_size, line_height) * scale_factor;
-
-    // Position and render the paragraph
-    let x = content_rect.left;
-    let y = content_rect.top + vertical_align_offset;
-
-    paragraph.paint(canvas, (x, y));*/
-}
-
-/// Wrap text based on actual font metrics and available width using Skia's Paragraph API
-pub fn wrap_text_with_font(text: &str, font: &Font, max_width: f32, white_space: &crate::css::WhiteSpace) -> Vec<String> {
-    // Handle special white-space modes
-    if !white_space.should_wrap() {
-        if white_space.preserve_whitespace() {
-            // For pre/pre-wrap modes, preserve all whitespace including newlines
-            return text.lines().map(|s| s.to_string()).collect();
-        } else {
-            // For nowrap, collapse whitespace but don't wrap
-            let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
-            return vec![collapsed];
-        }
-    }
-
-    // Use Paragraph API for proper text wrapping
-    let mut font_collection = FontCollection::new();
-    font_collection.set_default_font_manager(skia_safe::FontMgr::new(), None);
-
-    let mut paragraph_style = ParagraphStyle::new();
-    paragraph_style.set_text_align(SkiaTextAlign::Left);
-
-    let mut text_style = TextStyle::new();
-    text_style.set_font_size(font.size());
-
-    // Get font families from the font's typeface
-    let typeface = font.typeface();
-        let family_name = typeface.family_name();
-    text_style.set_font_families(&[family_name]);
-
-    paragraph_style.set_text_style(&text_style);
-
-    let mut paragraph_builder = ParagraphBuilder::new(&paragraph_style, font_collection);
-    paragraph_builder.push_style(&text_style);
-    paragraph_builder.add_text(text);
-
-    let mut paragraph = paragraph_builder.build();
-    paragraph.layout(max_width.max(1.0));
-
-    // Extract lines from the laid out paragraph
-    let mut wrapped_lines = Vec::new();
-    let line_count = paragraph.line_number() as usize;
-
-    for line_idx in 0..line_count {
-        // Get the text range for this line
-        if let Some(line_metrics) = paragraph.get_line_metrics_at(line_idx) {
-            let start = line_metrics.start_index;
-            let end = line_metrics.end_index;
-
-            if start < text.len() && end <= text.len() {
-                let line_text = &text[start..end];
-                wrapped_lines.push(line_text.to_string());
+                PositionedLayoutItem::InlineBox(_) => {
+                    // Inline boxes are not rendered in this context
+                }
             }
         }
     }
-
-    // Return at least one empty line if everything was empty
-    if wrapped_lines.is_empty() {
-        wrapped_lines.push(String::new());
-    }
-
-    wrapped_lines
 }
 
 // Under this line, anyrender_skia is referenced to create a text renderer
@@ -836,7 +663,7 @@ impl TextPainter<'_> {
         glyph_transform: Option<kurbo::Affine>,
         glyphs: impl Iterator<Item = anyrender::Glyph>,
     ) {
-        //todo self.set_matrix(transform);
+        self.set_matrix(transform);
 
         if let Some(glyph_transform) = glyph_transform {
             self.concat_matrix(glyph_transform);
@@ -907,6 +734,55 @@ impl TextPainter<'_> {
 
         self.inner.draw_rrect(rrect, &self.cache.paint);
     }
+
+    // Canvas wrapper methods for general rendering
+
+    pub(crate) fn save(&self) {
+        self.inner.save();
+    }
+
+    pub(crate) fn restore(&self) {
+        self.inner.restore();
+    }
+
+    pub(crate) fn translate(&self, dx: f32, dy: f32) {
+        self.inner.translate((dx, dy));
+    }
+
+    pub(crate) fn base_layer_size(&self) -> skia_safe::ISize {
+        self.inner.base_layer_size()
+    }
+
+    pub(crate) fn draw_rect(&self, rect: Rect, paint: &Paint) {
+        self.inner.draw_rect(rect, paint);
+    }
+
+    pub(crate) fn draw_line(&self, p0: impl Into<Point>, p1: impl Into<Point>, paint: &Paint) {
+        self.inner.draw_line(p0, p1, paint);
+    }
+
+    pub(crate) fn draw_path(&self, path: &skia_safe::Path, paint: &Paint) {
+        self.inner.draw_path(path, paint);
+    }
+
+    pub(crate) fn draw_text_blob(&self, blob: &TextBlob, origin: impl Into<Point>, paint: &Paint) {
+        self.inner.draw_text_blob(blob, origin, paint);
+    }
+
+    pub(crate) fn draw_image(&mut self, image: ImageBrushRef, transform: Affine) {
+        self.fill(
+            Fill::NonZero,
+            transform,
+            image,
+            None,
+            &kurbo::Rect::new(
+                0.0,
+                0.0,
+                image.image.width as f64,
+                image.image.height as f64,
+            ),
+        );
+    }
 }
 
 fn lerp_f32(a: f32, b: f32, t: f32) -> f32 {
@@ -955,9 +831,9 @@ mod sk_peniko {
         let pixels = unsafe {
             SkData::new_bytes(image_data.data.data()) // We have to ensure the src image data lives long enough
         };
-        let image =
-            skia_safe::images::raster_from_data(&image_info, pixels, image_info.min_row_bytes())
-                .unwrap();
+        let image = skia_safe::image::Image::from_encoded(pixels).unwrap();
+        //let image =
+        //    skia_safe::images::raster_from_data(&image_info, pixels, image_info.min_row_bytes())?;
 
         let sampling = match image_brush.sampler.quality {
             peniko::ImageQuality::Low => {
@@ -1324,5 +1200,19 @@ mod sk_kurbo {
             }
             PathEl::ClosePath => _ = sk_path.close(),
         };
+    }
+}
+
+pub trait ToColorColor {
+    /// Converts a color into the `AlphaColor<Srgb>` type from the `color` crate
+    fn as_color_color(&self) -> AlphaColor<Srgb>;
+}
+impl ToColorColor for AbsoluteColor {
+    fn as_color_color(&self) -> AlphaColor<Srgb> {
+        AlphaColor::new(
+            *self
+                .to_color_space(style::color::ColorSpace::Srgb)
+                .raw_components(),
+        )
     }
 }

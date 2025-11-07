@@ -1,14 +1,15 @@
 use super::font::FontManager;
 use crate::css::{ComputedValues, ContentValue};
 use crate::dom::ElementData;
+use crate::renderer::text::TextPainter;
 // Pseudo-element rendering (::before, ::after)
-use skia_safe::{Canvas, Paint, Rect, TextBlob};
+use skia_safe::{Paint, Rect, TextBlob};
 use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::servo_arc::Arc;
 
 /// Render pseudo-element generated content (::before or ::after)
 pub fn render_pseudo_element_content(
-    canvas: &Canvas,
+    painter: &TextPainter,
     rect: &Rect,
     element_data: &ElementData,
     styles: &ComputedValues,
@@ -58,11 +59,11 @@ pub fn render_pseudo_element_content(
         };
 
         // Draw the generated content
-        canvas.draw_text_blob(&text_blob, (text_x, text_y), &text_paint);
+        painter.draw_text_blob(&text_blob, (text_x, text_y), &text_paint);
 
         // Apply text decorations if specified
         super::decorations::render_text_decorations(
-            canvas,
+            painter,
             &text_blob,
             (text_x, text_y),
             &styles.text_decoration,

@@ -72,7 +72,7 @@ impl LayoutEngine {
             },
             NodeData::Text { contents } => {
                 let mut text_box = LayoutBox::new(BoxType::Text, node_id, style, stylo);
-                text_box.content = Some(LayoutContent::Text { content: contents.borrow().to_string(), paragraph: None });
+                text_box.content = Some(LayoutContent::Text { content: contents.borrow().to_string() });
                 text_box
             },
             NodeData::Image(data) => {

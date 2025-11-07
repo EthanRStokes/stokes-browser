@@ -3,6 +3,7 @@ use std::cell::RefCell;
 // DOM node implementation for representing HTML elements
 use std::collections::HashMap;
 use std::{fmt, ptr};
+use std::io::Cursor;
 use std::ops::{Deref, DerefMut};
 use std::rc::{Rc, Weak};
 use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut};
@@ -10,6 +11,7 @@ use bitflags::bitflags;
 use html5ever::{LocalName, QualName};
 use html5ever::tendril::StrTendril;
 use markup5ever::local_name;
+use peniko::Blob;
 use selectors::matching::{ElementSelectorFlags, QuirksMode};
 use skia_safe::FontMgr;
 use skia_safe::wrapper::PointerWrapper;
@@ -218,7 +220,36 @@ pub struct ImageData {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub loading_state: ImageLoadingState,
-    pub cached_image: Option<skia_safe::Image>, // Cached decoded image
+    pub cached_image: CachedImage, // Cached decoded image
+}
+
+#[derive(Debug, Clone)]
+pub enum CachedImage {
+    Raster(RasterImageData),
+    Svg(Box<usvg::Tree>),
+    None
+}
+
+impl CachedImage {
+    fn is_some(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RasterImageData {
+    pub width: u32,
+    pub height: u32,
+    pub data: Blob<u8>,
+}
+impl RasterImageData {
+    pub fn new(width: u32, height: u32, data: std::sync::Arc<Vec<u8>>) -> Self {
+        Self { width, height, data: Blob::new(data) }
+    }
 }
 
 /// Image loading state
@@ -250,26 +281,38 @@ impl ImageData {
             width: None,
             height: None,
             loading_state: ImageLoadingState::NotLoaded,
-            cached_image: None,
+            cached_image: CachedImage::None,
         }
     }
 
     /// Get or decode the Skia image, caching the result
-    pub fn get_or_decode_image(&mut self) -> Option<&skia_safe::Image> {
+    pub fn get_or_decode_image(&mut self) -> &CachedImage {
         // If we already have a cached image, return it
         if self.cached_image.is_some() {
-            return self.cached_image.as_ref();
+            return &self.cached_image;
         }
 
         // If we have loaded image data but no cached image, decode it
         if let ImageLoadingState::Loaded(image_bytes) = &self.loading_state {
-            if let Some(decoded_image) = Self::decode_image_data(image_bytes) {
-                self.cached_image = Some(decoded_image);
-                return self.cached_image.as_ref();
+            if let Ok(image) = image::ImageReader::new(Cursor::new(image_bytes))
+                .with_guessed_format()
+                .expect("Failed to guess image format")
+                .decode()
+            {
+                let rgba_image = image.to_rgba8();
+                let (width, height) = rgba_image.dimensions();
+                let rgba_data = rgba_image.into_raw();
+
+                self.cached_image = CachedImage::Raster(RasterImageData::new(
+                    width,
+                    height,
+                    std::sync::Arc::new(rgba_data),
+                ));
+                return &self.cached_image;
             }
         }
 
-        None
+        &CachedImage::None
     }
 
     /// Decode image data into a Skia image (static method for reuse)
@@ -447,7 +490,7 @@ impl ImageData {
 
     /// Clear the cached image (useful when image data changes)
     pub fn clear_cache(&mut self) {
-        self.cached_image = None;
+        self.cached_image = CachedImage::None;
     }
 }
 

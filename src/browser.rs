@@ -4,6 +4,7 @@ use std::num::NonZeroU32;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use blitz_traits::shell::Viewport;
+use kurbo::Affine;
 use parley::{FontContext, LayoutContext};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
@@ -359,20 +360,24 @@ impl BrowserApp {
             .map(|frame| &frame.image);
 
         let canvas = self.env.surface.canvas();
-        canvas.clear(Color::WHITE);
 
-        // Render the active tab's frame from shared memory
-        if let Some(image) = frame_to_render {
-            canvas.draw_image(image, (0.0, 0.0), None);
-        }
-
-        // Render UI on top
         let mut painter = TextPainter {
             inner: canvas,
             cache: &mut Default::default(),
         };
+
+        painter.reset();
+
+        // Render the active tab's frame from shared memory
+        if let Some(image) = frame_to_render {
+            painter.set_matrix(Affine::translate((0.0, 0.0)));
+
+            canvas.draw_image(image, (0.0, 0.0), None);
+        }
+
+        // Render UI on top
         self.ui.render(canvas, &mut self.font_ctx, &mut self.layout_ctx, &mut painter);
-        self.ui.render_loading_indicator(canvas, is_loading, self.loading_spinner_angle);
+        self.ui.render_loading_indicator(&mut painter, is_loading, self.loading_spinner_angle);
 
         self.env.gr_context.flush_and_submit();
         self.env.gl_surface.swap_buffers(&self.env.gl_context)

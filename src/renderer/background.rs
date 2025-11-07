@@ -1,12 +1,19 @@
 use crate::css::{BackgroundImage, ComputedValues};
-use skia_safe::{Canvas, Color, FilterMode, MipmapMode, Paint, Rect, SamplingOptions};
+use crate::dom::node::RasterImageData;
+use crate::renderer::text::TextPainter;
+use kurbo::Affine;
+use peniko::{ImageAlphaType, ImageData, ImageFormat, ImageSampler};
+use skia_safe::{Color, Paint, Rect};
 use std::cell::RefCell;
-// Background rendering (colors, images)
 use std::collections::HashMap;
+use std::io::Cursor;
+use style::properties::generated::ComputedValues as StyloComputedValues;
+use style::servo_arc::Arc;
+use style::values::specified::ImageRendering;
 
 /// Background image cache manager
 pub struct BackgroundImageCache {
-    cache: RefCell<HashMap<String, Option<skia_safe::Image>>>,
+    cache: RefCell<HashMap<String, Option<RasterImageData>>>,
 }
 
 impl BackgroundImageCache {
@@ -17,7 +24,7 @@ impl BackgroundImageCache {
     }
 
     /// Load a background image from URL (with caching)
-    pub fn load_background_image(&self, url: &str) -> Option<skia_safe::Image> {
+    pub fn load_background_image(&self, url: &str) -> Option<RasterImageData> {
         // Check cache first
         {
             let cache = self.cache.borrow();
@@ -43,9 +50,10 @@ impl BackgroundImageCache {
 
 /// Render background image for an element
 pub fn render_background_image(
-    canvas: &Canvas,
+    painter: &mut TextPainter,
     rect: &Rect,
     styles: &ComputedValues,
+    style: &Arc<StyloComputedValues>,
     scale_factor: f32,
     image_cache: &BackgroundImageCache,
 ) {
@@ -58,20 +66,14 @@ pub fn render_background_image(
         BackgroundImage::Url(url) => {
             // Try to load and render the background image
             if let Some(image) = image_cache.load_background_image(url) {
-                let mut paint = Paint::default();
-                paint.set_anti_alias(true);
+                let inherited_box = style.get_inherited_box();
+                let image_rendering = inherited_box.image_rendering;
+                let quality = to_image_quality(image_rendering);
 
-                // Use high quality filtering for better scaling
-                let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::Linear);
+                let transform = Affine::translate((rect.left as f64, rect.top as f64));
 
                 // Draw the background image to cover the entire rect
-                canvas.draw_image_rect_with_sampling_options(
-                    &image,
-                    None, // Use entire source image
-                    *rect,
-                    sampling,
-                    &paint
-                );
+                painter.draw_image(to_peniko_image(&image, quality).as_ref(), transform);
             }
         }
     }
@@ -91,15 +93,56 @@ pub fn set_default_background_color(paint: &mut Paint, tag_name: &str) {
 }
 
 /// Load an image from a file path
-fn load_image_from_path(path: &str) -> Option<skia_safe::Image> {
+fn load_image_from_path(path: &str) -> Option<RasterImageData> {
     use std::fs;
 
     // Try to read the file
     match fs::read(path) {
         Ok(data) => {
-            // Decode the image data using Skia
-            skia_safe::Image::from_encoded(skia_safe::Data::new_copy(&data))
+            if let Ok(image) = image::ImageReader::new(Cursor::new(data))
+                .with_guessed_format()
+                .expect("Failed to guess image format")
+                .decode()
+            {
+                let rgba_image = image.to_rgba8();
+                let (width, height) = rgba_image.dimensions();
+                let rgba_data = rgba_image.into_raw();
+
+                return Some(RasterImageData::new(
+                    width,
+                    height,
+                    std::sync::Arc::new(rgba_data)
+                ));
+            }
+
+            None
         }
-        Err(_) => None,
+        Err(err) => None,
+    }
+}
+
+pub(crate) fn to_image_quality(image_rendering: ImageRendering) -> peniko::ImageQuality {
+    match image_rendering {
+        ImageRendering::Auto => peniko::ImageQuality::Medium,
+        ImageRendering::CrispEdges => peniko::ImageQuality::Low,
+        ImageRendering::Pixelated => peniko::ImageQuality::Low,
+    }
+}
+
+pub(crate) fn to_peniko_image(image: &RasterImageData, quality: peniko::ImageQuality) -> peniko::ImageBrush {
+    peniko::ImageBrush {
+        image: ImageData {
+            data: image.data.clone(),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 0,
+            height: 0,
+        },
+        sampler: ImageSampler {
+            x_extend: peniko::Extend::Repeat,
+            y_extend: peniko::Extend::Repeat,
+            quality,
+            alpha: 1.0,
+        },
     }
 }

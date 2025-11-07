@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use blitz_traits::net::{DummyNetProvider, NetProvider};
 use blitz_traits::shell::Viewport;
 use euclid::Size2D;
-use parley::FontContext;
+use parley::{FontContext, LayoutContext};
 use parley::fontique::Blob;
 use selectors::Element;
 use selectors::matching::QuirksMode;
@@ -41,6 +41,7 @@ use crate::dom::config::DomConfig;
 use crate::dom::node::DomNodeFlags;
 use crate::dom::url::DocUrl;
 use crate::networking::{Resource, StylesheetLoader};
+use crate::ui::TextBrush;
 pub use self::events::{EventDispatcher, EventType};
 pub use self::node::{AttributeMap, DomNode, ElementData, ImageData, ImageLoadingState, NodeData};
 pub use self::parser::HtmlParser;
@@ -66,6 +67,9 @@ pub struct Dom {
     pub(crate) lock: SharedRwLock,
     // Stylo invalidation map
     pub(crate) snapshots: SnapshotMap,
+
+    pub(crate) font_ctx: Arc<Mutex<FontContext>>,
+    pub(crate) layout_ctx: Arc<Mutex<LayoutContext<TextBrush>>>,
 
     pub(crate) has_active_animations: bool,
     pub(crate) has_canvas: bool,
@@ -135,7 +139,7 @@ impl Dom {
             font_ctx
         });
         let font_ctx = Arc::new(Mutex::new(font_ctx));
-        let device = device(&viewport, font_ctx);
+        let device = device(&viewport, font_ctx.clone());
 
         stylo_config::set_bool("layout.flexbox.enabled", true);
         stylo_config::set_bool("layout.grid.enabled", true);
@@ -157,6 +161,8 @@ impl Dom {
             animations: Default::default(),
             lock: SharedRwLock::new(),
             snapshots: SnapshotMap::new(),
+            font_ctx,
+            layout_ctx: Arc::new(Mutex::new(LayoutContext::new())),
             has_active_animations: false,
             has_canvas: false,
             nodes_to_id: Default::default(),
@@ -200,6 +206,22 @@ impl Dom {
         entry.insert(DomNode::new(slab_ptr, id, self.lock.clone(), data));
 
         id
+    }
+
+    pub fn tree(&self) -> &Slab<DomNode> {
+        &self.nodes
+    }
+
+    pub fn id(&self) -> usize {
+        self.id
+    }
+
+    pub fn get_node(&self, node_id: usize) -> Option<&DomNode> {
+        self.nodes.get(node_id)
+    }
+
+    pub fn get_node_mut(&mut self, node_id: usize) -> Option<&mut DomNode> {
+        self.nodes.get_mut(node_id)
     }
 
     /// Parse HTML into a DOM

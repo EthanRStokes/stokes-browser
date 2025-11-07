@@ -2,7 +2,6 @@
 use super::box_model::{Dimensions, EdgeSizes};
 use crate::css::ComputedValues;
 use crate::dom::ImageData;
-use skia_safe::textlayout::{FontCollection, Paragraph, ParagraphBuilder, ParagraphStyle, TextStyle};
 use skia_safe::Rect;
 use std::cell::RefCell;
 use style::properties::generated::ComputedValues as StyloComputedValues;
@@ -112,7 +111,7 @@ pub enum BoxType {
 
 #[derive(Debug)]
 pub enum LayoutContent {
-    Text { content: String, paragraph: Option<Paragraph> },
+    Text { content: String },
 }
 
 /// A box in the layout tree
@@ -395,10 +394,11 @@ impl LayoutBox {
         self.layout_block((container_width).min(200.0 * scale_factor), container_height, offset_x, offset_y, scale_factor);
     }
 
-    /// Layout text nodes with position offset using Skia's textlayout (skparagraph)
+    /// Layout text nodes with position offset
     fn layout_text(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
         match &self.content {
-            Some(LayoutContent::Text { content: text, paragraph }) => {
+            Some(LayoutContent::Text { content: text }) => {
+                // TODO use parley for better text layout
                 // Handle newlines and calculate proper text dimensions - scale for high DPI
                 let char_width = 8.0 * scale_factor; // Average character width, scaled
                 let line_height = 16.0 * scale_factor; // Line height, scaled
@@ -415,24 +415,6 @@ impl LayoutBox {
 
                 let auto_text_width = if text.trim().is_empty() { 0.0 } else { max_line_width };
                 let auto_text_height = num_lines as f32 * line_height;
-
-                /*// Use Skia's Paragraph API for accurate text measurement
-                // Default font size scaled for high DPI
-                let scaled_font_size = 16.0 * scale_factor;
-
-                // Measure text using Skia's textlayout
-                let (measured_width, measured_height, paragraph) = self.measure_text_with_skia(
-                    text,
-                    container_width,
-                    scaled_font_size,
-                );
-
-                let auto_text_width = if text.trim().is_empty() { 0.0 } else { measured_width };
-                let auto_text_height = if text.trim().is_empty() {
-                    scaled_font_size
-                } else {
-                    measured_height
-                };*/
 
                 // Use CSS dimensions if specified, otherwise use calculated dimensions
                 let position = self.stylo.get_position();
@@ -487,41 +469,6 @@ impl LayoutBox {
                 self.dimensions.content = Rect::from_xywh(final_x, final_y, width, final_height);
             }
         }
-    }
-
-    /// Measure text dimensions using Skia's textlayout (skparagraph and skshaper)
-    // TODO pass font properties from CSS
-    fn measure_text_with_skia(&self, text: &str, max_width: f32, font_size: f32) -> (f32, f32, Paragraph) {
-        // Set up font collection
-        let mut font_collection = FontCollection::new();
-        font_collection.set_default_font_manager(skia_safe::FontMgr::new(), None);
-
-        // Create paragraph style
-        let paragraph_style = ParagraphStyle::new();
-
-        // Create text style with font properties
-        let mut text_style = TextStyle::new();
-        text_style.set_font_size(font_size);
-
-        // Use a default font family
-        text_style.set_font_families(&["Arial", "sans-serif"]);
-
-        // Build the paragraph using Skia's textlayout
-        let mut paragraph_builder = ParagraphBuilder::new(&paragraph_style, font_collection);
-        paragraph_builder.push_style(&text_style);
-        paragraph_builder.add_text(text);
-
-        let mut paragraph = paragraph_builder.build();
-
-        // Layout the paragraph with the available width
-        let layout_width = max_width.max(1.0);
-        paragraph.layout(layout_width);
-
-        // Get the actual dimensions from the laid out paragraph
-        let measured_width = paragraph.max_intrinsic_width().min(layout_width);
-        let measured_height = paragraph.height();
-
-        (measured_width, measured_height, paragraph)
     }
 
     /// Helper function to wrap text into lines that fit within a given width

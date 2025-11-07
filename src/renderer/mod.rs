@@ -3,14 +3,14 @@ mod font;
 mod paint;
 pub(crate) mod text;
 mod image;
-mod background;
+pub(crate) mod background;
 mod decorations;
 mod pseudo;
 mod cache;
 
 use crate::css::transition_manager::TransitionManager;
 use crate::css::ComputedValues;
-use crate::dom::{DomNode, ElementData, NodeData};
+use crate::dom::{Dom, DomNode, ElementData, NodeData};
 use crate::layout::LayoutBox;
 use crate::renderer::background::BackgroundImageCache;
 use crate::renderer::font::FontManager;
@@ -53,6 +53,7 @@ impl HtmlRenderer {
         &mut self,
         canvas: &Canvas,
         node: &DomNode,
+        dom: &Dom,
         layout_box: &LayoutBox,
         transition_manager: Option<&TransitionManager>,
         painter: &mut TextPainter,
@@ -61,24 +62,24 @@ impl HtmlRenderer {
         scale_factor: f32,
     ) {
         // Save the current canvas state
-        canvas.save();
+        painter.save();
 
         // Apply scroll offset by translating the canvas
-        canvas.translate((-scroll_x, -scroll_y));
+        painter.translate(-scroll_x, -scroll_y);
 
         // Calculate viewport bounds for culling off-screen elements
         let viewport_rect = Rect::from_xywh(
             scroll_x,
             scroll_y,
-            canvas.base_layer_size().width as f32,
-            canvas.base_layer_size().height as f32,
+            painter.base_layer_size().width as f32,
+            painter.base_layer_size().height as f32,
         );
 
         // Render the layout tree with styles, scale factor, and viewport culling
-        self.render_box(canvas, &node, layout_box, transition_manager, painter, scale_factor, &viewport_rect);
+        self.render_box(canvas, &node, dom, layout_box, transition_manager, painter, scale_factor, &viewport_rect);
 
         // Restore the canvas state
-        canvas.restore();
+        painter.restore();
     }
 
     /// Render a single layout box with CSS styles, transitions, and scale factor
@@ -86,6 +87,7 @@ impl HtmlRenderer {
         &mut self,
         canvas: &Canvas,
         node: &DomNode,
+        dom: &Dom,
         layout_box: &LayoutBox,
         transition_manager: Option<&TransitionManager>,
         painter: &mut TextPainter,
@@ -128,7 +130,7 @@ impl HtmlRenderer {
         if is_visible {
             match &dom_node.data {
                 NodeData::Element(element_data) => {
-                    self.render_element(canvas, node, layout_box, element_data, &computed_styles, &style, scale_factor);
+                    self.render_element(canvas, node, layout_box, element_data, &computed_styles, &style, scale_factor, painter);
                 },
                 NodeData::Text { contents } => {
                     // Check if text node is inside a non-visual element
@@ -136,6 +138,7 @@ impl HtmlRenderer {
                         text::render_text_node(
                             canvas,
                             node,
+                            dom,
                             layout_box,
                             contents,
                             &computed_styles,
@@ -148,7 +151,7 @@ impl HtmlRenderer {
                 },
                 NodeData::Image(image_data) => {
                     let placeholder_font = self.font_manager.placeholder_font_for_size(12.0 * scale_factor as f32);
-                    image::render_image_node(canvas, node, layout_box, image_data, scale_factor, &placeholder_font);
+                    image::render_image_node(painter, node, layout_box, image_data, &style, scale_factor, &placeholder_font);
                 },
                 NodeData::Document => {
                     // Just render children for document
@@ -182,7 +185,7 @@ impl HtmlRenderer {
 
             // Render children in z-index order
             for (child_node, child, _) in children_with_z {
-                self.render_box(canvas, &*child_node, child, transition_manager, painter, scale_factor, viewport_rect);
+                self.render_box(canvas, &*child_node, dom, child, transition_manager, painter, scale_factor, viewport_rect);
             }
         }
     }
@@ -197,6 +200,7 @@ impl HtmlRenderer {
         styles: &ComputedValues,
         style: &Arc<StyloComputedValues>,
         scale_factor: f32,
+        painter: &mut TextPainter,
     ) {
         let content_rect = layout_box.dimensions.content;
 
@@ -206,7 +210,7 @@ impl HtmlRenderer {
 
         // Render ::before pseudo-element content
         pseudo::render_pseudo_element_content(
-            canvas,
+            painter,
             &content_rect,
             element_data,
             styles,
@@ -218,7 +222,7 @@ impl HtmlRenderer {
         );
 
         // Render box shadows first (behind the element)
-        decorations::render_box_shadows(canvas, &content_rect, styles, scale_factor);
+        decorations::render_box_shadows(painter, &content_rect, styles, scale_factor);
 
         // Create background paint with CSS colors
         let mut bg_paint = &mut self.paints.background_paint;
@@ -282,20 +286,20 @@ impl HtmlRenderer {
             heading_paint.set_stroke(true);
             let scaled_heading_border = 2.0 * scale_factor as f32;
             heading_paint.set_stroke_width(scaled_heading_border);
-            canvas.draw_rect(content_rect, &heading_paint);
+            painter.draw_rect(content_rect, &heading_paint);
         }
 
         // Render outline if specified
-        decorations::render_outline(canvas, &content_rect, styles, opacity, scale_factor);
+        decorations::render_outline(painter, &content_rect, styles, opacity, scale_factor);
 
         // Render stroke if specified (CSS stroke property)
-        decorations::render_stroke(canvas, &content_rect, &styles.stroke, opacity, scale_factor);
+        decorations::render_stroke(painter, &content_rect, &styles.stroke, opacity, scale_factor);
 
         // Render rounded corners if border radius is specified
         let border_radius_px = styles.border_radius.to_px(styles.font_size, 400.0);
         if border_radius_px.has_radius() {
             decorations::render_rounded_element(
-                canvas,
+                painter,
                 content_rect,
                 &border_radius_px,
                 &bg_paint,
@@ -306,13 +310,13 @@ impl HtmlRenderer {
         }
 
         // Draw background (only if no rounded corners)
-        canvas.draw_rect(content_rect, &bg_paint);
+        painter.draw_rect(content_rect, &bg_paint);
 
         // Render background image if specified
-        background::render_background_image(canvas, &content_rect, styles, scale_factor, &self.background_image_cache);
+        background::render_background_image(painter, &content_rect, styles, style, scale_factor, &self.background_image_cache);
 
         if should_draw_border {
-            canvas.draw_rect(content_rect, &border_paint);
+            painter.draw_rect(content_rect, &border_paint);
         }
     }
 }

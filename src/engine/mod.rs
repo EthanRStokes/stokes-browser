@@ -14,7 +14,9 @@ use blitz_traits::shell::Viewport;
 use skia_safe::Canvas;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::rc::Rc;
+use std::sync::Arc;
 use futures::executor::block_on;
 use markup5ever::local_name;
 use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters, SharedStyleContext};
@@ -26,6 +28,7 @@ use style::traversal::DomTraversal;
 use style::traversal_flags::TraversalFlags;
 use stylo_atoms::Atom;
 use crate::css::stylo::RecalcStyle;
+use crate::dom::node::{CachedImage, RasterImageData};
 use crate::renderer::text::TextPainter;
 
 /// The core browser engine that coordinates all browser activities
@@ -199,9 +202,20 @@ impl Engine {
                 let mut image_data = image_data.borrow_mut();
                 match result {
                     Ok(image_bytes) => {
-                        // Decode and cache the image immediately after loading
-                        if let Some(decoded_image) = ImageData::decode_image_data_static(&image_bytes) {
-                            image_data.cached_image = Some(decoded_image);
+                        if let Ok(image) = image::ImageReader::new(Cursor::new(&image_bytes))
+                            .with_guessed_format()
+                            .expect("failed to read image")
+                            .decode()
+                        {
+                            let rgba_image = image.to_rgba8();
+                            let (width, height) = rgba_image.dimensions();
+                            let rgba_data = rgba_image.into_raw();
+
+                            image_data.cached_image = CachedImage::Raster(RasterImageData::new(
+                                width,
+                                height,
+                                Arc::new(rgba_data),
+                            ));
                             println!("Successfully loaded and decoded image: {}", src);
                         } else {
                             println!("Successfully loaded but failed to decode image: {}", src);
@@ -414,6 +428,7 @@ impl Engine {
             self.renderer.render(
                 canvas,
                 node,
+                dom,
                 layout,
                 transition_manager_ref,
                 painter,
