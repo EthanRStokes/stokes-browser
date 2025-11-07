@@ -23,15 +23,12 @@ use style::values::specified::{TextAlign, TextAlignKeyword, TextDecorationLine};
 
 /// Render text with CSS styles applied and DPI scale factor using Skia's textlayout
 pub fn render_text_node(
-    canvas: &Canvas,
+    painter: &mut TextPainter,
     node: &DomNode,
     dom: &Dom,
     layout_box: &LayoutBox,
     contents: &RefCell<StrTendril>,
     style: &Arc<ComputedValues>,
-    font_manager: &FontManager,
-    default_text_paint: &Paint,
-    painter: &mut TextPainter,
     scale_factor: f32,
 ) {
     let text = contents.borrow();
@@ -794,22 +791,6 @@ impl TextPainter<'_> {
 
     pub(crate) fn base_layer_size(&self) -> skia_safe::ISize {
         self.inner.base_layer_size()
-    }
-
-    pub(crate) fn draw_rect(&self, rect: Rect, paint: &Paint) {
-        self.inner.draw_rect(rect, paint);
-    }
-
-    pub(crate) fn draw_line(&self, p0: impl Into<Point>, p1: impl Into<Point>, paint: &Paint) {
-        self.inner.draw_line(p0, p1, paint);
-    }
-
-    pub(crate) fn draw_path(&self, path: &skia_safe::Path, paint: &Paint) {
-        self.inner.draw_path(path, paint);
-    }
-
-    pub(crate) fn draw_text_blob(&self, blob: &TextBlob, origin: impl Into<Point>, paint: &Paint) {
-        self.inner.draw_text_blob(blob, origin, paint);
     }
 
     pub(crate) fn draw_image(&mut self, image: ImageBrushRef, transform: Affine) {

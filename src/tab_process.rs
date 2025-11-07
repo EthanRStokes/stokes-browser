@@ -379,7 +379,7 @@ impl TabProcess {
 
             let engine = &mut self.engine;
             if engine.dom.is_some() {
-                engine.render(canvas, &mut painter, engine.viewport.hidpi_scale);
+                engine.render(&mut painter, engine.viewport.hidpi_scale);
             }
 
             // Copy the pixel data to shared memory

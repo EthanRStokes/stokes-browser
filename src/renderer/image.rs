@@ -54,11 +54,25 @@ pub fn render_image_node(painter: &mut TextPainter, node: &DomNode, layout_box: 
 }
 
 /// Render a placeholder for images (when not loaded, loading, or failed)
-pub fn render_image_placeholder(painter: &TextPainter, rect: &Rect, text: &str, scale_factor: f32, font: &Font) {
+pub fn render_image_placeholder(painter: &mut TextPainter, rect: &Rect, text: &str, scale_factor: f32, font: &Font) {
+    // Convert to kurbo::Rect
+    let kurbo_rect = kurbo::Rect::new(
+        rect.left as f64,
+        rect.top as f64,
+        rect.right as f64,
+        rect.bottom as f64,
+    );
+    
     // Draw a light gray background
     let mut bg_paint = Paint::default();
     bg_paint.set_color(Color::from_rgb(240, 240, 240));
-    painter.draw_rect(*rect, &bg_paint);
+    painter.fill(
+        peniko::Fill::NonZero,
+        kurbo::Affine::IDENTITY,
+        bg_paint.color4f(), // todo convert
+        None,
+        &kurbo_rect,
+    );
 
     // Draw a border with scaled width
     let mut border_paint = Paint::default();
@@ -66,7 +80,13 @@ pub fn render_image_placeholder(painter: &TextPainter, rect: &Rect, text: &str, 
     border_paint.set_stroke(true);
     let scaled_border_width = 1.0 * scale_factor;
     border_paint.set_stroke_width(scaled_border_width);
-    painter.draw_rect(*rect, &border_paint);
+    painter.stroke(
+        &kurbo::Stroke::new(scaled_border_width as f64),
+        kurbo::Affine::IDENTITY,
+        border_paint.color4f(),
+        None,
+        &kurbo_rect,
+    );
 
     // Draw placeholder text
     if !text.is_empty() && rect.width() > 20.0 && rect.height() > 20.0 {
@@ -88,7 +108,8 @@ pub fn render_image_placeholder(painter: &TextPainter, rect: &Rect, text: &str, 
             let text_x = rect.left + (rect.width() - text_bounds.width()) / 2.0;
             let text_y = rect.top + (rect.height() + text_bounds.height()) / 2.0;
 
-            painter.draw_text_blob(&text_blob, (text_x, text_y), &text_paint);
+            // Use inner canvas for text blob drawing (not yet abstracted in TextPainter)
+            painter.inner.draw_text_blob(&text_blob, (text_x, text_y), &text_paint);
         }
     }
 
@@ -105,17 +126,46 @@ pub fn render_image_placeholder(painter: &TextPainter, rect: &Rect, text: &str, 
         let icon_y = rect.top + 8.0 * scale_factor as f32;
         let icon_rect = Rect::from_xywh(icon_x, icon_y, scaled_icon_size, scaled_icon_size);
 
-        // Draw a simple square with an X
-        painter.draw_rect(icon_rect, &icon_paint);
-        painter.draw_line(
-            (icon_rect.left, icon_rect.top),
-            (icon_rect.right, icon_rect.bottom),
-            &icon_paint
+        // Convert to kurbo shapes
+        let kurbo_icon_rect = kurbo::Rect::new(
+            icon_rect.left as f64,
+            icon_rect.top as f64,
+            icon_rect.right as f64,
+            icon_rect.bottom as f64,
         );
-        painter.draw_line(
-            (icon_rect.right, icon_rect.top),
-            (icon_rect.left, icon_rect.bottom),
-            &icon_paint
+
+        // Draw a simple square with an X
+        painter.stroke(
+            &kurbo::Stroke::new(scaled_icon_stroke as f64),
+            kurbo::Affine::IDENTITY,
+            icon_paint.color4f(),
+            None,
+            &kurbo_icon_rect,
+        );
+        
+        // Draw X lines
+        let line1 = kurbo::Line::new(
+            (icon_rect.left as f64, icon_rect.top as f64),
+            (icon_rect.right as f64, icon_rect.bottom as f64)
+        );
+        painter.stroke(
+            &kurbo::Stroke::new(scaled_icon_stroke as f64),
+            kurbo::Affine::IDENTITY,
+            icon_paint.color4f(),
+            None,
+            &line1,
+        );
+        
+        let line2 = kurbo::Line::new(
+            (icon_rect.right as f64, icon_rect.top as f64),
+            (icon_rect.left as f64, icon_rect.bottom as f64)
+        );
+        painter.stroke(
+            &kurbo::Stroke::new(scaled_icon_stroke as f64),
+            kurbo::Affine::IDENTITY,
+            icon_paint.color4f(),
+            None,
+            &line2,
         );
     }
 }

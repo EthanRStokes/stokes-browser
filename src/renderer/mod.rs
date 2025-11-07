@@ -51,12 +51,11 @@ impl HtmlRenderer {
     /// Render a layout tree to the canvas with transition support
     pub fn render(
         &mut self,
-        canvas: &Canvas,
+        painter: &mut TextPainter,
         node: &DomNode,
         dom: &Dom,
         layout_box: &LayoutBox,
         transition_manager: Option<&TransitionManager>,
-        painter: &mut TextPainter,
         scroll_x: f32,
         scroll_y: f32,
         scale_factor: f32,
@@ -76,7 +75,7 @@ impl HtmlRenderer {
         );
 
         // Render the layout tree with styles, scale factor, and viewport culling
-        self.render_box(canvas, &node, dom, layout_box, transition_manager, painter, scale_factor, &viewport_rect);
+        self.render_box(painter, &node, dom, layout_box, transition_manager, scale_factor, &viewport_rect);
 
         // Restore the canvas state
         painter.restore();
@@ -85,12 +84,11 @@ impl HtmlRenderer {
     /// Render a single layout box with CSS styles, transitions, and scale factor
     fn render_box(
         &mut self,
-        canvas: &Canvas,
+        painter: &mut TextPainter,
         node: &DomNode,
         dom: &Dom,
         layout_box: &LayoutBox,
         transition_manager: Option<&TransitionManager>,
-        painter: &mut TextPainter,
         scale_factor: f32,
         viewport_rect: &Rect,
     ) {
@@ -130,21 +128,18 @@ impl HtmlRenderer {
         if is_visible {
             match &dom_node.data {
                 NodeData::Element(element_data) => {
-                    self.render_element(canvas, node, layout_box, element_data, &computed_styles, &style, scale_factor, painter);
+                    self.render_element(painter, node, dom, layout_box, element_data, &computed_styles, &style, scale_factor);
                 },
                 NodeData::Text { contents } => {
                     // Check if text node is inside a non-visual element
                     if !is_inside_non_visual_element(&dom_node) {
                         text::render_text_node(
-                            canvas,
+                            painter,
                             node,
                             dom,
                             layout_box,
                             contents,
                             &style,
-                            &self.font_manager,
-                            &self.paints.text_paint,
-                            painter,
                             scale_factor,
                         );
                     }
@@ -185,7 +180,7 @@ impl HtmlRenderer {
 
             // Render children in z-index order
             for (child_node, child, _) in children_with_z {
-                self.render_box(canvas, &*child_node, dom, child, transition_manager, painter, scale_factor, viewport_rect);
+                self.render_box(painter, &*child_node, dom, child, transition_manager, scale_factor, viewport_rect);
             }
         }
     }
@@ -193,14 +188,14 @@ impl HtmlRenderer {
     /// Render an element with CSS styles applied
     fn render_element(
         &mut self,
-        canvas: &Canvas,
+        painter: &mut TextPainter,
         node: &DomNode,
+        dom: &Dom,
         layout_box: &LayoutBox,
         element_data: &ElementData,
         styles: &ComputedValues,
         style: &Arc<StyloComputedValues>,
         scale_factor: f32,
-        painter: &mut TextPainter,
     ) {
         let content_rect = layout_box.dimensions.content;
 
@@ -211,14 +206,12 @@ impl HtmlRenderer {
         // Render ::before pseudo-element content
         pseudo::render_pseudo_element_content(
             painter,
+            dom,
             &content_rect,
             element_data,
-            styles,
             style,
             scale_factor,
             true, // before
-            &self.font_manager,
-            &self.paints.text_paint,
         );
 
         // Render box shadows first (behind the element)

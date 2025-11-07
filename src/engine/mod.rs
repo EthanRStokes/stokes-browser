@@ -413,7 +413,7 @@ impl Engine {
     }
 
     /// Render the current page to a canvas with transition support
-    pub fn render(&mut self, canvas: &Canvas, painter: &mut TextPainter, scale_factor: f32) {
+    pub fn render(&mut self, painter: &mut TextPainter, scale_factor: f32) {
         let dom = self.dom.as_ref().unwrap();
         let node = dom.root_node();
 
@@ -429,12 +429,11 @@ impl Engine {
             };
 
             self.renderer.render(
-                canvas,
+                painter,
                 node,
                 dom,
                 layout,
                 transition_manager_ref,
-                painter,
                 self.scroll_x,
                 self.scroll_y,
                 scale_factor

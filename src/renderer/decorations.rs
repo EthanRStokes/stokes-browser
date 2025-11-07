@@ -5,7 +5,7 @@ use skia_safe::{Color, Paint, Rect, TextBlob};
 
 /// Render text decorations (underline, overline, line-through)
 pub fn render_text_decorations(
-    painter: &TextPainter,
+    painter: &mut TextPainter,
     text_blob: &TextBlob,
     text_position: (f32, f32),
     text_decoration: &TextDecoration,
