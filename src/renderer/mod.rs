@@ -60,11 +60,8 @@ impl HtmlRenderer {
         scroll_y: f32,
         scale_factor: f32,
     ) {
-        // Save the current canvas state
-        painter.save();
-
-        // Apply scroll offset by translating the canvas
-        painter.translate(-scroll_x, -scroll_y);
+        // Create scroll transform to offset the view
+        let scroll_transform = kurbo::Affine::translate((-scroll_x as f64, -scroll_y as f64));
 
         // Calculate viewport bounds for culling off-screen elements
         let viewport_rect = Rect::from_xywh(
@@ -75,10 +72,7 @@ impl HtmlRenderer {
         );
 
         // Render the layout tree with styles, scale factor, and viewport culling
-        self.render_box(painter, &node, dom, layout_box, transition_manager, scale_factor, &viewport_rect);
-
-        // Restore the canvas state
-        painter.restore();
+        self.render_box(painter, &node, dom, layout_box, transition_manager, scale_factor, &viewport_rect, scroll_transform);
     }
 
     /// Render a single layout box with CSS styles, transitions, and scale factor
@@ -91,6 +85,7 @@ impl HtmlRenderer {
         transition_manager: Option<&TransitionManager>,
         scale_factor: f32,
         viewport_rect: &Rect,
+        scroll_transform: kurbo::Affine,
     ) {
         let style = node.style_arc();
 
@@ -128,7 +123,7 @@ impl HtmlRenderer {
         if is_visible {
             match &dom_node.data {
                 NodeData::Element(element_data) => {
-                    self.render_element(painter, node, dom, layout_box, element_data, &computed_styles, &style, scale_factor);
+                    self.render_element(painter, node, dom, layout_box, element_data, &computed_styles, &style, scale_factor, scroll_transform);
                 },
                 NodeData::Text { contents } => {
                     // Check if text node is inside a non-visual element
@@ -141,12 +136,13 @@ impl HtmlRenderer {
                             contents,
                             &style,
                             scale_factor,
+                            scroll_transform,
                         );
                     }
                 },
                 NodeData::Image(image_data) => {
                     let placeholder_font = self.font_manager.placeholder_font_for_size(12.0 * scale_factor as f32);
-                    image::render_image_node(painter, node, layout_box, image_data, &style, scale_factor, &placeholder_font);
+                    image::render_image_node(painter, node, layout_box, image_data, &style, scale_factor, &placeholder_font, scroll_transform);
                 },
                 NodeData::Document => {
                     // Just render children for document
@@ -180,7 +176,7 @@ impl HtmlRenderer {
 
             // Render children in z-index order
             for (child_node, child, _) in children_with_z {
-                self.render_box(painter, &*child_node, dom, child, transition_manager, scale_factor, viewport_rect);
+                self.render_box(painter, &*child_node, dom, child, transition_manager, scale_factor, viewport_rect, scroll_transform);
             }
         }
     }
@@ -196,6 +192,7 @@ impl HtmlRenderer {
         styles: &ComputedValues,
         style: &Arc<StyloComputedValues>,
         scale_factor: f32,
+        scroll_transform: kurbo::Affine,
     ) {
         let content_rect = layout_box.dimensions.content;
 
@@ -212,10 +209,11 @@ impl HtmlRenderer {
             style,
             scale_factor,
             true, // before
+            scroll_transform,
         );
 
         // Render box shadows first (behind the element)
-        decorations::render_box_shadows(painter, &content_rect, styles, scale_factor);
+        decorations::render_box_shadows(painter, &content_rect, styles, scale_factor, scroll_transform);
 
         // Create background paint with CSS colors
         let mut bg_paint = &mut self.paints.background_paint;
@@ -272,21 +270,39 @@ impl HtmlRenderer {
 
         // Add visual indicators for headings with scaled border width
         if element_data.name.local.starts_with('h') {
-            let mut heading_paint = Paint::default();
-            let mut heading_color = Color::from_rgb(50, 50, 150);
-            heading_color = heading_color.with_a((255.0 * opacity) as u8);
-            heading_paint.set_color(heading_color);
-            heading_paint.set_stroke(true);
-            let scaled_heading_border = 2.0 * scale_factor as f32;
-            heading_paint.set_stroke_width(scaled_heading_border);
-            painter.draw_rect(content_rect, &heading_paint);
+            let heading_color = color::AlphaColor::from_rgba8(50, 50, 150, (255.0 * opacity) as u8);
+            let scaled_heading_border = 2.0 * scale_factor;
+            let stroke = kurbo::Stroke::new(scaled_heading_border as f64);
+            let rect = kurbo::Rect::new(
+                content_rect.left as f64,
+                content_rect.top as f64,
+                content_rect.right as f64,
+                content_rect.bottom as f64,
+            );
+            painter.stroke(&stroke, scroll_transform, heading_color, None, &rect);
         }
 
         // Render outline if specified
-        decorations::render_outline(painter, &content_rect, styles, opacity, scale_factor);
+        decorations::render_outline(painter, &content_rect, styles, opacity, scale_factor, scroll_transform);
 
         // Render stroke if specified (CSS stroke property)
-        decorations::render_stroke(painter, &content_rect, &styles.stroke, opacity, scale_factor);
+        decorations::render_stroke(painter, &content_rect, &styles.stroke, opacity, scale_factor, scroll_transform);
+
+        let bg_color = bg_paint.color();
+        let bg_alpha_color = color::AlphaColor::from_rgba8(
+            bg_color.r(),
+            bg_color.g(),
+            bg_color.b(),
+            bg_color.a(),
+        );
+
+        let border_color = border_paint.color();
+        let border_alpha_color = color::AlphaColor::from_rgba8(
+            border_color.r(),
+            border_color.g(),
+            border_color.b(),
+            border_color.a(),
+        );
 
         // Render rounded corners if border radius is specified
         let border_radius_px = styles.border_radius.to_px(styles.font_size, 400.0);
@@ -295,21 +311,29 @@ impl HtmlRenderer {
                 painter,
                 content_rect,
                 &border_radius_px,
-                &bg_paint,
-                if should_draw_border { Some(&border_paint) } else { None },
+                bg_alpha_color.clone(),
+                if should_draw_border { Some(border_alpha_color.clone()) } else { None },
                 scale_factor,
+                scroll_transform,
             );
             return; // Skip the regular rectangle drawing since we drew rounded shapes
         }
 
         // Draw background (only if no rounded corners)
-        painter.draw_rect(content_rect, &bg_paint);
+        let rect = kurbo::Rect::new(
+            content_rect.left as f64,
+            content_rect.top as f64,
+            content_rect.right as f64,
+            content_rect.bottom as f64,
+        );
+        painter.fill(peniko::Fill::NonZero, scroll_transform, bg_alpha_color, None, &rect);
 
         // Render background image if specified
-        background::render_background_image(painter, &content_rect, styles, style, scale_factor, &self.background_image_cache);
+        background::render_background_image(painter, &content_rect, styles, style, scale_factor, &self.background_image_cache, scroll_transform);
 
         if should_draw_border {
-            painter.draw_rect(content_rect, &border_paint);
+            let border_stroke = kurbo::Stroke::new(border_paint.stroke_width() as f64);
+            painter.stroke(&border_stroke, scroll_transform, border_alpha_color, None, &rect);
         }
     }
 }

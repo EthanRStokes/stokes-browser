@@ -30,6 +30,7 @@ pub fn render_text_node(
     contents: &RefCell<StrTendril>,
     style: &Arc<ComputedValues>,
     scale_factor: f32,
+    scroll_transform: kurbo::Affine,
 ) {
     let text = contents.borrow();
     let content_rect = layout_box.dimensions.content;
@@ -171,8 +172,8 @@ pub fn render_text_node(
 
     // Get text color
     let text_color: AlphaColor<Srgb> = style.clone_color().as_color_color();
-    // Create transform for text position
-    let transform = Affine::translate((content_rect.left as f64, content_rect.top as f64));
+    // Create transform for text position, combined with scroll transform
+    let transform = scroll_transform * Affine::translate((content_rect.left as f64, content_rect.top as f64));
 
     // Render each line
     for line in layout.lines() {
@@ -785,9 +786,6 @@ impl TextPainter<'_> {
         self.inner.restore();
     }
 
-    pub(crate) fn translate(&self, dx: f32, dy: f32) {
-        self.inner.translate((dx, dy));
-    }
 
     pub(crate) fn base_layer_size(&self) -> skia_safe::ISize {
         self.inner.base_layer_size()

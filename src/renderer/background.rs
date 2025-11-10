@@ -56,6 +56,7 @@ pub fn render_background_image(
     style: &Arc<StyloComputedValues>,
     scale_factor: f32,
     image_cache: &BackgroundImageCache,
+    scroll_transform: kurbo::Affine,
 ) {
     // Check if background-image is specified
     match &styles.background_image {
@@ -70,7 +71,7 @@ pub fn render_background_image(
                 let image_rendering = inherited_box.image_rendering;
                 let quality = to_image_quality(image_rendering);
 
-                let transform = Affine::translate((rect.left as f64, rect.top as f64));
+                let transform = scroll_transform * Affine::translate((rect.left as f64, rect.top as f64));
 
                 // Draw the background image to cover the entire rect
                 painter.draw_image(to_peniko_image(&image, quality).as_ref(), transform);

@@ -1,72 +1,18 @@
+use color::{AlphaColor, Srgb};
 use crate::css::{BorderRadiusPx, ComputedValues, OutlineStyle, Stroke, TextDecoration};
 use crate::renderer::text::TextPainter;
 // Text decorations, borders, shadows, and outlines
 use skia_safe::{Color, Paint, Rect, TextBlob};
 
-/// Render text decorations (underline, overline, line-through)
-pub fn render_text_decorations(
-    painter: &mut TextPainter,
-    text_blob: &TextBlob,
-    text_position: (f32, f32),
-    text_decoration: &TextDecoration,
-    text_paint: &Paint,
-    font_size: f32,
-    scale_factor: f32,
-) {
-    // Skip if no decorations
-    if matches!(text_decoration, TextDecoration::None) {
-        return;
-    }
-
-    let text_bounds = text_blob.bounds();
-    let text_width = text_bounds.width();
-    let (text_x, text_y) = text_position;
-
-    // Create decoration paint based on text paint
-    let mut decoration_paint = text_paint.clone();
-    decoration_paint.set_stroke(true);
-    let decoration_thickness = (font_size / 16.0).max(1.0) * scale_factor;
-    decoration_paint.set_stroke_width(decoration_thickness);
-
-    // Render underline
-    if text_decoration.has_underline() {
-        let underline_y = text_y + font_size * 0.1; // Position below baseline
-        painter.draw_line(
-            (text_x, underline_y),
-            (text_x + text_width, underline_y),
-            &decoration_paint,
-        );
-    }
-
-    // Render overline
-    if text_decoration.has_overline() {
-        let overline_y = text_y - font_size * 0.8; // Position above text
-        painter.draw_line(
-            (text_x, overline_y),
-            (text_x + text_width, overline_y),
-            &decoration_paint,
-        );
-    }
-
-    // Render line-through (strikethrough)
-    if text_decoration.has_line_through() {
-        let line_through_y = text_y - font_size * 0.3; // Position through middle of text
-        painter.draw_line(
-            (text_x, line_through_y),
-            (text_x + text_width, line_through_y),
-            &decoration_paint,
-        );
-    }
-}
-
 /// Render an element with rounded corners
 pub fn render_rounded_element(
-    painter: &TextPainter,
+    painter: &mut TextPainter,
     rect: Rect,
     border_radius_px: &BorderRadiusPx,
-    bg_paint: &Paint,
-    border_paint: Option<&Paint>,
+    bg_color: AlphaColor<Srgb>,
+    border_color: Option<AlphaColor<Srgb>>,
     scale_factor: f32,
+    scroll_transform: kurbo::Affine,
 ) {
     // Apply scale factor to border radius values
     let scaled_top_left = border_radius_px.top_left * scale_factor;
@@ -75,30 +21,34 @@ pub fn render_rounded_element(
     let scaled_bottom_left = border_radius_px.bottom_left * scale_factor;
 
     // For now, use uniform radius (average of all corners) for simplicity
-    // Skia's add_round_rect method expects a tuple for radius
     let avg_radius = (scaled_top_left + scaled_top_right + scaled_bottom_right + scaled_bottom_left) / 4.0;
 
-    // Create a path with rounded rectangle for background
-    let mut bg_path = skia_safe::Path::new();
-    bg_path.add_round_rect(rect, (avg_radius, avg_radius), None);
+    // Create kurbo rounded rectangle
+    let kurbo_rect = kurbo::Rect::new(
+        rect.left as f64,
+        rect.top as f64,
+        rect.right as f64,
+        rect.bottom as f64,
+    );
+    let rounded_rect = kurbo::RoundedRect::from_rect(kurbo_rect, avg_radius as f64);
 
     // Draw the background with rounded corners
-    painter.draw_path(&bg_path, bg_paint);
+    painter.fill(peniko::Fill::NonZero, scroll_transform, bg_color, None, &rounded_rect);
 
     // Draw border if specified
-    if let Some(border_paint) = border_paint {
-        let mut border_path = skia_safe::Path::new();
-        border_path.add_round_rect(rect, (avg_radius, avg_radius), None);
-        painter.draw_path(&border_path, border_paint);
+    if let Some(border_color) = border_color {
+        let stroke = kurbo::Stroke::new(1.0 * scale_factor as f64);
+        painter.stroke(&stroke, scroll_transform, border_color, None, &rounded_rect);
     }
 }
 
 /// Render box shadows for an element
 pub fn render_box_shadows(
-    painter: &TextPainter,
+    painter: &mut TextPainter,
     rect: &Rect,
     styles: &ComputedValues,
     scale_factor: f32,
+    scroll_transform: kurbo::Affine,
 ) {
     // Render each box shadow
     for shadow in &styles.box_shadow {
@@ -157,32 +107,50 @@ pub fn render_box_shadows(
                 );
 
                 // Reduce alpha for blur effect
-                let mut blur_paint = shadow_paint.clone();
                 let original_color = shadow_px.color.to_skia_color();
                 let alpha = (original_color.a() as f32 * step_alpha * 0.3) as u8;
-                blur_paint.set_color(Color::from_argb(
-                    alpha,
+                let blur_color = color::AlphaColor::from_rgba8(
                     original_color.r(),
                     original_color.g(),
                     original_color.b(),
-                ));
-
-                painter.draw_rect(blur_rect, &blur_paint);
+                    alpha,
+                );
+                let blur_kurbo_rect = kurbo::Rect::new(
+                    blur_rect.left as f64,
+                    blur_rect.top as f64,
+                    blur_rect.right as f64,
+                    blur_rect.bottom as f64,
+                );
+                painter.fill(peniko::Fill::NonZero, scroll_transform, blur_color, None, &blur_kurbo_rect);
             }
         } else {
             // No blur, just draw the shadow directly
-            painter.draw_rect(shadow_rect, &shadow_paint);
+            let shadow_color = shadow_paint.color();
+            let shadow_alpha_color = color::AlphaColor::from_rgba8(
+                shadow_color.r(),
+                shadow_color.g(),
+                shadow_color.b(),
+                shadow_color.a(),
+            );
+            let shadow_kurbo_rect = kurbo::Rect::new(
+                shadow_rect.left as f64,
+                shadow_rect.top as f64,
+                shadow_rect.right as f64,
+                shadow_rect.bottom as f64,
+            );
+            painter.fill(peniko::Fill::NonZero, scroll_transform, shadow_alpha_color, None, &shadow_kurbo_rect);
         }
     }
 }
 
 /// Render outline for an element
 pub fn render_outline(
-    painter: &TextPainter,
+    painter: &mut TextPainter,
     rect: &Rect,
     styles: &ComputedValues,
     opacity: f32,
     scale_factor: f32,
+    scroll_transform: kurbo::Affine,
 ) {
     // Check if outline is visible
     if !styles.outline.is_visible() {
@@ -243,10 +211,23 @@ pub fn render_outline(
             let inner_width = scaled_outline_width / 3.0;
             let gap = scaled_outline_width / 3.0;
 
+            // Convert outline color to AlphaColor
+            let outline_alpha_color = color::AlphaColor::from_rgba8(
+                outline_color.r(),
+                outline_color.g(),
+                outline_color.b(),
+                outline_color.a(),
+            );
+
             // Draw outer outline
-            let mut outer_paint = outline_paint.clone();
-            outer_paint.set_stroke_width(inner_width);
-            painter.draw_rect(outline_rect, &outer_paint);
+            let outer_kurbo_rect = kurbo::Rect::new(
+                outline_rect.left as f64,
+                outline_rect.top as f64,
+                outline_rect.right as f64,
+                outline_rect.bottom as f64,
+            );
+            let outer_stroke = kurbo::Stroke::new(inner_width as f64);
+            painter.stroke(&outer_stroke, scroll_transform, outline_alpha_color, None, &outer_kurbo_rect);
 
             // Draw inner outline
             let inner_rect = Rect::from_xywh(
@@ -255,7 +236,13 @@ pub fn render_outline(
                 outline_rect.width() - 2.0 * (gap + inner_width),
                 outline_rect.height() - 2.0 * (gap + inner_width),
             );
-            painter.draw_rect(inner_rect, &outer_paint);
+            let inner_kurbo_rect = kurbo::Rect::new(
+                inner_rect.left as f64,
+                inner_rect.top as f64,
+                inner_rect.right as f64,
+                inner_rect.bottom as f64,
+            );
+            painter.stroke(&outer_stroke, scroll_transform, outline_alpha_color, None, &inner_kurbo_rect);
             return; // Skip the main draw below
         }
         OutlineStyle::Groove | OutlineStyle::Ridge |
@@ -268,17 +255,34 @@ pub fn render_outline(
         }
     }
 
-    // Draw the outline
-    painter.draw_rect(outline_rect, &outline_paint);
+    // Draw the outline using stroke
+    let outline_kurbo_rect = kurbo::Rect::new(
+        outline_rect.left as f64,
+        outline_rect.top as f64,
+        outline_rect.right as f64,
+        outline_rect.bottom as f64,
+    );
+
+    // Convert outline color to AlphaColor
+    let outline_alpha_color = color::AlphaColor::from_rgba8(
+        outline_color.r(),
+        outline_color.g(),
+        outline_color.b(),
+        outline_color.a(),
+    );
+
+    let outline_stroke = kurbo::Stroke::new(scaled_outline_width as f64);
+    painter.stroke(&outline_stroke, scroll_transform, outline_alpha_color, None, &outline_kurbo_rect);
 }
 
 /// Render stroke for an element (similar to SVG stroke)
 pub fn render_stroke(
-    painter: &TextPainter,
+    painter: &mut TextPainter,
     rect: &Rect,
     stroke: &Stroke,
     opacity: f32,
     scale_factor: f32,
+    scroll_transform: kurbo::Affine,
 ) {
     // Only render if stroke is visible
     if !stroke.is_visible() {
@@ -294,19 +298,25 @@ pub fn render_stroke(
     let stroke_width_px = stroke.width_px(16.0, 0.0);
     let scaled_stroke_width = stroke_width_px * scale_factor;
 
-    // Create stroke paint
-    let mut stroke_paint = Paint::default();
-    let mut color = stroke_color.to_skia_color();
-    
-    // Apply both stroke opacity and element opacity
-    let combined_opacity = stroke.opacity * opacity;
-    color = color.with_a((color.a() as f32 * combined_opacity) as u8);
-    
-    stroke_paint.set_color(color);
-    stroke_paint.set_stroke(true);
-    stroke_paint.set_stroke_width(scaled_stroke_width);
-    stroke_paint.set_anti_alias(true);
+    // Convert Skia rect to kurbo rect
+    let kurbo_rect = kurbo::Rect::new(
+        rect.left as f64,
+        rect.top as f64,
+        rect.right as f64,
+        rect.bottom as f64,
+    );
 
-    // Draw the stroke around the element
-    painter.draw_rect(*rect, &stroke_paint);
+    // Convert stroke color to AlphaColor with combined opacity
+    let skia_color = stroke_color.to_skia_color();
+    let combined_opacity = stroke.opacity * opacity;
+    let stroke_alpha_color = color::AlphaColor::from_rgba8(
+        skia_color.r(),
+        skia_color.g(),
+        skia_color.b(),
+        (skia_color.a() as f32 * combined_opacity) as u8,
+    );
+
+    // Draw the stroke around the element using TextPainter's stroke method
+    let kurbo_stroke = kurbo::Stroke::new(scaled_stroke_width as f64);
+    painter.stroke(&kurbo_stroke, scroll_transform, stroke_alpha_color, None, &kurbo_rect);
 }

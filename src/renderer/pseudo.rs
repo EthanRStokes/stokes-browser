@@ -23,6 +23,7 @@ pub fn render_pseudo_element_content(
     style: &Arc<StyloComputedValues>,
     scale_factor: f32,
     is_before: bool,
+    scroll_transform: kurbo::Affine,
 ) {
     // Check if content property is set and not Normal/None
     let content = &style.get_counters().content;
@@ -136,8 +137,8 @@ pub fn render_pseudo_element_content(
         rect.right
     };
 
-    // Create transform for text position
-    let transform = Affine::translate((offset_x as f64, rect.top as f64));
+    // Create transform for text position, combined with scroll transform
+    let transform = scroll_transform * Affine::translate((offset_x as f64, rect.top as f64));
 
     // Render each line
     for line in layout.lines() {
