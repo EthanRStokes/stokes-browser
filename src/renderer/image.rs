@@ -28,7 +28,14 @@ pub fn render_image_node(painter: &mut TextPainter, node: &DomNode, layout_box: 
             let inherited_box = style.get_inherited_box();
             let image_rendering = inherited_box.image_rendering;
 
-            let transform = scroll_transform * Affine::translate((content_rect.left as f64, content_rect.top as f64));
+            // Calculate scale factors to fit image into content_rect
+            let scale_x = content_rect.width() as f64 / data.width as f64;
+            let scale_y = content_rect.height() as f64 / data.height as f64;
+
+            let transform = scroll_transform
+                * Affine::translate((content_rect.left as f64, content_rect.top as f64))
+                * Affine::scale_non_uniform(scale_x, scale_y);
+
             // Draw the cached image scaled to fit the content rect
 
             painter.draw_image(to_peniko_image(data, to_image_quality(image_rendering)).as_ref(), transform);

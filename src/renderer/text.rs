@@ -792,8 +792,7 @@ impl TextPainter<'_> {
     }
 
     pub(crate) fn draw_image(&mut self, image: ImageBrushRef, transform: Affine) {
-        // TODO fix impl
-        /*self.fill(
+        self.fill(
             Fill::NonZero,
             transform,
             image,
@@ -804,7 +803,7 @@ impl TextPainter<'_> {
                 image.image.width as f64,
                 image.image.height as f64,
             ),
-        );*/
+        );
     }
 }
 
@@ -854,9 +853,9 @@ mod sk_peniko {
         let pixels = unsafe {
             SkData::new_bytes(image_data.data.data()) // We have to ensure the src image data lives long enough
         };
-        let image = skia_safe::image::Image::from_encoded(pixels).unwrap();
-        //let image =
-        //    skia_safe::images::raster_from_data(&image_info, pixels, image_info.min_row_bytes())?;
+        //let image = skia_safe::image::Image::from_encoded(pixels)?;
+        let image =
+            skia_safe::images::raster_from_data(&image_info, pixels, image_info.min_row_bytes())?;
 
         let sampling = match image_brush.sampler.quality {
             peniko::ImageQuality::Low => {

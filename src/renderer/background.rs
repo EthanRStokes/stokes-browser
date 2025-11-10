@@ -136,8 +136,8 @@ pub(crate) fn to_peniko_image(image: &RasterImageData, quality: peniko::ImageQua
             data: image.data.clone(),
             format: ImageFormat::Rgba8,
             alpha_type: ImageAlphaType::Alpha,
-            width: 0,
-            height: 0,
+            width: image.width,
+            height: image.height,
         },
         sampler: ImageSampler {
             x_extend: peniko::Extend::Repeat,
