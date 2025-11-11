@@ -240,6 +240,12 @@ impl Dom {
         self.stylist.append_stylesheet(sheet, &self.lock.read());
     }
 
+    pub fn remove_stylesheet(&mut self, css: &str) {
+        if let Some(sheet) = self.stylesheets.remove(css) {
+            self.stylist.remove_stylesheet(sheet, &self.lock.read());
+        }
+    }
+
     pub fn make_stylesheet(&self, css: impl AsRef<str>, origin: Origin) -> DocumentStyleSheet {
         let data = Stylesheet::from_str(
             css.as_ref(),

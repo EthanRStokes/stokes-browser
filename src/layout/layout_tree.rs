@@ -388,7 +388,7 @@ impl LayoutBox {
     /// Layout inline-block elements with position offset
     fn layout_inline_block(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
         // Similar to block but flows inline - scale the max width
-        self.layout_block((container_width).min(200.0 * scale_factor), container_height, offset_x, offset_y, scale_factor);
+        self.layout_block(container_width.min(200.0 * scale_factor), container_height, offset_x, offset_y, scale_factor);
     }
 
     /// Layout text nodes with position offset
