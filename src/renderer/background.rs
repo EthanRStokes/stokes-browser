@@ -8,7 +8,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Cursor;
 use style::properties::generated::ComputedValues as StyloComputedValues;
+use style::servo::url::ComputedUrl;
 use style::servo_arc::Arc;
+use style::values::computed::{Gradient, Image};
+use style::values::generics::image::{GenericCrossFadeImage, GenericImage, GenericImageSetItem};
 use style::values::specified::ImageRendering;
 
 /// Background image cache manager
@@ -24,8 +27,12 @@ impl BackgroundImageCache {
     }
 
     /// Load a background image from URL (with caching)
-    pub fn load_background_image(&self, url: &str) -> Option<RasterImageData> {
+    pub fn load_background_image(&self, url: &ComputedUrl) -> Option<RasterImageData> {
         // Check cache first
+        let url = match url {
+            ComputedUrl::Valid(u) => u.as_str(),
+            ComputedUrl::Invalid(u) => return None,
+        };
         {
             let cache = self.cache.borrow();
             if let Some(cached) = cache.get(url) {
@@ -52,45 +59,83 @@ impl BackgroundImageCache {
 pub fn render_background_image(
     painter: &mut TextPainter,
     rect: &Rect,
-    styles: &ComputedValues,
     style: &Arc<StyloComputedValues>,
     scale_factor: f32,
     image_cache: &BackgroundImageCache,
     scroll_transform: kurbo::Affine,
 ) {
     // Check if background-image is specified
-    match &styles.background_image {
-        BackgroundImage::None => {
-            // No background image, nothing to do
-            return;
-        }
-        BackgroundImage::Url(url) => {
-            // Try to load and render the background image
-            if let Some(image) = image_cache.load_background_image(url) {
-                let inherited_box = style.get_inherited_box();
-                let image_rendering = inherited_box.image_rendering;
-                let quality = to_image_quality(image_rendering);
+    let background = style.get_background();
+    let images = &background.background_image;
+    for image in images.0.iter() {
+        match image {
+            Image::None => {}
+            Image::Url(url) => {
+                // Try to load and render the background image
+                if let Some(image) = image_cache.load_background_image(url) {
+                    let inherited_box = style.get_inherited_box();
+                    let image_rendering = inherited_box.image_rendering;
+                    let quality = to_image_quality(image_rendering);
 
-                let transform = scroll_transform * Affine::translate((rect.left as f64, rect.top as f64));
+                    let transform = scroll_transform * Affine::translate((rect.left as f64, rect.top as f64));
 
-                // Draw the background image to cover the entire rect
-                painter.draw_image(to_peniko_image(&image, quality).as_ref(), transform);
+                    // Draw the background image to cover the entire rect
+                    painter.draw_image(to_peniko_image(&image, quality).as_ref(), transform);
+                }
+            }
+            Image::Gradient(gradient) => {}
+            Image::PaintWorklet(worklet) => {}
+            Image::CrossFade(fade) => {
+                for element in fade.elements.iter() {
+                    let image = &element.image;
+                    match image {
+                        GenericCrossFadeImage::Image(image) => {
+                            match image {
+                                GenericImage::Url(url) => {
+                                    // Try to load and render the background image
+                                    if let Some(image) = image_cache.load_background_image(&url) {
+                                        let inherited_box = style.get_inherited_box();
+                                        let image_rendering = inherited_box.image_rendering;
+                                        let quality = to_image_quality(image_rendering);
+
+                                        let transform = scroll_transform * Affine::translate((rect.left as f64, rect.top as f64));
+
+                                        // Draw the background image to cover the entire rect
+                                        painter.draw_image(to_peniko_image(&image, quality).as_ref(), transform);
+                                    }
+                                }
+                                GenericImage::Gradient(gradient) => {
+                                    // Handle gradient rendering here
+                                },
+                                _ => todo!()
+                            }
+                        }
+                        GenericCrossFadeImage::Color(color) => {
+                            todo!()
+                        }
+                    }
+                }
+            }
+            Image::ImageSet(set) => {
+                // todo: handle image set rendering
+            }
+            Image::LightDark(lightdark) => {
+                // TODO: handle light/dark mode images
             }
         }
     }
 }
 
-/// Set default background color for elements
-pub fn set_default_background_color(paint: &mut Paint, tag_name: &str) {
-    let color = match tag_name {
+/// Get default background color for elements
+pub fn get_default_background_color(tag_name: &str) -> Color {
+     match tag_name {
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => Color::from_rgb(240, 240, 250),
         "div" => Color::from_rgb(248, 248, 248),
         "p" => Color::WHITE,
         "a" => Color::from_rgb(230, 240, 255),
         "button" => Color::from_rgb(242, 242, 242),
         _ => Color::WHITE,
-    };
-    paint.set_color(color);
+    }
 }
 
 /// Load an image from a file path

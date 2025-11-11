@@ -8,6 +8,7 @@ mod decorations;
 mod pseudo;
 mod cache;
 
+use color::AlphaColor;
 use crate::css::transition_manager::TransitionManager;
 use crate::css::ComputedValues;
 use crate::dom::{Dom, DomNode, ElementData, NodeData};
@@ -20,7 +21,7 @@ use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::properties::generated::style_structs::Font as StyloFont;
 use style::properties::longhands;
 use style::servo_arc::Arc;
-use crate::renderer::text::TextPainter;
+use crate::renderer::text::{TextPainter, ToColorColor};
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer {
@@ -95,18 +96,6 @@ impl HtmlRenderer {
         //    return; // Skip this box and all its children
         //}
 
-        // Get base computed styles for this node
-        let base_styles = &node.style;
-
-        // TODO Get interpolated styles if transitions are active
-        let computed_styles = base_styles;
-        /*let computed_styles = if let (Some(manager), Some(base)) = (transition_manager, base_styles) {
-            let interpolated = manager.get_interpolated_styles(node.node_id, base);
-            Some(interpolated)
-        } else {
-            base_styles.cloned()
-        };*/
-
         // Check visibility - if hidden, skip rendering visual aspects but still render children
         let inherited_box = style.get_inherited_box();
         let is_visible = inherited_box.visibility == longhands::visibility::SpecifiedValue::Visible;
@@ -123,7 +112,7 @@ impl HtmlRenderer {
         if is_visible {
             match &dom_node.data {
                 NodeData::Element(element_data) => {
-                    self.render_element(painter, node, dom, layout_box, element_data, &computed_styles, &style, scale_factor, scroll_transform);
+                    self.render_element(painter, node, dom, layout_box, element_data, &style, scale_factor, scroll_transform);
                 },
                 NodeData::Text { contents } => {
                     // Check if text node is inside a non-visual element
@@ -189,7 +178,6 @@ impl HtmlRenderer {
         dom: &Dom,
         layout_box: &LayoutBox,
         element_data: &ElementData,
-        styles: &ComputedValues,
         style: &Arc<StyloComputedValues>,
         scale_factor: f32,
         scroll_transform: kurbo::Affine,
@@ -213,41 +201,28 @@ impl HtmlRenderer {
         );
 
         // Render box shadows first (behind the element)
-        decorations::render_box_shadows(painter, &content_rect, styles, scale_factor, scroll_transform);
+        decorations::render_box_shadows(painter, &content_rect, style, scale_factor, scroll_transform);
 
         // Create background paint with CSS colors
-        let mut bg_paint = &mut self.paints.background_paint;
         let background = style.get_background();
-        let bg_color = &background.background_color;
-        // todo replace bg_color impl
-        if let Some(bg_color) = &styles.background_color {
-            let mut color = bg_color.to_skia_color();
-            // Apply opacity to background color
-            color = color.with_a((color.a() as f32 * opacity) as u8);
-            bg_paint.set_color(color);
-        } else {
-            // Fallback to default background colors
-            background::set_default_background_color(&mut bg_paint, &element_data.name.local);
-            // Apply opacity
-            let mut color = bg_paint.color();
-            color = color.with_a((color.a() as f32 * opacity) as u8);
-            bg_paint.set_color(color);
-        }
+        let bg_color = background.background_color.as_absolute().unwrap().as_color_color();
 
         // Draw border if specified in styles or default for certain elements
         let mut should_draw_border = false;
         let mut border_paint = self.paints.border_paint.clone();
 
+        let border = style.get_border();
         // Check if border is specified in styles
-        if styles.border.top > 0.0 || styles.border.right > 0.0 ||
-            styles.border.bottom > 0.0 || styles.border.left > 0.0 {
+        if border.border_top_width.0 > 0 || border.border_right_width.0 > 0 ||
+            border.border_bottom_width.0 > 0 || border.border_left_width.0 > 0 {
             should_draw_border = true;
             // Use average border width for simplicity and apply scale factor
-            let avg_border_width = (styles.border.top + styles.border.right +
-                styles.border.bottom + styles.border.left) / 4.0;
+            let avg_border_width = (border.border_top_width.0 + border.border_right_width.0 +
+                border.border_bottom_width.0 + border.border_left_width.0) as f32 / 4.0;
             let scaled_border_width = avg_border_width * scale_factor as f32;
             border_paint.set_stroke_width(scaled_border_width);
         }
+
 
         // Default border for certain elements with scaling
         if !should_draw_border {
@@ -283,18 +258,10 @@ impl HtmlRenderer {
         }
 
         // Render outline if specified
-        decorations::render_outline(painter, &content_rect, styles, opacity, scale_factor, scroll_transform);
+        decorations::render_outline(painter, &content_rect, style, opacity, scale_factor, scroll_transform);
 
-        // Render stroke if specified (CSS stroke property)
-        decorations::render_stroke(painter, &content_rect, &styles.stroke, opacity, scale_factor, scroll_transform);
-
-        let bg_color = bg_paint.color();
-        let bg_alpha_color = color::AlphaColor::from_rgba8(
-            bg_color.r(),
-            bg_color.g(),
-            bg_color.b(),
-            bg_color.a(),
-        );
+        // TODORender stroke if specified (CSS stroke property)
+        //decorations::render_stroke(painter, &content_rect, &styles.stroke, opacity, scale_factor, scroll_transform);
 
         let border_color = border_paint.color();
         let border_alpha_color = color::AlphaColor::from_rgba8(
@@ -305,19 +272,23 @@ impl HtmlRenderer {
         );
 
         // Render rounded corners if border radius is specified
-        let border_radius_px = styles.border_radius.to_px(styles.font_size, 400.0);
-        if border_radius_px.has_radius() {
-            decorations::render_rounded_element(
-                painter,
-                content_rect,
-                &border_radius_px,
-                bg_alpha_color.clone(),
-                if should_draw_border { Some(border_alpha_color.clone()) } else { None },
-                scale_factor,
-                scroll_transform,
-            );
-            return; // Skip the regular rectangle drawing since we drew rounded shapes
-        }
+        let border = style.get_border();
+
+        // Calculate border radius in pixels from the Stylo computed values
+        let font = style.get_font();
+        let font_size = font.font_size.computed_size().px();
+
+        // TODO
+        /*decorations::render_rounded_element(
+            painter,
+            content_rect,
+            &border,
+            bg_color.clone(),
+            if should_draw_border { Some(border_alpha_color.clone()) } else { None },
+            scale_factor,
+            scroll_transform,
+        );*/
+
 
         // Draw background (only if no rounded corners)
         let rect = kurbo::Rect::new(
@@ -326,10 +297,10 @@ impl HtmlRenderer {
             content_rect.right as f64,
             content_rect.bottom as f64,
         );
-        painter.fill(peniko::Fill::NonZero, scroll_transform, bg_alpha_color, None, &rect);
+        painter.fill(peniko::Fill::NonZero, scroll_transform, bg_color, None, &rect);
 
         // Render background image if specified
-        background::render_background_image(painter, &content_rect, styles, style, scale_factor, &self.background_image_cache, scroll_transform);
+        background::render_background_image(painter, &content_rect, style, scale_factor, &self.background_image_cache, scroll_transform);
 
         if should_draw_border {
             let border_stroke = kurbo::Stroke::new(border_paint.stroke_width() as f64);
