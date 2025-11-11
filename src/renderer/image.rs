@@ -1,4 +1,4 @@
-use crate::dom::{DomNode, ImageData};
+use crate::dom::{Dom, DomNode, ImageData};
 use crate::dom::ImageLoadingState;
 use crate::layout::LayoutBox;
 use crate::renderer::text::TextPainter;
@@ -13,7 +13,7 @@ use crate::dom::node::CachedImage;
 use crate::renderer::background::{to_image_quality, to_peniko_image};
 
 /// Render image content
-pub fn render_image_node(painter: &mut TextPainter, node: &DomNode, layout_box: &LayoutBox, image_data: &RefCell<ImageData>, style: &Arc<StyloComputedValues>, scale_factor: f32, font: &Font, scroll_transform: kurbo::Affine) {
+pub fn render_image_node(painter: &mut TextPainter, node: &DomNode, dom: &Dom, layout_box: &LayoutBox, image_data: &RefCell<ImageData>, style: &Arc<StyloComputedValues>, scale_factor: f32, scroll_transform: kurbo::Affine) {
     let image_data = image_data.borrow();
     let content_rect = layout_box.dimensions.content;
 
@@ -43,11 +43,11 @@ pub fn render_image_node(painter: &mut TextPainter, node: &DomNode, layout_box: 
         },
         ImageLoadingState::Loading => {
             // Show loading placeholder
-            render_image_placeholder(painter, &content_rect, "Loading...", scale_factor, font, scroll_transform);
+            render_image_placeholder(painter, dom, &content_rect, "Loading...", scale_factor, scroll_transform);
         },
         ImageLoadingState::Failed(error) => {
             // Show error placeholder
-            render_image_placeholder(painter, &content_rect, &format!("Error: {}", error), scale_factor, font, scroll_transform);
+            render_image_placeholder(painter, dom, &content_rect, &format!("Error: {}", error), scale_factor, scroll_transform);
         },
         ImageLoadingState::NotLoaded => {
             // Show placeholder with alt text or src
@@ -56,13 +56,13 @@ pub fn render_image_node(painter: &mut TextPainter, node: &DomNode, layout_box: 
             } else {
                 &image_data.src
             };
-            render_image_placeholder(painter, &content_rect, placeholder_text, scale_factor, font, scroll_transform);
+            render_image_placeholder(painter, dom, &content_rect, placeholder_text, scale_factor, scroll_transform);
         }
     }
 }
 
 /// Render a placeholder for images (when not loaded, loading, or failed)
-pub fn render_image_placeholder(painter: &mut TextPainter, rect: &Rect, text: &str, scale_factor: f32, font: &Font, scroll_transform: kurbo::Affine) {
+pub fn render_image_placeholder(painter: &mut TextPainter, dom: &Dom, rect: &Rect, text: &str, scale_factor: f32, scroll_transform: kurbo::Affine) {
     // Convert to kurbo::Rect
     let kurbo_rect = kurbo::Rect::new(
         rect.left as f64,
@@ -105,7 +105,8 @@ pub fn render_image_placeholder(painter: &mut TextPainter, rect: &Rect, text: &s
             text.to_string()
         };
 
-        if let Some(text_blob) = TextBlob::new(&display_text, font) {
+        // todo render placeholder text
+        /*if let Some(text_blob) = TextBlob::new(&display_text, font) {
             let text_bounds = text_blob.bounds();
 
             // Center the text in the placeholder
@@ -114,7 +115,7 @@ pub fn render_image_placeholder(painter: &mut TextPainter, rect: &Rect, text: &s
 
             // Use inner canvas for text blob drawing (not yet abstracted in TextPainter)
             painter.inner.draw_text_blob(&text_blob, (text_x, text_y), &text_paint);
-        }
+        }*/
     }
 
     // Draw a simple "broken image" icon if there's space

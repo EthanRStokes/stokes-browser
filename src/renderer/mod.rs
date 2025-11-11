@@ -1,5 +1,4 @@
 // HTML renderer module - organized into logical components
-mod font;
 mod paint;
 pub(crate) mod text;
 mod image;
@@ -8,44 +7,29 @@ mod decorations;
 mod pseudo;
 mod cache;
 
-use color::AlphaColor;
-use crate::css::transition_manager::TransitionManager;
-use crate::css::ComputedValues;
 use crate::dom::{Dom, DomNode, ElementData, NodeData};
 use crate::layout::LayoutBox;
 use crate::renderer::background::BackgroundImageCache;
-use crate::renderer::font::FontManager;
 use crate::renderer::paint::DefaultPaints;
-use skia_safe::{Canvas, Color, Font, Paint, Rect};
+use crate::renderer::text::{TextPainter, ToColorColor};
+use skia_safe::Rect;
 use style::properties::generated::ComputedValues as StyloComputedValues;
-use style::properties::generated::style_structs::Font as StyloFont;
 use style::properties::longhands;
 use style::servo_arc::Arc;
 use style::values::computed::ZIndex;
-use crate::renderer::text::{TextPainter, ToColorColor};
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer {
-    default_font: Font,
-    heading_font: Font,
     paints: DefaultPaints,
-    font_manager: FontManager,
     background_image_cache: BackgroundImageCache,
 }
 
 impl HtmlRenderer {
     pub fn new() -> Self {
-        let font_manager = FontManager::new();
         let paints = DefaultPaints::new();
 
-        let default_font = Font::new(font_manager.placeholder_typeface.clone(), 14.0);
-        let heading_font = Font::new(font_manager.placeholder_typeface.clone(), 18.0);
-
         Self {
-            default_font,
-            heading_font,
             paints,
-            font_manager,
             background_image_cache: BackgroundImageCache::new(),
         }
     }
@@ -57,7 +41,6 @@ impl HtmlRenderer {
         node: &DomNode,
         dom: &Dom,
         layout_box: &LayoutBox,
-        transition_manager: Option<&TransitionManager>,
         scroll_x: f32,
         scroll_y: f32,
         scale_factor: f32,
@@ -74,7 +57,7 @@ impl HtmlRenderer {
         );
 
         // Render the layout tree with styles, scale factor, and viewport culling
-        self.render_box(painter, &node, dom, layout_box, transition_manager, scale_factor, &viewport_rect, scroll_transform);
+        self.render_box(painter, &node, dom, layout_box, scale_factor, &viewport_rect, scroll_transform);
     }
 
     /// Render a single layout box with CSS styles, transitions, and scale factor
@@ -84,7 +67,6 @@ impl HtmlRenderer {
         node: &DomNode,
         dom: &Dom,
         layout_box: &LayoutBox,
-        transition_manager: Option<&TransitionManager>,
         scale_factor: f32,
         viewport_rect: &Rect,
         scroll_transform: kurbo::Affine,
@@ -131,8 +113,7 @@ impl HtmlRenderer {
                     }
                 },
                 NodeData::Image(image_data) => {
-                    let placeholder_font = self.font_manager.placeholder_font_for_size(12.0 * scale_factor as f32);
-                    image::render_image_node(painter, node, layout_box, image_data, &style, scale_factor, &placeholder_font, scroll_transform);
+                    image::render_image_node(painter, node, dom, layout_box, image_data, &style, scale_factor, scroll_transform);
                 },
                 NodeData::Document => {
                     // Just render children for document
@@ -174,7 +155,7 @@ impl HtmlRenderer {
 
             // Render children in z-index order
             for (child_node, child, _) in children_with_z {
-                self.render_box(painter, &*child_node, dom, child, transition_manager, scale_factor, viewport_rect, scroll_transform);
+                self.render_box(painter, &*child_node, dom, child, scale_factor, viewport_rect, scroll_transform);
             }
         }
     }

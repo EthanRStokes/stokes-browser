@@ -1,5 +1,3 @@
-use super::font::FontManager;
-use crate::css::ComputedValues;
 use crate::dom::{AttributeMap, Dom, ElementData};
 use crate::renderer::text::{TextPainter, ToColorColor};
 // Pseudo-element rendering (::before, ::after)

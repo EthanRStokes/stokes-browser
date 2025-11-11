@@ -1,25 +1,24 @@
-use std::cell::RefCell;
-use html5ever::tendril::StrTendril;
-use super::font::FontManager;
+use crate::dom::{Dom, DomNode};
 use crate::layout::LayoutBox;
-// Text rendering functionality
-use skia_safe::{BlurStyle, Canvas, Color, ColorSpace, Font, FontArguments, FontHinting, FontMgr, GlyphId, MaskFilter, Paint, PaintCap, PaintJoin, PaintStyle, Point, RRect, Rect, Shader, TextBlob, Typeface};
-use skia_safe::canvas::{GlyphPositions, SaveLayerRec, SrcRectConstraint};
+use crate::renderer::cache::{FontCacheKey, FontCacheKeyBorrowed, GenerationalCache, NormalizedTypefaceCacheKey, NormalizedTypefaceCacheKeyBorrowed};
+use color::{AlphaColor, Srgb};
+use html5ever::tendril::StrTendril;
+use kurbo::{Affine, Stroke};
+use parley::{Alignment, AlignmentOptions, FontWeight, GenericFamily, LineHeight, PositionedLayoutItem, StyleProperty};
+use peniko::{Fill, ImageBrushRef};
+use skia_safe::canvas::{GlyphPositions, SaveLayerRec};
 use skia_safe::font::Edging;
 use skia_safe::font_arguments::variation_position::Coordinate;
 use skia_safe::font_arguments::VariationPosition;
-use crate::dom::{Dom, DomNode};
-use crate::renderer::cache::{FontCacheKey, FontCacheKeyBorrowed, GenerationalCache, NormalizedTypefaceCacheKey, NormalizedTypefaceCacheKeyBorrowed};
-use parley::{Alignment, AlignmentOptions, FontWeight, GenericFamily, LineHeight, PositionedLayoutItem, StyleProperty};
-use color::{AlphaColor, Srgb};
-use kurbo::{Affine, Stroke};
-use peniko::{Fill, ImageBrushRef};
+// Text rendering functionality
+use skia_safe::{BlurStyle, Canvas, Color, ColorSpace, Font, FontArguments, FontHinting, FontMgr, GlyphId, MaskFilter, Paint, PaintCap, PaintJoin, PaintStyle, Point, RRect, Rect, Shader, Typeface};
+use std::cell::RefCell;
 use style::color::AbsoluteColor;
 use style::properties::ComputedValues;
 use style::servo_arc::Arc;
 use style::values::computed::font::{GenericFontFamily, SingleFontFamily};
 use style::values::specified::text::TextTransformCase;
-use style::values::specified::{TextAlign, TextAlignKeyword, TextDecorationLine};
+use style::values::specified::{TextAlignKeyword, TextDecorationLine};
 
 /// Render text with CSS styles applied and DPI scale factor using Skia's textlayout
 pub fn render_text_node(
@@ -813,11 +812,13 @@ fn lerp_f32(a: f32, b: f32, t: f32) -> f32 {
 
 mod sk_peniko {
     use peniko::color::{AlphaColor, ColorSpaceTag, HueDirection, Srgb};
+    use peniko::{color::DynamicColor, Fill};
     use peniko::{
         BlendMode, Compose, Extend, Gradient, GradientKind, ImageAlphaType, ImageBrush, ImageData,
         ImageFormat, Mix,
     };
-    use peniko::{Fill, color::DynamicColor};
+    use skia_safe::gradient_shader::interpolation::ColorSpace as SkGradientShaderColorSpace;
+    use skia_safe::gradient_shader::interpolation::HueMethod as SkGradientShaderHueMethod;
     use skia_safe::AlphaType as SkAlphaType;
     use skia_safe::BlendMode as SkBlendMode;
     use skia_safe::Color4f as SkColor4f;
@@ -828,8 +829,6 @@ mod sk_peniko {
     use skia_safe::SamplingOptions as SkSamplingOptions;
     use skia_safe::Shader as SkShader;
     use skia_safe::TileMode as SkTileMode;
-    use skia_safe::gradient_shader::interpolation::ColorSpace as SkGradientShaderColorSpace;
-    use skia_safe::gradient_shader::interpolation::HueMethod as SkGradientShaderHueMethod;
 
     pub(super) fn shader_from_image_brush(
         image_brush: ImageBrush<&ImageData>,
@@ -1114,12 +1113,12 @@ mod sk_peniko {
 mod sk_kurbo {
     use kurbo::{Affine, PathEl, Point};
     use kurbo::{Rect, RoundedRect, Shape};
-    use skia_safe::M44 as SkM44;
     use skia_safe::Matrix as SkMatrix;
     use skia_safe::Path as SkPath;
     use skia_safe::Point as SkPoint;
     use skia_safe::RRect as SkRRect;
     use skia_safe::Rect as SkRect;
+    use skia_safe::M44 as SkM44;
 
     pub(super) fn rect_from(rect: Rect) -> SkRect {
         SkRect::new(

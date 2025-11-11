@@ -16,7 +16,6 @@ use selectors::matching::{ElementSelectorFlags, QuirksMode};
 use skia_safe::FontMgr;
 use skia_safe::wrapper::PointerWrapper;
 use slab::Slab;
-use crate::css::ComputedValues;
 use style::data::ElementData as StyleElementData;
 use style::properties::{parse_style_attribute, PropertyDeclarationBlock};
 use style::servo_arc::{Arc as ServoArc, Arc};
@@ -533,7 +532,6 @@ pub struct DomNode {
     pub element_state: ElementState,
 
     // layout data:
-    pub style: ComputedValues,
     pub taffy_style: Style<Atom>,
 
     pub has_snapshot: bool,
@@ -576,7 +574,6 @@ impl DomNode {
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
             lock,
             element_state: ElementState::empty(),
-            style: ComputedValues::default(),
             taffy_style: Default::default(),
             has_snapshot: false,
             event_listeners: EventListenerRegistry::new(),

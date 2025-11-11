@@ -485,9 +485,10 @@ pub fn update_cursor_for_position(
         if y > chrome_height {
             // Mouse is over page content, check CSS cursor property
             let content_y = (y - chrome_height) as f32;
-            let css_cursor = active_engine.get_cursor_at_position(x as f32, content_y);
+            /*let css_cursor = active_engine.get_cursor_at_position(x as f32, content_y);
             let winit_cursor = css_cursor.to_winit_cursor();
-            window.set_cursor(winit_cursor);
+            window.set_cursor(winit_cursor); TODO
+             */
         } else {
             // Mouse is over chrome area but not an interactive element
             window.set_cursor(winit::window::CursorIcon::Default);

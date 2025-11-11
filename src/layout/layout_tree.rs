@@ -1,6 +1,5 @@
 // Layout tree implementation
 use super::box_model::{Dimensions, EdgeSizes, ToEdgeSizes};
-use crate::css::ComputedValues;
 use crate::dom::ImageData;
 use skia_safe::Rect;
 use std::cell::RefCell;
@@ -926,17 +925,6 @@ impl LayoutBox {
             result.extend(child.get_all_boxes());
         }
         result
-    }
-
-    /// Apply CSS styles to this layout box
-    pub fn apply_styles(&mut self, style: ComputedValues) {
-        // Apply margin, padding, and border from computed styles
-        self.dimensions.margin = style.margin.clone();
-        self.dimensions.padding = style.padding.clone();
-        self.dimensions.border = style.border.clone();
-
-        // Note: Other style properties like colors, fonts are handled in the renderer
-        // Scale factor will be applied during layout phase
     }
 
     fn convert_size(&self, length: &Size, default_width: f32, container_width: f32, scale_factor: f32) -> CSSFloat {

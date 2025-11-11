@@ -4,21 +4,19 @@ mod layout_tree;
 
 pub use self::layout_tree::*;
 
-use crate::css::{ComputedValues, StyleResolver, Stylesheet};
-use crate::dom::{DomNode, NodeData};
+use crate::dom::{Dom, DomNode, NodeData};
 use slab::Slab;
 use std::cell::RefCell;
 use std::ops::Deref;
-
-// Add taffy imports
-use taffy::prelude::*;
+use style::properties::longhands;
+use style::shared_lock::StylesheetGuards;
+use style::values::computed::{Au, Size};
 
 /// Layout engine responsible for computing element positions and sizes
 pub struct LayoutEngine {
     viewport_width: f32,
     viewport_height: f32,
     next_node_id: usize,
-    style_resolver: StyleResolver,
 }
 
 impl LayoutEngine {
@@ -27,20 +25,19 @@ impl LayoutEngine {
             viewport_width,
             viewport_height,
             next_node_id: 0,
-            style_resolver: StyleResolver::new(),
         }
     }
 
     /// Compute layout for a DOM tree
-    pub fn compute_layout(&mut self, root: &mut DomNode, scale_factor: f32) -> LayoutBox {
+    pub fn compute_layout(&mut self, dom: &mut Dom, scale_factor: f32) -> LayoutBox {
         self.next_node_id = 0;
 
         // First pass: compute styles for all nodes
-        let root_cell = RefCell::new(root);
-        self.compute_styles_recursive(&root_cell, None);
+        self.compute_styles_recursive(dom);
         self.next_node_id = 0; // Reset for layout tree building
 
         // Second pass: build layout tree from DOM with styles applied
+        let root_cell = RefCell::new(dom.root_node_mut());
         let mut layout_root = self.build_layout_tree(root_cell);
 
         // Reserve space for browser UI at the top (address bar, tabs, etc.)
@@ -85,45 +82,93 @@ impl LayoutEngine {
         };
 
         // Apply CSS styles if available
-        let computed_styles = &borrowed.style;
         let position = stylo.get_position();
 
+        let width = &position.width;
+        let height = &position.height;
 
-        // Apply width and height constraints
-        if let Some(width) = &computed_styles.width {
-            let parent_width = self.viewport_width; // Simplified parent width
-            let computed_width = width.to_px(computed_styles.font_size, parent_width);
-            layout_box.dimensions.content.right = layout_box.dimensions.content.left + computed_width;
+        match width {
+            Size::LengthPercentage(percent) => {
+                let parent_width = self.viewport_width; // Simplified parent width
+                let computed_width = percent.0.to_pixel_length(Au(parent_width as i32)).px();
+                layout_box.dimensions.content.right = layout_box.dimensions.content.left + computed_width;
+            }
+            Size::Auto => {}
+            Size::MaxContent => {}
+            Size::MinContent => {}
+            Size::FitContent => {}
+            Size::WebkitFillAvailable => {
+                let parent_width = self.viewport_width; // Simplified parent width
+                layout_box.dimensions.content.right = layout_box.dimensions.content.left + parent_width;
+            }
+            Size::Stretch => {
+                let parent_width = self.viewport_width; // Simplified parent width
+                layout_box.dimensions.content.right = layout_box.dimensions.content.left + parent_width;
+            }
+            Size::FitContentFunction(percent) => {
+                let parent_width = self.viewport_width; // Simplified parent width
+                let computed_width = percent.0.to_pixel_length(Au(parent_width as i32)).px();
+                layout_box.dimensions.content.right = layout_box.dimensions.content.left + computed_width;
+            }
+            Size::AnchorSizeFunction(anchor) => {}
+            Size::AnchorContainingCalcFunction(anchor) => {}
         }
 
-        if let Some(height) = &computed_styles.height {
-            let parent_height = self.viewport_height; // Simplified parent height
-            let computed_height = height.to_px(computed_styles.font_size, parent_height);
-            layout_box.dimensions.content.bottom = layout_box.dimensions.content.top + computed_height;
+        match height {
+            Size::LengthPercentage(percent) => {
+                let parent_height = self.viewport_height; // Simplified parent height
+                let computed_height = percent.0.to_pixel_length(Au(parent_height as i32)).px();
+                layout_box.dimensions.content.bottom = layout_box.dimensions.content.top + computed_height;
+            }
+            Size::Auto => {}
+            Size::MaxContent => {}
+            Size::MinContent => {}
+            Size::FitContent => {}
+            Size::WebkitFillAvailable => {
+                let parent_height = self.viewport_height; // Simplified parent height
+                layout_box.dimensions.content.bottom = layout_box.dimensions.content.top + parent_height;
+            }
+            Size::Stretch => {
+                let parent_height = self.viewport_height; // Simplified parent height
+                layout_box.dimensions.content.bottom = layout_box.dimensions.content.top + parent_height;
+            }
+            Size::FitContentFunction(percent) => {
+                let parent_height = self.viewport_height; // Simplified parent height
+                let computed_height = percent.0.to_pixel_length(Au(parent_height as i32)).px();
+                layout_box.dimensions.content.bottom = layout_box.dimensions.content.top + computed_height;
+            }
+            Size::AnchorSizeFunction(anchor) => {}
+            Size::AnchorContainingCalcFunction(anchor) => {}
         }
 
         // Override box type based on display property
-        match computed_styles.display {
-            crate::css::computed::DisplayType::Block => {
-                // TODO: reconsider this
-                // layout_box.box_type = BoxType::Block;
-            },
-            crate::css::computed::DisplayType::Inline => {
+        let style_box = stylo.get_box();
+        match &style_box.display {
+            &longhands::display::computed_value::T::Block => {
+                layout_box.box_type = BoxType::Block;
+            }
+            &longhands::display::computed_value::T::Inline => {
                 layout_box.box_type = BoxType::Inline;
-            },
-            crate::css::computed::DisplayType::InlineBlock => {
+            }
+            &longhands::display::computed_value::T::InlineBlock => {
                 layout_box.box_type = BoxType::InlineBlock;
-            },
-            crate::css::computed::DisplayType::Flex => {
+            }
+            &longhands::display::computed_value::T::Flex => {
                 // Flex containers behave like block containers but layout children horizontally
                 // Keep the box_type as is, the display_type will control layout
-            },
-            crate::css::computed::DisplayType::None => {
+            }
+            //&longhands::display::computed_value::T::InlineFlex => {
+                //TODO layout_box.box_type = BoxType::InlineFlex;
+            //}
+            &longhands::display::computed_value::T::None => {
                 // Elements with display: none should not be rendered
                 // We'll handle this by creating an empty block that takes no space
                 layout_box.box_type = BoxType::Block;
                 layout_box.dimensions.content.right = layout_box.dimensions.content.left;
                 layout_box.dimensions.content.bottom = layout_box.dimensions.content.top;
+            }
+            _ => {
+                println!("Unknown display type for node id {}: {:?}", node_id, style_box.display);
             }
         }
 
@@ -175,54 +220,20 @@ impl LayoutEngine {
         self.viewport_height = height;
     }
 
-    /// Add a stylesheet to the style resolver
-    #[inline]
-    pub fn add_stylesheet(&mut self, stylesheet: Stylesheet) {
-        self.style_resolver.add_stylesheet(stylesheet);
-    }
-
     /// Recursively compute styles for DOM nodes
-    fn compute_styles_recursive(&self, node: &RefCell<&mut DomNode>, parent_styles: Option<&ComputedValues>) {
-        let computed_styles = {
-            let mut borrowed = node.borrow_mut();
-            // Compute styles for this node
-            let computed_styles = self.style_resolver.resolve_styles(borrowed.deref(), parent_styles);
-            borrowed.style = computed_styles.clone();
-            computed_styles
+    fn compute_styles_recursive(&self, dom: &mut Dom) {
+        let lock = &dom.lock;
+        let author = lock.read();
+        let ua_or_user = lock.read();
+        let guards = StylesheetGuards {
+            author: &author,
+            ua_or_user: &ua_or_user,
         };
 
-        // Collect children IDs first
-        let children_ids: Vec<usize> = {
-            let borrowed = node.borrow();
-            borrowed.children.clone()
-        };
-
-        // Process children - must ensure borrow is dropped before recursive call
-        for child_id in children_ids {
-            // We need to get the tree pointer, drop the parent borrow, then access the child.
-            // This is safe because:
-            // 1) Each node in the slab is at a different memory location
-            // 2) We're not modifying the parent during the child's recursion
-            // 3) The tree pointer remains valid for the lifetime of this operation
-            let tree_ptr = {
-                let borrowed = node.borrow();
-                // Get the raw pointer to the tree from the immutable reference
-                // The tree is internally stored as a raw pointer in DomNode
-                borrowed.tree() as *const Slab<DomNode>
-            }; // parent borrow is dropped here
-
-            // SAFETY: We know that:
-            // - The tree pointer is valid (it comes from a valid DomNode)
-            // - We're accessing a different entry in the slab (child_id != parent id)
-            // - No other code can invalidate the slab during this operation
-            // - The tree is fundamentally stored as a raw *mut pointer in DomNode
-            // - We immediately wrap it in a RefCell for borrowing tracking
-            let child = unsafe {
-                let tree_mut_ptr = tree_ptr as *mut Slab<DomNode>;
-                (*tree_mut_ptr).get_mut(child_id).unwrap()
-            };
-            let child_cell = RefCell::new(child);
-            self.compute_styles_recursive(&child_cell, Some(&computed_styles));
+        // Flush the stylist with all loaded stylesheets
+        {
+            let root = &dom.nodes[0];
+            dom.stylist.flush(&guards, Some(root), Some(&dom.snapshots));
         }
     }
 }

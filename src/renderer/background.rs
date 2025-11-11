@@ -1,4 +1,3 @@
-use crate::css::{BackgroundImage, ComputedValues};
 use crate::dom::node::RasterImageData;
 use crate::renderer::text::TextPainter;
 use kurbo::Affine;

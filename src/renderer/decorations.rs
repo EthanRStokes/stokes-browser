@@ -1,4 +1,3 @@
-use crate::css::Stroke;
 use crate::renderer::text::{TextPainter, ToColorColor};
 use color::{AlphaColor, Srgb};
 use kurbo::BezPath;
@@ -338,7 +337,7 @@ fn point_on_rect_perimeter(rect: &Rect, t: f32) -> (f32, f32) {
     }
 }
 
-/// Render stroke for an element (similar to SVG stroke)
+/*/// Render stroke for an element (similar to SVG stroke)
 pub fn render_stroke(
     painter: &mut TextPainter,
     rect: &Rect,
@@ -383,3 +382,4 @@ pub fn render_stroke(
     let kurbo_stroke = kurbo::Stroke::new(scaled_stroke_width as f64);
     painter.stroke(&kurbo_stroke, scroll_transform, stroke_alpha_color, None, &kurbo_rect);
 }
+*/

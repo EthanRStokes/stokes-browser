@@ -2,8 +2,6 @@
 mod config;
 
 pub use self::config::EngineConfig;
-use crate::css::transition_manager::TransitionManager;
-use crate::css::{ComputedValues, CssParser};
 use crate::dom::{Dom, DomNode, ImageData, ImageLoadingState, NodeData};
 use crate::dom::{EventDispatcher, EventType};
 use crate::js::JsRuntime;
@@ -43,17 +41,12 @@ pub struct Engine {
     layout_engine: LayoutEngine,
     // Add cached renderer and style map
     renderer: HtmlRenderer,
-    cached_style_map: HashMap<usize, ComputedValues>,
     style_map_dirty: bool,
     scroll_y: f32,
     scroll_x: f32,
     content_height: f32,
     content_width: f32,
     pub(crate) viewport: Viewport,
-    // Add transition manager for CSS animations
-    transition_manager: TransitionManager,
-    // Store previous style map to detect changes for transitions
-    previous_style_map: HashMap<usize, ComputedValues>,
     // JavaScript runtime
     js_runtime: Option<JsRuntime>,
     // Navigation history
@@ -73,15 +66,12 @@ impl Engine {
             layout: None,
             layout_engine: LayoutEngine::new(800.0, 600.0), // Default viewport size
             renderer: HtmlRenderer::new(),
-            cached_style_map: HashMap::new(),
             style_map_dirty: false,
             scroll_y: 0.0,
             scroll_x: 0.0,
             content_height: 0.0,
             content_width: 0.0,
             viewport,
-            transition_manager: TransitionManager::new(),
-            previous_style_map: HashMap::new(),
             js_runtime: None,
             history: Vec::new(),
             history_index: None,
@@ -365,8 +355,7 @@ impl Engine {
 
         let dom = self.dom.as_mut().unwrap();
 
-        let root = dom.root_node_mut();
-        self.layout = Some(self.layout_engine.compute_layout(root, self.viewport.hidpi_scale));
+        self.layout = Some(self.layout_engine.compute_layout(dom, self.viewport.hidpi_scale));
 
         self.style_map_dirty = true;
 
@@ -418,22 +407,12 @@ impl Engine {
         let node = dom.root_node();
 
         if let Some(layout) = &self.layout {
-            // Clean up completed transitions
-            self.transition_manager.cleanup_completed_transitions();
-
-            // Use the renderer with transition support
-            let transition_manager_ref = if self.transition_manager.has_active_transitions() {
-                Some(&self.transition_manager)
-            } else {
-                None
-            };
 
             self.renderer.render(
                 painter,
                 node,
                 dom,
                 layout,
-                transition_manager_ref,
                 self.scroll_x,
                 self.scroll_y,
                 scale_factor
@@ -443,10 +422,7 @@ impl Engine {
 
     /// Add a CSS stylesheet to the engine
     pub fn add_stylesheet(&mut self, css_content: &str) {
-        let parser = CssParser::new();
-        let stylesheet = parser.parse(css_content);
         self.dom_mut().add_stylesheet(css_content);
-        self.layout_engine.add_stylesheet(stylesheet);
     }
 
     /// Add a CSS stylesheet from a URL
@@ -671,7 +647,7 @@ impl Engine {
         (max_width, max_height)
     }
 
-    /// Get the cursor style for the element at the given position
+    /*TODO /// Get the cursor style for the element at the given position
     pub fn get_cursor_at_position(&self, x: f32, y: f32) -> crate::css::Cursor {
         // Adjust position for scroll offset
         let adjusted_x = x + self.scroll_x;
@@ -689,7 +665,7 @@ impl Engine {
 
         // Default cursor
         crate::css::Cursor::Auto
-    }
+    }*/
 
     /// Recursively find the element at the given position (returns the deepest/topmost element)
     fn find_element_at_position(&self, layout_box: &LayoutBox, x: f32, y: f32) -> Option<usize> {
@@ -711,11 +687,6 @@ impl Engine {
         }
 
         None
-    }
-
-    /// Check if there are active transitions that require continuous rendering
-    pub fn has_active_transitions(&self) -> bool {
-        self.transition_manager.has_active_transitions()
     }
 
     /// Initialize JavaScript runtime for the current document
