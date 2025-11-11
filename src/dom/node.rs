@@ -6,6 +6,7 @@ use std::{fmt, ptr};
 use std::io::Cursor;
 use std::ops::{Deref, DerefMut};
 use std::rc::{Rc, Weak};
+use std::sync::atomic::AtomicBool;
 use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut};
 use bitflags::bitflags;
 use html5ever::{LocalName, QualName};
@@ -535,6 +536,7 @@ pub struct DomNode {
     pub taffy_style: Style<Atom>,
 
     pub has_snapshot: bool,
+    pub snapshot_handled: AtomicBool,
 
     /// Event listener registry
     pub event_listeners: EventListenerRegistry,
@@ -576,6 +578,7 @@ impl DomNode {
             element_state: ElementState::empty(),
             taffy_style: Default::default(),
             has_snapshot: false,
+            snapshot_handled: AtomicBool::new(false),
             event_listeners: EventListenerRegistry::new(),
             layout_invalidation_callback: None,
         }

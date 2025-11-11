@@ -8,9 +8,15 @@ use crate::dom::{Dom, DomNode, NodeData};
 use slab::Slab;
 use std::cell::RefCell;
 use std::ops::Deref;
+use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters, SharedStyleContext};
+use style::global_style_data::GLOBAL_STYLE_DATA;
 use style::properties::longhands;
 use style::shared_lock::StylesheetGuards;
+use style::traversal::DomTraversal;
+use style::traversal_flags::TraversalFlags;
 use style::values::computed::{Au, Size};
+use stylo_atoms::Atom;
+use crate::css::stylo::RecalcStyle;
 
 /// Layout engine responsible for computing element positions and sizes
 pub struct LayoutEngine {
@@ -235,5 +241,37 @@ impl LayoutEngine {
             let root = &dom.nodes[0];
             dom.stylist.flush(&guards, Some(root), Some(&dom.snapshots));
         }
+
+        struct Painters;
+        impl RegisteredSpeculativePainters for Painters {
+            fn get(&self, name: &Atom) -> Option<&dyn RegisteredSpeculativePainter> {
+                None
+            }
+        }
+
+        // Perform style traversal to compute styles for all elements
+        {
+            let context = SharedStyleContext {
+                stylist: &dom.stylist,
+                visited_styles_enabled: false,
+                options: GLOBAL_STYLE_DATA.options.clone(),
+                guards: guards,
+                current_time_for_animations: 0.0, // TODO animations
+                traversal_flags: TraversalFlags::empty(),
+                snapshot_map: &dom.snapshots,
+                animations: Default::default(),
+                registered_speculative_painters: &Painters,
+            };
+
+            let root = dom.root_element();
+            let token = RecalcStyle::pre_traverse(root, &context);
+
+            if token.should_traverse() {
+                let traverser = RecalcStyle::new(context);
+                style::driver::traverse_dom(&traverser, token, None);
+            }
+        }
+        drop(author);
+        drop(ua_or_user);
     }
 }

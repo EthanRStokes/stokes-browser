@@ -4,6 +4,7 @@
 
 use std::hash::{Hash, Hasher};
 use std::ptr::NonNull;
+use std::sync::atomic::Ordering;
 use atomic_refcell::{AtomicRef, AtomicRefMut};
 use boa_engine::ast::expression::Identifier;
 use markup5ever::{local_name, LocalName, LocalNameStaticSet, Namespace, NamespaceStaticSet};
@@ -500,11 +501,11 @@ impl<'a> TElement for Node<'a> {
     }
 
     fn handled_snapshot(&self) -> bool {
-        todo!()
+        self.snapshot_handled.load(Ordering::SeqCst)
     }
 
     unsafe fn set_handled_snapshot(&self) {
-        todo!()
+        self.snapshot_handled.store(true, Ordering::SeqCst)
     }
 
     unsafe fn set_dirty_descendants(&self) {}

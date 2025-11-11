@@ -369,7 +369,9 @@ impl Engine {
         self.layout_engine.set_viewport(width, height);
 
         // Recalculate layout with new viewport
+        style::thread_state::enter(ThreadState::LAYOUT);
         self.recalculate_layout();
+        style::thread_state::exit(ThreadState::LAYOUT);
     }
 
     /// Get the viewport size
