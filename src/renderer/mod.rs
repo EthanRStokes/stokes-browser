@@ -21,6 +21,7 @@ use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::properties::generated::style_structs::Font as StyloFont;
 use style::properties::longhands;
 use style::servo_arc::Arc;
+use style::values::computed::ZIndex;
 use crate::renderer::text::{TextPainter, ToColorColor};
 
 /// HTML renderer that draws layout boxes to a canvas
@@ -155,7 +156,15 @@ impl HtmlRenderer {
             let mut children_with_z: Vec<(&DomNode, &LayoutBox, i32)> = layout_box.children.iter()
                 .map(|child| {
                     let node = node.get_node(child.node_id);
-                    let z_index = node.style.z_index;
+                    let z_index = node.style_arc().get_position().z_index;
+                    let z_index = match z_index {
+                        ZIndex::Integer(i) => {
+                            i
+                        }
+                        ZIndex::Auto => {
+                            0
+                        }
+                    };
                     (node, child, z_index)
                 })
                 .collect();

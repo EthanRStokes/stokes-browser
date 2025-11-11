@@ -1,5 +1,5 @@
 // Layout tree implementation
-use super::box_model::{Dimensions, EdgeSizes};
+use super::box_model::{Dimensions, EdgeSizes, ToEdgeSizes};
 use crate::css::ComputedValues;
 use crate::dom::ImageData;
 use skia_safe::Rect;
@@ -122,18 +122,17 @@ pub struct LayoutBox {
     pub children: Vec<LayoutBox>,
     pub node_id: usize,
     pub content: Option<LayoutContent>, // custom data
-    pub style: ComputedValues,
     pub stylo: Arc<StyloComputedValues>,
 }
 
 impl LayoutBox {
-    pub fn new(box_type: BoxType, node_id: usize, style: ComputedValues, stylo: Arc<StyloComputedValues>) -> Self {
+    pub fn new(box_type: BoxType, node_id: usize, stylo: Arc<StyloComputedValues>) -> Self {
         let mut dimensions = Dimensions::new();
 
         // Apply margin and padding from computed styles
-        dimensions.margin = style.margin.clone();
-        dimensions.padding = style.padding.clone();
-        dimensions.border = style.border.clone();
+        dimensions.margin = stylo.get_margin().as_edge_sizes(0);
+        dimensions.padding = stylo.get_padding().as_edge_sizes(0);
+        dimensions.border = stylo.get_border().as_edge_sizes(0);
 
         Self {
             box_type,
@@ -141,7 +140,6 @@ impl LayoutBox {
             children: Vec::new(),
             node_id,
             content: None,
-            style,
             stylo,
         }
     }
@@ -697,17 +695,19 @@ impl LayoutBox {
         // For vertical flex containers, flex-basis would control height
         // For now, we support it but height property takes precedence in non-flex contexts
 
-        let mut height = if let Some(css_height) = &self.style.height {
-            // Use the CSS-specified height, converting to pixels and scaling
-            let specified_height = css_height.to_px(16.0, container_height) * scale_factor;
+        let position = self.stylo.get_position();
+
+        let mut height = if !position.height.is_auto() {
+            // Use the CSS-specified height from stylo
+            let specified_height = self.convert_size(&position.height, 0.0, container_height, scale_factor);
 
             // Apply box-sizing logic
-            match self.style.box_sizing {
-                crate::css::BoxSizing::ContentBox => {
+            match position.box_sizing {
+                longhands::box_sizing::SpecifiedValue::ContentBox => {
                     // Default behavior: height applies to content box only
                     specified_height
                 }
-                crate::css::BoxSizing::BorderBox => {
+                longhands::box_sizing::SpecifiedValue::BorderBox => {
                     // Height includes padding and border, so subtract them to get content height
                     specified_height
                         - self.dimensions.padding.top - self.dimensions.padding.bottom
@@ -724,11 +724,11 @@ impl LayoutBox {
         };
 
         // Apply max-height constraint if specified
-        if let Some(css_max_height) = &self.style.max_height {
-            let max_height = css_max_height.to_px(16.0, container_height) * scale_factor;
-            let max_height_content = match self.style.box_sizing {
-                crate::css::BoxSizing::ContentBox => max_height,
-                crate::css::BoxSizing::BorderBox => {
+        let max_height = self.convert_max_size(&position.max_height, container_height, scale_factor);
+        if max_height < f32::INFINITY {
+            let max_height_content = match position.box_sizing {
+                longhands::box_sizing::SpecifiedValue::ContentBox => max_height,
+                longhands::box_sizing::SpecifiedValue::BorderBox => {
                     max_height
                         - self.dimensions.padding.top - self.dimensions.padding.bottom
                         - self.dimensions.border.top - self.dimensions.border.bottom
@@ -738,11 +738,11 @@ impl LayoutBox {
         }
 
         // Apply min-height constraint if specified
-        if let Some(css_min_height) = &self.style.min_height {
-            let min_height = css_min_height.to_px(16.0, container_height) * scale_factor;
-            let min_height_content = match self.style.box_sizing {
-                crate::css::BoxSizing::ContentBox => min_height,
-                crate::css::BoxSizing::BorderBox => {
+        let min_height = self.convert_size(&position.min_height, 0.0, container_height, scale_factor);
+        if min_height > 0.0 {
+            let min_height_content = match position.box_sizing {
+                longhands::box_sizing::SpecifiedValue::ContentBox => min_height,
+                longhands::box_sizing::SpecifiedValue::BorderBox => {
                     min_height
                         - self.dimensions.padding.top - self.dimensions.padding.bottom
                         - self.dimensions.border.top - self.dimensions.border.bottom
@@ -793,7 +793,8 @@ impl LayoutBox {
         self.dimensions.content = Rect::from_xywh(content_x, content_y, content_width, 0.0);
 
         // Calculate gap spacing (column-gap for horizontal flex layout)
-        let column_gap = self.style.gap.column.to_px(16.0, container_width) * scale_factor;
+        let position = self.stylo.get_position();
+        let column_gap = stylo_taffy::convert::gap(&position.column_gap).into_raw().value();
 
         // Calculate total gap space
         let total_gap = if self.children.len() > 1 {
@@ -809,31 +810,26 @@ impl LayoutBox {
         let mut flex_items: Vec<(f32, f32, f32)> = Vec::new(); // (base_size, flex_grow, flex_shrink)
 
         for child in &self.children {
+            let position = child.stylo.get_position();
             // Determine the flex base size according to flex-basis
-            let base_size = match &child.style.flex_basis {
-                crate::css::FlexBasis::Length(length) => {
-                    // Explicit length value (including 0px from "flex: 1")
-                    length.to_px(16.0, content_width) * scale_factor
-                }
-                crate::css::FlexBasis::Auto => {
-                    // If flex-basis is auto, use the item's main size (width) if specified
-                    if let Some(css_width) = &child.style.width {
-                        css_width.to_px(16.0, content_width) * scale_factor
-                    } else {
-                        // Use content size - for now, we'll use a minimum size
-                        // In a full implementation, this would calculate intrinsic content size
-                        // For flex items without width, use a small default that will grow
-                        50.0 * scale_factor // Minimum content size
-                    }
-                }
-                crate::css::FlexBasis::Content => {
+            let base_size = match &position.flex_basis {
+                FlexBasis::Content => {
                     // Content-based sizing - use intrinsic content size
-                    // For now, use a minimum default
-                    50.0 * scale_factor
+                    // For now, we'll use a minimum size
+                    // In a full implementation, this would calculate intrinsic content size
+                    // For flex items without width, use a small default that will grow
+                    50.0 * scale_factor // Minimum content size
+                }
+                FlexBasis::Size(size) => {
+                    // flex-basis with size takes precedence
+                    // If flex-basis is auto, fall back to the width property
+                    self.convert_size(size, available_width, container_width, scale_factor)
                 }
             };
+            let flex_grow = position.flex_grow.0;
+            let flex_shrink = position.flex_shrink.0;
 
-            flex_items.push((base_size, child.style.flex_grow.0, child.style.flex_shrink.0));
+            flex_items.push((base_size, flex_grow, flex_shrink));
         }
 
         // Step 2: Calculate total base size
@@ -938,9 +934,6 @@ impl LayoutBox {
         self.dimensions.margin = style.margin.clone();
         self.dimensions.padding = style.padding.clone();
         self.dimensions.border = style.border.clone();
-
-        // Store CSS
-        self.style = style;
 
         // Note: Other style properties like colors, fonts are handled in the renderer
         // Scale factor will be applied during layout phase

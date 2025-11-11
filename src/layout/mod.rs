@@ -60,33 +60,33 @@ impl LayoutEngine {
         let node_id = self.next_node_id;
         self.next_node_id += 1;
 
-        let style = borrowed.style.clone();
         let stylo = borrowed.style_arc();
         let mut layout_box = match &borrowed.data {
             NodeData::Document => {
-                LayoutBox::new(BoxType::Block, node_id, style, stylo)
+                LayoutBox::new(BoxType::Block, node_id, stylo.clone())
             },
             NodeData::Element(data) => {
                 let box_type = self.determine_box_type(&data.name.local);
-                LayoutBox::new(box_type, node_id, style, stylo)
+                LayoutBox::new(box_type, node_id, stylo.clone())
             },
             NodeData::Text { contents } => {
-                let mut text_box = LayoutBox::new(BoxType::Text, node_id, style, stylo);
+                let mut text_box = LayoutBox::new(BoxType::Text, node_id, stylo.clone());
                 text_box.content = Some(LayoutContent::Text { content: contents.borrow().to_string() });
                 text_box
             },
             NodeData::Image(data) => {
                 // TODO can i make this better?
-                LayoutBox::new(BoxType::Image(data.clone()), node_id, style, stylo)
+                LayoutBox::new(BoxType::Image(data.clone()), node_id, stylo.clone())
             },
             _ => {
                 // Skip other node types for now
-                LayoutBox::new(BoxType::Block, node_id, style, stylo)
+                LayoutBox::new(BoxType::Block, node_id, stylo.clone())
             }
         };
 
         // Apply CSS styles if available
         let computed_styles = &borrowed.style;
+        let position = stylo.get_position();
 
 
         // Apply width and height constraints

@@ -1,5 +1,10 @@
 // Box model implementation for CSS layout
 use skia_safe::Rect;
+use style::properties::style_structs::{Border, Margin, Padding};
+use style::values::computed::Au;
+use style::values::computed::length::Margin as MarginLength;
+use style::values::generics::length::GenericMargin;
+use style::values::generics::transform::ToAbsoluteLength;
 
 /// CSS box model dimensions
 #[derive(Debug, Clone, Default)]
@@ -80,5 +85,68 @@ impl EdgeSizes {
 
     pub fn new(top: f32, right: f32, bottom: f32, left: f32) -> Self {
         Self { top, right, bottom, left }
+    }
+}
+
+pub trait ToEdgeSizes {
+    fn as_edge_sizes(&self, content_width: i32) -> EdgeSizes;
+}
+
+impl ToEdgeSizes for Margin {
+    fn as_edge_sizes(&self, content_width: i32) -> EdgeSizes {
+        let top = &self.margin_top;
+        let right = &self.margin_right;
+        let bottom = &self.margin_bottom;
+        let left = &self.margin_left;
+
+        fn to_px(margin: &MarginLength, content_width: i32) -> f32 {
+            match margin {
+                MarginLength::LengthPercentage(length_percentage) => {
+                    // For simplicity, assume length_percentage is in pixels
+                    length_percentage.to_pixel_length(Au(content_width)).px()
+                }
+                MarginLength::Auto => 0.0, // Auto margins are treated as 0 for edge sizes
+                MarginLength::AnchorSizeFunction(anchor) => 0.0, // Placeholder
+                MarginLength::AnchorContainingCalcFunction(anchor) => 0.0, // Placeholder
+            }
+        }
+        EdgeSizes {
+            top: to_px(top, content_width),
+            right: to_px(right, content_width),
+            bottom: to_px(bottom, content_width),
+            left: to_px(left, content_width),
+        }
+    }
+}
+
+impl ToEdgeSizes for Padding {
+    fn as_edge_sizes(&self, content_width: i32) -> EdgeSizes {
+        let top = &self.padding_top.0.to_pixel_length(Au(content_width)).px();
+        let right = &self.padding_right.0.to_pixel_length(Au(content_width)).px();
+        let bottom = &self.padding_bottom.0.to_pixel_length(Au(content_width)).px();
+        let left = &self.padding_left.0.to_pixel_length(Au(content_width)).px();
+
+        EdgeSizes {
+            top: *top,
+            right: *right,
+            bottom: *bottom,
+            left: *left,
+        }
+    }
+}
+
+impl ToEdgeSizes for Border {
+    fn as_edge_sizes(&self, content_width: i32) -> EdgeSizes {
+        let top = self.border_top_width.0 as f32;
+        let right = self.border_right_width.0 as f32;
+        let bottom = self.border_bottom_width.0 as f32;
+        let left = self.border_left_width.0 as f32;
+
+        EdgeSizes {
+            top: top,
+            right: right,
+            bottom: bottom,
+            left: left,
+        }
     }
 }
