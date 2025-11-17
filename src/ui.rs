@@ -1018,16 +1018,10 @@ impl BrowserUI {
                                 1.0,
                                 transform,
                                 glyph_xform,
-                                glyph_run.glyphs().map(|glyph| {
-                                    let gx = run_x + glyph.x;
-                                    let gy = run_y - glyph.y;
-                                    run_x += glyph.advance;
-
-                                    anyrender::Glyph {
-                                        id: glyph.id as _,
-                                        x: gx,
-                                        y: gy,
-                                    }
+                                glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
+                                    id: glyph.id as _,
+                                    x: glyph.x,
+                                    y: glyph.y,
                                 })
                             );
                         }

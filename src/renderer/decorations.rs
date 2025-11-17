@@ -167,7 +167,7 @@ pub fn render_outline(
     }
 
     let offset = outline.outline_offset;
-    let outline_offset_px = offset.px();
+    let outline_offset_px = offset.to_f32_px();
     let scaled_outline_width = outline_width_px as f32 * scale_factor;
     let scaled_outline_offset = outline_offset_px * scale_factor;
 
