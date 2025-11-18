@@ -7,15 +7,17 @@ use skia_safe::{Color, FilterMode, Font, MipmapMode, Paint, Rect, SamplingOption
 use std::cell::RefCell;
 use color::AlphaColor;
 use kurbo::Affine;
+use style::properties::ComputedValues;
 use style::servo_arc::Arc;
 use style::properties::generated::ComputedValues as StyloComputedValues;
 use crate::dom::node::CachedImage;
 use crate::renderer::background::{to_image_quality, to_peniko_image};
 
 /// Render image content
-pub fn render_image_node(painter: &mut TextPainter, node: &DomNode, dom: &Dom, layout_box: &LayoutBox, image_data: &RefCell<ImageData>, style: &Arc<StyloComputedValues>, scale_factor: f32, scroll_transform: kurbo::Affine) {
-    let image_data = image_data.borrow();
-    let content_rect = layout_box.dimensions.content;
+pub fn render_image_node(painter: &mut TextPainter, node: &DomNode, dom: &Dom, image_data: &Box<ImageData>, style: &Arc<StyloComputedValues>, scale_factor: f32, scroll_transform: kurbo::Affine) {
+    let image_data = image_data;
+    let layout = node.final_layout;
+    let content_rect = Rect::from_xywh(layout.location.x, layout.location.y, layout.size.width, layout.size.height);
 
     // Early exit if content rect is too small
     if content_rect.width() < 1.0 || content_rect.height() < 1.0 {

@@ -1,6 +1,10 @@
 // Layout engine for computing element positions and sizes
 pub(crate) mod box_model;
 mod layout_tree;
+mod taffy;
+mod inline;
+pub(crate) mod table;
+mod replaced;
 
 pub use self::layout_tree::*;
 
@@ -8,6 +12,7 @@ use crate::dom::{Dom, DomNode, NodeData};
 use slab::Slab;
 use std::cell::RefCell;
 use std::ops::Deref;
+use ::taffy::{compute_root_layout, round_layout, AvailableSpace, Display, NodeId};
 use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters, SharedStyleContext};
 use style::global_style_data::GLOBAL_STYLE_DATA;
 use style::properties::longhands;
@@ -54,6 +59,13 @@ impl LayoutEngine {
         // Compute layout dimensions with scaled viewport
         layout_root.layout(self.viewport_width, available_height, 0.0, content_start_y, scale_factor);
 
+        let root_element_id = NodeId::from(dom.root_element().id);
+        compute_root_layout(dom, root_element_id, taffy::Size {
+            width: AvailableSpace::Definite(self.viewport_width),
+            height: AvailableSpace::Definite(available_height),
+        });
+        round_layout(dom, root_element_id);
+
         layout_root
     }
 
@@ -64,26 +76,23 @@ impl LayoutEngine {
         self.next_node_id += 1;
 
         let stylo = borrowed.style_arc();
+        let style = &borrowed.taffy_style;
         let mut layout_box = match &borrowed.data {
             NodeData::Document => {
-                LayoutBox::new(BoxType::Block, node_id, stylo.clone())
+                LayoutBox::new(BoxType::Block, node_id, style.clone())
             },
             NodeData::Element(data) => {
                 let box_type = self.determine_box_type(&data.name.local);
-                LayoutBox::new(box_type, node_id, stylo.clone())
+                LayoutBox::new(box_type, node_id, style.clone())
             },
             NodeData::Text { contents } => {
-                let mut text_box = LayoutBox::new(BoxType::Text, node_id, stylo.clone());
+                let mut text_box = LayoutBox::new(BoxType::Text, node_id, style.clone());
                 text_box.content = Some(LayoutContent::Text { content: contents.borrow().to_string() });
                 text_box
             },
-            NodeData::Image(data) => {
-                // TODO can i make this better?
-                LayoutBox::new(BoxType::Image(data.clone()), node_id, stylo.clone())
-            },
             _ => {
                 // Skip other node types for now
-                LayoutBox::new(BoxType::Block, node_id, stylo.clone())
+                LayoutBox::new(BoxType::Block, node_id, style.clone())
             }
         };
 
@@ -148,25 +157,16 @@ impl LayoutEngine {
         }
 
         // Override box type based on display property
-        let style_box = stylo.get_box();
-        match &style_box.display {
-            &longhands::display::computed_value::T::Block => {
+        match &style.display {
+            Display::Block => {
                 layout_box.box_type = BoxType::Block;
             }
-            &longhands::display::computed_value::T::Inline => {
+            Display::Grid => {
                 layout_box.box_type = BoxType::Inline;
             }
-            &longhands::display::computed_value::T::InlineBlock => {
-                layout_box.box_type = BoxType::InlineBlock;
+            Display::Flex => {
             }
-            &longhands::display::computed_value::T::Flex => {
-                // Flex containers behave like block containers but layout children horizontally
-                // Keep the box_type as is, the display_type will control layout
-            }
-            //&longhands::display::computed_value::T::InlineFlex => {
-                //TODO layout_box.box_type = BoxType::InlineFlex;
-            //}
-            &longhands::display::computed_value::T::None => {
+            Display::None => {
                 // Elements with display: none should not be rendered
                 // We'll handle this by creating an empty block that takes no space
                 layout_box.box_type = BoxType::Block;
@@ -174,7 +174,7 @@ impl LayoutEngine {
                 layout_box.dimensions.content.bottom = layout_box.dimensions.content.top;
             }
             _ => {
-                println!("Unknown display type for node id {}: {:?}", node_id, style_box.display);
+                println!("Unknown display type for node id {}: {:?}", node_id, style.display);
             }
         }
 

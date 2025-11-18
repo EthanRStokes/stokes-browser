@@ -5,6 +5,7 @@ use style::values::computed::Au;
 use style::values::computed::length::Margin as MarginLength;
 use style::values::generics::length::GenericMargin;
 use style::values::generics::transform::ToAbsoluteLength;
+use taffy::{LengthPercentage, LengthPercentageAuto};
 
 /// CSS box model dimensions
 #[derive(Debug, Clone, Default)]
@@ -147,6 +148,28 @@ impl ToEdgeSizes for Border {
             right: right,
             bottom: bottom,
             left: left,
+        }
+    }
+}
+
+impl ToEdgeSizes for taffy::Rect<LengthPercentageAuto> {
+    fn as_edge_sizes(&self, content_width: i32) -> EdgeSizes {
+        EdgeSizes {
+            top: self.top.into_raw().value(),
+            right: self.right.into_raw().value(),
+            bottom: self.bottom.into_raw().value(),
+            left: self.left.into_raw().value(),
+        }
+    }
+}
+
+impl ToEdgeSizes for taffy::Rect<LengthPercentage> {
+    fn as_edge_sizes(&self, content_width: i32) -> EdgeSizes {
+        EdgeSizes {
+            top: self.top.into_raw().value(),
+            right: self.right.into_raw().value(),
+            bottom: self.bottom.into_raw().value(),
+            left: self.left.into_raw().value(),
         }
     }
 }

@@ -31,7 +31,7 @@ parking_lot = "0.12"
 uds_windows = "1.1.0"
 rfd = "0.15"
 url = "2"
-taffy = "0.9.1"
+taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "fff4ea6e71e4f6ec29d0ea560a77545ad611470a" }
 slab = "0.4.11"
 markup5ever = "0.36.1"
 parley = "0.6.0"
@@ -47,6 +47,7 @@ hashbrown = "0.16.0"
 peniko = "0.5.0"
 anyrender = "0.6.2"
 color = "0.3.2"
+html-escape = "0.2.13"
 
 # Stylo
 stylo = "0.9.0"
@@ -59,7 +60,7 @@ selectors = "0.33.0"
 # Blitz
 blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "b8b88a5d" }
 blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "b8b88a5d" }
-stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "b8b88a5d" }
+stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "b8b88a5d", features = ["floats"] }
 
 [dependencies.winit]
 git = "https://github.com/Treetrain1/winit.git"

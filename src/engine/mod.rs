@@ -17,8 +17,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use futures::executor::block_on;
 use markup5ever::local_name;
+use selectors::Element;
 use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters, SharedStyleContext};
-use style::dom::TNode;
+use style::dom::{TDocument, TNode};
 use style::global_style_data::GLOBAL_STYLE_DATA;
 use style::shared_lock::StylesheetGuards;
 use style::thread_state::ThreadState;
@@ -26,7 +27,7 @@ use style::traversal::DomTraversal;
 use style::traversal_flags::TraversalFlags;
 use stylo_atoms::Atom;
 use crate::css::stylo::RecalcStyle;
-use crate::dom::node::{CachedImage, RasterImageData};
+use crate::dom::node::{CachedImage, RasterImageData, SpecialElementData};
 use crate::renderer::text::TextPainter;
 
 /// The core browser engine that coordinates all browser activities
@@ -143,23 +144,27 @@ impl Engine {
 
     /// Start loading all images found in the current DOM
     pub async fn start_image_loading(&mut self) {
-        let dom = self.dom();
+        let dom = self.dom_mut();
         // Find all image nodes
-        let image_nodes = dom.find_nodes(|node| matches!(node.data, NodeData::Image(_)));
+        let image_nodes = dom.find_node_ids(|node| node.data.element().is_some_and(|data| {
+            matches!(data.special_data, SpecialElementData::Image(_))
+        }));
 
         // Collect image sources that need to be loaded
-        let mut image_requests: Vec<(&DomNode, Rc<String>)> = Vec::new();
+        let mut image_requests: Vec<(usize, Rc<String>)> = Vec::new();
 
-        for image_node in &image_nodes {
-            if let NodeData::Image(ref image_data) = image_node.data {
-                let mut image_data = image_data.borrow_mut();
-                // Only start loading if not already loaded or loading
-                if matches!(image_data.loading_state, ImageLoadingState::NotLoaded) {
-                    // Set to loading state
-                    image_data.loading_state = ImageLoadingState::Loading;
+        for image_node in image_nodes {
+            let image_node = dom.get_node_mut(image_node).unwrap();
+            if let NodeData::Element(ref mut image_data) = image_node.data {
+                if let SpecialElementData::Image(image_data) = &mut image_data.special_data {
+                    // Only start loading if not already loaded or loading
+                    if matches!(image_data.loading_state, ImageLoadingState::NotLoaded) {
+                        // Set to loading state
+                        image_data.loading_state = ImageLoadingState::Loading;
 
-                    if !image_data.src.is_empty() {
-                        image_requests.push((image_node, image_data.src.clone()));
+                        if !image_data.src.is_empty() {
+                            image_requests.push((image_node.id, image_data.src.clone()));
+                        }
                     }
                 }
             }
@@ -186,41 +191,43 @@ impl Engine {
 
         let results = futures::future::join_all(fetch_futures).await;
 
+        let dom = self.dom_mut();
         // Process results and update image nodes
         for ((node, src), (_, result)) in image_requests.iter().zip(results.into_iter()) {
-            if let NodeData::Image(ref image_data) = node.data {
-                let mut image_data = image_data.borrow_mut();
-                match result {
-                    Ok(image_bytes) => {
-                        let image_bytes = bytes::Bytes::from(image_bytes);
-                        if let Ok(image) = image::ImageReader::new(Cursor::new(&image_bytes))
-                            .with_guessed_format()
-                            .expect("failed to read image")
-                            .decode()
-                        {
-                            let rgba_image = image.to_rgba8();
-                            let (width, height) = rgba_image.dimensions();
-                            let rgba_data = rgba_image.into_raw();
+            let mut node = dom.get_node_mut(*node).unwrap();
+            if node.data.element().is_some() {
+                if let SpecialElementData::Image(data) = &mut node.data.element_mut().unwrap().special_data {
+                    match result {
+                        Ok(image_bytes) => {
+                            let image_bytes = bytes::Bytes::from(image_bytes);
+                            if let Ok(image) = image::ImageReader::new(Cursor::new(&image_bytes))
+                                .with_guessed_format()
+                                .expect("failed to read image")
+                                .decode()
+                            {
+                                let rgba_image = image.to_rgba8();
+                                let (width, height) = rgba_image.dimensions();
+                                let rgba_data = rgba_image.into_raw();
 
-                            let raster = style::servo_arc::Arc::new(RasterImageData::new(
-                                width,
-                                height,
-                                Arc::new(rgba_data),
-                            ));
-                            image_data.cached_image = CachedImage::Raster(raster.clone());
-                            image_data.loading_state = ImageLoadingState::Loaded(raster);
-                            println!("Successfully loaded and decoded image: {}", src);
-                        } else {
-                            println!("Successfully loaded but failed to decode image: {}", src);
-                            image_data.loading_state = ImageLoadingState::Failed("Failed to decode image".to_string());
-                        };
-                    }
-                    Err(err) => {
-                        image_data.loading_state = ImageLoadingState::Failed(err.to_string());
-                        println!("Failed to load image {}: {}", src, err);
+                                let raster = style::servo_arc::Arc::new(RasterImageData::new(
+                                    width,
+                                    height,
+                                    Arc::new(rgba_data),
+                                ));
+                                data.cached_image = CachedImage::Raster(raster.clone());
+                                data.loading_state = ImageLoadingState::Loaded(raster);
+                                println!("Successfully loaded and decoded image: {}", src);
+                            } else {
+                                println!("Successfully loaded but failed to decode image: {}", src);
+                                data.loading_state = ImageLoadingState::Failed("Failed to decode image".to_string());
+                            };
+                        }
+                        Err(err) => {
+                            data.loading_state = ImageLoadingState::Failed(err.to_string());
+                            println!("Failed to load image {}: {}", src, err);
+                        }
                     }
                 }
-                drop(image_data)
             }
         }
 
@@ -330,15 +337,18 @@ impl Engine {
 
     /// Force reload images (useful for debugging or refresh)
     pub async fn reload_images(&mut self) {
-        let dom = self.dom();
+        let dom = self.dom_mut();
         // Find all image nodes and reset their loading state
-        let image_nodes = dom.find_nodes(|node| matches!(node.data, NodeData::Image(_)));
+        let image_nodes = dom.find_node_ids(|node| node.data.element().is_some_and(|data| {
+            matches!(data.special_data, SpecialElementData::Image(_))
+        }));
 
         for image_node in image_nodes {
-            if let NodeData::Image(ref image_data) = image_node.data {
-                let mut image_data = image_data.borrow_mut();
-                image_data.loading_state = ImageLoadingState::NotLoaded;
-                drop(image_data);
+            let image_node = dom.get_node_mut(image_node).unwrap();
+            if let NodeData::Element(ref mut image_data) = image_node.data {
+                if let SpecialElementData::Image(image_data) = &mut image_data.special_data {
+                    image_data.loading_state = ImageLoadingState::NotLoaded;
+                }
             }
         }
 
@@ -408,18 +418,14 @@ impl Engine {
         let dom = self.dom.as_ref().unwrap();
         let node = dom.root_node();
 
-        if let Some(layout) = &self.layout {
-
-            self.renderer.render(
-                painter,
-                node,
-                dom,
-                layout,
-                self.scroll_x,
-                self.scroll_y,
-                scale_factor
-            );
-        }
+        self.renderer.render(
+            painter,
+            node,
+            dom,
+            self.scroll_x,
+            self.scroll_y,
+            scale_factor
+        );
     }
 
     /// Add a CSS stylesheet to the engine
@@ -516,7 +522,12 @@ impl Engine {
 
         // Flush the stylist with all loaded stylesheets
         {
-            let root = &dom.nodes[0];
+            let root = TDocument::as_node(&&dom.nodes[0])
+                .first_element_child()
+                .unwrap()
+                .as_element()
+                .unwrap();
+
             dom.stylist.flush(&guards, Some(root), Some(&dom.snapshots));
         }
 
@@ -548,9 +559,21 @@ impl Engine {
                 let traverser = RecalcStyle::new(context);
                 style::driver::traverse_dom(&traverser, token, None);
             }
+
+            for opaque in dom.snapshots.keys() {
+                let id = opaque.id();
+                if let Some(node) = dom.nodes.get_mut(id) {
+                    node.has_snapshot = false;
+                }
+            }
+            dom.snapshots.clear();
         }
         drop(author);
         drop(ua_or_user);
+
+        dom.get_layout_children();
+
+        dom.flush_layout_style(dom.root_element().id);
     }
 
     /// Get the current page title

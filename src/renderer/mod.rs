@@ -17,6 +17,7 @@ use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::properties::longhands;
 use style::servo_arc::Arc;
 use style::values::computed::ZIndex;
+use crate::dom::node::SpecialElementData;
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer {
@@ -40,7 +41,6 @@ impl HtmlRenderer {
         painter: &mut TextPainter,
         node: &DomNode,
         dom: &Dom,
-        layout_box: &LayoutBox,
         scroll_x: f32,
         scroll_y: f32,
         scale_factor: f32,
@@ -57,7 +57,7 @@ impl HtmlRenderer {
         );
 
         // Render the layout tree with styles, scale factor, and viewport culling
-        self.render_box(painter, &node, dom, layout_box, scale_factor, &viewport_rect, scroll_transform);
+        self.render_box(painter, &node, dom, scale_factor, &viewport_rect, scroll_transform);
     }
 
     /// Render a single layout box with CSS styles, transitions, and scale factor
@@ -66,7 +66,6 @@ impl HtmlRenderer {
         painter: &mut TextPainter,
         node: &DomNode,
         dom: &Dom,
-        layout_box: &LayoutBox,
         scale_factor: f32,
         viewport_rect: &Rect,
         scroll_transform: kurbo::Affine,
@@ -95,7 +94,14 @@ impl HtmlRenderer {
         if is_visible {
             match &dom_node.data {
                 NodeData::Element(element_data) => {
-                    self.render_element(painter, node, dom, layout_box, element_data, &style, scale_factor, scroll_transform);
+                    match &element_data.special_data {
+                        SpecialElementData::Image(data) => {
+                            image::render_image_node(painter, node, dom, &data, &style, scale_factor, scroll_transform);
+                        },
+                        _ => {
+                            self.render_element(painter, node, dom, element_data, &style, scale_factor, scroll_transform)
+                        }
+                    }
                 },
                 NodeData::Text { contents } => {
                     // Check if text node is inside a non-visual element
@@ -104,16 +110,12 @@ impl HtmlRenderer {
                             painter,
                             node,
                             dom,
-                            layout_box,
                             contents,
                             &style,
                             scale_factor,
                             scroll_transform,
                         );
                     }
-                },
-                NodeData::Image(image_data) => {
-                    image::render_image_node(painter, node, dom, layout_box, image_data, &style, scale_factor, scroll_transform);
                 },
                 NodeData::Document => {
                     // Just render children for document
@@ -134,9 +136,10 @@ impl HtmlRenderer {
                     (child, z_index)
                 })
                 .collect();*/
-            let mut children_with_z: Vec<(&DomNode, &LayoutBox, i32)> = layout_box.children.iter()
+            let layout_children = node.layout_children.borrow();
+            let mut children_with_z: Vec<(&DomNode, i32)> = layout_children.as_ref().unwrap().iter()
                 .map(|child| {
-                    let node = node.get_node(child.node_id);
+                    let node = node.get_node(*child);
                     let z_index = node.style_arc().get_position().z_index;
                     let z_index = match z_index {
                         ZIndex::Integer(i) => {
@@ -146,16 +149,16 @@ impl HtmlRenderer {
                             0
                         }
                     };
-                    (node, child, z_index)
+                    (node, z_index)
                 })
                 .collect();
 
             // Sort by z-index (lower z-index rendered first, so they appear behind)
-            children_with_z.sort_by_key(|(_, _, z)| *z);
+            children_with_z.sort_by_key(|(_, z)| *z);
 
             // Render children in z-index order
-            for (child_node, child, _) in children_with_z {
-                self.render_box(painter, &*child_node, dom, child, scale_factor, viewport_rect, scroll_transform);
+            for (child_node, _) in children_with_z {
+                self.render_box(painter, &*child_node, dom, scale_factor, viewport_rect, scroll_transform);
             }
         }
     }
@@ -166,13 +169,13 @@ impl HtmlRenderer {
         painter: &mut TextPainter,
         node: &DomNode,
         dom: &Dom,
-        layout_box: &LayoutBox,
         element_data: &ElementData,
         style: &Arc<StyloComputedValues>,
         scale_factor: f32,
         scroll_transform: kurbo::Affine,
     ) {
-        let content_rect = layout_box.dimensions.content;
+        let layout = node.final_layout;
+        let content_rect = Rect::from_xywh(layout.location.x, layout.location.y, layout.size.width, layout.size.height);
 
         // Get opacity value (default to 1.0 if no styles)
         let effects = style.get_effects();

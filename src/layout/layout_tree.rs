@@ -6,9 +6,11 @@ use std::cell::RefCell;
 use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::properties::longhands;
 use style::servo_arc::Arc;
-use style::values::computed::{Au, Clear, FlexBasis, MaxSize, Size};
+use style::values::computed::{Au, FlexBasis, MaxSize, Size};
 use style::values::generics::length::GenericSize;
 use style::values::CSSFloat;
+use stylo_atoms::Atom;
+use taffy::{BoxSizing, Clear, CoreStyle, Display, Float, Style};
 
 /// Tracks active floats in a formatting context
 #[derive(Debug, Clone)]
@@ -73,8 +75,7 @@ impl FloatContext {
                     clear_y = clear_y.max(fy + fh);
                 }
             }
-            Clear::None => {},
-            &Clear::InlineStart | &Clear::InlineEnd => todo!()
+            Clear::None => {}
         }
 
         clear_y
@@ -121,17 +122,17 @@ pub struct LayoutBox {
     pub children: Vec<LayoutBox>,
     pub node_id: usize,
     pub content: Option<LayoutContent>, // custom data
-    pub stylo: Arc<StyloComputedValues>,
+    pub style: Style<Atom>,
 }
 
 impl LayoutBox {
-    pub fn new(box_type: BoxType, node_id: usize, stylo: Arc<StyloComputedValues>) -> Self {
+    pub fn new(box_type: BoxType, node_id: usize, style: Style<Atom>) -> Self {
         let mut dimensions = Dimensions::new();
 
         // Apply margin and padding from computed styles
-        dimensions.margin = stylo.get_margin().as_edge_sizes(0);
-        dimensions.padding = stylo.get_padding().as_edge_sizes(0);
-        dimensions.border = stylo.get_border().as_edge_sizes(0);
+        dimensions.margin = style.margin().as_edge_sizes(0);
+        dimensions.padding = style.padding().as_edge_sizes(0);
+        dimensions.border = style.border().as_edge_sizes(0);
 
         Self {
             box_type,
@@ -139,15 +140,14 @@ impl LayoutBox {
             children: Vec::new(),
             node_id,
             content: None,
-            stylo,
+            style,
         }
     }
 
     /// Calculate layout
     pub fn layout(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
         // Check if this is a flex container
-        let style_box = self.stylo.get_box();
-        if style_box.display == longhands::display::computed_value::T::Flex {
+        if self.style.display == Display::Flex {
             self.layout_flex(container_width, container_height, offset_x, offset_y, scale_factor);
             return;
         }
@@ -171,13 +171,13 @@ impl LayoutBox {
         // Use CSS width if specified, otherwise use available container width
         let content_width = self.calculate_used_width(container_width, scale_factor);
 
-        let position = self.stylo.get_position();
+        let size = self.style.size;
         // Calculate content area with proper offset positioning and centering
         let base_content_x = offset_x + self.dimensions.margin.left + self.dimensions.border.left + self.dimensions.padding.left;
         let content_y = offset_y + self.dimensions.margin.top + self.dimensions.border.top + self.dimensions.padding.top;
 
         // Center horizontally if CSS width is specified
-        let content_x = if !position.width.is_auto() {
+        let content_x = if !size.width.is_auto() {
             let available_width = container_width - self.dimensions.margin.left - self.dimensions.margin.right
                 - self.dimensions.border.left - self.dimensions.border.right
                 - self.dimensions.padding.left - self.dimensions.padding.right;
@@ -196,7 +196,7 @@ impl LayoutBox {
         let mut float_context = FloatContext::new();
 
         // Calculate gap spacing (row-gap for vertical stacking)
-        let row_gap = stylo_taffy::convert::gap(&position.row_gap).into_raw().value();
+        let row_gap = self.style.gap.height.into_raw().value();
         //let row_gap = self.style.gap.row.to_px(16.0, container_width) * scale_factor;
 
         // Layout children vertically, handling floats and gap
@@ -206,15 +206,15 @@ impl LayoutBox {
                 current_y += row_gap;
             }
 
-            let style_box = child.stylo.get_box();
+            let style_box = &child.style;
             // Handle clear property - move past floats if needed
-            if style_box.clear != longhands::clear::SpecifiedValue::None {
+            if style_box.clear != Clear::None {
                 current_y = float_context.get_clear_y(&style_box.clear, current_y);
             }
 
             // Check if this child is floated
             match style_box.float {
-                longhands::float::SpecifiedValue::Left => {
+                Float::Left => {
                     // Layout the child first to get its dimensions
                     child.layout(available_width, container_height, content_x, current_y, scale_factor);
 
@@ -235,7 +235,7 @@ impl LayoutBox {
 
                     // Floats don't affect current_y for normal flow (they're taken out of flow)
                 }
-                longhands::float::SpecifiedValue::Right => {
+                Float::Right => {
                     // Layout the child first to get its dimensions
                     child.layout(available_width, container_height, content_x, current_y, scale_factor);
 
@@ -256,7 +256,7 @@ impl LayoutBox {
 
                     // Floats don't affect current_y for normal flow (they're taken out of flow)
                 }
-                longhands::float::SpecifiedValue::None => {
+                Float::None => {
                     // Normal flow element - position it considering active floats
                     // Get available width at current Y position
                     let (_left_edge, avail_width) = float_context.get_available_width(current_y, available_width, content_x);
@@ -277,8 +277,7 @@ impl LayoutBox {
 
                     // Advance current_y for the next normal flow element
                     current_y = actual_y + child.dimensions.total_height();
-                },
-                style::values::computed::Float::InlineStart | style::values::computed::Float::InlineEnd => todo!()
+                }
             }
         }
 
@@ -304,7 +303,7 @@ impl LayoutBox {
         let final_content_height = self.calculate_used_height(container_height, scale_factor, auto_content_height);
 
         // Center vertically if CSS height is specified
-        let final_content_y = if !self.stylo.get_position().height.is_auto() {
+        let final_content_y = if !self.style.size.height.is_auto() {
             let available_height = container_height - self.dimensions.margin.top - self.dimensions.margin.bottom
                 - self.dimensions.border.top - self.dimensions.border.bottom
                 - self.dimensions.padding.top - self.dimensions.padding.bottom;
@@ -336,14 +335,14 @@ impl LayoutBox {
         let default_width = container_width - self.dimensions.padding.left - self.dimensions.padding.right;
 
         // Use CSS dimensions if specified
-        let position = self.stylo.get_position();
-        let content_width = self.convert_size(&position.width, default_width, container_width, scale_factor);
+        let size = self.style.size;
+        let content_width = size.width.into_raw().value();
 
 
         let final_height = self.calculate_used_height(container_height, scale_factor, default_height);
 
         // Center horizontally if CSS width is specified
-        let content_x = if !position.width.is_auto() {
+        let content_x = if !size.width.is_auto() {
             let centering_offset = (default_width - content_width) / 2.0;
             base_content_x + centering_offset.max(0.0)
         } else {
@@ -351,7 +350,7 @@ impl LayoutBox {
         };
 
         // Center vertically if CSS height is specified
-        let content_y = if !position.height.is_auto() {
+        let content_y = if !size.height.is_auto() {
             let available_height = container_height - self.dimensions.padding.top - self.dimensions.padding.bottom;
             let centering_offset = (available_height - final_height) / 2.0;
             base_content_y + centering_offset.max(0.0)
@@ -367,7 +366,7 @@ impl LayoutBox {
         );
 
         // Calculate gap spacing (column-gap for horizontal flow)
-        let column_gap = stylo_taffy::convert::gap(&position.column_gap).into_raw().value();
+        let column_gap = self.style.gap.width.into_raw().value();
 
         // Layout children horizontally with column-gap
         let mut current_x = content_x;
@@ -404,23 +403,16 @@ impl LayoutBox {
                 let wrapped_lines = self.legacy_wrap_text(text, container_width, char_width);
                 let num_lines = wrapped_lines.len().max(1);
 
-                // Calculate width based on the longest wrapped line
-                let max_line_width = wrapped_lines.iter()
-                    .map(|line| line.len() as f32 * char_width)
-                    .fold(0.0, f32::max)
-                    .min(container_width);
-
-                let auto_text_width = if text.trim().is_empty() { 0.0 } else { max_line_width };
                 let auto_text_height = num_lines as f32 * line_height;
 
                 // Use CSS dimensions if specified, otherwise use calculated dimensions
-                let position = self.stylo.get_position();
-                let width = self.convert_size(&position.width, auto_text_width, container_width, scale_factor);
+                let size = self.style.size;
+                let width = size.width.into_raw().value();
 
                 let final_text_height = self.calculate_used_height(container_height, scale_factor, auto_text_height);
 
                 // Center horizontally if CSS width is specified
-                let final_x = if !position.width.is_auto() {
+                let final_x = if !size.width.is_auto() {
                     let centering_offset = (container_width - width) / 2.0;
                     offset_x + centering_offset.max(0.0)
                 } else {
@@ -428,7 +420,7 @@ impl LayoutBox {
                 };
 
                 // Center vertically if CSS height is specified
-                let final_y = if !position.height.is_auto() {
+                let final_y = if !size.height.is_auto() {
                     let centering_offset = (container_height - final_text_height) / 2.0;
                     offset_y + centering_offset.max(0.0)
                 } else {
@@ -444,19 +436,19 @@ impl LayoutBox {
             },
             _ => {
                 // Empty text node - use CSS dimensions if specified
-                let position = self.stylo.get_position();
-                let width = self.convert_size(&position.width, 0.0, container_width, scale_factor);
+                let size = self.style.size;
+                let width = size.width.into_raw().value();
                 let final_height = self.calculate_used_height(container_height, scale_factor, 0.0);
 
                 // Center if CSS dimensions are specified
-                let final_x = if !position.width.is_auto() {
+                let final_x = if !size.width.is_auto() {
                     let centering_offset = (container_width - width) / 2.0;
                     offset_x + centering_offset.max(0.0)
                 } else {
                     offset_x
                 };
 
-                let final_y = if !position.height.is_auto() {
+                let final_y = if !size.height.is_auto() {
                     let centering_offset = (container_height - final_height) / 2.0;
                     offset_y + centering_offset.max(0.0)
                 } else {
@@ -579,9 +571,9 @@ impl LayoutBox {
         let base_image_height = data.height.unwrap_or(default_height) as f32;
 
         // Apply CSS dimensions if specified, otherwise use HTML attributes or defaults
-        let position = self.stylo.get_position();
-        let width = self.convert_size(&position.width, base_image_width, container_width, scale_factor);
-        let height = self.convert_size(&position.height, base_image_height, container_height, scale_factor);
+        let size = self.style.size;
+        let width = size.width.into_raw().value();
+        let height = size.height.into_raw().value();
 
         // Set margins for inline-block behavior - scale for high DPI
         self.dimensions.margin = EdgeSizes::new(
@@ -597,7 +589,7 @@ impl LayoutBox {
         let base_y = offset_y + self.dimensions.margin.top;
 
         // Center horizontally if CSS width is specified
-        let final_x = if !position.width.is_auto() {
+        let final_x = if !size.width.is_auto() {
             let available_width = container_width - self.dimensions.margin.left - self.dimensions.margin.right;
             let centering_offset = (available_width - width) / 2.0;
             base_x + centering_offset.max(0.0)
@@ -606,7 +598,7 @@ impl LayoutBox {
         };
 
         // Center vertically if CSS height is specified
-        let final_y = if !position.height.is_auto() {
+        let final_y = if !size.height.is_auto() {
             let available_height = container_height - self.dimensions.margin.top - self.dimensions.margin.bottom;
             let centering_offset = (available_height - height) / 2.0;
             base_y + centering_offset.max(0.0)
@@ -624,48 +616,17 @@ impl LayoutBox {
 
     /// Calculate the actual width this box should use, respecting CSS width values, flex-basis, and box-sizing
     fn calculate_used_width(&self, container_width: f32, scale_factor: f32) -> f32 {
-        let position = self.stylo.get_position();
+        let size = self.style.size;
         // Determine the base width: prioritize flex-basis, then width, then auto
-        let mut width = match &position.flex_basis {
-            FlexBasis::Content => {
-                // Content-based sizing - use intrinsic content size
-                // For now, fallback to width or auto (future: calculate from content)
-                let width = self.convert_size(&position.width, container_width, container_width, scale_factor);
-                match position.box_sizing {
-                    longhands::box_sizing::SpecifiedValue::ContentBox => width,
-                    longhands::box_sizing::SpecifiedValue::BorderBox => {
-                        width
-                            - self.dimensions.padding.left - self.dimensions.padding.right
-                            - self.dimensions.border.left - self.dimensions.border.right
-                    }
-                }
-            },
-            FlexBasis::Size(size) => {
-                // flex-basis with size takes precedence
-                // If flex-basis is auto, fall back to the width property
-                let width = if matches!(size, Size::Auto) {
-                    self.convert_size(&position.width, container_width, container_width, scale_factor)
-                } else {
-                    self.convert_size(size, container_width, container_width, scale_factor)
-                };
-
-                // Apply box-sizing logic
-                match position.box_sizing {
-                    longhands::box_sizing::SpecifiedValue::ContentBox => width,
-                    longhands::box_sizing::SpecifiedValue::BorderBox => {
-                        width
-                            - self.dimensions.padding.left - self.dimensions.padding.right
-                            - self.dimensions.border.left - self.dimensions.border.right
-                    }
-                }
-            }
-        };
+        let mut width = self.style.flex_basis.into_raw().value()
+            - self.dimensions.padding.left - self.dimensions.padding.right
+            - self.dimensions.border.left - self.dimensions.border.right;
 
         // Apply max-width constraint if specified
-        let max_width = self.convert_max_size(&position.max_width, container_width, scale_factor);
-        let max_width_content = match position.box_sizing {
-            longhands::box_sizing::SpecifiedValue::ContentBox => max_width,
-            longhands::box_sizing::SpecifiedValue::BorderBox => {
+        let max_width = self.style.max_size.width.into_raw().value();
+        let max_width_content = match self.style.box_sizing {
+            BoxSizing::ContentBox => max_width,
+            BoxSizing::BorderBox => {
                 max_width
                     - self.dimensions.padding.left - self.dimensions.padding.right
                     - self.dimensions.border.left - self.dimensions.border.right
@@ -674,10 +635,10 @@ impl LayoutBox {
         width = width.min(max_width_content);
 
         // Apply min-width constraint if specified
-        let min_width = self.convert_size(&position.min_width, 0.0, container_width, scale_factor);
-        let min_width_content = match position.box_sizing {
-            longhands::box_sizing::SpecifiedValue::ContentBox => min_width,
-            longhands::box_sizing::SpecifiedValue::BorderBox => {
+        let min_width = self.style.min_size.width.into_raw().value();
+        let min_width_content = match self.style.box_sizing {
+            BoxSizing::ContentBox => min_width,
+            BoxSizing::BorderBox => {
                 min_width
                     - self.dimensions.padding.left - self.dimensions.padding.right
                     - self.dimensions.border.left - self.dimensions.border.right
@@ -694,19 +655,19 @@ impl LayoutBox {
         // For vertical flex containers, flex-basis would control height
         // For now, we support it but height property takes precedence in non-flex contexts
 
-        let position = self.stylo.get_position();
+        let size = self.style.size;
 
-        let mut height = if !position.height.is_auto() {
+        let mut height = if !size.height.is_auto() {
             // Use the CSS-specified height from stylo
-            let specified_height = self.convert_size(&position.height, 0.0, container_height, scale_factor);
+            let specified_height = size.height.into_raw().value();
 
             // Apply box-sizing logic
-            match position.box_sizing {
-                longhands::box_sizing::SpecifiedValue::ContentBox => {
+            match self.style.box_sizing {
+                BoxSizing::ContentBox => {
                     // Default behavior: height applies to content box only
                     specified_height
                 }
-                longhands::box_sizing::SpecifiedValue::BorderBox => {
+                BoxSizing::BorderBox => {
                     // Height includes padding and border, so subtract them to get content height
                     specified_height
                         - self.dimensions.padding.top - self.dimensions.padding.bottom
@@ -723,11 +684,11 @@ impl LayoutBox {
         };
 
         // Apply max-height constraint if specified
-        let max_height = self.convert_max_size(&position.max_height, container_height, scale_factor);
+        let max_height = self.style.max_size.height.into_raw().value();
         if max_height < f32::INFINITY {
-            let max_height_content = match position.box_sizing {
-                longhands::box_sizing::SpecifiedValue::ContentBox => max_height,
-                longhands::box_sizing::SpecifiedValue::BorderBox => {
+            let max_height_content = match self.style.box_sizing {
+                BoxSizing::ContentBox => max_height,
+                BoxSizing::BorderBox => {
                     max_height
                         - self.dimensions.padding.top - self.dimensions.padding.bottom
                         - self.dimensions.border.top - self.dimensions.border.bottom
@@ -737,11 +698,11 @@ impl LayoutBox {
         }
 
         // Apply min-height constraint if specified
-        let min_height = self.convert_size(&position.min_height, 0.0, container_height, scale_factor);
+        let min_height = self.style.min_size.height.into_raw().value();
         if min_height > 0.0 {
-            let min_height_content = match position.box_sizing {
-                longhands::box_sizing::SpecifiedValue::ContentBox => min_height,
-                longhands::box_sizing::SpecifiedValue::BorderBox => {
+            let min_height_content = match self.style.box_sizing {
+                BoxSizing::ContentBox => min_height,
+                BoxSizing::BorderBox => {
                     min_height
                         - self.dimensions.padding.top - self.dimensions.padding.bottom
                         - self.dimensions.border.top - self.dimensions.border.bottom
@@ -792,8 +753,8 @@ impl LayoutBox {
         self.dimensions.content = Rect::from_xywh(content_x, content_y, content_width, 0.0);
 
         // Calculate gap spacing (column-gap for horizontal flex layout)
-        let position = self.stylo.get_position();
-        let column_gap = stylo_taffy::convert::gap(&position.column_gap).into_raw().value();
+        let size = self.style.size;
+        let column_gap = self.style.gap.width.into_raw().value();
 
         // Calculate total gap space
         let total_gap = if self.children.len() > 1 {
@@ -809,24 +770,10 @@ impl LayoutBox {
         let mut flex_items: Vec<(f32, f32, f32)> = Vec::new(); // (base_size, flex_grow, flex_shrink)
 
         for child in &self.children {
-            let position = child.stylo.get_position();
-            // Determine the flex base size according to flex-basis
-            let base_size = match &position.flex_basis {
-                FlexBasis::Content => {
-                    // Content-based sizing - use intrinsic content size
-                    // For now, we'll use a minimum size
-                    // In a full implementation, this would calculate intrinsic content size
-                    // For flex items without width, use a small default that will grow
-                    50.0 * scale_factor // Minimum content size
-                }
-                FlexBasis::Size(size) => {
-                    // flex-basis with size takes precedence
-                    // If flex-basis is auto, fall back to the width property
-                    self.convert_size(size, available_width, container_width, scale_factor)
-                }
-            };
-            let flex_grow = position.flex_grow.0;
-            let flex_shrink = position.flex_shrink.0;
+            let size = child.style.size;
+            let base_size = self.style.flex_basis.into_raw().value();
+            let flex_grow = self.style.flex_grow;
+            let flex_shrink = self.style.flex_shrink;
 
             flex_items.push((base_size, flex_grow, flex_shrink));
         }

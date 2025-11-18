@@ -1856,12 +1856,6 @@ dependencies = [
 
 [[package]]
 name = "grid"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12101ecc8225ea6d675bc70263074eab6169079621c2186fe0c66590b2df9681"
-
-[[package]]
-name = "grid"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9e2d4c0a8296178d8802098410ca05d86b17a10bb5ab559b3fb404c1f948220"
@@ -1954,6 +1948,15 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "html-escape"
+version = "0.2.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d1ad449764d627e22bfd7cd5e8868264fc9236e07c752972b4080cd351cb476"
+dependencies = [
+ "utf8-width",
+]
 
 [[package]]
 name = "html5ever"
@@ -4556,6 +4559,7 @@ dependencies = [
  "glutin",
  "glutin-winit",
  "hashbrown 0.16.0",
+ "html-escape",
  "html5ever",
  "image",
  "kurbo 0.12.0",
@@ -4580,7 +4584,7 @@ dependencies = [
  "stylo_dom",
  "stylo_taffy",
  "stylo_traits",
- "taffy 0.9.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "taffy",
  "tiny-skia",
  "tokio",
  "tracing",
@@ -4753,7 +4757,7 @@ source = "git+https://github.com/DioxusLabs/blitz?rev=b8b88a5d#b8b88a5dabaac26ef
 dependencies = [
  "stylo",
  "stylo_atoms",
- "taffy 0.9.1 (git+https://github.com/DioxusLabs/taffy?rev=fff4ea6e71e4f6ec29d0ea560a77545ad611470a)",
+ "taffy",
 ]
 
 [[package]]
@@ -4873,22 +4877,10 @@ dependencies = [
 [[package]]
 name = "taffy"
 version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b25026fb8cc9ab51ab9fdabe5d11706796966f6d1c78e19871ef63be2b8f0644"
-dependencies = [
- "arrayvec",
- "grid 0.18.0",
- "serde",
- "slotmap",
-]
-
-[[package]]
-name = "taffy"
-version = "0.9.1"
 source = "git+https://github.com/DioxusLabs/taffy?rev=fff4ea6e71e4f6ec29d0ea560a77545ad611470a#fff4ea6e71e4f6ec29d0ea560a77545ad611470a"
 dependencies = [
  "arrayvec",
- "grid 1.0.0",
+ "grid",
  "serde",
  "slotmap",
 ]
@@ -5540,6 +5532,12 @@ name = "utf16_iter"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8232dd3cdaed5356e0f716d285e4b40b932ac434100fe9b7e0e8e935b9e6246"
+
+[[package]]
+name = "utf8-width"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86bd8d4e895da8537e5315b8254664e6b769c4ff3db18321b297a1e7004392e3"
 
 [[package]]
 name = "utf8_iter"

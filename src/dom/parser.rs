@@ -7,6 +7,7 @@ use markup5ever_rcdom::{Handle, NodeData as EverNodeData};
 use std::cell::RefCell;
 use markup5ever::local_name;
 use crate::dom::config::DomConfig;
+use crate::dom::node::SpecialElementData;
 
 /// HTML Parser for converting HTML strings into DOM structures
 pub struct HtmlParser;
@@ -48,19 +49,7 @@ impl HtmlParser {
                 }
             }
             EverNodeData::Doctype { name, public_id, system_id } => {
-                // Create a DocType node
-                let data = NodeData::DocType {
-                    name: name.clone(),
-                    public_id: public_id.clone(),
-                    system_id: system_id.clone(),
-                };
-                let id = dom.create_node(data);
-                // Attach to parent if provided
-                if let Some(pid) = parent_id {
-                    // set parent on new node and add as child
-                    dom.nodes[id].parent = Some(pid);
-                    dom.nodes[pid].children.push(id);
-                }
+                // IGNORE DOCTYPE for now
             }
             EverNodeData::Text { contents } => {
                 let text = contents.borrow().to_string();
@@ -97,14 +86,13 @@ impl HtmlParser {
                 elem_data.flush_style_attribute(&dom.lock, &dom.url.url_extra_data());
 
                 // Special handling for <img> to create Image node variant, otherwise Element
-                let node_kind = if name.local.as_ref().eq_ignore_ascii_case("img") {
+                if name.local.as_ref().eq_ignore_ascii_case("img") {
                     // create ImageData from attributes
                     let src = elem_data.attr(local_name!("src")).unwrap_or_default().to_string();
                     let alt = elem_data.attr(local_name!("alt")).unwrap_or_default().to_string();
-                    NodeData::Image(RefCell::new(ImageData::new(src, alt)))
-                } else {
-                    NodeData::Element(elem_data)
+                    elem_data.special_data = SpecialElementData::Image(Box::new(ImageData::new(src.clone(), alt.clone())));
                 };
+                let node_kind = NodeData::Element(elem_data);
 
                 let id = dom.create_node(node_kind);
 
@@ -114,26 +102,6 @@ impl HtmlParser {
                     dom.nodes[pid].children.push(id);
                 }
 
-                // If element has template contents (e.g., <template>), recurse into them and attach to the created element's template_contents
-                if let Some(template_handle) = template_contents.borrow().as_ref() {
-                    // Build a DocumentFragment to hold template children
-                    let frag_id = dom.create_node(NodeData::DocumentFragment);
-                    // attach fragment as child of the element
-                    {
-                        dom.nodes[frag_id].parent = Some(id);
-                        dom.nodes[id].children.push(frag_id);
-                        // set the element's template_contents to the fragment handle
-                        if let NodeData::Element(ed) = &mut dom.nodes[id].data {
-                            ed.template_contents = Some(frag_id);
-                        }
-                    }
-                    // Recurse children of template into the fragment
-                    let children = template_handle.children.borrow();
-                    for child in children.iter() {
-                        self.build_dom_from_handle(child, Some(frag_id), dom);
-                    }
-                }
-
                 // Recurse into children (normal child nodes)
                 let children = handle.children.borrow();
                 for child in children.iter() {
@@ -141,12 +109,7 @@ impl HtmlParser {
                 }
             }
             EverNodeData::ProcessingInstruction { target, contents } => {
-                let data = NodeData::ProcessingInstruction { target: target.to_string(), data: contents.to_string() };
-                let id = dom.create_node(data);
-                if let Some(pid) = parent_id {
-                    dom.nodes[id].parent = Some(pid);
-                    dom.nodes[pid].children.push(id);
-                }
+                // Ignore ProcessingInstruction for now
             }
             _ => {
                 // Unknown or unhandled node types - skip

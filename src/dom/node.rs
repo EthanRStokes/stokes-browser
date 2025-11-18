@@ -1,17 +1,20 @@
 use crate::dom::events::EventListenerRegistry;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 // DOM node implementation for representing HTML elements
 use std::collections::HashMap;
 use std::{fmt, ptr};
 use std::io::Cursor;
 use std::ops::{Deref, DerefMut};
+use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::AtomicBool;
 use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut};
 use bitflags::bitflags;
 use html5ever::{LocalName, QualName};
 use html5ever::tendril::StrTendril;
+use html_escape::encode_quoted_attribute_to_string;
 use markup5ever::local_name;
+use parley::ContentWidths;
 use peniko::Blob;
 use selectors::matching::{ElementSelectorFlags, QuirksMode};
 use skia_safe::FontMgr;
@@ -28,8 +31,12 @@ use style::invalidation::element::restyle_hints::RestyleHint;
 use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::properties::style_structs::Font;
 use style::selector_parser::RestyleDamage;
-use style::stylesheets::{CssRuleType, UrlExtraData};
-use taffy::Style;
+use style::stylesheets::{CssRuleType, DocumentStyleSheet, UrlExtraData};
+use style::values::computed::Display;
+use style_traits::ToCss;
+use taffy::{Cache, Layout, Style};
+use crate::layout::table::TableContext;
+use crate::ui::TextBrush;
 
 /// Callback type for layout invalidation
 pub type LayoutInvalidationCallback = Box<dyn Fn()>;
@@ -84,27 +91,25 @@ impl DerefMut for AttributeMap {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NodeKind {
+    Document,
+    Element,
+    AnonymousBlock,
+    Text,
+    Comment,
+}
+
 /// Represents the type of DOM node
 #[derive(Debug, Clone)]
 pub enum NodeData {
     /// The `Document` itself - the root node.
     Document,
-    DocType {
-        name: StrTendril,
-        public_id: StrTendril,
-        system_id: StrTendril,
-    },
-    DocumentFragment,
     Text { contents: RefCell<StrTendril> },
     Comment { contents: StrTendril },
     Element(ElementData),
     // TODO better pseudo element support
     AnonymousBlock(ElementData),
-    ProcessingInstruction {
-        target: String,
-        data: String,
-    },
-    Image(RefCell<ImageData>),
 }
 
 impl NodeData {
@@ -140,6 +145,41 @@ impl NodeData {
         };
         *tag_name == element.name.local
     }
+
+    pub fn kind(&self) -> NodeKind {
+        match self {
+            NodeData::Document => NodeKind::Document,
+            NodeData::Element(_) => NodeKind::Element,
+            NodeData::AnonymousBlock(_) => NodeKind::AnonymousBlock,
+            NodeData::Text { .. } => NodeKind::Text,
+            NodeData::Comment { .. } => NodeKind::Comment,
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct TextLayout {
+    pub text: String,
+    pub content_widths: Option<ContentWidths>,
+    pub layout: parley::layout::Layout<TextBrush>,
+}
+
+impl TextLayout {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn content_widths(&mut self) -> ContentWidths {
+        *self
+            .content_widths
+            .get_or_insert_with(|| self.layout.calculate_content_widths())
+    }
+}
+
+impl std::fmt::Debug for TextLayout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TextLayout")
+    }
 }
 
 /// Data specific to element nodes
@@ -156,8 +196,38 @@ pub struct ElementData {
 
     pub style_attribute: Option<ServoArc<Locked<PropertyDeclarationBlock>>>,
 
+    pub special_data: SpecialElementData,
+
+    pub inline_layout_data: Option<Box<TextLayout>>,
+
     /// For HTML <template> elements, holds the template contents
     pub template_contents: Option<usize>,
+}
+
+/// Heterogeneous data that depends on the element's type.
+#[derive(Clone, Default)]
+#[derive(Debug)]
+pub enum SpecialElementData {
+    Stylesheet(DocumentStyleSheet),
+    /// An \<img\> element's image data
+    Image(Box<ImageData>),
+    /// A \<canvas\> element's custom paint source
+    Canvas(CanvasData),
+    /// Pre-computed table layout data
+    TableRoot(std::sync::Arc<TableContext>),
+    TextInput,
+    /// Checkbox checked state
+    CheckboxInput(bool),
+    FileInput(FileData),
+    /// No data (for nodes that don't need any node-specific data)
+    #[default]
+    None,
+}
+
+impl SpecialElementData {
+    pub fn take(&mut self) -> Self {
+        std::mem::take(self)
+    }
 }
 
 impl ElementData {
@@ -173,6 +243,8 @@ impl ElementData {
             id: id_attr_atom,
             attributes: attrs,
             style_attribute: Default::default(),
+            special_data: SpecialElementData::None,
+            inline_layout_data: None,
             template_contents: None,
         }
     }
@@ -207,8 +279,41 @@ impl ElementData {
         Some(&attr.value)
     }
 
+    pub fn attrs(&self) -> &AttributeMap {
+        &self.attributes
+    }
+
     pub fn has_attr(&self, attr_name: impl PartialEq<LocalName>) -> bool {
         self.attributes.iter().any(|attr| attr_name == attr.name.local)
+    }
+
+    pub fn take_inline_layout(&mut self) -> Option<Box<TextLayout>> {
+        std::mem::take(&mut self.inline_layout_data)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CanvasData {
+    pub custom_paint_source_id: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct FileData(pub Vec<PathBuf>);
+impl Deref for FileData {
+    type Target = Vec<PathBuf>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl DerefMut for FileData {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl From<Vec<PathBuf>> for FileData {
+    fn from(files: Vec<PathBuf>) -> Self {
+        Self(files)
     }
 }
 
@@ -490,17 +595,17 @@ bitflags! {
 
 impl DomNodeFlags {
     #[inline]
-    pub fn is_inline_root(self) -> bool {
+    pub fn is_inline_root(&self) -> bool {
         self.contains(DomNodeFlags::IS_INLINE_ROOT)
     }
 
     #[inline]
-    pub fn is_table_root(self) -> bool {
+    pub fn is_table_root(&self) -> bool {
         self.contains(DomNodeFlags::IS_TABLE_ROOT)
     }
 
     #[inline]
-    pub fn is_in_document(self) -> bool {
+    pub fn is_in_document(&self) -> bool {
         self.contains(DomNodeFlags::IS_IN_DOCUMENT)
     }
 
@@ -521,6 +626,8 @@ pub struct DomNode {
     pub parent: Option<usize>,
     /// Child nodes
     pub children: Vec<usize>,
+    pub layout_parent: Cell<Option<usize>>,
+    pub layout_children: RefCell<Option<Vec<usize>>>,
 
     pub flags: DomNodeFlags,
 
@@ -532,8 +639,15 @@ pub struct DomNode {
     pub lock: SharedRwLock,
     pub element_state: ElementState,
 
+    // Pseudo element nodes
+    pub before: Option<usize>,
+    pub after: Option<usize>,
+
     // layout data:
     pub taffy_style: Style<Atom>,
+    pub cache: Cache,
+    pub unrounded_layout: Layout,
+    pub final_layout: Layout,
 
     pub has_snapshot: bool,
     pub snapshot_handled: AtomicBool,
@@ -570,13 +684,20 @@ impl DomNode {
             id,
             parent: None,
             children: Vec::new(),
+            layout_parent: Cell::new(None),
+            layout_children: RefCell::new(None),
             flags: DomNodeFlags::empty(),
             data,
             stylo_data: Default::default(),
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
             lock,
             element_state: ElementState::empty(),
+            before: None,
+            after: None,
             taffy_style: Default::default(),
+            cache: Cache::new(),
+            unrounded_layout: Layout::new(),
+            final_layout: Layout::new(),
             has_snapshot: false,
             snapshot_handled: AtomicBool::new(false),
             event_listeners: EventListenerRegistry::new(),
@@ -594,6 +715,13 @@ impl DomNode {
 
     pub fn element_data(&self) -> Option<&ElementData> {
         match &self.data {
+            NodeData::Element(data) | NodeData::AnonymousBlock(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    pub fn element_data_mut(&mut self) -> Option<&mut ElementData> {
+        match &mut self.data {
             NodeData::Element(data) | NodeData::AnonymousBlock(data) => Some(data),
             _ => None,
         }
@@ -724,6 +852,26 @@ impl DomNode {
         self.element_data()?.attr(name)
     }
 
+    pub fn pe_by_index(&self, index: usize) -> Option<usize> {
+        match index {
+            0 => self.after,
+            1 => self.before,
+            _ => panic!("Invalid pseudo element index"),
+        }
+    }
+
+    pub fn set_pe_by_index(&mut self, index: usize, value: Option<usize>) {
+        match index {
+            0 => self.after = value,
+            1 => self.before = value,
+            _ => panic!("Invalid pseudo element index"),
+        }
+    }
+
+    pub(crate) fn display_style(&self) -> Option<Display> {
+        Some(self.primary_styles().as_ref()?.clone_display())
+    }
+
     pub fn primary_styles(&self) -> Option<AtomicRef<'_, StyloComputedValues>> {
         let stylo_data = self.stylo_data.borrow();
         if stylo_data.as_ref().and_then(|data| data.styles.get_primary()).is_some() {
@@ -743,7 +891,7 @@ impl DomNode {
             .borrow()
             .as_ref()
             .map(|element_data| element_data.styles.primary().clone())
-            .expect("CSS not applied whatsoever").to_arc()
+            .unwrap_or(StyloComputedValues::initial_values_with_font_override(Font::initial_values())).to_arc()
     }
 
     /// Get text content of this node and its descendants
@@ -920,6 +1068,89 @@ impl DomNode {
 
         result
     }
+
+    /// Find nodes that match a predicate, returning owned references
+    pub fn find_nodes_mut<F>(&mut self, predicate: F) -> Vec<usize>
+    where
+        F: Fn(&mut DomNode) -> bool + Clone,
+    {
+        let mut result: Vec<usize> = Vec::new();
+
+        // We can't include self in the result since we don't have an Rc to self
+        // This method is meant to be called on nodes that are already in Rc<RefCell<>>
+
+        // Recursively check children
+        for child in self.children.clone() {
+            let child = self.get_node_mut(child);
+            if predicate(&mut *child) {
+                result.push(child.id);
+            }
+
+            // Recursively search in child's children
+            let mut child_matches = child.find_nodes_mut(predicate.clone());
+            result.append(&mut child_matches);
+        }
+
+        result
+    }
+
+    pub fn outer_html(&self) -> String {
+        let mut output = String::new();
+        self.write_outer_html(&mut output);
+        output
+    }
+
+    pub fn write_outer_html(&self, writer: &mut String) {
+        let has_children = !self.children.is_empty();
+        let current_color = self
+            .primary_styles()
+            .map(|style| style.clone_color())
+            .map(|color| color.to_css_string());
+
+        match &self.data {
+            NodeData::Document => {}
+            NodeData::Comment { contents: _ } => {}
+            NodeData::AnonymousBlock(_) => {}
+            // NodeData::Doctype { name, .. } => write!(s, "DOCTYPE {name}"),
+            NodeData::Text { contents }  => {
+                writer.push_str(&**contents.borrow());
+            }
+            NodeData::Element(data) => {
+                writer.push('<');
+                writer.push_str(&data.name.local);
+
+                for attr in data.attrs().iter() {
+                    writer.push(' ');
+                    writer.push_str(&attr.name.local);
+                    writer.push_str("=\"");
+                    #[allow(clippy::unnecessary_unwrap)] // Convert to if-let chain once stabilised
+                    if current_color.is_some() && attr.value.contains("currentColor") {
+                        let value = attr
+                            .value
+                            .replace("currentColor", current_color.as_ref().unwrap());
+                        encode_quoted_attribute_to_string(&value, writer);
+                    } else {
+                        encode_quoted_attribute_to_string(&attr.value, writer);
+                    }
+                    writer.push('"');
+                }
+                if !has_children {
+                    writer.push_str(" /");
+                }
+                writer.push('>');
+
+                if has_children {
+                    for &child_id in &self.children {
+                        self.tree()[child_id].write_outer_html(writer);
+                    }
+
+                    writer.push_str("</");
+                    writer.push_str(&data.name.local);
+                    writer.push('>');
+                }
+            }
+        }
+    }
 }
 
 impl fmt::Debug for DomNode {
@@ -962,26 +1193,6 @@ impl fmt::Debug for DomNode {
             },
             NodeData::Comment { contents } => {
                 write!(f, "<!-- {} -->", contents)
-            },
-            NodeData::DocType { name, public_id, system_id } => {
-                write!(f, "<!DOCTYPE {} PUBLIC \"{}\" \"{}\">", name, public_id, system_id)
-            },
-            NodeData::DocumentFragment => {
-                write!(f, "<#document-fragment>")
-            },
-            NodeData::ProcessingInstruction { target, data } => {
-                write!(f, "<?{} {}?>", target, data)
-            },
-            NodeData::Image(data) => {
-                let data = data.borrow();
-                write!(f, "<img src=\"{}\" alt=\"{}\"", data.src, data.alt)?;
-                if let Some(width) = data.width {
-                    write!(f, " width=\"{}\"", width)?;
-                }
-                if let Some(height) = data.height {
-                    write!(f, " height=\"{}\"", height)?;
-                }
-                write!(f, "/>")
             },
         }
     }

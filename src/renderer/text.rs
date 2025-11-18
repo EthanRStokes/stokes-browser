@@ -1,5 +1,4 @@
 use crate::dom::{Dom, DomNode};
-use crate::layout::LayoutBox;
 use crate::renderer::cache::{FontCacheKey, FontCacheKeyBorrowed, GenerationalCache, NormalizedTypefaceCacheKey, NormalizedTypefaceCacheKeyBorrowed};
 use color::{AlphaColor, Srgb};
 use html5ever::tendril::StrTendril;
@@ -25,14 +24,14 @@ pub fn render_text_node(
     painter: &mut TextPainter,
     node: &DomNode,
     dom: &Dom,
-    layout_box: &LayoutBox,
     contents: &RefCell<StrTendril>,
     style: &Arc<ComputedValues>,
     scale_factor: f32,
     scroll_transform: kurbo::Affine,
 ) {
     let text = contents.borrow();
-    let content_rect = layout_box.dimensions.content;
+    let layout = node.final_layout;
+    let content_rect = Rect::from_xywh(layout.location.x, layout.location.y, layout.size.width, layout.size.height);
 
     let mut font_ctx = dom.font_ctx.lock().unwrap();
     let mut layout_ctx = dom.layout_ctx.lock().unwrap();
