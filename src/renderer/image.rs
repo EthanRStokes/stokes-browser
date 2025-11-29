@@ -10,12 +10,12 @@ use kurbo::Affine;
 use style::properties::ComputedValues;
 use style::servo_arc::Arc;
 use style::properties::generated::ComputedValues as StyloComputedValues;
-use crate::dom::node::CachedImage;
 use crate::renderer::background::{to_image_quality, to_peniko_image};
 
 /// Render image content
 pub fn render_image_node(painter: &mut TextPainter, node: &DomNode, dom: &Dom, image_data: &Box<ImageData>, style: &Arc<StyloComputedValues>, scale_factor: f32, scroll_transform: kurbo::Affine) {
-    let image_data = image_data;
+    // TODO reimplement image stuff
+    /*let image_data = image_data;
     let layout = node.final_layout;
     let content_rect = Rect::from_xywh(layout.location.x, layout.location.y, layout.size.width, layout.size.height);
 
@@ -60,7 +60,7 @@ pub fn render_image_node(painter: &mut TextPainter, node: &DomNode, dom: &Dom, i
             };
             render_image_placeholder(painter, dom, &content_rect, placeholder_text, scale_factor, scroll_transform);
         }
-    }
+    }*/
 }
 
 /// Render a placeholder for images (when not loaded, loading, or failed)

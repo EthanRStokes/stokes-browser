@@ -5,6 +5,8 @@ mod events;
 mod config;
 pub(crate) mod damage;
 mod url;
+mod layout;
+mod traverse;
 
 use markup5ever::{ns, QualName};
 use std::cell::RefCell;
@@ -14,8 +16,9 @@ use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use blitz_traits::net::{DummyNetProvider, NetProvider};
-use blitz_traits::shell::Viewport;
+use blitz_traits::shell::{DummyShellProvider, ShellProvider, Viewport};
 use euclid::Size2D;
 use markup5ever::local_name;
 use parley::{FontContext, LayoutContext};
@@ -42,27 +45,17 @@ use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use taffy::Point;
 use crate::dom::config::DomConfig;
 use crate::dom::damage::{ALL_DAMAGE, CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC};
+use crate::dom::layout::collect_layout_children;
 use crate::dom::node::{DomNodeFlags, NodeKind, SpecialElementData, TextLayout};
 use crate::dom::url::DocUrl;
 use crate::layout::table::build_table_context;
-use crate::networking::{parse_svg, Resource, StylesheetLoader};
+use crate::networking::{parse_svg, Resource, ResourceLoadResponse, StylesheetLoader};
 use crate::ui::TextBrush;
 pub use self::events::{EventDispatcher, EventType};
 pub use self::node::{AttributeMap, DomNode, ElementData, ImageData, ImageLoadingState, NodeData};
 pub use self::parser::HtmlParser;
 
 const ZERO: Point<f64> = Point { x: 0.0, y: 0.0 };
-
-#[macro_export]
-macro_rules! qual_name {
-    ($local:tt $(, $ns:ident)?) => {
-        markup5ever::interface::QualName {
-            prefix: None,
-            ns: ns!($($ns)?),
-            local: local_name!($local),
-        }
-    };
-}
 
 /// Represents a DOM tree
 pub struct Dom {
@@ -74,6 +67,9 @@ pub struct Dom {
     pub(crate) viewport: Viewport,
     // Scroll position in the viewport
     pub(crate) viewport_scroll: Point<f64>,
+
+    pub(crate) tx: Sender<DomEvent>,
+    pub(crate) rx: Option<Receiver<DomEvent>>,
 
     pub(crate) nodes: Box<Slab<DomNode>>,
 
@@ -94,7 +90,12 @@ pub struct Dom {
     pub(crate) nodes_to_stylesheet: BTreeMap<usize, DocumentStyleSheet>,
     pub(crate) stylesheets: HashMap<String, DocumentStyleSheet>,
 
-    pub net_provider: Arc<dyn NetProvider<Resource>>,
+    pub net_provider: Arc<dyn NetProvider>,
+    pub shell_provider: Arc<dyn ShellProvider>,
+}
+
+pub enum DomEvent {
+    ResourceLoad(ResourceLoadResponse)
 }
 
 pub(crate) fn device(viewport: &Viewport, font_ctx: Arc<Mutex<FontContext>>) -> Device {
@@ -165,12 +166,17 @@ impl Dom {
 
         let base_url = config.base_url.and_then(|url| DocUrl::from_str(&url).ok()).unwrap_or_default();
         let net_provider = config.net_provider.unwrap_or_else(|| Arc::new(DummyNetProvider));
+        let shell_provider = config.shell_provider.unwrap_or_else(|| Arc::new(DummyShellProvider));
+
+        let (tx, rx) = channel();
 
         let mut dom = Self {
             id,
             url: base_url,
             viewport,
             viewport_scroll: ZERO,
+            tx,
+            rx: Some(rx),
             nodes: Box::new(Slab::new()),
             //root: Rc::new(RefCell::from(DomNode::new(NodeData::Document, None))),
             stylist: Stylist::new(device, QuirksMode::NoQuirks),
@@ -185,6 +191,7 @@ impl Dom {
             nodes_to_stylesheet: Default::default(),
             stylesheets: Default::default(),
             net_provider,
+            shell_provider,
         };
 
         // Create the root document node
@@ -269,7 +276,12 @@ impl Dom {
             origin,
             style::servo_arc::Arc::new(self.lock.wrap(MediaList::empty())),
             self.lock.clone(),
-            Some(&StylesheetLoader(self.id, self.net_provider.clone())), // todo
+            Some(&StylesheetLoader {
+                tx: self.tx.clone(),
+                dom_id: self.id,
+                net_provider: self.net_provider.clone(),
+                shell_provider: self.shell_provider.clone(),
+            }),
             None,
             QuirksMode::NoQuirks,
             AllowImportRules::Yes
@@ -285,41 +297,24 @@ impl Dom {
             let mut damage = dom.nodes[node_id].damage().unwrap_or(ALL_DAMAGE);
             let _flags = &dom.nodes[node_id].flags;
 
-            if damage.intersects(CONSTRUCT_FC | CONSTRUCT_BOX) {
-                //} || flags.contains(NodeFlags::IS_INLINE_ROOT) {
-                let mut layout_children = Vec::new();
-                let mut anonymous_block: Option<usize> = None;
+            let mut layout_children = Vec::new();
+            let mut anonymous_block: Option<usize> = None;
+            collect_layout_children(dom, node_id, &mut layout_children, &mut anonymous_block);
 
-                // Recurse into newly collected layout children
-                for child_id in layout_children.iter().copied() {
-                    get_layout_children_recursive(dom, child_id);
-                    dom.nodes[child_id].layout_parent.set(Some(node_id));
-                    if let Some(data) = dom.nodes[child_id].stylo_data.get_mut() {
-                        data.damage
-                            .remove(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-                    }
+            // Recurse into newly collected layout children
+            for child_id in layout_children.iter().copied() {
+                get_layout_children_recursive(dom, child_id);
+                dom.nodes[child_id].layout_parent.set(Some(node_id));
+                if let Some(data) = dom.nodes[child_id].stylo_data.get_mut() {
+                    data.damage
+                        .remove(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
                 }
-
-                *dom.nodes[node_id].layout_children.borrow_mut() = Some(layout_children.clone());
-
-                damage.remove(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-                // damage.insert(RestyleDamage::RELAYOUT | RestyleDamage::REPAINT);
-            } else {
-                //if damage.contains(CONSTRUCT_DESCENDENT) {
-                let layout_children = dom.nodes[node_id].layout_children.borrow_mut().take();
-                if let Some(layout_children) = layout_children {
-                    // Recurse into previously computed layout children
-                    for child_id in layout_children.iter().copied() {
-                        get_layout_children_recursive(dom, child_id);
-                        dom.nodes[child_id].layout_parent.set(Some(node_id));
-                    }
-
-                    *dom.nodes[node_id].layout_children.borrow_mut() = Some(layout_children);
-                }
-
-                // damage.remove(CONSTRUCT_DESCENDENT);
-                // damage.insert(RestyleDamage::RELAYOUT | RestyleDamage::REPAINT);
             }
+
+            *dom.nodes[node_id].layout_children.borrow_mut() = Some(layout_children.clone());
+
+            damage.remove(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+            // damage.insert(RestyleDamage::RELAYOUT | RestyleDamage::REPAINT);
 
             dom.nodes[node_id].set_damage(damage);
         }
@@ -342,91 +337,6 @@ impl Dom {
         // set layout styles for children
         for child_id in self.nodes[node_id].children.clone() {
             self.flush_layout_style(child_id);
-        }
-    }
-
-    const DUMMY_NAME: QualName = qual_name!("div", html);
-
-    // TODO TODO TODO collect layout children
-    fn flush_pseudo_elements(dom: &mut Dom, node_id: usize) {
-        let (before_style, after_style, before_node_id, after_node_id) = {
-            let node = &dom.nodes[node_id];
-
-            let before_node_id = node.before;
-            let after_node_id = node.after;
-
-            // Note: yes these are kinda backwards
-            let style_data = node.stylo_data.borrow();
-            let before_style = style_data
-                .as_ref()
-                .and_then(|d| d.styles.pseudos.as_array()[1].clone());
-            let after_style = style_data
-                .as_ref()
-                .and_then(|d| d.styles.pseudos.as_array()[0].clone());
-
-            (before_style, after_style, before_node_id, after_node_id)
-        };
-
-        // Sync pseudo element
-        for (idx, pe_style, pe_node_id) in [
-            (1, before_style, before_node_id),
-            (0, after_style, after_node_id),
-        ] {
-            // Delete psuedo element if it exists but shouldn't
-            if let (Some(pe_node_id), None) = (pe_node_id, &pe_style) {
-                dom.remove_and_drop_pe(pe_node_id);
-                let node = &mut dom.nodes[node_id];
-                node.set_pe_by_index(idx, None);
-                node.insert_damage(ALL_DAMAGE);
-            }
-
-            // Create pseudo element if it should exist but doesn't
-            if let (None, Some(pe_style)) = (pe_node_id, &pe_style) {
-                let new_node_id = dom.create_node(NodeData::AnonymousBlock(ElementData::new(
-                    Self::DUMMY_NAME,
-                    AttributeMap::empty(),
-                )));
-                dom.nodes[new_node_id].parent = Some(node_id);
-                dom.nodes[new_node_id].layout_parent.set(Some(node_id));
-
-                let content = &pe_style.as_ref().get_counters().content;
-                if let Content::Items(item_data) = content {
-                    let items = &item_data.items[0..item_data.alt_start];
-                    match &items[0] {
-                        ContentItem::String(owned_str) => {
-                            // create text node
-                        }
-                        _ => {
-                            // TODO: other types of content
-                        }
-                    }
-                }
-
-                let mut element_data = style::data::ElementData::default();
-                element_data.styles.primary = Some(pe_style.clone());
-                element_data.set_restyled();
-                element_data.damage = RestyleDamage::all();
-                *dom.nodes[new_node_id].stylo_data.borrow_mut() = Some(element_data);
-
-                let node = &mut dom.nodes[node_id];
-                node.set_pe_by_index(idx, Some(new_node_id));
-                node.insert_damage(ALL_DAMAGE);
-            }
-
-            // Else: Update psuedo element
-            if let (Some(pe_node_id), Some(pe_style)) = (pe_node_id, pe_style) {
-                // TODO: Update content
-
-                let mut node_styles = dom.nodes[pe_node_id].stylo_data.borrow_mut();
-                let node_styles = &mut node_styles.as_mut().unwrap();
-                node_styles.damage.insert(RestyleDamage::all());
-                let primary_styles = &mut node_styles.styles.primary;
-
-                if !std::ptr::eq(&**primary_styles.as_ref().unwrap(), &*pe_style) {
-                    *primary_styles = Some(pe_style);
-                    node_styles.set_restyled();
-                }
-            }
         }
     }
 

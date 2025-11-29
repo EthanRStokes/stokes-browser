@@ -106,7 +106,7 @@ pub enum BoxType {
     Inline,
     InlineBlock,
     Text,
-    Image(RefCell<ImageData>),
+    Image,
 }
 
 #[derive(Debug)]
@@ -157,8 +157,8 @@ impl LayoutBox {
             BoxType::Inline => self.layout_inline(container_width, container_height, offset_x, offset_y, scale_factor),
             BoxType::InlineBlock => self.layout_inline_block(container_width, container_height, offset_x, offset_y, scale_factor),
             BoxType::Text => self.layout_text(container_width, container_height, offset_x, offset_y, scale_factor),
-            BoxType::Image(data) => {
-                self.layout_image(data.clone(), container_width, container_height, offset_x, offset_y, scale_factor)
+            BoxType::Image => {
+                self.layout_image(container_width, container_height, offset_x, offset_y, scale_factor)
             },
         }
     }
@@ -560,16 +560,7 @@ impl LayoutBox {
     }
 
     /// Layout image nodes with position offset
-    fn layout_image(&mut self, data: RefCell<ImageData>, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
-        let data = data.borrow();
-        // Default image dimensions
-        let default_width = 150;
-        let default_height = 100;
-
-        // Use specified dimensions from HTML attributes if available, or CSS if specified
-        let base_image_width = data.width.unwrap_or(default_width) as f32;
-        let base_image_height = data.height.unwrap_or(default_height) as f32;
-
+    fn layout_image(&mut self, container_width: f32, container_height: f32, offset_x: f32, offset_y: f32, scale_factor: f32) {
         // Apply CSS dimensions if specified, otherwise use HTML attributes or defaults
         let size = self.style.size;
         let width = size.width.into_raw().value();

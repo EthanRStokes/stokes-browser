@@ -27,7 +27,9 @@ use style::traversal::DomTraversal;
 use style::traversal_flags::TraversalFlags;
 use stylo_atoms::Atom;
 use crate::css::stylo::RecalcStyle;
-use crate::dom::node::{CachedImage, RasterImageData, SpecialElementData};
+use crate::dom::node::{RasterImageData, SpecialElementData};
+use crate::renderer::background::BackgroundImageCache;
+use crate::renderer::paint::DefaultPaints;
 use crate::renderer::text::TextPainter;
 
 /// The core browser engine that coordinates all browser activities
@@ -40,8 +42,6 @@ pub struct Engine {
     pub(crate) dom: Option<Dom>,
     layout: Option<LayoutBox>,
     layout_engine: LayoutEngine,
-    // Add cached renderer and style map
-    renderer: HtmlRenderer,
     style_map_dirty: bool,
     scroll_y: f32,
     scroll_x: f32,
@@ -66,7 +66,6 @@ impl Engine {
             dom: None,
             layout: None,
             layout_engine: LayoutEngine::new(800.0, 600.0), // Default viewport size
-            renderer: HtmlRenderer::new(),
             style_map_dirty: false,
             scroll_y: 0.0,
             scroll_x: 0.0,
@@ -158,14 +157,15 @@ impl Engine {
             if let NodeData::Element(ref mut image_data) = image_node.data {
                 if let SpecialElementData::Image(image_data) = &mut image_data.special_data {
                     // Only start loading if not already loaded or loading
-                    if matches!(image_data.loading_state, ImageLoadingState::NotLoaded) {
+                    // TODO reimplement image fetching
+                    /*if matches!(image_data.loading_state, ImageLoadingState::NotLoaded) {
                         // Set to loading state
                         image_data.loading_state = ImageLoadingState::Loading;
 
                         if !image_data.src.is_empty() {
                             image_requests.push((image_node.id, image_data.src.clone()));
                         }
-                    }
+                    }*/
                 }
             }
         }
@@ -209,21 +209,20 @@ impl Engine {
                                 let (width, height) = rgba_image.dimensions();
                                 let rgba_data = rgba_image.into_raw();
 
-                                let raster = style::servo_arc::Arc::new(RasterImageData::new(
+                                let raster = RasterImageData::new(
                                     width,
                                     height,
                                     Arc::new(rgba_data),
-                                ));
-                                data.cached_image = CachedImage::Raster(raster.clone());
-                                data.loading_state = ImageLoadingState::Loaded(raster);
+                                );
+                                *data = Box::new(ImageData::Raster(raster.clone()));
                                 println!("Successfully loaded and decoded image: {}", src);
                             } else {
                                 println!("Successfully loaded but failed to decode image: {}", src);
-                                data.loading_state = ImageLoadingState::Failed("Failed to decode image".to_string());
+                                //data.loading_state = ImageLoadingState::Failed("Failed to decode image".to_string());
                             };
                         }
                         Err(err) => {
-                            data.loading_state = ImageLoadingState::Failed(err.to_string());
+                            //data.loading_state = ImageLoadingState::Failed(err.to_string());
                             println!("Failed to load image {}: {}", src, err);
                         }
                     }
@@ -347,7 +346,8 @@ impl Engine {
             let image_node = dom.get_node_mut(image_node).unwrap();
             if let NodeData::Element(ref mut image_data) = image_node.data {
                 if let SpecialElementData::Image(image_data) = &mut image_data.special_data {
-                    image_data.loading_state = ImageLoadingState::NotLoaded;
+                    // TODO
+                    //image_data.loading_state = ImageLoadingState::NotLoaded;
                 }
             }
         }
@@ -376,6 +376,9 @@ impl Engine {
     /// Update the viewport size
     pub fn set_viewport_size(&mut self, width: f32, height: f32) {
         self.viewport.window_size = (width as u32, height as u32);
+        if let Some(dom) = &mut self.dom {
+            dom.viewport.window_size = (width as u32, height as u32);
+        }
         self.layout_engine.set_viewport(width, height);
 
         // Recalculate layout with new viewport
@@ -413,18 +416,23 @@ impl Engine {
         self.update_content_dimensions();
     }
 
-    /// Render the current page to a canvas with transition support
-    pub fn render(&mut self, painter: &mut TextPainter, scale_factor: f32) {
+    /// Render the current page to a canvas
+    pub fn render(&mut self, painter: &mut TextPainter) {
         let dom = self.dom.as_ref().unwrap();
         let node = dom.root_node();
 
-        self.renderer.render(
+        let mut renderer = HtmlRenderer {
+            dom: &dom,
+            scale_factor: self.viewport.hidpi_scale as f64,
+            width: self.viewport_width() as u32,
+            height: self.viewport_height() as u32,
+            paints: DefaultPaints::new(),
+            background_image_cache: BackgroundImageCache::new(),
+        };
+
+        renderer.render(
             painter,
             node,
-            dom,
-            self.scroll_x,
-            self.scroll_y,
-            scale_factor
         );
     }
 
@@ -620,6 +628,8 @@ impl Engine {
         let max_scroll = (self.content_height - self.viewport_height()).max(0.0);
         self.scroll_y = self.scroll_y.min(max_scroll);
 
+        self.update_dom_scroll();
+
         // Return whether scroll position actually changed
         old_scroll_y != self.scroll_y
     }
@@ -633,19 +643,32 @@ impl Engine {
         let max_scroll = (self.content_width - self.viewport_width()).max(0.0);
         self.scroll_x = self.scroll_x.min(max_scroll);
 
+        self.update_dom_scroll();
+
         // Return whether scroll position actually changed
         old_scroll_x != self.scroll_x
     }
 
     /// Get current scroll position
-    pub fn scroll_position(&self) -> (f32, f32) {
-        (self.scroll_x, self.scroll_y)
+    pub fn scroll_position(&self) -> taffy::Point<f64> {
+        self.dom().viewport_scroll
+    }
+
+    fn update_dom_scroll(&mut self) {
+        let x = self.scroll_x as f64;
+        let y = self.scroll_y as f64;
+
+        let dom = self.dom_mut();
+        dom.viewport_scroll.x = x;
+        dom.viewport_scroll.y = y;
     }
 
     /// Set scroll position directly
     pub fn set_scroll_position(&mut self, x: f32, y: f32) {
         self.scroll_x = x.max(0.0).min((self.content_width - self.viewport_width()).max(0.0));
         self.scroll_y = y.max(0.0).min((self.content_height - self.viewport_height()).max(0.0));
+
+        self.update_dom_scroll();
     }
 
     /// Update content dimensions based on layout

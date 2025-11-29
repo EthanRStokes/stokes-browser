@@ -3,7 +3,7 @@ use glutin::config::{ConfigTemplateBuilder, GlConfig};
 use glutin::context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext};
 use glutin::display::{GetGlDisplay, GlDisplay};
 use glutin::surface::{Surface as GlutinSurface, SurfaceAttributesBuilder, WindowSurface};
-use glutin_winit::DisplayBuilder;
+use glutin_winit::{ApiPreference, DisplayBuilder};
 use skia_safe::gpu::gl::{Format, FramebufferInfo, Interface};
 use skia_safe::gpu::surfaces::wrap_backend_render_target;
 use skia_safe::gpu::{backend_render_targets, DirectContext};
@@ -47,7 +47,7 @@ pub(crate) fn create_window(el: &EventLoop<()>) -> Env {
         .with_alpha_size(8)
         .with_transparency(true);
 
-    let display_builder = DisplayBuilder::new().with_window_attributes(window_attrs.into());
+    let display_builder = DisplayBuilder::new().with_preference(ApiPreference::PreferEgl).with_window_attributes(window_attrs.into());
     let (window, gl_config) = display_builder
         .build(el, template, |configs| {
             configs

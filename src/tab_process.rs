@@ -354,6 +354,9 @@ impl TabProcess {
             }
             ParentToTabMessage::SetScaleFactor(scale) => {
                 self.engine.viewport.hidpi_scale = scale;
+                if let Some(dom) = &mut self.engine.dom {
+                    dom.viewport.hidpi_scale = scale;
+                }
                 self.engine.recalculate_layout();
                 self.render_frame()?;
             }
@@ -379,7 +382,7 @@ impl TabProcess {
 
             let engine = &mut self.engine;
             if engine.dom.is_some() {
-                engine.render(&mut painter, engine.viewport.hidpi_scale);
+                engine.render(&mut painter);
             }
 
             // Copy the pixel data to shared memory

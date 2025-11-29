@@ -1,8 +1,8 @@
 use crate::dom::node::RasterImageData;
 use crate::renderer::text::TextPainter;
-use kurbo::Affine;
+use kurbo::{Affine, Rect};
 use peniko::{ImageAlphaType, ImageData, ImageFormat, ImageSampler};
-use skia_safe::{Color, Paint, Rect};
+use skia_safe::Color;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -76,7 +76,7 @@ pub fn render_background_image(
                     let image_rendering = inherited_box.image_rendering;
                     let quality = to_image_quality(image_rendering);
 
-                    let transform = scroll_transform * Affine::translate((rect.left as f64, rect.top as f64));
+                    let transform = scroll_transform * Affine::translate((rect.x0, rect.y0));
 
                     // Draw the background image to cover the entire rect
                     painter.draw_image(to_peniko_image(&image, quality).as_ref(), transform);
@@ -97,7 +97,7 @@ pub fn render_background_image(
                                         let image_rendering = inherited_box.image_rendering;
                                         let quality = to_image_quality(image_rendering);
 
-                                        let transform = scroll_transform * Affine::translate((rect.left as f64, rect.top as f64));
+                                        let transform = scroll_transform * Affine::translate((rect.x0, rect.y0));
 
                                         // Draw the background image to cover the entire rect
                                         painter.draw_image(to_peniko_image(&image, quality).as_ref(), transform);

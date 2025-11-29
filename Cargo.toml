@@ -19,8 +19,6 @@ resvg = "0.45.1"
 usvg = "0.45.1"
 tiny-skia = "0.11.4"
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
-#boa_engine = "0.20.0"
-#boa_gc = "0.20.0"
 mozjs = { git = "https://github.com/servo/mozjs.git", rev = "73aed6e" }
 base64 = "0.22"
 stacker = "0.1"
@@ -32,17 +30,17 @@ parking_lot = "0.12"
 uds_windows = "1.1.0"
 rfd = "0.16.0"
 url = "2"
-taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "fff4ea6e71e4f6ec29d0ea560a77545ad611470a" }
+taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "22868d2812bf903cc4d1dc514cf82197d9849a0b" }
 slab = "0.4.11"
 markup5ever = "0.36.1"
-parley = "0.6.0"
+parley = { git = "https://github.com/linebender/parley", rev = "10fedab4bfd4254a227a1a0f9602b6218e1fe447" }
 euclid = "0.22.11"
 bitflags = "2.10.0"
 atomic_refcell = "0.1.13"
 skrifa = "0.39.0"
 kurbo = "0.12.0"
-bytes = "1.10.1"
-tracing = "0.1.41"
+bytes = "1.11.0"
+tracing = "0.1.43"
 wuff = "0.2.1"
 hashbrown = "0.16.1"
 peniko = "0.5.0"
@@ -59,9 +57,10 @@ stylo_dom = "0.9.0"
 selectors = "0.33.0"
 
 # Blitz
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "b8b88a5d" }
-blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "b8b88a5d" }
-stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "b8b88a5d", features = ["floats"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "63e7c4d" }
+blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "63e7c4d" }
+stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "63e7c4d", features = ["floats"] }
+log = "0.4.28"
 
 [dependencies.winit]
 git = "https://github.com/Treetrain1/winit.git"
@@ -69,5 +68,3 @@ default-features = true
 
 [patch.crates-io]
 winit = { git = "https://github.com/Treetrain1/winit.git" }
-
-# Boa engine removed, now using mozjs

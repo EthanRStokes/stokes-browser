@@ -3,8 +3,11 @@ use std::io::Cursor;
 use curl::easy::{Easy, List};
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::Sender;
 use std::time::Duration;
-use blitz_traits::net::{NetHandler, Request, SharedCallback, SharedProvider};
+use blitz_traits::net::{NetHandler, NetProvider, Request};
+use blitz_traits::shell::ShellProvider;
 use bytes::Bytes;
 use selectors::context::QuirksMode;
 use style::font_face::{FontFaceSourceFormat, FontFaceSourceFormatKeyword, Source};
@@ -18,6 +21,7 @@ use style::parser::ParserContext;
 use style::stylesheets::import_rule::{ImportLayer, ImportSheet, ImportSupportsCondition};
 use style::stylesheets::{ImportRule, StylesheetLoader as StyloStylesheetLoader};
 use style::values::{CssUrl, SourceLocation};
+use crate::dom::DomEvent;
 
 #[derive(Debug)]
 pub enum NetworkError {
@@ -68,22 +72,131 @@ pub enum ImageType {
 
 #[derive(Clone, Debug)]
 pub enum Resource {
-    Image(usize, ImageType, u32, u32, Arc<Vec<u8>>),
-    Svg(usize, ImageType, Box<usvg::Tree>),
-    Css(usize, DocumentStyleSheet),
+    Image(ImageType, u32, u32, Arc<Vec<u8>>),
+    Svg(ImageType, Box<usvg::Tree>),
+    Css(DocumentStyleSheet),
     Font(Bytes),
     None,
 }
 
-pub struct CssHandler {
-    pub node: usize,
-    pub url: Url,
-    pub lock: SharedRwLock,
-    pub provider: SharedProvider<Resource>,
+pub(crate) struct ResourceHandler<T: Send + Sync + 'static> {
+    dom_id: usize,
+    request_id: usize,
+    node_id: Option<usize>,
+    tx: Sender<DomEvent>,
+    shell_provider: Arc<dyn ShellProvider>,
+    data: T,
+}
+
+impl<T: Send + Sync + 'static> ResourceHandler<T> {
+    pub(crate) fn new(
+        tx: Sender<DomEvent>,
+        doc_id: usize,
+        node_id: Option<usize>,
+        shell_provider: Arc<dyn ShellProvider>,
+        data: T,
+    ) -> Self {
+        static REQUEST_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
+        Self {
+            request_id: REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
+            dom_id: doc_id,
+            node_id,
+            tx,
+            shell_provider,
+            data,
+        }
+    }
+
+    pub(crate) fn boxed(
+        tx: Sender<DomEvent>,
+        doc_id: usize,
+        node_id: Option<usize>,
+        shell_provider: Arc<dyn ShellProvider>,
+        data: T,
+    ) -> Box<dyn NetHandler>
+    where
+        ResourceHandler<T>: NetHandler,
+    {
+        Box::new(Self::new(tx, doc_id, node_id, shell_provider, data)) as _
+    }
+
+    fn respond(&self, resolved_url: String, result: Result<Resource, String>) {
+        let response = ResourceLoadResponse {
+            request_id: self.request_id,
+            node_id: self.node_id,
+            resolved_url: Some(resolved_url),
+            result,
+        };
+        let _ = self.tx.send(DomEvent::ResourceLoad(response));
+        self.shell_provider.request_redraw();
+    }
+}
+
+#[allow(unused)]
+pub struct ResourceLoadResponse {
+    pub request_id: usize,
+    pub node_id: Option<usize>,
+    pub resolved_url: Option<String>,
+    pub result: Result<Resource, String>,
+}
+
+pub struct StylesheetHandler {
+    pub source_url: Url,
+    pub guard: SharedRwLock,
+    pub net_provider: Arc<dyn NetProvider>,
+}
+
+impl NetHandler for ResourceHandler<StylesheetHandler> {
+    fn bytes(self: Box<Self>, resolved_url: String, bytes: Bytes) {
+        let Ok(css) = std::str::from_utf8(&bytes) else {
+            return self.respond(resolved_url, Err(String::from("Invalid UTF8")));
+        };
+
+        // NOTE(Nico): I don't *think* external stylesheets should have HTML entities escaped
+        // let escaped_css = html_escape::decode_html_entities(css);
+
+        let sheet = Stylesheet::from_str(
+            css,
+            self.data.source_url.clone().into(),
+            Origin::Author,
+            ServoArc::new(self.data.guard.wrap(MediaList::empty())),
+            self.data.guard.clone(),
+            Some(&StylesheetLoader {
+                tx: self.tx.clone(),
+                dom_id: self.dom_id,
+                net_provider: self.data.net_provider.clone(),
+                shell_provider: self.shell_provider.clone(),
+            }),
+            None, // error_reporter
+            QuirksMode::NoQuirks,
+            AllowImportRules::Yes,
+        );
+
+        // Fetch @font-face fonts
+        fetch_font_face(
+            self.tx.clone(),
+            self.dom_id,
+            self.node_id,
+            &sheet,
+            &self.data.net_provider,
+            &self.shell_provider,
+            &self.data.guard.read(),
+        );
+
+        self.respond(
+            resolved_url,
+            Ok(Resource::Css(DocumentStyleSheet(ServoArc::new(sheet)))),
+        );
+    }
 }
 
 #[derive(Clone)]
-pub(crate) struct StylesheetLoader(pub(crate) usize, pub(crate) SharedProvider<Resource>);
+pub(crate) struct StylesheetLoader {
+    pub(crate) tx: Sender<DomEvent>,
+    pub(crate) dom_id: usize,
+    pub(crate) net_provider: Arc<dyn NetProvider>,
+    pub(crate) shell_provider: Arc<dyn ShellProvider>,
+}
 
 impl StyloStylesheetLoader for StylesheetLoader {
     fn request_stylesheet(
@@ -116,16 +229,21 @@ impl StyloStylesheetLoader for StylesheetLoader {
         let url = import.url.url().unwrap().clone();
         let import = ServoArc::new(lock.wrap(import));
 
-        self.1.fetch(
-            self.0,
+        self.net_provider.fetch(
+            self.dom_id,
             Request::get(url.as_ref().clone()),
-            Box::new(StylesheetLoaderInner {
-                loader: self.clone(),
-                lock: lock.clone(),
-                url: url.clone(),
-                media: media,
-                import_rule: import.clone(),
-                provider: self.1.clone(),
+            ResourceHandler::boxed(
+                self.tx.clone(),
+                self.dom_id,
+                None, // node_id
+                self.shell_provider.clone(),
+                StylesheetLoaderInner {
+                    loader: self.clone(),
+                    lock: lock.clone(),
+                    url: url.clone(),
+                    media,
+                    import_rule: import.clone(),
+                    provider: self.net_provider.clone(),
             }),
         );
 
@@ -139,73 +257,67 @@ struct StylesheetLoaderInner {
     url: ServoArc<Url>,
     media: ServoArc<Locked<MediaList>>,
     import_rule: ServoArc<Locked<ImportRule>>,
-    provider: SharedProvider<Resource>,
+    provider: Arc<dyn NetProvider>,
 }
 
-impl NetHandler<Resource> for StylesheetLoaderInner {
-    fn bytes(self: Box<Self>, doc_id: usize, bytes: Bytes, callback: SharedCallback<Resource>) {
+impl NetHandler for ResourceHandler<StylesheetLoaderInner> {
+    fn bytes(self: Box<Self>, resolved_url: String, bytes: Bytes) {
         let Ok(css) = std::str::from_utf8(&bytes) else {
-            callback.call(doc_id, Err(Some(String::from("Invalid UTF8"))));
-            return;
+            return self.respond(resolved_url, Err(String::from("Invalid UTF8")));
         };
+
+        // NOTE(Nico): I don't *think* external stylesheets should have HTML entities escaped
+        // let escaped_css = html_escape::decode_html_entities(css);
 
         let sheet = ServoArc::new(Stylesheet::from_str(
             css,
-            UrlExtraData(self.url),
+            UrlExtraData(self.data.url.clone()),
             Origin::Author,
-            self.media.clone(),
-            self.lock.clone(),
-            Some(&self.loader),
+            self.data.media.clone(),
+            self.data.lock.clone(),
+            Some(&self.data.loader),
             None, // error_reporter
             QuirksMode::NoQuirks,
             AllowImportRules::Yes,
         ));
 
         // Fetch @font-face fonts
-        fetch_font_face(doc_id, &sheet, &self.provider, &self.lock.read());
-
-        let mut guard = self.lock.write();
-        self.import_rule.write_with(&mut guard).stylesheet = ImportSheet::Sheet(sheet);
-
-        callback.call(doc_id, Ok(Resource::None))
-    }
-}
-
-impl NetHandler<Resource> for CssHandler {
-    fn bytes(self: Box<Self>, doc_id: usize, bytes: Bytes, callback: blitz_traits::net::SharedCallback<Resource>) {
-        let Ok(css) = std::str::from_utf8(&bytes) else {
-            callback.call(doc_id, Err(Some(String::from("Invalid UTF-8 in CSS resource"))));
-            return;
-        };
-
-        let stylesheet = Stylesheet::from_str(
-            css,
-            self.url.into(),
-            Origin::Author,
-            ServoArc::new(self.lock.wrap(MediaList::empty())),
-            self.lock.clone(),
-            Some(&StylesheetLoader(doc_id, self.provider.clone())),
-            None,
-            QuirksMode::NoQuirks,
-            AllowImportRules::Yes
+        fetch_font_face(
+            self.tx.clone(),
+            self.dom_id,
+            self.node_id,
+            &sheet,
+            &self.data.provider,
+            &self.shell_provider,
+            &self.data.lock.read(),
         );
 
-        fetch_font_face(doc_id, &stylesheet, &self.provider, &self.lock.read());
+        let mut guard = self.data.lock.write();
+        self.data.import_rule.write_with(&mut guard).stylesheet = ImportSheet::Sheet(sheet);
+        drop(guard);
 
-        callback.call(doc_id, Ok(Resource::Css(self.node, DocumentStyleSheet(ServoArc::new(stylesheet)))));
+        self.respond(resolved_url, Ok(Resource::None))
     }
 }
 
 struct FontFaceHandler(FontFaceSourceFormatKeyword);
-impl NetHandler<Resource> for FontFaceHandler {
-    fn bytes(mut self: Box<Self>, doc_id: usize, bytes: Bytes, callback: SharedCallback<Resource>) {
+impl NetHandler for ResourceHandler<FontFaceHandler> {
+    fn bytes(mut self: Box<Self>, resolved_url: String, bytes: Bytes) {
+        let result = self.data.parse(bytes);
+        self.respond(resolved_url, result)
+    }
+}
+impl FontFaceHandler {
+    fn parse(&mut self, bytes: Bytes) -> Result<Resource, String> {
         if self.0 == FontFaceSourceFormatKeyword::None && bytes.len() >= 4 {
             self.0 = match &bytes.as_ref()[0..4] {
                 // WOFF (v1) files begin with 0x774F4646 ('wOFF' in ascii)
                 // See: <https://w3c.github.io/woff/woff1/spec/Overview.html#WOFFHeader>
+                #[cfg(any(feature = "woff-c", feature = "woff-rust"))]
                 b"wOFF" => FontFaceSourceFormatKeyword::Woff,
                 // WOFF2 files begin with 0x774F4632 ('wOF2' in ascii)
                 // See: <https://w3c.github.io/woff/woff2/#woff20Header>
+                #[cfg(any(feature = "woff-c", feature = "woff-rust"))]
                 b"wOF2" => FontFaceSourceFormatKeyword::Woff2,
                 // Opentype fonts with CFF data begin with 0x4F54544F ('OTTO' in ascii)
                 // See: <https://learn.microsoft.com/en-us/typography/opentype/spec/otff#organization-of-an-opentype-font>
@@ -221,47 +333,68 @@ impl NetHandler<Resource> for FontFaceHandler {
         }
 
         // Satisfy rustc's mutability linting with woff feature both enabled/disabled
+        #[cfg(any(feature = "woff-c", feature = "woff-rust"))]
         let mut bytes = bytes;
 
         match self.0 {
+            #[cfg(any(feature = "woff-c", feature = "woff-rust"))]
             FontFaceSourceFormatKeyword::Woff => {
+                #[cfg(feature = "tracing")]
                 tracing::info!("Decompressing woff1 font");
 
+                // Use woff crate to decompress font
+                #[cfg(feature = "woff-c")]
+                let decompressed = woff::version1::decompress(&bytes);
+
                 // Use wuff crate to decompress font
+                #[cfg(feature = "woff-rust")]
                 let decompressed = wuff::decompress_woff1(&bytes).ok();
 
                 if let Some(decompressed) = decompressed {
                     bytes = Bytes::from(decompressed);
                 } else {
+                    #[cfg(feature = "tracing")]
                     tracing::warn!("Failed to decompress woff1 font");
                 }
             }
+            #[cfg(any(feature = "woff-c", feature = "woff-rust"))]
             FontFaceSourceFormatKeyword::Woff2 => {
+                #[cfg(feature = "tracing")]
                 tracing::info!("Decompressing woff2 font");
 
+                // Use woff crate to decompress font
+                #[cfg(feature = "woff-c")]
+                let decompressed = woff::version2::decompress(&bytes);
+
                 // Use wuff crate to decompress font
+                #[cfg(feature = "woff-rust")]
                 let decompressed = wuff::decompress_woff2(&bytes).ok();
 
                 if let Some(decompressed) = decompressed {
                     bytes = Bytes::from(decompressed);
                 } else {
+                    #[cfg(feature = "tracing")]
                     tracing::warn!("Failed to decompress woff2 font");
                 }
             }
             FontFaceSourceFormatKeyword::None => {
-                return;
+                // Should this be an error?
+                return Ok(Resource::None);
             }
             _ => {}
         }
 
-        callback.call(doc_id, Ok(Resource::Font(bytes)))
+        Ok(Resource::Font(bytes))
     }
 }
 
 fn fetch_font_face(
+    tx: Sender<DomEvent>,
     doc_id: usize,
+    node_id: Option<usize>,
     sheet: &Stylesheet,
-    network_provider: &SharedProvider<Resource>,
+    network_provider: &Arc<dyn NetProvider>,
+    shell_provider: &Arc<dyn ShellProvider>,
     read_guard: &SharedRwLockReadGuard,
 ) {
     sheet
@@ -311,18 +444,38 @@ fn fetch_font_face(
                 return;
             }
             let url = url_source.url.url().unwrap().as_ref().clone();
-            network_provider.fetch(doc_id, Request::get(url), Box::new(FontFaceHandler(format)))
+            network_provider.fetch(
+                doc_id,
+                Request::get(url),
+                ResourceHandler::boxed(
+                    tx.clone(),
+                    doc_id,
+                    node_id,
+                    shell_provider.clone(),
+                    FontFaceHandler(format),
+                ),
+            );
         });
 }
 
-pub struct ImageHandler(usize, ImageType);
+pub struct ImageHandler {
+    kind: ImageType,
+}
 impl ImageHandler {
-    pub fn new(node_id: usize, kind: ImageType) -> Self {
-        Self(node_id, kind)
+    pub fn new(kind: ImageType) -> Self {
+        Self { kind }
     }
 }
-impl NetHandler<Resource> for ImageHandler {
-    fn bytes(self: Box<Self>, doc_id: usize, bytes: Bytes, callback: SharedCallback<Resource>) {
+
+impl NetHandler for ResourceHandler<ImageHandler> {
+    fn bytes(self: Box<Self>, resolved_url: String, bytes: Bytes) {
+        let result = self.data.parse(bytes);
+        self.respond(resolved_url, result)
+    }
+}
+
+impl ImageHandler {
+    fn parse(&self, bytes: Bytes) -> Result<Resource, String> {
         // Try parse image
         if let Ok(image) = image::ImageReader::new(Cursor::new(&bytes))
             .with_guessed_format()
@@ -330,25 +483,19 @@ impl NetHandler<Resource> for ImageHandler {
             .decode()
         {
             let raw_rgba8_data = image.clone().into_rgba8().into_raw();
-            callback.call(
-                doc_id,
-                Ok(Resource::Image(
-                    self.0,
-                    self.1,
-                    image.width(),
-                    image.height(),
-                    Arc::new(raw_rgba8_data),
-                )),
-            );
-            return;
+            return Ok(Resource::Image(
+                self.kind.clone(),
+                image.width(),
+                image.height(),
+                Arc::new(raw_rgba8_data),
+            ));
         };
 
         if let Ok(tree) = parse_svg(&bytes) {
-            callback.call(doc_id, Ok(Resource::Svg(self.0, self.1, Box::new(tree))));
-            return;
+            return Ok(Resource::Svg(self.kind.clone(), Box::new(tree)));
         }
 
-        callback.call(doc_id, Err(Some(String::from("Could not parse image"))))
+        Err(String::from("Could not parse image"))
     }
 }
 

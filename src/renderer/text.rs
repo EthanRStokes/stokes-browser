@@ -10,7 +10,7 @@ use skia_safe::font::Edging;
 use skia_safe::font_arguments::variation_position::Coordinate;
 use skia_safe::font_arguments::VariationPosition;
 // Text rendering functionality
-use skia_safe::{BlurStyle, Canvas, Color, ColorSpace, Font, FontArguments, FontHinting, FontMgr, GlyphId, MaskFilter, Paint, PaintCap, PaintJoin, PaintStyle, Point, RRect, Rect, Shader, Typeface};
+use skia_safe::{BlurStyle, Canvas, Color, ColorSpace, Font, FontArguments, FontHinting, FontMgr, GlyphId, ISize, MaskFilter, Paint, PaintCap, PaintJoin, PaintStyle, Point, RRect, Rect, Shader, Typeface};
 use std::cell::RefCell;
 use style::color::AbsoluteColor;
 use style::properties::ComputedValues;
@@ -171,84 +171,80 @@ pub fn render_text_node(
     // Get text color
     let text_color: AlphaColor<Srgb> = style.clone_color().as_color_color();
     // Create transform for text position, combined with scroll transform
-    let transform = scroll_transform * Affine::translate((content_rect.left as f64, content_rect.top as f64));
+    let transform = Affine::translate((content_rect.left as f64, content_rect.top as f64));
 
     // Render each line
     for line in layout.lines() {
         for item in line.items() {
-            match item {
-                PositionedLayoutItem::GlyphRun(glyph_run) => {
-                    let mut run_x = glyph_run.offset();
-                    let run_y = glyph_run.baseline();
+            if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
+                let run = glyph_run.run();
+                let font = run.font();
+                let font_size = run.font_size();
+                let metrics = run.metrics();
+                let style = glyph_run.style();
+                let synthesis = run.synthesis();
+                let glyph_xform = synthesis
+                    .skew()
+                    .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
 
-                    let run = glyph_run.run();
-                    let font = run.font();
-                    let font_size = run.font_size();
-                    let metrics = run.metrics();
-                    let style = glyph_run.style();
-                    let synthesis = run.synthesis();
-                    let glyph_xform = synthesis.skew().map(|angle| {
-                        Affine::skew(angle.to_radians().tan() as f64, 0.0)
-                    });
+                // Styles
+                let styles = dom
+                    .get_node(style.brush.id)
+                    .unwrap()
+                    .primary_styles()
+                    .unwrap();
+                let itext_styles = styles.get_inherited_text();
+                let text_styles = styles.get_text();
+                let text_color = itext_styles.color.as_color_color();
+                let text_decoration_color = text_styles
+                    .text_decoration_color
+                    .as_absolute()
+                    .map(ToColorColor::as_color_color)
+                    .unwrap_or(text_color);
+                let text_decoration_brush = anyrender::Paint::from(text_decoration_color);
+                let text_decoration_line = text_styles.text_decoration_line;
+                let has_underline = text_decoration_line.contains(TextDecorationLine::UNDERLINE);
+                let has_strikethrough =
+                    text_decoration_line.contains(TextDecorationLine::LINE_THROUGH);
 
-                    // style
-                    let style= dom.get_node(style.brush.id).unwrap().primary_styles().unwrap();
-                    let itext_style = style.get_inherited_text();
-                    let text_style = style.get_text();
-                    let text_color = itext_style.color.as_color_color();
-                    let text_decoration_color = text_style
-                        .text_decoration_color
-                        .as_absolute()
-                        .map(ToColorColor::as_color_color)
-                        .unwrap_or(text_color);
-                    let text_decoration_brush = anyrender::Paint::from(text_decoration_color);
-                    let text_decoration_line = text_style.text_decoration_line;
-                    let has_underline = text_decoration_line.contains(TextDecorationLine::UNDERLINE);
-                    let has_strikethrough =
-                        text_decoration_line.contains(TextDecorationLine::LINE_THROUGH);
+                painter.draw_glyphs(
+                    font,
+                    font_size,
+                    true, // hint
+                    run.normalized_coords(),
+                    Fill::NonZero,
+                    &anyrender::Paint::from(text_color),
+                    1.0, // alpha
+                    transform,
+                    glyph_xform,
+                    glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
+                        id: glyph.id as _,
+                        x: glyph.x,
+                        y: glyph.y,
+                    }),
+                );
 
-                    painter.draw_glyphs(
-                        font,
-                        font_size,
-                        true,
-                        run.normalized_coords(),
-                        Fill::NonZero,
-                        &anyrender::Paint::from(text_color),
-                        1.0,
-                        transform,
-                        glyph_xform,
-                        glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
-                            id: glyph.id as _,
-                            x: glyph.x,
-                            y: glyph.y,
-                        })
-                    );
+                let mut draw_decoration_line =
+                    |offset: f32, size: f32, brush: &anyrender::Paint| {
+                        let x = glyph_run.offset() as f64;
+                        let w = glyph_run.advance() as f64;
+                        let y = (glyph_run.baseline() - offset + size / 2.0) as f64;
+                        let line = kurbo::Line::new((x, y), (x + w, y));
+                        painter.stroke(&Stroke::new(size as f64), transform, brush, None, &line)
+                    };
 
-                    let mut draw_decoration_line =
-                        |offset: f32, size: f32, brush: &anyrender::Paint| {
-                            let x = glyph_run.offset() as f64;
-                            let w = glyph_run.advance() as f64;
-                            let y = (glyph_run.baseline() - offset + size / 2.0) as f64;
-                            let line = kurbo::Line::new((x, y), (x + w, y));
-                            painter.stroke(&Stroke::new(size as f64), transform, brush, None, &line)
-                        };
+                if has_underline {
+                    let offset = metrics.underline_offset;
+                    let size = metrics.underline_size;
 
-                    if has_underline {
-                        let offset = metrics.underline_offset;
-                        let size = metrics.underline_size;
-
-                        // TODO: intercept line when crossing an descending character like "gqy"
-                        draw_decoration_line(offset, size, &text_decoration_brush);
-                    }
-                    if has_strikethrough {
-                        let offset = metrics.strikethrough_offset;
-                        let size = metrics.strikethrough_size;
-
-                        draw_decoration_line(offset, size, &text_decoration_brush);
-                    }
+                    // TODO: intercept line when crossing an descending character like "gqy"
+                    draw_decoration_line(offset, size, &text_decoration_brush);
                 }
-                PositionedLayoutItem::InlineBox(_) => {
-                    // Inline boxes are not rendered in this context
+                if has_strikethrough {
+                    let offset = metrics.strikethrough_offset;
+                    let size = metrics.strikethrough_size;
+
+                    draw_decoration_line(offset, size, &text_decoration_brush);
                 }
             }
         }
@@ -779,8 +775,9 @@ impl TextPainter<'_> {
     }
 
 
-    pub(crate) fn base_layer_size(&self) -> skia_safe::ISize {
-        self.inner.base_layer_size()
+    pub(crate) fn base_layer_size(&self) -> ISize {
+        let base = self.inner.base_layer_size();
+        ISize::new(base.width, base.height - crate::ui::BrowserUI::CHROME_HEIGHT as i32)
     }
 
     pub(crate) fn draw_image(&mut self, image: ImageBrushRef, transform: Affine) {

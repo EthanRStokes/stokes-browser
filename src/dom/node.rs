@@ -7,6 +7,7 @@ use std::io::Cursor;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
+use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut};
 use bitflags::bitflags;
@@ -32,7 +33,8 @@ use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::properties::style_structs::Font;
 use style::selector_parser::RestyleDamage;
 use style::stylesheets::{CssRuleType, DocumentStyleSheet, UrlExtraData};
-use style::values::computed::Display;
+use style::values::computed::{Display, PositionProperty};
+use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use style_traits::ToCss;
 use taffy::{Cache, Layout, Style};
 use crate::layout::table::TableContext;
@@ -279,12 +281,66 @@ impl ElementData {
         Some(&attr.value)
     }
 
+    pub fn attr_parsed<T: FromStr>(&self, attr_name: impl PartialEq<LocalName>) -> Option<T> {
+        let attr = self.attributes.iter().find(|attr| attr_name == attr.name.local)?;
+        attr.value.parse::<T>().ok()
+    }
+
     pub fn attrs(&self) -> &AttributeMap {
         &self.attributes
     }
 
     pub fn has_attr(&self, attr_name: impl PartialEq<LocalName>) -> bool {
         self.attributes.iter().any(|attr| attr_name == attr.name.local)
+    }
+
+    pub fn image_data(&self) -> Option<&ImageData> {
+        match &self.special_data {
+            SpecialElementData::Image(data) => Some(&**data),
+            _ => None,
+        }
+    }
+
+    pub fn image_data_mut(&mut self) -> Option<&mut ImageData> {
+        match self.special_data {
+            SpecialElementData::Image(ref mut data) => Some(&mut **data),
+            _ => None,
+        }
+    }
+
+    pub fn raster_image_data(&self) -> Option<&RasterImageData> {
+        match self.image_data()? {
+            ImageData::Raster(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    pub fn raster_image_data_mut(&mut self) -> Option<&mut RasterImageData> {
+        match self.image_data_mut()? {
+            ImageData::Raster(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    pub fn canvas_data(&self) -> Option<&CanvasData> {
+        match &self.special_data {
+            SpecialElementData::Canvas(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    pub fn svg_data(&self) -> Option<&usvg::Tree> {
+        match self.image_data()? {
+            ImageData::Svg(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    pub fn svg_data_mut(&mut self) -> Option<&mut usvg::Tree> {
+        match self.image_data_mut()? {
+            ImageData::Svg(data) => Some(data),
+            _ => None,
+        }
     }
 
     pub fn take_inline_layout(&mut self) -> Option<Box<TextLayout>> {
@@ -317,25 +373,20 @@ impl From<Vec<PathBuf>> for FileData {
     }
 }
 
-/// Data specific to image nodes
 #[derive(Debug, Clone)]
-pub struct ImageData {
-    pub src: Rc<String>,
-    pub alt: String,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    pub loading_state: ImageLoadingState,
-    pub cached_image: CachedImage, // Cached decoded image
-}
-
-#[derive(Debug, Clone)]
-pub enum CachedImage {
-    Raster(Arc<RasterImageData>),
+pub enum ImageData {
+    Raster(RasterImageData),
     Svg(Box<usvg::Tree>),
     None
 }
 
-impl CachedImage {
+impl From<usvg::Tree> for ImageData {
+    fn from(value: usvg::Tree) -> Self {
+        ImageData::Svg(Box::new(value))
+    }
+}
+
+impl ImageData {
     fn is_some(&self) -> bool {
         !matches!(self, Self::None)
     }
@@ -364,225 +415,6 @@ pub enum ImageLoadingState {
     Loading,
     Loaded(Arc<RasterImageData>), // Raw image data
     Failed(String),  // Error message
-}
-
-impl PartialEq for ImageData {
-    fn eq(&self, other: &Self) -> bool {
-        // Compare all fields except cached_image (since skia_safe::Image doesn't implement PartialEq)
-        self.src == other.src
-            && self.alt == other.alt
-            && self.width == other.width
-            && self.height == other.height
-            && self.loading_state == other.loading_state
-        // Note: We don't compare cached_image as it's a derived/cached value
-    }
-}
-
-impl ImageData {
-    pub fn new(src: String, alt: String) -> Self {
-        Self {
-            src: Rc::from(src),
-            alt,
-            width: None,
-            height: None,
-            loading_state: ImageLoadingState::NotLoaded,
-            cached_image: CachedImage::None,
-        }
-    }
-
-    /// Get or decode the Skia image, caching the result
-    pub fn get_or_decode_image(&mut self) -> &CachedImage {
-        // If we already have a cached image, return it
-        if self.cached_image.is_some() {
-            return &self.cached_image;
-        }
-
-        // If we have loaded image data but no cached image, decode it
-        if let ImageLoadingState::Loaded(image_bytes) = &self.loading_state {
-            self.cached_image = CachedImage::Raster(image_bytes.clone());
-            return &self.cached_image;
-        }
-
-        &CachedImage::None
-    }
-
-    /// Decode image data into a Skia image (static method for reuse)
-    fn decode_image_data(image_bytes: &[u8]) -> Option<skia_safe::Image> {
-        if image_bytes.is_empty() {
-            println!("Error: Empty image data");
-            return None;
-        }
-
-        // Check the first few bytes to identify the image format for debugging
-        let format_name = if image_bytes.len() >= 12 {
-            let header = &image_bytes[0..12];
-            match header {
-                [0xFF, 0xD8, 0xFF, ..] => "JPEG",
-                [0x89, 0x50, 0x4E, 0x47, ..] => "PNG",
-                [0x47, 0x49, 0x46, 0x38, ..] => "GIF",
-                [0x42, 0x4D, ..] => "BMP",
-                [0x52, 0x49, 0x46, 0x46, _, _, _, _, 0x57, 0x45, 0x42, 0x50] => "WebP",
-                _ => {
-                    // Check if it's SVG (starts with <svg or <?xml)
-                    if let Ok(text) = std::str::from_utf8(&image_bytes[0..image_bytes.len().min(100)]) {
-                        if text.trim_start().starts_with("<svg") || text.trim_start().starts_with("<?xml") {
-                            "SVG"
-                        } else {
-                            "Unknown"
-                        }
-                    } else {
-                        "Unknown"
-                    }
-                }
-            }
-        } else {
-            "Unknown"
-        };
-
-        println!("Decoding {} image format", format_name);
-
-        // Handle SVG separately
-        if format_name == "SVG" {
-            return Self::decode_svg_data(image_bytes);
-        }
-
-        // Try Skia first
-        let skia_data = skia_safe::Data::new_copy(image_bytes);
-        if !skia_data.is_empty() {
-            match skia_safe::Image::from_encoded(skia_data) {
-                Some(image) => {
-                    println!("Successfully decoded image with Skia: {}x{}", image.width(), image.height());
-                    return Some(image);
-                }
-                None => {
-                    println!("Skia failed to decode image, trying fallback...");
-                }
-            }
-        } else {
-            println!("Error: Failed to create Skia Data object");
-        }
-
-        // Fallback to image crate for formats Skia doesn't support (especially WebP)
-        match image::load_from_memory(image_bytes) {
-            Ok(dynamic_image) => {
-                println!("Successfully decoded image with image crate: {}x{}",
-                        dynamic_image.width(), dynamic_image.height());
-
-                // Convert to RGBA8 format
-                let rgba_image = dynamic_image.to_rgba8();
-                let (width, height) = rgba_image.dimensions();
-                let rgba_data = rgba_image.into_raw();
-
-                // Create Skia image from RGBA data
-                let image_info = skia_safe::ImageInfo::new(
-                    skia_safe::ISize::new(width as i32, height as i32),
-                    skia_safe::ColorType::RGBA8888,
-                    skia_safe::AlphaType::Unpremul,
-                    None,
-                );
-
-                match skia_safe::images::raster_from_data(
-                    &image_info,
-                    skia_safe::Data::new_copy(&rgba_data),
-                    (width * 4) as usize,
-                ) {
-                    Some(skia_image) => {
-                        println!("Successfully converted image crate result to Skia image");
-                        Some(skia_image)
-                    }
-                    None => {
-                        println!("Error: Failed to convert image crate result to Skia image");
-                        None
-                    }
-                }
-            }
-            Err(e) => {
-                println!("Error: Both Skia and image crate failed to decode image: {}", e);
-                None
-            }
-        }
-    }
-
-    /// Decode SVG data into a Skia image
-    // TODO use Skia's SVG support when available
-    fn decode_svg_data(svg_bytes: &[u8]) -> Option<skia_safe::Image> {
-        // Convert bytes to string
-        let svg_str = match std::str::from_utf8(svg_bytes) {
-            Ok(s) => s,
-            Err(e) => {
-                println!("Error: SVG data is not valid UTF-8: {}", e);
-                return None;
-            }
-        };
-
-        // Parse the SVG using usvg
-        let options = usvg::Options::default();
-        let tree = match usvg::Tree::from_str(svg_str, &options) {
-            Ok(tree) => tree,
-            Err(e) => {
-                println!("Error: Failed to parse SVG: {}", e);
-                return None;
-            }
-        };
-
-        // Get the SVG size
-        let size = tree.size();
-        let width = size.width() as i32;
-        let height = size.height() as i32;
-
-        if width == 0 || height == 0 {
-            println!("Error: SVG has zero dimensions");
-            return None;
-        }
-
-        println!("Rendering SVG: {}x{}", width, height);
-
-        // Create a pixmap to render into
-        let mut pixmap = match tiny_skia::Pixmap::new(width as u32, height as u32) {
-            Some(pixmap) => pixmap,
-            None => {
-                println!("Error: Failed to create pixmap for SVG rendering");
-                return None;
-            }
-        };
-
-        // Render the SVG
-        resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
-
-        // Convert the pixmap to a Skia image
-        let rgba_data = pixmap.data();
-        let image_info = skia_safe::ImageInfo::new(
-            skia_safe::ISize::new(width, height),
-            skia_safe::ColorType::RGBA8888,
-            skia_safe::AlphaType::Unpremul,
-            None,
-        );
-
-        match skia_safe::images::raster_from_data(
-            &image_info,
-            skia_safe::Data::new_copy(rgba_data),
-            (width * 4) as usize,
-        ) {
-            Some(image) => {
-                println!("Successfully decoded SVG image");
-                Some(image)
-            }
-            None => {
-                println!("Error: Failed to convert SVG pixmap to Skia image");
-                None
-            }
-        }
-    }
-
-    /// Public static method for decoding image data (used by engine)
-    pub fn decode_image_data_static(image_bytes: &[u8]) -> Option<skia_safe::Image> {
-        Self::decode_image_data(image_bytes)
-    }
-
-    /// Clear the cached image (useful when image data changes)
-    pub fn clear_cache(&mut self) {
-        self.cached_image = CachedImage::None;
-    }
 }
 
 bitflags! {
@@ -651,6 +483,7 @@ pub struct DomNode {
 
     pub has_snapshot: bool,
     pub snapshot_handled: AtomicBool,
+    pub display_constructed_as: Display,
 
     /// Event listener registry
     pub event_listeners: EventListenerRegistry,
@@ -700,6 +533,7 @@ impl DomNode {
             final_layout: Layout::new(),
             has_snapshot: false,
             snapshot_handled: AtomicBool::new(false),
+            display_constructed_as: Display::Block,
             event_listeners: EventListenerRegistry::new(),
             layout_invalidation_callback: None,
         }
@@ -711,6 +545,18 @@ impl DomNode {
 
     pub fn tree_mut(&mut self) -> &mut Slab<DomNode> {
         unsafe { &mut *self.tree }
+    }
+
+    pub fn is_element(&self) -> bool {
+        matches!(self.data, NodeData::Element(_))
+    }
+
+    pub fn is_anonymous(&self) -> bool {
+        matches!(self.data, NodeData::AnonymousBlock(_))
+    }
+
+    pub fn is_text_node(&self) -> bool {
+        matches!(self.data, NodeData::Text { .. })
     }
 
     pub fn element_data(&self) -> Option<&ElementData> {
@@ -870,6 +716,47 @@ impl DomNode {
 
     pub(crate) fn display_style(&self) -> Option<Display> {
         Some(self.primary_styles().as_ref()?.clone_display())
+    }
+
+    pub fn is_or_contains_block(&self) -> bool {
+        let style = self.primary_styles();
+        let style = style.as_ref();
+
+        // Ignore out-of-flow items
+        let position = style
+            .map(|s| s.clone_position())
+            .unwrap_or(PositionProperty::Relative);
+        let is_in_flow = matches!(
+            position,
+            PositionProperty::Static | PositionProperty::Relative | PositionProperty::Sticky
+        );
+        if !is_in_flow {
+            return false;
+        }
+        let display = style
+            .map(|s| s.clone_display())
+            .unwrap_or(Display::inline());
+        match display.outside() {
+            DisplayOutside::None => false,
+            DisplayOutside::Block => true,
+            _ => {
+                if display.inside() == DisplayInside::Flow {
+                    self.children
+                        .iter()
+                        .copied()
+                        .any(|child_id| self.tree()[child_id].is_or_contains_block())
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    pub fn is_whitespace_node(&self) -> bool {
+        match &self.data {
+            NodeData::Text { contents } => contents.borrow().chars().all(|c| c.is_ascii_whitespace()),
+            _ => false,
+        }
     }
 
     pub fn primary_styles(&self) -> Option<AtomicRef<'_, StyloComputedValues>> {

@@ -1,7 +1,7 @@
 use crate::dom::{AttributeMap, Dom, ElementData};
 use crate::renderer::text::{TextPainter, ToColorColor};
 // Pseudo-element rendering (::before, ::after)
-use skia_safe::{Paint, Rect};
+use skia_safe::{Paint};
 use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::servo_arc::Arc;
 use style::values::computed::counters::Content;
@@ -9,7 +9,7 @@ use style::values::generics::counters::GenericContentItem;
 use parley::{Alignment, AlignmentOptions, FontWeight, GenericFamily, LineHeight, PositionedLayoutItem, StyleProperty};
 use style::values::computed::font::{GenericFontFamily, SingleFontFamily};
 use color::{AlphaColor, Srgb};
-use kurbo::{Affine, Stroke};
+use kurbo::{Affine, Rect, Stroke};
 use peniko::Fill;
 
 /// Render pseudo-element generated content (::before or ::after)
@@ -129,14 +129,14 @@ pub fn render_pseudo_element_content(
     // Calculate position offset based on is_before
     let offset_x = if is_before {
         // Position at the left edge of the content area
-        rect.left
+        rect.x0
     } else {
         // Position at the right edge of the content area
-        rect.right
+        rect.x1
     };
 
     // Create transform for text position, combined with scroll transform
-    let transform = scroll_transform * Affine::translate((offset_x as f64, rect.top as f64));
+    let transform = scroll_transform * Affine::translate((offset_x, rect.y0));
 
     // Render each line
     for line in layout.lines() {

@@ -90,7 +90,8 @@ impl HtmlParser {
                     // create ImageData from attributes
                     let src = elem_data.attr(local_name!("src")).unwrap_or_default().to_string();
                     let alt = elem_data.attr(local_name!("alt")).unwrap_or_default().to_string();
-                    elem_data.special_data = SpecialElementData::Image(Box::new(ImageData::new(src.clone(), alt.clone())));
+                    // TODO reimplement image stuff
+                    //elem_data.special_data = SpecialElementData::Image(Box::new(ImageData::new(src.clone(), alt.clone())));
                 };
                 let node_kind = NodeData::Element(elem_data);
 

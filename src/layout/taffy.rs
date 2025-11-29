@@ -6,7 +6,7 @@ use style::values::computed::{CSSPixelLength, LineHeight};
 use stylo_atoms::Atom;
 pub(crate) use taffy::{compute_block_layout, compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout, AvailableSpace, CacheTree, CollapsibleMarginSet, Display, Layout, LayoutBlockContainer, LayoutFlexboxContainer, LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, PrintTree, ResolveOrZero, RoundTree, RunMode, Size, Style, TraversePartialTree, TraverseTree};
 use crate::dom::{Dom, ImageData, NodeData};
-use crate::dom::node::{CachedImage, SpecialElementData};
+use crate::dom::node::{SpecialElementData};
 use crate::layout::replaced::{replaced_measure_function, ReplacedContext};
 use crate::layout::table::{TableContext, TableTreeWrapper};
 
@@ -167,19 +167,19 @@ impl LayoutPartialTree for Dom {
 
                         // Get image's native sizespecial_data
                         let inherent_size = match &data.special_data {
-                            SpecialElementData::Image(image_data) => match &image_data.cached_image {
-                                CachedImage::Raster(image) => Size {
+                            SpecialElementData::Image(image_data) => match &**image_data {
+                                ImageData::Raster(image) => Size {
                                     width: image.width as f32,
                                     height: image.height as f32,
                                 },
-                                CachedImage::Svg(svg) => {
+                                ImageData::Svg(svg) => {
                                     let size = svg.size();
                                     taffy::Size {
                                         width: size.width(),
                                         height: size.height(),
                                     }
                                 }
-                                CachedImage::None => taffy::Size::ZERO,
+                                ImageData::None => taffy::Size::ZERO,
                             },
                             SpecialElementData::Canvas(_) => taffy::Size::ZERO,
                             SpecialElementData::None => taffy::Size::ZERO,
