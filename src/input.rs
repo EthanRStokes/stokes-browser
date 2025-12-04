@@ -15,6 +15,7 @@ pub enum InputAction {
     AddTab,
     CloseTab(usize),
     SwitchTab(usize),
+    ReorderTab { from_index: usize, to_index: usize },
     ReloadPage,
     GoBack,
     GoForward,

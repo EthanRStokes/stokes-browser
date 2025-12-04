@@ -196,11 +196,32 @@ impl UiComponent {
     }
 }
 
+/// State for tab dragging
+#[derive(Debug, Clone, Default)]
+pub struct TabDragState {
+    /// Whether a tab is currently being dragged
+    pub is_dragging: bool,
+    /// The ID of the tab being dragged
+    pub dragged_tab_id: Option<String>,
+    /// The starting X position of the drag
+    pub drag_start_x: f32,
+    /// The original X position of the tab when drag started
+    pub original_tab_x: f32,
+    /// The current drag offset
+    pub drag_offset: f32,
+    /// The original index of the dragged tab
+    pub original_index: usize,
+    /// Whether the drag threshold has been exceeded (to distinguish from click)
+    pub drag_threshold_exceeded: bool,
+}
+
 /// Represents the browser UI (chrome)
 pub struct BrowserUI {
     pub components: Vec<UiComponent>,
     pub viewport: Viewport,
     tab_scroll_offset: f32,  // Horizontal scroll offset for tabs
+    /// State for tab dragging
+    pub tab_drag_state: TabDragState,
 }
 
 impl BrowserUI {
@@ -249,6 +270,7 @@ impl BrowserUI {
             ],
             viewport: viewport.clone(),
             tab_scroll_offset: 0.0,
+            tab_drag_state: TabDragState::default(),
         }
     }
 
@@ -1655,6 +1677,216 @@ impl BrowserUI {
 
             painter.stroke(&stroke, Affine::IDENTITY, color, None, &arc);
         }
+    }
+
+    /// Start dragging a tab
+    pub fn start_tab_drag(&mut self, x: f32, y: f32) -> bool {
+        // Find which tab was clicked
+        let mut found_tab: Option<(String, f32, usize)> = None;
+        let mut tab_index = 0;
+
+        for comp in &self.components {
+            if let UiComponent::TabButton { id, x: tab_x, y: tab_y, width, height, .. } = comp {
+                if x >= *tab_x && x <= *tab_x + *width && y >= *tab_y && y <= *tab_y + *height {
+                    found_tab = Some((id.clone(), *tab_x, tab_index));
+                    break;
+                }
+                tab_index += 1;
+            }
+        }
+
+        if let Some((tab_id, original_x, index)) = found_tab {
+            self.tab_drag_state = TabDragState {
+                is_dragging: true,
+                dragged_tab_id: Some(tab_id),
+                drag_start_x: x,
+                original_tab_x: original_x,
+                drag_offset: 0.0,
+                original_index: index,
+                drag_threshold_exceeded: false,
+            };
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Update tab position during drag
+    pub fn update_tab_drag(&mut self, x: f32) -> Option<(usize, usize)> {
+        if !self.tab_drag_state.is_dragging {
+            return None;
+        }
+
+        let drag_offset = x - self.tab_drag_state.drag_start_x;
+        self.tab_drag_state.drag_offset = drag_offset;
+
+        // Check if drag threshold has been exceeded (5 pixels)
+        const DRAG_THRESHOLD: f32 = 5.0;
+        if !self.tab_drag_state.drag_threshold_exceeded && drag_offset.abs() > DRAG_THRESHOLD {
+            self.tab_drag_state.drag_threshold_exceeded = true;
+        }
+
+        // Only update visual position if threshold has been exceeded
+        if !self.tab_drag_state.drag_threshold_exceeded {
+            return None;
+        }
+
+        // Calculate the new X position for the dragged tab
+        let new_tab_x = self.tab_drag_state.original_tab_x + drag_offset;
+
+        // Get tab info for reordering calculation
+        let scaled_spacing = Self::TAB_SPACING * self.viewport.hidpi_scale;
+        let tab_width = self.calculate_tab_width();
+
+        // Find the dragged tab's current center
+        let dragged_center_x = new_tab_x + tab_width / 2.0;
+
+        // Find which position the tab should be swapped to
+        let mut target_index: Option<usize> = None;
+        let mut current_tab_index = 0;
+
+        for comp in &self.components {
+            if let UiComponent::TabButton { id, x: tab_x, width, .. } = comp {
+                if Some(id.clone()) == self.tab_drag_state.dragged_tab_id {
+                    current_tab_index += 1;
+                    continue;
+                }
+
+                let tab_center = *tab_x + *width / 2.0;
+
+                // Check if the dragged tab's center has crossed this tab's center
+                if current_tab_index < self.tab_drag_state.original_index {
+                    // Moving left: swap when we pass the center of a tab to the left
+                    if dragged_center_x < tab_center + *width / 2.0 {
+                        target_index = Some(current_tab_index);
+                        break;
+                    }
+                } else {
+                    // Moving right: swap when we pass the center of a tab to the right
+                    if dragged_center_x > tab_center - *width / 2.0 {
+                        target_index = Some(current_tab_index);
+                    }
+                }
+                current_tab_index += 1;
+            }
+        }
+
+        // Update the dragged tab's visual position
+        if let Some(dragged_id) = &self.tab_drag_state.dragged_tab_id {
+            for comp in &mut self.components {
+                if let UiComponent::TabButton { id, x, .. } = comp {
+                    if id == dragged_id {
+                        *x = new_tab_x;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Return the swap info if needed
+        if let Some(target) = target_index {
+            if target != self.tab_drag_state.original_index {
+                return Some((self.tab_drag_state.original_index, target));
+            }
+        }
+
+        None
+    }
+
+    /// End tab dragging and return the final reorder info (from_index, to_index) if tabs were reordered
+    pub fn end_tab_drag(&mut self) -> Option<(usize, usize)> {
+        if !self.tab_drag_state.is_dragging {
+            return None;
+        }
+
+        // If threshold wasn't exceeded, treat as a click
+        let threshold_exceeded = self.tab_drag_state.drag_threshold_exceeded;
+
+        let drag_offset = self.tab_drag_state.drag_offset;
+        let tab_width = self.calculate_tab_width();
+        let scaled_spacing = Self::TAB_SPACING * self.viewport.hidpi_scale;
+        let tab_slot_width = tab_width + scaled_spacing;
+
+        // Calculate how many positions to move based on drag distance
+        let positions_moved = (drag_offset / tab_slot_width).round() as i32;
+        let from_index = self.tab_drag_state.original_index;
+        let tab_count = self.components.iter()
+            .filter(|c| matches!(c, UiComponent::TabButton { .. }))
+            .count();
+
+        // Calculate target index with bounds checking
+        let to_index = if positions_moved < 0 {
+            from_index.saturating_sub((-positions_moved) as usize)
+        } else {
+            (from_index + positions_moved as usize).min(tab_count.saturating_sub(1))
+        };
+
+        // Reset drag state
+        self.tab_drag_state = TabDragState::default();
+
+        // Update tab layout to restore proper positions
+        self.update_tab_layout();
+
+        // Only return reorder info if threshold was exceeded and tabs actually moved
+        if threshold_exceeded && from_index != to_index {
+            Some((from_index, to_index))
+        } else {
+            None
+        }
+    }
+
+    /// Cancel tab dragging without applying changes
+    pub fn cancel_tab_drag(&mut self) {
+        self.tab_drag_state = TabDragState::default();
+        self.update_tab_layout();
+    }
+
+    /// Check if a tab is currently being dragged
+    pub fn is_dragging_tab(&self) -> bool {
+        self.tab_drag_state.is_dragging
+    }
+
+    /// Check if a tab drag is actively happening (threshold exceeded)
+    pub fn is_actively_dragging_tab(&self) -> bool {
+        self.tab_drag_state.is_dragging && self.tab_drag_state.drag_threshold_exceeded
+    }
+
+    /// Reorder tabs in the UI components list
+    pub fn reorder_tabs(&mut self, from_index: usize, to_index: usize) {
+        // Get all tab indices in the components vec
+        let tab_indices: Vec<usize> = self.components.iter()
+            .enumerate()
+            .filter_map(|(i, c)| {
+                if matches!(c, UiComponent::TabButton { .. }) {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if from_index >= tab_indices.len() || to_index >= tab_indices.len() {
+            return;
+        }
+
+        let from_comp_index = tab_indices[from_index];
+        let to_comp_index = tab_indices[to_index];
+
+        // Remove the tab from its original position
+        let tab = self.components.remove(from_comp_index);
+
+        // Adjust the target index if necessary
+        let adjusted_to_index = if from_comp_index < to_comp_index {
+            to_comp_index - 1
+        } else {
+            to_comp_index
+        };
+
+        // Insert at the new position
+        self.components.insert(adjusted_to_index, tab);
+
+        // Update layout to recalculate positions
+        self.update_tab_layout();
     }
 
     // Helper: find previous character boundary strictly before or at byte_pos

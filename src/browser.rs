@@ -245,6 +245,25 @@ impl BrowserApp {
             input::InputAction::AddTab => {
                 self.add_tab();
             }
+            input::InputAction::ReorderTab { from_index, to_index } => {
+                // Reorder tabs in UI
+                self.ui.reorder_tabs(*from_index, *to_index);
+
+                // Reorder tabs in tab_order
+                if *from_index < self.tab_order.len() && *to_index < self.tab_order.len() {
+                    let tab_id = self.tab_order.remove(*from_index);
+                    self.tab_order.insert(*to_index, tab_id);
+
+                    // Update active tab index if needed
+                    if self.active_tab_index == *from_index {
+                        self.active_tab_index = *to_index;
+                    } else if *from_index < self.active_tab_index && *to_index >= self.active_tab_index {
+                        self.active_tab_index -= 1;
+                    } else if *from_index > self.active_tab_index && *to_index <= self.active_tab_index {
+                        self.active_tab_index += 1;
+                    }
+                }
+            }
             input::InputAction::ReloadPage => {
                 if let Some(tab_id) = self.active_tab_id().cloned() {
                     let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Reload);
@@ -470,15 +489,66 @@ impl ApplicationHandler for BrowserApp {
                     self.cursor_position.1 as f32,
                     Instant::now()
                 );
-                self.handle_click(self.cursor_position.0 as f32, self.cursor_position.1 as f32, event_loop);
+
+                // Check if we're starting a tab drag (only start drag on tabs)
+                let x = self.cursor_position.0 as f32;
+                let y = self.cursor_position.1 as f32;
+                let chrome_height = self.ui.chrome_height();
+
+                // Only try to start drag if we're in the tab area (first row)
+                if y < chrome_height / 2.0 {
+                    // Check if this is a close button click first
+                    if self.ui.check_close_button_click(x, y).is_some() {
+                        // Let handle_click process the close button
+                        self.handle_click(x, y, event_loop);
+                    } else {
+                        // Try to start dragging
+                        self.ui.start_tab_drag(x, y);
+                        self.env.window.request_redraw();
+                    }
+                } else {
+                    self.handle_click(x, y, event_loop);
+                }
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                let x = self.cursor_position.0 as f32;
+                let y = self.cursor_position.1 as f32;
+
+                // Check if we were dragging a tab
+                if self.ui.is_dragging_tab() {
+                    // End the drag and get reorder info
+                    if let Some((from_index, to_index)) = self.ui.end_tab_drag() {
+                        // Reorder tabs in UI
+                        self.ui.reorder_tabs(from_index, to_index);
+
+                        // Reorder tabs in tab_order
+                        if from_index < self.tab_order.len() && to_index < self.tab_order.len() {
+                            let tab_id = self.tab_order.remove(from_index);
+                            self.tab_order.insert(to_index, tab_id);
+
+                            // Update active tab index if needed
+                            if self.active_tab_index == from_index {
+                                self.active_tab_index = to_index;
+                            } else if from_index < self.active_tab_index && to_index >= self.active_tab_index {
+                                self.active_tab_index -= 1;
+                            } else if from_index > self.active_tab_index && to_index <= self.active_tab_index {
+                                self.active_tab_index += 1;
+                            }
+                        }
+                    } else {
+                        // It was a click without significant drag - switch to the tab
+                        if let Some(component_id) = self.ui.handle_click(x, y) {
+                            if component_id.starts_with("tab") {
+                                if let Some(tab_index) = self.tab_order.iter().position(|id| id == &component_id) {
+                                    self.switch_to_tab(tab_index);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Update hover state after mouse release
-                self.ui.update_mouse_hover(
-                    self.cursor_position.0 as f32,
-                    self.cursor_position.1 as f32,
-                    Instant::now()
-                );
+                self.ui.update_mouse_hover(x, y, Instant::now());
                 self.env.window.request_redraw();
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Middle, .. } => {
@@ -488,14 +558,20 @@ impl ApplicationHandler for BrowserApp {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_position = (position.x, position.y);
 
-                // Update UI hover state on cursor movement
-                self.ui.update_mouse_hover(position.x as f32, position.y as f32, Instant::now());
+                // Update tab drag if dragging
+                if self.ui.is_dragging_tab() {
+                    self.ui.update_tab_drag(position.x as f32);
+                    self.env.window.request_redraw();
+                } else {
+                    // Update UI hover state on cursor movement
+                    self.ui.update_mouse_hover(position.x as f32, position.y as f32, Instant::now());
 
-                if let Some(tab_id) = self.active_tab_id().cloned() {
-                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::MouseMove {
-                        x: position.x as f32,
-                        y: position.y as f32
-                    });
+                    if let Some(tab_id) = self.active_tab_id().cloned() {
+                        let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::MouseMove {
+                            x: position.x as f32,
+                            y: position.y as f32
+                        });
+                    }
                 }
 
                 // Request redraw to show hover effects
