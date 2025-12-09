@@ -1108,6 +1108,8 @@ mod sk_kurbo {
     use kurbo::{Rect, RoundedRect, Shape};
     use skia_safe::Matrix as SkMatrix;
     use skia_safe::Path as SkPath;
+    use skia_safe::PathFillType as SkPathFillType;
+    use skia_safe::PathVerb as SkPathVerb;
     use skia_safe::Point as SkPoint;
     use skia_safe::RRect as SkRRect;
     use skia_safe::Rect as SkRect;
@@ -1189,30 +1191,46 @@ mod sk_kurbo {
     }
 
     pub(super) fn path_from_shape(shape: &impl Shape) -> SkPath {
-        let mut sk_path = SkPath::new();
+        let mut points: Vec<SkPoint> = Vec::new();
+        let mut verbs: Vec<SkPathVerb> = Vec::new();
 
-        if let Some(path_els) = shape.as_path_slice() {
-            for path_el in path_els {
-                append_path_el_to_sk_path(path_el, &mut sk_path);
-            }
+        let path_elements: Vec<PathEl> = if let Some(path_els) = shape.as_path_slice() {
+            path_els.to_vec()
         } else {
-            for path_el in shape.path_elements(0.1) {
-                append_path_el_to_sk_path(&path_el, &mut sk_path);
-            }
+            shape.path_elements(0.1).collect()
+        };
+
+        for path_el in path_elements {
+            append_path_el_to_vecs(&path_el, &mut points, &mut verbs);
         }
 
-        sk_path
+        SkPath::raw(&points, &verbs, &[], SkPathFillType::Winding, None)
     }
 
-    fn append_path_el_to_sk_path(path_el: &PathEl, sk_path: &mut SkPath) {
+    fn append_path_el_to_vecs(path_el: &PathEl, points: &mut Vec<SkPoint>, verbs: &mut Vec<SkPathVerb>) {
         match path_el {
-            PathEl::MoveTo(p) => _ = sk_path.move_to(pt_from(*p)),
-            PathEl::LineTo(p) => _ = sk_path.line_to(pt_from(*p)),
-            PathEl::QuadTo(p1, p2) => _ = sk_path.quad_to(pt_from(*p1), pt_from(*p2)),
-            PathEl::CurveTo(p1, p2, p3) => {
-                _ = sk_path.cubic_to(pt_from(*p1), pt_from(*p2), pt_from(*p3))
+            PathEl::MoveTo(p) => {
+                verbs.push(SkPathVerb::Move);
+                points.push(pt_from(*p));
             }
-            PathEl::ClosePath => _ = sk_path.close(),
+            PathEl::LineTo(p) => {
+                verbs.push(SkPathVerb::Line);
+                points.push(pt_from(*p));
+            }
+            PathEl::QuadTo(p1, p2) => {
+                verbs.push(SkPathVerb::Quad);
+                points.push(pt_from(*p1));
+                points.push(pt_from(*p2));
+            }
+            PathEl::CurveTo(p1, p2, p3) => {
+                verbs.push(SkPathVerb::Cubic);
+                points.push(pt_from(*p1));
+                points.push(pt_from(*p2));
+                points.push(pt_from(*p3));
+            }
+            PathEl::ClosePath => {
+                verbs.push(SkPathVerb::Close);
+            }
         };
     }
 }
