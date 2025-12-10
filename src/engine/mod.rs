@@ -878,7 +878,7 @@ impl Engine {
         let dom = self.dom.as_ref().unwrap();
         let node = dom.root_node().get_node(node_id);
         if let Some(runtime) = &mut self.js_runtime {
-            let context = runtime.context_mut();
+            let context = runtime.cx();
 
             println!("[Event] Firing click event at ({}, {}) on node {}", x, y, node_id);
 

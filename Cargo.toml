@@ -70,10 +70,4 @@ default-features = true
 [patch.crates-io]
 winit = { git = "https://github.com/Treetrain1/winit.git" }
 
-[dependencies.boa_engine]
-git = "https://github.com/boa-dev/boa.git"
-default-features = true
-
-[dependencies.boa_gc]
-git = "https://github.com/boa-dev/boa.git"
-default-features = true
+# Boa engine removed, now using mozjs

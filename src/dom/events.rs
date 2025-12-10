@@ -1,9 +1,13 @@
+// Event system for DOM nodes using mozjs
 use crate::dom::DomNode;
-use boa_engine::{object::JsObject, Context, JsValue};
+use crate::js::JsRuntime;
+use mozjs::jsval::{JSVal, UndefinedValue, ObjectValue, Int32Value, BooleanValue, DoubleValue, StringValue};
+use mozjs::rooted;
 use std::cell::RefCell;
-// Event system for DOM nodes
 use std::collections::HashMap;
 use std::rc::Rc;
+use mozjs::context::JSContext;
+use mozjs::jsapi::{JSObject, JS_DefineProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JSPROP_ENUMERATE};
 
 /// Event types supported by the browser
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -156,11 +160,11 @@ impl EventType {
     }
 }
 
-/// Event listener callback - stores a JavaScript function
+/// Event listener callback - stores a JavaScript function code or reference
 #[derive(Clone)]
 pub struct EventListener {
     /// JavaScript function to call
-    pub callback: JsObject,
+    pub callback: JSObject,
     /// Whether to capture the event
     pub use_capture: bool,
     /// Unique ID for this listener
@@ -186,7 +190,7 @@ impl EventListenerRegistry {
     }
 
     /// Add an event listener
-    pub fn add_listener(&mut self, event_type: EventType, callback: JsObject, use_capture: bool) -> usize {
+    pub fn add_listener(&mut self, event_type: EventType, callback: JSObject, use_capture: bool) -> usize {
         let id = self.next_id;
         self.next_id += 1;
 
@@ -202,18 +206,6 @@ impl EventListenerRegistry {
             .push(listener);
 
         id
-    }
-
-    /// Remove an event listener by callback (for removeEventListener)
-    /// Note: This is simplified - in a real implementation, we'd need to compare function references
-    pub fn remove_listener(&mut self, event_type: &EventType, callback: &JsObject) -> bool {
-        if let Some(listeners) = self.listeners.get_mut(event_type) {
-            let initial_len = listeners.len();
-            listeners.retain(|listener| !JsObject::equals(&listener.callback, callback));
-            listeners.len() < initial_len
-        } else {
-            false
-        }
     }
 
     /// Remove an event listener by ID
@@ -353,102 +345,94 @@ impl Event {
     }
 
     /// Convert to JavaScript object
-    pub fn to_js_object(&self, context: &mut Context) -> boa_engine::JsResult<JsValue> {
-        use boa_engine::object::ObjectInitializer;
-        use boa_engine::JsString;
+    pub fn to_js_object(&self, context: &mut JSContext) -> Result<JSVal, String> {
+        let raw_cx = unsafe { context.raw_cx() };
 
-        let mut js_event = ObjectInitializer::new(context);
+        unsafe {
+            rooted!(in(raw_cx) let event_obj = JS_NewPlainObject(raw_cx));
+            if event_obj.get().is_null() {
+                return Err("Failed to create event object".to_string());
+            }
 
-        let mut js_event = js_event
-            .property(
-                JsString::from("type"),
-                JsValue::from(JsString::from(self.event_type.as_str())),
-                boa_engine::property::Attribute::all(),
-            )
-            .property(
-                JsString::from("bubbles"),
-                JsValue::from(self.bubbles),
-                boa_engine::property::Attribute::all(),
-            )
-            .property(
-                JsString::from("cancelable"),
-                JsValue::from(self.cancelable),
-                boa_engine::property::Attribute::all(),
-            )
-            .property(
-                JsString::from("defaultPrevented"),
-                JsValue::from(self.default_prevented),
-                boa_engine::property::Attribute::all(),
-            )
-            .property(
-                JsString::from("timestamp"),
-                JsValue::from(self.timestamp),
-                boa_engine::property::Attribute::all(),
-            )
-            .property(
-                JsString::from("eventPhase"),
-                JsValue::from(self.phase as i32),
-                boa_engine::property::Attribute::all(),
-            );
+            // Set type
+            let type_name = std::ffi::CString::new("type").unwrap();
+            let type_utf16: Vec<u16> = self.event_type.as_str().encode_utf16().collect();
+            rooted!(in(raw_cx) let type_str = JS_NewUCStringCopyN(raw_cx, type_utf16.as_ptr(), type_utf16.len()));
+            rooted!(in(raw_cx) let type_val = StringValue(&*type_str.get()));
+            JS_DefineProperty(raw_cx, event_obj.handle().into(), type_name.as_ptr(), type_val.handle().into(), JSPROP_ENUMERATE as u32);
 
-        // Add mouse event properties if applicable
-        if let Some(x) = self.client_x {
-            js_event = js_event.property(
-                JsString::from("clientX"),
-                JsValue::from(x),
-                boa_engine::property::Attribute::all(),
-            );
+            // Set bubbles
+            let bubbles_name = std::ffi::CString::new("bubbles").unwrap();
+            rooted!(in(raw_cx) let bubbles_val = BooleanValue(self.bubbles));
+            JS_DefineProperty(raw_cx, event_obj.handle().into(), bubbles_name.as_ptr(), bubbles_val.handle().into(), JSPROP_ENUMERATE as u32);
+
+            // Set cancelable
+            let cancelable_name = std::ffi::CString::new("cancelable").unwrap();
+            rooted!(in(raw_cx) let cancelable_val = BooleanValue(self.cancelable));
+            JS_DefineProperty(raw_cx, event_obj.handle().into(), cancelable_name.as_ptr(), cancelable_val.handle().into(), JSPROP_ENUMERATE as u32);
+
+            // Set defaultPrevented
+            let default_prevented_name = std::ffi::CString::new("defaultPrevented").unwrap();
+            rooted!(in(raw_cx) let default_prevented_val = BooleanValue(self.default_prevented));
+            JS_DefineProperty(raw_cx, event_obj.handle().into(), default_prevented_name.as_ptr(), default_prevented_val.handle().into(), JSPROP_ENUMERATE as u32);
+
+            // Set timestamp
+            let timestamp_name = std::ffi::CString::new("timestamp").unwrap();
+            rooted!(in(raw_cx) let timestamp_val = DoubleValue(self.timestamp));
+            JS_DefineProperty(raw_cx, event_obj.handle().into(), timestamp_name.as_ptr(), timestamp_val.handle().into(), JSPROP_ENUMERATE as u32);
+
+            // Set eventPhase
+            let phase_name = std::ffi::CString::new("eventPhase").unwrap();
+            rooted!(in(raw_cx) let phase_val = Int32Value(self.phase as i32));
+            JS_DefineProperty(raw_cx, event_obj.handle().into(), phase_name.as_ptr(), phase_val.handle().into(), JSPROP_ENUMERATE as u32);
+
+            // Set mouse position if applicable
+            if let Some(x) = self.client_x {
+                let client_x_name = std::ffi::CString::new("clientX").unwrap();
+                rooted!(in(raw_cx) let client_x_val = DoubleValue(x));
+                JS_DefineProperty(raw_cx, event_obj.handle().into(), client_x_name.as_ptr(), client_x_val.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+
+            if let Some(y) = self.client_y {
+                let client_y_name = std::ffi::CString::new("clientY").unwrap();
+                rooted!(in(raw_cx) let client_y_val = DoubleValue(y));
+                JS_DefineProperty(raw_cx, event_obj.handle().into(), client_y_name.as_ptr(), client_y_val.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+
+            // Set keyboard properties if applicable
+            if let Some(ref key) = self.key {
+                let key_name = std::ffi::CString::new("key").unwrap();
+                let key_utf16: Vec<u16> = key.encode_utf16().collect();
+                rooted!(in(raw_cx) let key_str = JS_NewUCStringCopyN(raw_cx, key_utf16.as_ptr(), key_utf16.len()));
+                rooted!(in(raw_cx) let key_val = StringValue(&*key_str.get()));
+                JS_DefineProperty(raw_cx, event_obj.handle().into(), key_name.as_ptr(), key_val.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+
+            if let Some(key_code) = self.key_code {
+                let key_code_name = std::ffi::CString::new("keyCode").unwrap();
+                rooted!(in(raw_cx) let key_code_val = Int32Value(key_code as i32));
+                JS_DefineProperty(raw_cx, event_obj.handle().into(), key_code_name.as_ptr(), key_code_val.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+
+            // Set modifier keys
+            let ctrl_name = std::ffi::CString::new("ctrlKey").unwrap();
+            rooted!(in(raw_cx) let ctrl_val = BooleanValue(self.ctrl_key));
+            JS_DefineProperty(raw_cx, event_obj.handle().into(), ctrl_name.as_ptr(), ctrl_val.handle().into(), JSPROP_ENUMERATE as u32);
+
+            let shift_name = std::ffi::CString::new("shiftKey").unwrap();
+            rooted!(in(raw_cx) let shift_val = BooleanValue(self.shift_key));
+            JS_DefineProperty(raw_cx, event_obj.handle().into(), shift_name.as_ptr(), shift_val.handle().into(), JSPROP_ENUMERATE as u32);
+
+            let alt_name = std::ffi::CString::new("altKey").unwrap();
+            rooted!(in(raw_cx) let alt_val = BooleanValue(self.alt_key));
+            JS_DefineProperty(raw_cx, event_obj.handle().into(), alt_name.as_ptr(), alt_val.handle().into(), JSPROP_ENUMERATE as u32);
+
+            let meta_name = std::ffi::CString::new("metaKey").unwrap();
+            rooted!(in(raw_cx) let meta_val = BooleanValue(self.meta_key));
+            JS_DefineProperty(raw_cx, event_obj.handle().into(), meta_name.as_ptr(), meta_val.handle().into(), JSPROP_ENUMERATE as u32);
+
+            Ok(ObjectValue(event_obj.get()))
         }
-
-        if let Some(y) = self.client_y {
-            js_event = js_event.property(
-                JsString::from("clientY"),
-                JsValue::from(y),
-                boa_engine::property::Attribute::all(),
-            );
-        }
-
-        // Add keyboard event properties if applicable
-        if let Some(ref key) = self.key {
-            js_event = js_event.property(
-                JsString::from("key"),
-                JsValue::from(JsString::from(key.clone())),
-                boa_engine::property::Attribute::all(),
-            );
-        }
-
-        if let Some(key_code) = self.key_code {
-            js_event = js_event.property(
-                JsString::from("keyCode"),
-                JsValue::from(key_code),
-                boa_engine::property::Attribute::all(),
-            );
-        }
-
-        // Add modifier keys
-        js_event = js_event
-            .property(
-                JsString::from("ctrlKey"),
-                JsValue::from(self.ctrl_key),
-                boa_engine::property::Attribute::all(),
-            )
-            .property(
-                JsString::from("shiftKey"),
-                JsValue::from(self.shift_key),
-                boa_engine::property::Attribute::all(),
-            )
-            .property(
-                JsString::from("altKey"),
-                JsValue::from(self.alt_key),
-                boa_engine::property::Attribute::all(),
-            )
-            .property(
-                JsString::from("metaKey"),
-                JsValue::from(self.meta_key),
-                boa_engine::property::Attribute::all(),
-            );
-
-        Ok(js_event.build().into())
     }
 }
 
@@ -460,7 +444,7 @@ impl EventDispatcher {
     pub fn dispatch_event(
         target: &DomNode,
         mut event: Event,
-        context: &mut Context,
+        context: &mut JSContext,
     ) -> Result<(), String> {
         // Set target
         event.target = Some(target.id);
@@ -535,9 +519,8 @@ impl EventDispatcher {
         node: &DomNode,
         event: &Event,
         capture_phase: bool,
-        context: &mut Context,
+        context: &mut JSContext,
     ) -> Result<(), String> {
-
         // Get listeners for this event type
         if let Some(listeners) = node.event_listeners.get_listeners(&event.event_type) {
             // Clone the listeners to avoid borrow issues
@@ -557,12 +540,10 @@ impl EventDispatcher {
                     break;
                 }
 
-                // Call the callback function
-                let _ = callback.call(&JsValue::undefined(), &[js_event.clone()], context)
-                    .map_err(|e| {
-                        eprintln!("Error executing event listener: {}", e);
-                        e
-                    });
+                // TODOExecute the callback code
+                //if let Err(e) = context.execute(&callback_code) {
+                //    eprintln!("Error executing event listener: {}", e);
+                //}
             }
         }
 
@@ -575,7 +556,7 @@ impl EventDispatcher {
         event_type: EventType,
         x: f64,
         y: f64,
-        context: &mut Context,
+        context: &mut JSContext,
     ) -> Result<(), String> {
         let event = Event::new_mouse_event(event_type, x, y);
         Self::dispatch_event(target, event, context)
@@ -587,7 +568,7 @@ impl EventDispatcher {
         event_type: EventType,
         key: String,
         key_code: u32,
-        context: &mut Context,
+        context: &mut JSContext,
     ) -> Result<(), String> {
         let event = Event::new_keyboard_event(event_type, key, key_code);
         Self::dispatch_event(target, event, context)
@@ -597,7 +578,7 @@ impl EventDispatcher {
     pub fn dispatch_simple_event(
         target: &DomNode,
         event_type: EventType,
-        context: &mut Context,
+        context: &mut JSContext,
     ) -> Result<(), String> {
         let event = Event::new(event_type);
         Self::dispatch_event(target, event, context)
