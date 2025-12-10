@@ -6,7 +6,6 @@ use std::hash::{Hash, Hasher};
 use std::ptr::NonNull;
 use std::sync::atomic::Ordering;
 use atomic_refcell::{AtomicRef, AtomicRefMut};
-use boa_engine::ast::expression::Identifier;
 use markup5ever::{local_name, LocalName, LocalNameStaticSet, Namespace, NamespaceStaticSet};
 use selectors::{Element, OpaqueElement};
 use selectors::attr::{AttrSelectorOperation, AttrSelectorOperator, CaseSensitivity, NamespaceConstraint};

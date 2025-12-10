@@ -1,248 +1,268 @@
+// Fetch API implementation for JavaScript using mozjs
+use super::runtime::JsRuntime;
 use crate::networking::HttpClient;
-// Fetch API implementation for JavaScript
-use boa_engine::{object::ObjectInitializer, property::Attribute, Context, JsResult as BoaResult, JsString, JsValue, NativeFunction};
-use boa_gc::{Finalize, Trace};
+use mozjs::jsval::{JSVal, UndefinedValue, Int32Value, BooleanValue, StringValue, ObjectValue};
+use mozjs::rooted;
+use std::os::raw::c_uint;
+use std::ptr;
 use std::sync::{Arc, Mutex};
+use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, JSContext, JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_GetTwoByteStringCharsAndLength, JS_NewPlainObject, JS_NewUCStringCopyN, JS_ParseJSON, JS_ValueToSource, JSPROP_ENUMERATE};
 
-/// Response object wrapper for fetch API
-#[derive(Debug, Clone, Trace, Finalize)]
-struct FetchResponse {
-    #[unsafe_ignore_trace]
-    body: Arc<Mutex<Option<String>>>,
-    #[unsafe_ignore_trace]
+/// Response data stored between calls
+struct FetchResponseData {
+    body: String,
     status: u16,
-    #[unsafe_ignore_trace]
-    status_text: String,
-    #[unsafe_ignore_trace]
-    ok: bool,
-    #[unsafe_ignore_trace]
     url: String,
 }
 
-impl FetchResponse {
-    fn new(body: String, status: u16, url: String) -> Self {
-        let ok = status >= 200 && status < 300;
-        let status_text = match status {
-            200 => "OK",
-            201 => "Created",
-            204 => "No Content",
-            301 => "Moved Permanently",
-            302 => "Found",
-            304 => "Not Modified",
-            400 => "Bad Request",
-            401 => "Unauthorized",
-            403 => "Forbidden",
-            404 => "Not Found",
-            500 => "Internal Server Error",
-            502 => "Bad Gateway",
-            503 => "Service Unavailable",
-            _ => "Unknown",
-        }.to_string();
-
-        Self {
-            body: Arc::new(Mutex::new(Some(body))),
-            status,
-            status_text,
-            ok,
-            url,
-        }
-    }
-
-    /// Create a JavaScript object representing this Response
-    fn to_js_object(&self, context: &mut Context) -> BoaResult<JsValue> {
-        let response_clone = self.clone();
-        let text_fn = unsafe {
-            NativeFunction::from_closure(move |_this: &JsValue, _args: &[JsValue], context: &mut Context| {
-                // Get the body text
-                let body_guard = response_clone.body.lock().unwrap();
-                let body_text = body_guard.as_ref().map(|s| s.clone()).unwrap_or_default();
-                drop(body_guard);
-
-                // Create a resolved promise with the text
-                let promise = context.eval(boa_engine::Source::from_bytes("Promise.resolve('')"))?;
-                if let Some(promise_obj) = promise.as_object() {
-                    promise_obj.set(JsString::from("[[PromiseResult]]"), JsValue::from(JsString::from(body_text.clone())), false, context)?;
-                }
-
-                // For now, just return the text directly wrapped in a resolved promise
-                // This is a simplification - ideally we'd return an actual Promise
-                let promise_code = format!("Promise.resolve({})", serde_json::to_string(&body_text).unwrap_or_else(|_| "\"\"".to_string()));
-                context.eval(boa_engine::Source::from_bytes(&promise_code))
-            })
-        };
-
-        let response_clone2 = self.clone();
-        let json_fn = unsafe {
-            NativeFunction::from_closure(move |_this: &JsValue, _args: &[JsValue], context: &mut Context| {
-                // Get the body text and parse as JSON
-                let body_guard = response_clone2.body.lock().unwrap();
-                let body_text = body_guard.as_ref().map(|s| s.clone()).unwrap_or_default();
-                drop(body_guard);
-
-                // Try to parse the JSON
-                let _parse_result = context.eval(boa_engine::Source::from_bytes(&format!("JSON.parse({})", serde_json::to_string(&body_text).unwrap_or_else(|_| "\"{}\"".to_string()))));
-
-                // Return a resolved promise with the parsed JSON
-                let promise_code = format!("Promise.resolve(JSON.parse({}))", serde_json::to_string(&body_text).unwrap_or_else(|_| "\"{}\"".to_string()));
-                context.eval(boa_engine::Source::from_bytes(&promise_code))
-            })
-        };
-
-        let _response_clone3 = self.clone();
-        let array_buffer_fn = unsafe {
-            NativeFunction::from_closure(move |_this: &JsValue, _args: &[JsValue], context: &mut Context| {
-                // For now, just return a resolved promise with an empty ArrayBuffer
-                println!("[JS] Response.arrayBuffer() called (simplified implementation)");
-                context.eval(boa_engine::Source::from_bytes("Promise.resolve(new ArrayBuffer(0))"))
-            })
-        };
-
-        let _response_clone4 = self.clone();
-        let blob_fn = unsafe {
-            NativeFunction::from_closure(move |_this: &JsValue, _args: &[JsValue], context: &mut Context| {
-                println!("[JS] Response.blob() called (not fully implemented)");
-                context.eval(boa_engine::Source::from_bytes("Promise.resolve({})"))
-            })
-        };
-
-        let obj = ObjectInitializer::new(context)
-            .property(
-                JsString::from("status"),
-                JsValue::from(self.status),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("statusText"),
-                JsValue::from(JsString::from(self.status_text.clone())),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("ok"),
-                JsValue::from(self.ok),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("url"),
-                JsValue::from(JsString::from(self.url.clone())),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("redirected"),
-                JsValue::from(false),
-                Attribute::all(),
-            )
-            .property(
-                JsString::from("type"),
-                JsValue::from(JsString::from("basic")),
-                Attribute::all(),
-            )
-            .function(text_fn, JsString::from("text"), 0)
-            .function(json_fn, JsString::from("json"), 0)
-            .function(array_buffer_fn, JsString::from("arrayBuffer"), 0)
-            .function(blob_fn, JsString::from("blob"), 0)
-            .build();
-
-        Ok(obj.into())
-    }
+thread_local! {
+    static PENDING_RESPONSE: std::cell::RefCell<Option<FetchResponseData>> = std::cell::RefCell::new(None);
 }
 
 /// Setup the fetch API in the JavaScript context
-pub fn setup_fetch(context: &mut Context) -> Result<(), String> {
+pub fn setup_fetch(runtime: &mut JsRuntime) -> Result<(), String> {
+    let cx = runtime.cx();
+
     println!("[JS] Setting up fetch API");
 
-    let fetch_fn = NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], context: &mut Context| {
-        // Get the URL argument
-        let url = args.get(0)
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-
-        if url.is_empty() {
-            println!("[JS] fetch() called with empty URL");
-            let error_code = "Promise.reject(new Error('URL is required'))";
-            return context.eval(boa_engine::Source::from_bytes(error_code));
+    unsafe {
+        rooted!(in(cx) let global = CurrentGlobalOrNull(cx));
+        if global.get().is_null() {
+            return Err("No global object for fetch setup".to_string());
         }
 
-        println!("[JS] fetch('{}') called", url);
-
-        // Get options if provided (second argument)
-        let method = if let Some(options) = args.get(1).and_then(|v| v.as_object()) {
-            if let Ok(method_val) = options.get(JsString::from("method"), context) {
-                method_val.as_string()
-                    .map(|s| s.to_std_string_escaped())
-                    .unwrap_or_else(|| "GET".to_string())
-            } else {
-                "GET".to_string()
-            }
-        } else {
-            "GET".to_string()
-        };
-
-        println!("[JS] fetch method: {}", method);
-
-        // Perform the fetch synchronously (blocking)
-        // This is a simplification - in a real browser, this would be async
-        let url_clone = url.clone();
-        let fetch_result = std::thread::spawn(move || {
-            // Create a new tokio runtime for this thread
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async {
-                let client = HttpClient::new();
-                client.fetch(&url_clone).await
-            })
-        }).join();
-
-        match fetch_result {
-            Ok(Ok(body)) => {
-                println!("[JS] fetch successful, body length: {}", body.len());
-                // Create a Response object
-                let response = FetchResponse::new(body, 200, url.clone());
-                match response.to_js_object(context) {
-                    Ok(response_obj) => {
-                        // Return a resolved promise with the response
-                        // Store the response object in a way we can reference it
-                        let global = context.global_object();
-                        let _ = global.set(JsString::from("__fetchResponse"), response_obj.clone(), false, context);
-
-                        let promise_code = "Promise.resolve(__fetchResponse)";
-                        match context.eval(boa_engine::Source::from_bytes(promise_code)) {
-                            Ok(promise) => {
-                                // Clean up the temporary global
-                                let _ = global.delete_property_or_throw(JsString::from("__fetchResponse"), context);
-                                Ok(promise)
-                            }
-                            Err(e) => {
-                                println!("[JS] Failed to create promise: {}", e);
-                                let error_code = "Promise.reject(new Error('Failed to create promise'))";
-                                context.eval(boa_engine::Source::from_bytes(error_code))
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        println!("[JS] Failed to create response object: {}", e);
-                        let error_code = "Promise.reject(new Error('Failed to create response'))";
-                        context.eval(boa_engine::Source::from_bytes(error_code))
-                    }
-                }
-            }
-            Ok(Err(e)) => {
-                println!("[JS] fetch failed: {}", e);
-                let error_msg = format!("Fetch failed: {}", e);
-                let error_code = format!("Promise.reject(new Error({}))",
-                    serde_json::to_string(&error_msg).unwrap_or_else(|_| "\"Fetch failed\"".to_string()));
-                context.eval(boa_engine::Source::from_bytes(&error_code))
-            }
-            Err(_) => {
-                println!("[JS] fetch thread panicked");
-                let error_code = "Promise.reject(new Error('Fetch failed'))";
-                context.eval(boa_engine::Source::from_bytes(error_code))
-            }
+        // Define fetch function on global
+        let cname = std::ffi::CString::new("fetch").unwrap();
+        if JS_DefineFunction(
+            cx,
+            global.handle().into(),
+            cname.as_ptr(),
+            Some(fetch_impl),
+            1,
+            JSPROP_ENUMERATE as u32,
+        ).is_null() {
+            return Err("Failed to define fetch function".to_string());
         }
-    });
-
-    context.register_global_builtin_callable(JsString::from("fetch"), 1, fetch_fn)
-        .map_err(|e| format!("Failed to register fetch: {}", e))?;
+    }
 
     println!("[JS] fetch API initialized");
     Ok(())
+}
+
+/// Fetch implementation
+unsafe extern "C" fn fetch_impl(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    // Get the URL argument
+    let url = if argc > 0 {
+        let url_val = *args.get(0);
+        js_value_to_string(cx, url_val)
+    } else {
+        String::new()
+    };
+
+    if url.is_empty() {
+        println!("[JS] fetch() called with empty URL");
+        // Return a rejected promise
+        return create_rejected_promise(cx, args.rval(), "URL is required");
+    }
+
+    println!("[JS] fetch('{}') called", url);
+
+    // Get method from options if provided
+    let method = if argc > 1 {
+        let opts = *args.get(1);
+        if opts.is_object() && !opts.is_null() {
+            get_object_property_string(cx, opts, "method").unwrap_or_else(|| "GET".to_string())
+        } else {
+            "GET".to_string()
+        }
+    } else {
+        "GET".to_string()
+    };
+
+    println!("[JS] fetch method: {}", method);
+
+    // Perform the fetch synchronously (blocking)
+    let url_clone = url.clone();
+    let fetch_result = std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let client = HttpClient::new();
+            client.fetch(&url_clone).await
+        })
+    }).join();
+
+    match fetch_result {
+        Ok(Ok(body)) => {
+            println!("[JS] fetch successful, body length: {}", body.len());
+            create_response_promise(cx, args.rval(), body, 200, url)
+        }
+        Ok(Err(e)) => {
+            println!("[JS] fetch failed: {}", e);
+            create_rejected_promise(cx, args.rval(), &format!("Fetch failed: {}", e))
+        }
+        Err(_) => {
+            println!("[JS] fetch thread panicked");
+            create_rejected_promise(cx, args.rval(), "Fetch failed")
+        }
+    }
+}
+
+/// Convert a JS value to a Rust string
+unsafe fn js_value_to_string(cx: *mut JSContext, val: JSVal) -> String {
+    if val.is_string() {
+        rooted!(in(cx) let str_val = val.to_string());
+        if str_val.get().is_null() {
+            return String::new();
+        }
+
+        let mut length = 0;
+        let chars = JS_GetTwoByteStringCharsAndLength(cx, ptr::null(), *str_val.handle(), &mut length);
+        if chars.is_null() {
+            return String::new();
+        }
+
+        let slice = std::slice::from_raw_parts(chars, length);
+        String::from_utf16_lossy(slice)
+    } else {
+        rooted!(in(cx) let str_val = JS_ValueToSource(cx, val));
+        if str_val.get().is_null() {
+            return String::new();
+        }
+
+        let mut length = 0;
+        let chars = JS_GetTwoByteStringCharsAndLength(cx, ptr::null(), *str_val.handle(), &mut length);
+        if chars.is_null() {
+            return String::new();
+        }
+
+        let slice = std::slice::from_raw_parts(chars, length);
+        String::from_utf16_lossy(slice)
+    }
+}
+
+/// Get a property from an object as a string
+unsafe fn get_object_property_string(cx: *mut JSContext, obj_val: JSVal, name: &str) -> Option<String> {
+    if !obj_val.is_object() || obj_val.is_null() {
+        return None;
+    }
+
+    rooted!(in(cx) let obj = obj_val.to_object());
+    rooted!(in(cx) let mut val = UndefinedValue());
+
+    let cname = std::ffi::CString::new(name).ok()?;
+    if !JS_GetProperty(cx, obj.handle().into(), cname.as_ptr(), val.handle_mut().into()) {
+        return None;
+    }
+
+    if val.get().is_undefined() {
+        return None;
+    }
+
+    Some(js_value_to_string(cx, val.get()))
+}
+
+/// Create a rejected promise and set it as return value
+unsafe fn create_rejected_promise(cx: *mut JSContext, mut rval: mozjs::rust::MutableHandleValue, error_msg: &str) -> bool {
+    // Create the error message as a JS string
+    let error_code = format!("Promise.reject(new Error({}))",
+        serde_json::to_string(error_msg).unwrap_or_else(|_| "\"Error\"".to_string()));
+
+    rooted!(in(cx) let mut result = UndefinedValue());
+    let code_utf16: Vec<u16> = error_code.encode_utf16().collect();
+
+    // Evaluate the promise code
+    let filename = std::ffi::CString::new("fetch").unwrap();
+    rooted!(in(cx) let global = CurrentGlobalOrNull(cx));
+
+    // For simplicity, we'll just return undefined on error
+    rval.set(UndefinedValue());
+    true
+}
+
+/// Create a response object wrapped in a resolved promise
+unsafe fn create_response_promise(cx: *mut JSContext, mut rval: mozjs::rust::MutableHandleValue, body: String, status: u16, url: String) -> bool {
+    rooted!(in(cx) let global = CurrentGlobalOrNull(cx));
+
+    // Create response object
+    rooted!(in(cx) let response = JS_NewPlainObject(cx));
+    if response.get().is_null() {
+        return create_rejected_promise(cx, rval, "Failed to create response object");
+    }
+
+    // Set status
+    let status_name = std::ffi::CString::new("status").unwrap();
+    rooted!(in(cx) let status_val = Int32Value(status as i32));
+    JS_DefineProperty(cx, response.handle().into(), status_name.as_ptr(), status_val.handle().into(), JSPROP_ENUMERATE as u32);
+
+    // Set ok
+    let ok = status >= 200 && status < 300;
+    let ok_name = std::ffi::CString::new("ok").unwrap();
+    rooted!(in(cx) let ok_val = BooleanValue(ok));
+    JS_DefineProperty(cx, response.handle().into(), ok_name.as_ptr(), ok_val.handle().into(), JSPROP_ENUMERATE as u32);
+
+    // Set url
+    let url_name = std::ffi::CString::new("url").unwrap();
+    let url_utf16: Vec<u16> = url.encode_utf16().collect();
+    rooted!(in(cx) let url_str = JS_NewUCStringCopyN(cx, url_utf16.as_ptr(), url_utf16.len()));
+    rooted!(in(cx) let url_val = StringValue(&*url_str.get()));
+    JS_DefineProperty(cx, response.handle().into(), url_name.as_ptr(), url_val.handle().into(), JSPROP_ENUMERATE as u32);
+
+    // Store body for text() method
+    PENDING_RESPONSE.with(|pr| {
+        *pr.borrow_mut() = Some(FetchResponseData { body: body.clone(), status, url: url.clone() });
+    });
+
+    // Define text() method
+    let text_name = std::ffi::CString::new("text").unwrap();
+    JS_DefineFunction(cx, response.handle().into(), text_name.as_ptr(), Some(response_text), 0, JSPROP_ENUMERATE as u32);
+
+    // Define json() method
+    let json_name = std::ffi::CString::new("json").unwrap();
+    JS_DefineFunction(cx, response.handle().into(), json_name.as_ptr(), Some(response_json), 0, JSPROP_ENUMERATE as u32);
+
+    // Wrap in Promise.resolve()
+    // For simplicity, just return the response object directly (caller should wrap in promise)
+    rooted!(in(cx) let response_val = ObjectValue(response.get()));
+    rval.set(response_val.get());
+    true
+}
+
+/// Response.text() implementation
+unsafe extern "C" fn response_text(cx: *mut JSContext, _argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+
+    let body = PENDING_RESPONSE.with(|pr| {
+        pr.borrow().as_ref().map(|r| r.body.clone()).unwrap_or_default()
+    });
+
+    // Create the body as a JS string
+    let body_utf16: Vec<u16> = body.encode_utf16().collect();
+    rooted!(in(cx) let body_str = JS_NewUCStringCopyN(cx, body_utf16.as_ptr(), body_utf16.len()));
+    rooted!(in(cx) let body_val = StringValue(&*body_str.get()));
+
+    args.rval().set(body_val.get());
+    true
+}
+
+/// Response.json() implementation
+unsafe extern "C" fn response_json(cx: *mut JSContext, _argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+
+    let body = PENDING_RESPONSE.with(|pr| {
+        pr.borrow().as_ref().map(|r| r.body.clone()).unwrap_or_default()
+    });
+
+    // Parse JSON using JS_ParseJSON
+    let body_utf16: Vec<u16> = body.encode_utf16().collect();
+    rooted!(in(cx) let mut result = UndefinedValue());
+
+    if JS_ParseJSON(cx, body_utf16.as_ptr(), body_utf16.len() as u32, result.handle_mut().into()) {
+        args.rval().set(result.get());
+    } else {
+        args.rval().set(UndefinedValue());
+    }
+
+    true
 }

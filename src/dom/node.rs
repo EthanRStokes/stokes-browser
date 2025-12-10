@@ -18,7 +18,7 @@ use skia_safe::FontMgr;
 use skia_safe::wrapper::PointerWrapper;
 use slab::Slab;
 use style::data::ElementData as StyleElementData;
-use style::properties::{parse_style_attribute, PropertyDeclarationBlock};
+use style::properties::{parse_style_attribute, ComputedValues, PropertyDeclarationBlock};
 use style::servo_arc::{Arc as ServoArc, Arc};
 use style::shared_lock::{Locked, SharedRwLock};
 use stylo_atoms::Atom;
@@ -743,7 +743,7 @@ impl DomNode {
             .borrow()
             .as_ref()
             .map(|element_data| element_data.styles.primary().clone())
-            .expect("CSS not applied whatsoever").to_arc()
+            .unwrap_or(ComputedValues::initial_values_with_font_override(Font::initial_values())).to_arc()
     }
 
     /// Get text content of this node and its descendants
