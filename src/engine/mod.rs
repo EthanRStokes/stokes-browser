@@ -893,7 +893,7 @@ impl Engine {
 
         let node = root.get_node(node_id);
         if let Some(runtime) = &mut self.js_runtime {
-            let context = runtime.context_mut();
+            let context = runtime.cx();
 
             if let Err(e) = EventDispatcher::dispatch_mouse_event(
                 &node,
@@ -938,7 +938,7 @@ impl Engine {
 
         let node = root.get_node(node_id);
         if let Some(runtime) = &mut self.js_runtime {
-            let context = runtime.context_mut();
+            let context = runtime.cx();
 
             println!("[Event] Firing {:?} event at ({}, {}) on node {}", event_type, x, y, node_id);
 
@@ -963,7 +963,7 @@ impl Engine {
         let root = dom.root_node();
 
         if let Some(runtime) = &mut self.js_runtime {
-            let context = runtime.context_mut();
+            let context = runtime.cx();
 
             println!("[Event] Firing {:?} event with key: {} (code: {})", event_type, key, key_code);
 
@@ -985,7 +985,7 @@ impl Engine {
         let root = dom.root_node();
 
         if let Some(runtime) = &mut self.js_runtime {
-            let context = runtime.context_mut();
+            let context = runtime.cx();
 
             println!("[Event] Firing scroll event");
 
@@ -1006,7 +1006,7 @@ impl Engine {
         let root = dom.root_node();
 
         if let Some(runtime) = &mut self.js_runtime {
-            let context = runtime.context_mut();
+            let context = runtime.cx();
 
             println!("[Event] Firing resize event");
 
@@ -1027,7 +1027,7 @@ impl Engine {
         let root = dom.root_node();
 
         if let Some(runtime) = &mut self.js_runtime {
-            let context = runtime.context_mut();
+            let context = runtime.cx();
 
             println!("[Event] Firing load event");
 

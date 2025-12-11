@@ -5,16 +5,16 @@ use mozjs::rooted;
 use mozjs::rust::HandleValue;
 use std::os::raw::c_uint;
 use std::ptr;
+use mozjs::gc::Handle;
 use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, JSContext, JSNative, JSObject, JS_DefineFunction, JS_DefineProperty, JS_GetTwoByteStringCharsAndLength, JS_NewPlainObject, JSPROP_ENUMERATE};
 use mozjs::rust::wrappers::JS_ValueToSource;
 
 /// Set up the console object in the JavaScript context
 pub fn setup_console(runtime: &mut JsRuntime) -> Result<(), String> {
-    let raw_cx = runtime.raw_cx();
-    let raw_raw_cx = unsafe { raw_cx.raw_raw_cx() };
+    let raw_cx = unsafe { runtime.cx().raw_cx() };
 
     unsafe {
-        rooted!(in(raw_raw_cx) let global = CurrentGlobalOrNull(raw_cx));
+        rooted!(in(raw_cx) let global = CurrentGlobalOrNull(raw_cx));
         if global.get().is_null() {
             return Err("No global object for console setup".to_string());
         }
@@ -112,67 +112,67 @@ unsafe fn js_value_to_string(raw_cx: *mut JSContext, val: JSVal) -> String {
         return val.to_double().to_string();
     }
 
-    rooted!(in(raw_cx) let str_val = JS_ValueToSource(raw_cx, val));
+    rooted!(in(raw_cx) let str_val = unsafe { JS_ValueToSource(raw_cx, Handle::from_marked_location(&val)) });
     if str_val.get().is_null() {
         return "[object]".to_string();
     }
 
     let mut length = 0;
-    let chars = JS_GetTwoByteStringCharsAndLength(raw_cx, ptr::null(), *str_val.handle(), &mut length);
+    let chars = unsafe { JS_GetTwoByteStringCharsAndLength(raw_cx, ptr::null(), *str_val.handle(), &mut length) };
     if chars.is_null() {
         return "[string conversion failed]".to_string();
     }
 
-    let slice = std::slice::from_raw_parts(chars, length);
+    let slice = unsafe { std::slice::from_raw_parts(chars, length) };
     String::from_utf16_lossy(slice)
 }
 
 /// console.log implementation
 unsafe extern "C" fn console_log(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
-    let message = format_args(raw_cx, argc, vp);
+    let message = unsafe { format_args(raw_cx, argc, vp) };
     println!("[JS] {}", message);
 
-    let args = CallArgs::from_vp(vp, argc);
+    let args = unsafe { CallArgs::from_vp(vp, argc) };
     args.rval().set(UndefinedValue());
     true
 }
 
 /// console.error implementation
 unsafe extern "C" fn console_error(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
-    let message = format_args(raw_cx, argc, vp);
+    let message = unsafe { format_args(raw_cx, argc, vp) };
     eprintln!("[JS Error] {}", message);
 
-    let args = CallArgs::from_vp(vp, argc);
+    let args = unsafe { CallArgs::from_vp(vp, argc) };
     args.rval().set(UndefinedValue());
     true
 }
 
 /// console.warn implementation
 unsafe extern "C" fn console_warn(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
-    let message = format_args(raw_cx, argc, vp);
+    let message = unsafe { format_args(raw_cx, argc, vp) };
     println!("[JS Warning] {}", message);
 
-    let args = CallArgs::from_vp(vp, argc);
+    let args = unsafe { CallArgs::from_vp(vp, argc) };
     args.rval().set(UndefinedValue());
     true
 }
 
 /// console.info implementation
 unsafe extern "C" fn console_info(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
-    let message = format_args(raw_cx, argc, vp);
+    let message = unsafe { format_args(raw_cx, argc, vp) };
     println!("[JS Info] {}", message);
 
-    let args = CallArgs::from_vp(vp, argc);
+    let args = unsafe { CallArgs::from_vp(vp, argc) };
     args.rval().set(UndefinedValue());
     true
 }
 
 /// console.debug implementation
 unsafe extern "C" fn console_debug(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
-    let message = format_args(raw_cx, argc, vp);
+    let message = unsafe { format_args(raw_cx, argc, vp) };
     println!("[JS Debug] {}", message);
 
-    let args = CallArgs::from_vp(vp, argc);
+    let args = unsafe { CallArgs::from_vp(vp, argc) };
     args.rval().set(UndefinedValue());
     true
 }
