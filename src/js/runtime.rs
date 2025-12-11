@@ -80,10 +80,9 @@ impl JsRuntime {
             let code_cstring = CString::new(code).map_err(|e| format!("Invalid JS code: {}", e))?;
             let filename = CString::new("script").unwrap();
 
-            let opts = CompileOptions::new(cx, filename.as_ptr(), 1);
             let result = mozjs::rust::wrappers::Evaluate(
                 raw_cx,
-                opts,
+                std::ptr::null(),
                 &mut transform_u16_to_source_text(code),
                 rval.handle_mut(),
             );
@@ -140,12 +139,6 @@ impl JsRuntime {
         }
     }
 
-    /// Process pending timers and execute callbacks that are ready
-    /// Returns true if any timers were executed
-    pub fn process_timers(&mut self) -> bool {
-        self.timer_manager.process_timers(&mut self)
-    }
-
     /// Check if there are any active timers
     pub fn has_active_timers(&self) -> bool {
         self.timer_manager.has_active_timers()
@@ -177,16 +170,4 @@ unsafe fn transform_u16_to_source_text(code: &str) -> mozjs::jsapi::SourceText<u
     source.length_ = utf16.len() as u32;
     std::mem::forget(utf16); // Leak to prevent deallocation
     source
-}
-
-/// Helper struct for compile options
-struct CompileOptions {
-    filename: *const std::ffi::c_char,
-    lineno: u32,
-}
-
-impl CompileOptions {
-    fn new(_cx: *mut JSContext, filename: *const std::ffi::c_char, lineno: u32) -> Self {
-        Self { filename, lineno }
-    }
 }

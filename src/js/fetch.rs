@@ -6,7 +6,7 @@ use mozjs::rooted;
 use std::os::raw::c_uint;
 use std::ptr;
 use std::sync::{Arc, Mutex};
-use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, JSContext, JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_GetTwoByteStringCharsAndLength, JS_NewPlainObject, JS_NewUCStringCopyN, JS_ParseJSON, JS_ValueToSource, JSPROP_ENUMERATE};
+use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, Handle, JSContext, JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_GetTwoByteStringCharsAndLength, JS_NewPlainObject, JS_NewUCStringCopyN, JS_ParseJSON, JS_ValueToSource, MutableHandleValue, JSPROP_ENUMERATE};
 
 /// Response data stored between calls
 struct FetchResponseData {
@@ -21,7 +21,7 @@ thread_local! {
 
 /// Setup the fetch API in the JavaScript context
 pub fn setup_fetch(runtime: &mut JsRuntime) -> Result<(), String> {
-    let cx = runtime.cx();
+    let cx = unsafe { runtime.cx().raw_cx() };
 
     println!("[JS] Setting up fetch API");
 
@@ -64,7 +64,7 @@ unsafe extern "C" fn fetch_impl(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal
     if url.is_empty() {
         println!("[JS] fetch() called with empty URL");
         // Return a rejected promise
-        return create_rejected_promise(cx, args.rval(), "URL is required");
+        return create_rejected_promise(cx, args.rval().into(), "URL is required");
     }
 
     println!("[JS] fetch('{}') called", url);
@@ -126,7 +126,7 @@ unsafe fn js_value_to_string(cx: *mut JSContext, val: JSVal) -> String {
         let slice = std::slice::from_raw_parts(chars, length);
         String::from_utf16_lossy(slice)
     } else {
-        rooted!(in(cx) let str_val = JS_ValueToSource(cx, val));
+        rooted!(in(cx) let str_val = JS_ValueToSource(cx, Handle::from_marked_location(&val)));
         if str_val.get().is_null() {
             return String::new();
         }
@@ -164,7 +164,7 @@ unsafe fn get_object_property_string(cx: *mut JSContext, obj_val: JSVal, name: &
 }
 
 /// Create a rejected promise and set it as return value
-unsafe fn create_rejected_promise(cx: *mut JSContext, mut rval: mozjs::rust::MutableHandleValue, error_msg: &str) -> bool {
+unsafe fn create_rejected_promise(cx: *mut JSContext, mut rval: MutableHandleValue, error_msg: &str) -> bool {
     // Create the error message as a JS string
     let error_code = format!("Promise.reject(new Error({}))",
         serde_json::to_string(error_msg).unwrap_or_else(|_| "\"Error\"".to_string()));
@@ -182,7 +182,7 @@ unsafe fn create_rejected_promise(cx: *mut JSContext, mut rval: mozjs::rust::Mut
 }
 
 /// Create a response object wrapped in a resolved promise
-unsafe fn create_response_promise(cx: *mut JSContext, mut rval: mozjs::rust::MutableHandleValue, body: String, status: u16, url: String) -> bool {
+unsafe fn create_response_promise(cx: *mut JSContext, mut rval: MutableHandleValue, body: String, status: u16, url: String) -> bool {
     rooted!(in(cx) let global = CurrentGlobalOrNull(cx));
 
     // Create response object
