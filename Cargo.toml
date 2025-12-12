@@ -61,6 +61,9 @@ blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "b8b88a5d" }
 blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "b8b88a5d" }
 stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "b8b88a5d" }
 
+# MozJS
+mozjs = { git = "https://github.com/servo/mozjs.git", rev = "73aed6e" }
+
 [dependencies.winit]
 git = "https://github.com/Treetrain1/winit.git"
 default-features = true
@@ -68,4 +71,4 @@ default-features = true
 [patch.crates-io]
 winit = { git = "https://github.com/Treetrain1/winit.git" }
 
-# Boa engine removed, now using mozjs
+
