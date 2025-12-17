@@ -5,7 +5,7 @@ pub use self::config::EngineConfig;
 use crate::dom::{Dom, DomNode, ImageData, ImageLoadingState, NodeData};
 use crate::dom::{EventDispatcher, EventType};
 use crate::js::JsRuntime;
-use crate::layout::{LayoutBox, LayoutEngine};
+use crate::layout::LayoutEngine;
 use crate::networking::{HttpClient, NetworkError};
 use crate::renderer::HtmlRenderer;
 use blitz_traits::shell::Viewport;
@@ -39,7 +39,6 @@ pub struct Engine {
     page_title: String,
     is_loading: bool,
     pub(crate) dom: Option<Dom>,
-    layout: Option<LayoutBox>,
     layout_engine: LayoutEngine,
     style_map_dirty: bool,
     scroll_y: f32,
@@ -63,7 +62,6 @@ impl Engine {
             page_title: "New Tab".to_string(),
             is_loading: false,
             dom: None,
-            layout: None,
             layout_engine: LayoutEngine::new(800.0, 600.0), // Default viewport size
             style_map_dirty: false,
             scroll_y: 0.0,
@@ -402,7 +400,7 @@ impl Engine {
 
         let dom = self.dom.as_mut().unwrap();
 
-        self.layout = Some(self.layout_engine.compute_layout(dom, self.viewport.hidpi_scale));
+        self.layout_engine.compute_layout(dom, self.viewport.hidpi_scale);
 
         self.style_map_dirty = true;
 
@@ -709,26 +707,12 @@ impl Engine {
 
     /// Update content dimensions based on layout
     fn update_content_dimensions(&mut self) {
-        if let Some(layout) = &self.layout {
-            // Calculate total content dimensions from the layout tree
-            let (width, height) = self.calculate_content_bounds(layout);
-            self.content_width = width;
-            self.content_height = height;
+        if let Some(dom) = &self.dom {
+            let root_element = dom.root_element();
+            let layout = root_element.final_layout;
+            self.content_width = layout.size.width;
+            self.content_height = layout.size.height;
         }
-    }
-
-    /// Recursively calculate content bounds
-    fn calculate_content_bounds(&self, layout_box: &LayoutBox) -> (f32, f32) {
-        let mut max_width = layout_box.dimensions.content.right();
-        let mut max_height = layout_box.dimensions.content.bottom();
-
-        for child in &layout_box.children {
-            let (child_width, child_height) = self.calculate_content_bounds(child);
-            max_width = max_width.max(child_width);
-            max_height = max_height.max(child_height);
-        }
-
-        (max_width, max_height)
     }
 
     /*TODO /// Get the cursor style for the element at the given position
@@ -737,9 +721,10 @@ impl Engine {
         let adjusted_x = x + self.scroll_x;
         let adjusted_y = y + self.scroll_y;
 
-        // Find the topmost element at this position
-        if let Some(layout) = &self.layout {
-            if let Some(node_id) = self.find_element_at_position(layout, adjusted_x, adjusted_y) {
+        // Find the topmost element at this position starting from root
+        if let Some(dom) = &self.dom {
+            let root_id = dom.root_element().id;
+            if let Some(node_id) = self.find_element_at_position(root_id, adjusted_x, adjusted_y, 0.0, 0.0) {
                 // Get the computed styles for this element
                 if let Some(styles) = self.cached_style_map.get(&node_id) {
                     return styles.cursor.clone();
@@ -752,22 +737,62 @@ impl Engine {
     }*/
 
     /// Recursively find the element at the given position (returns the deepest/topmost element)
-    fn find_element_at_position(&self, layout_box: &LayoutBox, x: f32, y: f32) -> Option<usize> {
-        let border_box = layout_box.dimensions.border_box();
+    fn find_element_at_position(&self, node_id: usize, x: f32, y: f32, parent_x: f32, parent_y: f32) -> Option<usize> {
+        let dom = self.dom.as_ref()?;
+        let node = dom.get_node(node_id)?;
+        let layout = node.final_layout;
 
-        // Check if position is within this box
-        if x >= border_box.left && x <= border_box.right &&
-            y >= border_box.top && y <= border_box.bottom {
+        // Calculate absolute position of this node
+        let abs_x = parent_x + layout.location.x;
+        let abs_y = parent_y + layout.location.y;
 
-            // Check children first (they are on top)
-            for child in &layout_box.children {
-                if let Some(child_node_id) = self.find_element_at_position(child, x, y) {
-                    return Some(child_node_id);
+        // Check if position is within this box (border box)
+        let left = abs_x;
+        let right = abs_x + layout.size.width;
+        let top = abs_y;
+        let bottom = abs_y + layout.size.height;
+
+        if x >= left && x <= right && y >= top && y <= bottom {
+            // Check layout children first (they are on top)
+            if let Some(layout_children) = node.layout_children.borrow().as_ref() {
+                // Sort children by z-index (highest first for hit testing)
+                // Elements with higher z-index should be checked first as they are visually on top
+                let mut children_with_z: Vec<(usize, i32)> = layout_children
+                    .iter()
+                    .map(|&child_id| {
+                        let child_node = dom.get_node(child_id);
+                        let z_index = child_node
+                            .and_then(|n| n.primary_styles())
+                            .map(|s| {
+                                match s.get_position().z_index {
+                                    style::values::computed::ZIndex::Integer(i) => i,
+                                    style::values::computed::ZIndex::Auto => 0,
+                                }
+                            })
+                            .unwrap_or(0);
+                        (child_id, z_index)
+                    })
+                    .collect();
+
+                // Sort by z-index descending (highest first), then by DOM order descending (later elements first)
+                // This ensures visually topmost elements are checked first
+                children_with_z.sort_by(|a, b| {
+                    b.1.cmp(&a.1).then_with(|| {
+                        // For equal z-index, later DOM order is on top, so check those first
+                        layout_children.iter().position(|&id| id == b.0)
+                            .cmp(&layout_children.iter().position(|&id| id == a.0))
+                    })
+                });
+
+                for (child_id, _) in children_with_z {
+                    if let Some(child_node_id) = self.find_element_at_position(child_id, x, y, abs_x, abs_y) {
+                        return Some(child_node_id);
+                    }
                 }
             }
 
             // If no child matched, return this node
-            return Some(layout_box.node_id);
+            return Some(node_id);
         }
 
         None
@@ -918,9 +943,10 @@ impl Engine {
         let adjusted_x = x + self.scroll_x;
         let adjusted_y = y + self.scroll_y;
 
-        // Find the element at this position
-        if let Some(layout) = &self.layout {
-            if let Some(node_id) = self.find_element_at_position(layout, adjusted_x, adjusted_y) {
+        // Find the element at this position starting from root
+        if let Some(dom) = &self.dom {
+            let root_id = dom.root_element().id;
+            if let Some(node_id) = self.find_element_at_position(root_id, adjusted_x, adjusted_y, 0.0, 0.0) {
                 // Fire click event on the element
                 self.fire_click_event(node_id, x as f64, y as f64);
 
@@ -959,9 +985,10 @@ impl Engine {
         let adjusted_x = x + self.scroll_x;
         let adjusted_y = y + self.scroll_y;
 
-        // Find the element at this position
-        if let Some(layout) = &self.layout {
-            if let Some(node_id) = self.find_element_at_position(layout, adjusted_x, adjusted_y) {
+        // Find the element at this position starting from root
+        if let Some(dom) = &self.dom {
+            let root_id = dom.root_element().id;
+            if let Some(node_id) = self.find_element_at_position(root_id, adjusted_x, adjusted_y, 0.0, 0.0) {
                 // Fire mouse move event on the element
                 self.fire_mouse_move_event(node_id, x as f64, y as f64);
             }
@@ -994,8 +1021,9 @@ impl Engine {
         let adjusted_x = x + self.scroll_x;
         let adjusted_y = y + self.scroll_y;
 
-        if let Some(layout) = &self.layout {
-            if let Some(node_id) = self.find_element_at_position(layout, adjusted_x, adjusted_y) {
+        if let Some(dom) = &self.dom {
+            let root_id = dom.root_element().id;
+            if let Some(node_id) = self.find_element_at_position(root_id, adjusted_x, adjusted_y, 0.0, 0.0) {
                 self.fire_mouse_event(node_id, EventType::MouseDown, x as f64, y as f64);
             }
         }
@@ -1006,8 +1034,9 @@ impl Engine {
         let adjusted_x = x + self.scroll_x;
         let adjusted_y = y + self.scroll_y;
 
-        if let Some(layout) = &self.layout {
-            if let Some(node_id) = self.find_element_at_position(layout, adjusted_x, adjusted_y) {
+        if let Some(dom) = &self.dom {
+            let root_id = dom.root_element().id;
+            if let Some(node_id) = self.find_element_at_position(root_id, adjusted_x, adjusted_y, 0.0, 0.0) {
                 self.fire_mouse_event(node_id, EventType::MouseUp, x as f64, y as f64);
             }
         }
