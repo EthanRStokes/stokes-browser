@@ -61,6 +61,7 @@ blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "63e7c4d" }
 blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "63e7c4d" }
 stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "63e7c4d", features = ["floats"] }
 log = "0.4.28"
+woff = "0.6.2"
 
 [dependencies.winit]
 git = "https://github.com/Treetrain1/winit.git"

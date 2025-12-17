@@ -149,26 +149,30 @@ impl Engine {
             matches!(data.special_data, SpecialElementData::Image(_))
         }));
 
+        println!("Found {} image nodes in DOM", image_nodes.len());
+
         // Collect image sources that need to be loaded
         let mut image_requests: Vec<(usize, Rc<String>)> = Vec::new();
 
         for image_node in image_nodes {
             let image_node = dom.get_node_mut(image_node).unwrap();
-            if let NodeData::Element(ref mut image_data) = image_node.data {
-                if let SpecialElementData::Image(image_data) = &mut image_data.special_data {
-                    // Only start loading if not already loaded or loading
-                    // TODO reimplement image fetching
-                    /*if matches!(image_data.loading_state, ImageLoadingState::NotLoaded) {
-                        // Set to loading state
-                        image_data.loading_state = ImageLoadingState::Loading;
-
-                        if !image_data.src.is_empty() {
-                            image_requests.push((image_node.id, image_data.src.clone()));
+            if let NodeData::Element(ref mut elem_data) = image_node.data {
+                if let SpecialElementData::Image(ref image_data) = elem_data.special_data {
+                    // Only start loading if the image is not already loaded
+                    if matches!(**image_data, ImageData::None) {
+                        // Get src from element's attributes
+                        if let Some(src) = elem_data.attr(local_name!("src")) {
+                            if !src.is_empty() {
+                                println!("Found image to load: node_id={}, src={}", image_node.id, src);
+                                image_requests.push((image_node.id, Rc::new(src.to_string())));
+                            }
                         }
-                    }*/
+                    }
                 }
             }
         }
+
+        println!("Total image requests to fetch: {}", image_requests.len());
 
         // Fetch all images concurrently
         let mut fetch_futures = Vec::new();
@@ -191,35 +195,62 @@ impl Engine {
 
         let results = futures::future::join_all(fetch_futures).await;
 
+        // Collect node IDs that had their images loaded successfully
+        let mut loaded_image_node_ids: Vec<usize> = Vec::new();
+
         let dom = self.dom_mut();
         // Process results and update image nodes
-        for ((node, src), (_, result)) in image_requests.iter().zip(results.into_iter()) {
-            let mut node = dom.get_node_mut(*node).unwrap();
+        for ((node_id, src), (_, result)) in image_requests.iter().zip(results.into_iter()) {
+            let mut node = dom.get_node_mut(*node_id).unwrap();
             if node.data.element().is_some() {
                 if let SpecialElementData::Image(data) = &mut node.data.element_mut().unwrap().special_data {
                     match result {
                         Ok(image_bytes) => {
                             let image_bytes = bytes::Bytes::from(image_bytes);
-                            if let Ok(image) = image::ImageReader::new(Cursor::new(&image_bytes))
-                                .with_guessed_format()
-                                .expect("failed to read image")
-                                .decode()
-                            {
-                                let rgba_image = image.to_rgba8();
-                                let (width, height) = rgba_image.dimensions();
-                                let rgba_data = rgba_image.into_raw();
+                            println!("Image bytes length: {} for {}", image_bytes.len(), src);
 
-                                let raster = RasterImageData::new(
-                                    width,
-                                    height,
-                                    Arc::new(rgba_data),
-                                );
-                                *data = Box::new(ImageData::Raster(raster.clone()));
-                                println!("Successfully loaded and decoded image: {}", src);
-                            } else {
-                                println!("Successfully loaded but failed to decode image: {}", src);
-                                //data.loading_state = ImageLoadingState::Failed("Failed to decode image".to_string());
-                            };
+                            // Debug: check first few bytes to identify format
+                            if image_bytes.len() >= 8 {
+                                println!("Image header bytes: {:02x?}", &image_bytes[..8.min(image_bytes.len())]);
+                            }
+
+                            match image::ImageReader::new(Cursor::new(&image_bytes))
+                                .with_guessed_format()
+                            {
+                                Ok(reader) => {
+                                    println!("Detected image format: {:?}", reader.format());
+                                    match reader.decode() {
+                                        Ok(image) => {
+                                            let (w, h) = (image.width(), image.height());
+                                            println!("Image color type: {:?}, dimensions: {}x{}", image.color(), w, h);
+                                            let rgba_image = image.to_rgba8();
+                                            let (width, height) = rgba_image.dimensions();
+                                            let rgba_data = rgba_image.into_raw();
+
+                                            // Debug: check if data is all zeros
+                                            let non_zero_count = rgba_data.iter().filter(|&&b| b != 0).count();
+                                            println!("Image decoded: {}x{}, rgba_data len={}, non-zero bytes={}",
+                                                width, height, rgba_data.len(), non_zero_count);
+
+                                            let raster = RasterImageData::new(
+                                                width,
+                                                height,
+                                                Arc::new(rgba_data),
+                                            );
+                                            *data = Box::new(ImageData::Raster(raster.clone()));
+                                            // Track this node for cache clearing
+                                            loaded_image_node_ids.push(*node_id);
+                                            println!("Successfully loaded and decoded image: {}", src);
+                                        }
+                                        Err(e) => {
+                                            println!("Failed to decode image {}: {}", src, e);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    println!("Failed to guess image format for {}: {}", src, e);
+                                }
+                            }
                         }
                         Err(err) => {
                             //data.loading_state = ImageLoadingState::Failed(err.to_string());
@@ -228,6 +259,13 @@ impl Engine {
                     }
                 }
             }
+        }
+
+        // Clear layout caches for all loaded images and their ancestors
+        // This is necessary because taffy caches layout results, and we need
+        // to invalidate them now that images have their actual dimensions
+        for node_id in loaded_image_node_ids {
+            dom.clear_layout_cache_with_ancestors(node_id);
         }
 
         // Recalculate layout after images are loaded (dimensions may have changed)

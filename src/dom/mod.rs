@@ -410,6 +410,21 @@ impl Dom {
         }
     }
 
+    /// Clear the layout cache for a node and all its ancestors.
+    /// This is necessary when a node's intrinsic size changes (e.g., when an image loads)
+    /// so that layout will be recomputed correctly.
+    pub fn clear_layout_cache_with_ancestors(&mut self, node_id: usize) {
+        let mut current_id = Some(node_id);
+        while let Some(id) = current_id {
+            if let Some(node) = self.nodes.get_mut(id) {
+                node.cache.clear();
+                current_id = node.layout_parent.get();
+            } else {
+                break;
+            }
+        }
+    }
+
     pub(crate) fn root_node(&self) -> &DomNode {
         &self.nodes[0]
     }

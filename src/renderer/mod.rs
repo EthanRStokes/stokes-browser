@@ -11,12 +11,14 @@ mod layers;
 
 use kurbo::{Affine, Insets, Point, Rect, Stroke, Vec2};
 use markup5ever::local_name;
+use parley::PositionedLayoutItem;
 use peniko::Fill;
-use crate::dom::{Dom, DomNode, ElementData, NodeData};
+use crate::dom::{Dom, DomNode, ElementData, ImageData, NodeData};
+use crate::dom::node::DomNodeFlags;
 use crate::layout::LayoutBox;
 use crate::renderer::background::BackgroundImageCache;
 use crate::renderer::paint::DefaultPaints;
-use crate::renderer::text::{TextPainter, ToColorColor};
+use crate::renderer::text::{TextPainter, ToColorColor, render_text_at_position};
 use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::properties::generated::longhands::visibility::computed_value::T as Visibility;
 use style::properties::{longhands, ComputedValues};
@@ -24,6 +26,7 @@ use style::properties::style_structs::Font;
 use style::servo_arc::Arc;
 use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, OutlineStyle, Overflow, ZIndex};
 use style::values::generics::color::GenericColor;
+use style::values::specified::TextDecorationLine;
 use taffy::Layout;
 use crate::dom::node::SpecialElementData;
 use crate::renderer::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
@@ -170,6 +173,8 @@ impl HtmlRenderer<'_> {
         let mut element = self.element(node, layout, position);
         //element.render_box(painter, node, &viewport_rect, scroll_transform);
 
+        element.draw_background(painter);
+        element.draw_image(painter);
         element.draw_outline(painter);
         element.draw_border(painter);
 
@@ -183,10 +188,18 @@ impl HtmlRenderer<'_> {
             NodeData::Element(_) | NodeData::AnonymousBlock(_) => {
                 self.render_element(scene, node_id, location)
             }
-            NodeData::Text { .. } => {
-                // Text nodes should never be rendered directly
-                // (they should always be rendered as part of an inline layout)
-                // unreachable!()
+            NodeData::Text { contents } => {
+                let style = node.style_arc();
+                let scroll_transform = Affine::translate((-self.dom.viewport_scroll.x, -self.dom.viewport_scroll.y));
+                text::render_text_node(
+                    scene,
+                    node,
+                    self.dom,
+                    contents,
+                    &style,
+                    self.scale_factor as f32,
+                    scroll_transform,
+                );
             }
             NodeData::Document => {}
             // NodeData::Doctype => {}
@@ -280,8 +293,13 @@ struct Element<'a> {
 }
 
 impl Element<'_> {
-
     fn draw_children(&self, painter: &mut TextPainter) {
+        // Check if this is an inline root - if so, render inline layout instead of children
+        if self.node.flags.contains(DomNodeFlags::IS_INLINE_ROOT) {
+            self.draw_inline_layout(painter);
+            return;
+        }
+
         let layout_children = self.node.layout_children.borrow();
         let mut children_with_z: Vec<(&DomNode, i32)> = layout_children.as_ref().unwrap().iter()
             .map(|child| {
@@ -304,6 +322,170 @@ impl Element<'_> {
 
         for (child_node, _) in children_with_z {
             self.context.render_node(painter, child_node.id, self.position);
+        }
+    }
+
+    fn draw_inline_layout(&self, painter: &mut TextPainter) {
+        let Some(inline_layout) = self.element.inline_layout_data.as_ref() else {
+            // No inline layout data - fall back to rendering text children directly
+            self.render_text_children_fallback(painter);
+            return;
+        };
+
+        let layout = &inline_layout.layout;
+
+        // Check if the layout is empty (no glyph runs were generated)
+        // This happens when inline layout construction hasn't populated the text
+        let has_content = layout.lines().next().is_some();
+        if !has_content {
+            // Fall back to rendering text children directly
+            self.render_text_children_fallback(painter);
+            return;
+        }
+
+        let transform = Affine::translate((self.position.x * self.scale_factor, self.position.y * self.scale_factor));
+
+        // Get padding and border to offset content
+        let node_layout = self.node.final_layout;
+        let padding_border = node_layout.padding + node_layout.border;
+        let content_offset = Affine::translate((
+            padding_border.left as f64 * self.scale_factor,
+            padding_border.top as f64 * self.scale_factor,
+        ));
+        let transform = transform * content_offset;
+
+        // Render each line
+        for line in layout.lines() {
+            for item in line.items() {
+                match item {
+                    PositionedLayoutItem::GlyphRun(glyph_run) => {
+                        let run = glyph_run.run();
+                        let font = run.font();
+                        let font_size = run.font_size();
+                        let metrics = run.metrics();
+                        let style = glyph_run.style();
+                        let synthesis = run.synthesis();
+                        let glyph_xform = synthesis
+                            .skew()
+                            .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
+
+                        // Get styles from the node associated with this text run
+                        let styles = self.context.dom
+                            .get_node(style.brush.id)
+                            .and_then(|n| n.primary_styles());
+
+                        let (text_color, text_decoration_color, text_decoration_line) = if let Some(styles) = styles {
+                            let itext_styles = styles.get_inherited_text();
+                            let text_styles = styles.get_text();
+                            let text_color = itext_styles.color.as_color_color();
+                            let text_decoration_color = text_styles
+                                .text_decoration_color
+                                .as_absolute()
+                                .map(ToColorColor::as_color_color)
+                                .unwrap_or(text_color);
+                            let text_decoration_line = text_styles.text_decoration_line;
+                            (text_color, text_decoration_color, text_decoration_line)
+                        } else {
+                            // Default to black text with no decoration
+                            let black = color::AlphaColor::new([0.0, 0.0, 0.0, 1.0]);
+                            (black, black, TextDecorationLine::empty())
+                        };
+
+                        let text_decoration_brush = anyrender::Paint::from(text_decoration_color);
+                        let has_underline = text_decoration_line.contains(TextDecorationLine::UNDERLINE);
+                        let has_strikethrough = text_decoration_line.contains(TextDecorationLine::LINE_THROUGH);
+
+                        painter.draw_glyphs(
+                            font,
+                            font_size,
+                            true, // hint
+                            run.normalized_coords(),
+                            Fill::NonZero,
+                            &anyrender::Paint::from(text_color),
+                            1.0, // alpha
+                            transform,
+                            glyph_xform,
+                            glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
+                                id: glyph.id as _,
+                                x: glyph.x,
+                                y: glyph.y,
+                            }),
+                        );
+
+                        // Draw underline
+                        if has_underline {
+                            let offset = metrics.underline_offset;
+                            let size = metrics.underline_size;
+                            let x = glyph_run.offset() as f64;
+                            let w = glyph_run.advance() as f64;
+                            let y = (glyph_run.baseline() - offset + size / 2.0) as f64;
+                            let line = kurbo::Line::new((x, y), (x + w, y));
+                            painter.stroke(&Stroke::new(size as f64), transform, &text_decoration_brush, None, &line);
+                        }
+
+                        // Draw strikethrough
+                        if has_strikethrough {
+                            let offset = metrics.strikethrough_offset;
+                            let size = metrics.strikethrough_size;
+                            let x = glyph_run.offset() as f64;
+                            let w = glyph_run.advance() as f64;
+                            let y = (glyph_run.baseline() - offset + size / 2.0) as f64;
+                            let line = kurbo::Line::new((x, y), (x + w, y));
+                            painter.stroke(&Stroke::new(size as f64), transform, &text_decoration_brush, None, &line);
+                        }
+                    }
+                    PositionedLayoutItem::InlineBox(inline_box) => {
+                        // Render inline box (embedded element like <img> or inline-block)
+                        let box_id = inline_box.id as usize;
+                        self.context.render_node(painter, box_id, self.position);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Fallback method to render text children directly when inline layout is not populated
+    fn render_text_children_fallback(&self, painter: &mut TextPainter) {
+        self.render_text_children_recursive(painter, self.node, self.position);
+    }
+
+    fn render_text_children_recursive(&self, painter: &mut TextPainter, node: &DomNode, position: Point) {
+        for child_id in node.children.iter() {
+            let child = self.context.dom.get_node(*child_id);
+            if let Some(child) = child {
+                match &child.data {
+                    NodeData::Text { contents } => {
+                        // Render this text node
+                        let style = child.style_arc();
+                        let scroll_transform = Affine::translate((
+                            -self.context.dom.viewport_scroll.x,
+                            -self.context.dom.viewport_scroll.y,
+                        ));
+
+                        // Use parent's position since text nodes in inline contexts
+                        // don't have their own layout position set
+                        render_text_at_position(
+                            painter,
+                            child,
+                            self.context.dom,
+                            contents,
+                            &style,
+                            self.context.scale_factor as f32,
+                            scroll_transform,
+                            position,
+                        );
+                    }
+                    NodeData::Element(_) | NodeData::AnonymousBlock(_) => {
+                        // For nested elements (like <span>), recurse
+                        // Skip if it's a block element
+                        let display = child.taffy_style.display;
+                        if !matches!(display, taffy::Display::Block) {
+                            self.render_text_children_recursive(painter, child, position);
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -368,257 +550,104 @@ impl Element<'_> {
         painter.fill(Fill::NonZero, self.transform, color, None, &path)
     }
 
-    /// Render a single layout box with CSS styles, transitions, and scale factor
-    fn render_box(
-        &mut self,
-        painter: &mut TextPainter,
-        node: &DomNode,
-        viewport_rect: &Rect,
-        scroll_transform: Affine,
-    ) {
-        let style = node.style_arc();
+    fn draw_image(&self, painter: &mut TextPainter) {
+        // Check if this element has image data
+        if let Some(image_data) = self.element.image_data() {
+            println!("draw_image called with image_data: {:?}", std::mem::discriminant(image_data));
 
-        // TODO Early culling: Skip rendering if box is completely outside viewport
-        //let border_box = layout_box.dimensions.border_box();
-        //if !viewport_rect.intersects(border_box) {
-        //    return; // Skip this box and all its children
-        //}
+            // Use the element's transform (which includes position and scale)
+            // and the content box for positioning
+            let content_box = self.frame.content_box;
 
-        // Check visibility - if hidden, skip rendering visual aspects but still render children
-        let inherited_box = style.get_inherited_box();
-        let is_visible = inherited_box.visibility == longhands::visibility::SpecifiedValue::Visible;
+            match image_data {
+                ImageData::Raster(data) => {
+                    println!("draw_image: Rendering raster image {}x{}", data.width, data.height);
+                    println!("draw_image: content_box={:?}, self.transform={:?}", content_box, self.transform);
 
-        // Get the DOM node for this layout box
-        let dom_node = node.get_node(node.id);
+                    // Calculate scale factors to fit image into content box
+                    let scale_x = content_box.width() / data.width as f64;
+                    let scale_y = content_box.height() / data.height as f64;
 
-        // Check if this node should be skipped from rendering
-        if should_skip_rendering(&dom_node) {
-            return; // Skip rendering this node and its children
-        }
+                    println!("draw_image: scale_x={}, scale_y={}", scale_x, scale_y);
 
-        // Only render visual aspects if visible
-        if is_visible {
-            match &dom_node.data {
-                NodeData::Element(element_data) => {
-                    match &element_data.special_data {
-                        SpecialElementData::Image(data) => {
-                            image::render_image_node(painter, node, self.context.dom, &data, &style, self.context.scale_factor as f32, scroll_transform);
-                        },
-                        _ => {
-                            self.render_element(painter, node, element_data, &style, scroll_transform)
-                        }
-                    }
+                    // Apply the element's transform, then translate to content box origin, then scale the image
+                    let image_transform = self.transform
+                        * Affine::translate((content_box.x0, content_box.y0))
+                        * Affine::scale_non_uniform(scale_x, scale_y);
+
+                    println!("draw_image: image_transform={:?}", image_transform);
+
+                    let inherited_box = self.style.get_inherited_box();
+                    let image_rendering = inherited_box.image_rendering;
+
+                    painter.draw_image(
+                        background::to_peniko_image(data, background::to_image_quality(image_rendering)).as_ref(),
+                        image_transform
+                    );
                 },
-                NodeData::Text { contents } => {
-                    // Check if text node is inside a non-visual element
-                    if !is_inside_non_visual_element(&dom_node) {
-                        text::render_text_node(
-                            painter,
-                            node,
-                            self.context.dom,
-                            contents,
-                            &style,
-                            self.context.scale_factor as f32,
-                            scroll_transform,
-                        );
-                    }
+                ImageData::Svg(_svg_tree) => {
+                    // SVG rendering - render placeholder for now
+                    let scroll_transform = Affine::translate((
+                        -self.context.dom.viewport_scroll.x,
+                        -self.context.dom.viewport_scroll.y,
+                    ));
+                    let layout = self.node.final_layout;
+                    let content_rect = skia_safe::Rect::from_xywh(
+                        layout.location.x,
+                        layout.location.y,
+                        layout.size.width,
+                        layout.size.height
+                    );
+                    image::render_image_placeholder(painter, self.context.dom, &content_rect, "SVG", self.scale_factor as f32, scroll_transform);
                 },
-                NodeData::Document => {
-                    // Just render children for document
-                },
-                _ => {
-                    // Skip other node types
+                ImageData::None => {
+                    // Show placeholder
+                    let scroll_transform = Affine::translate((
+                        -self.context.dom.viewport_scroll.x,
+                        -self.context.dom.viewport_scroll.y,
+                    ));
+                    let layout = self.node.final_layout;
+                    let content_rect = skia_safe::Rect::from_xywh(
+                        layout.location.x,
+                        layout.location.y,
+                        layout.size.width,
+                        layout.size.height
+                    );
+                    image::render_image_placeholder(painter, self.context.dom, &content_rect, "No image", self.scale_factor as f32, scroll_transform);
                 }
             }
         }
-
-        // Render children regardless of visibility (they may have their own visibility settings)
-        if !should_skip_rendering(&dom_node) {
-            // Sort children by z-index before rendering
-            /*let mut children_with_z: Vec<(&DomNode, i32)> = node.children.iter()
-                .map(|child| {
-                    let child = node.get_node(*child);
-                    let z_index = child.style.z_index;
-                    (child, z_index)
-                })
-                .collect();*/
-            let layout_children = node.layout_children.borrow();
-            let mut children_with_z: Vec<(&DomNode, i32)> = layout_children.as_ref().unwrap().iter()
-                .map(|child| {
-                    let node = node.get_node(*child);
-                    let z_index = node.style_arc().get_position().z_index;
-                    let z_index = match z_index {
-                        ZIndex::Integer(i) => {
-                            i
-                        }
-                        ZIndex::Auto => {
-                            0
-                        }
-                    };
-                    (node, z_index)
-                })
-                .collect();
-
-            // Sort by z-index (lower z-index rendered first, so they appear behind)
-            children_with_z.sort_by_key(|(_, z)| *z);
-
-            // Render children in z-index order
-            for (child_node, _) in children_with_z {
-                self.render_box(painter, &*child_node, viewport_rect, scroll_transform);
-            }
-        }
     }
 
-    /// Render an element with CSS styles applied
-    fn render_element(
-        &mut self,
-        painter: &mut TextPainter,
-        node: &DomNode,
-        element_data: &ElementData,
-        style: &Arc<StyloComputedValues>,
-        scroll_transform: Affine,
-    ) {
-        let layout = node.final_layout;
-        let content_rect = Rect::new(layout.location.x as f64, layout.location.y as f64, layout.size.width as f64, layout.size.height as f64);
-
-        // Get opacity value (default to 1.0 if no styles)
-        let effects = style.get_effects();
-        let opacity = effects.opacity;
-
-        // Render ::before pseudo-element content
-        pseudo::render_pseudo_element_content(
-            painter,
-            self.context.dom,
-            &content_rect,
-            element_data,
-            style,
-            self.context.scale_factor as f32,
-            true, // before
-            scroll_transform,
-        );
-
-        // Render box shadows first (behind the element)
-        decorations::render_box_shadows(painter, &content_rect, style, self.context.scale_factor as f32, scroll_transform);
-
-        // Create background paint with CSS colors
-        let background = style.get_background();
+    fn draw_background(&self, painter: &mut TextPainter) {
+        let background = self.style.get_background();
         let bg_color = background.background_color.as_absolute().unwrap().as_color_color();
 
-        // Draw border if specified in styles or default for certain elements
-        let mut should_draw_border = false;
-        let mut border_paint = self.context.paints.border_paint.clone();
-
-        let border = style.get_border();
-        // Check if border is specified in styles
-        if border.border_top_width.0 > 0 || border.border_right_width.0 > 0 ||
-            border.border_bottom_width.0 > 0 || border.border_left_width.0 > 0 {
-            should_draw_border = true;
-            // Use average border width for simplicity and apply scale factor
-            let avg_border_width = (border.border_top_width.0 + border.border_right_width.0 +
-                border.border_bottom_width.0 + border.border_left_width.0) as f32 / 4.0;
-            let scaled_border_width = avg_border_width * self.context.scale_factor as f32;
-            border_paint.set_stroke_width(scaled_border_width);
+        // Fill background color
+        let background_rect = self.frame.padding_box;
+        if bg_color.components[3] > 0.0 {
+            painter.fill(Fill::NonZero, self.transform, bg_color, None, &background_rect);
         }
 
-
-        // Default border for certain elements with scaling
-        if !should_draw_border {
-            match element_data.name.local.to_string().as_str() {
-                "div" | "section" | "article" | "header" | "footer" => {
-                    should_draw_border = true;
-                    let scaled_border_width = 1.0 * self.context.scale_factor as f32;
-                    border_paint.set_stroke_width(scaled_border_width);
-                },
-                _ => {}
-            }
-        }
-
-        // Apply opacity to border
-        if should_draw_border {
-            let mut border_color = border_paint.color();
-            border_color = border_color.with_a((border_color.a() as f32 * opacity) as u8);
-            border_paint.set_color(border_color);
-        }
-
-        // Add visual indicators for headings with scaled border width
-        if element_data.name.local.starts_with('h') {
-            let heading_color = color::AlphaColor::from_rgba8(50, 50, 150, (255.0 * opacity) as u8);
-            let scaled_heading_border = 2.0 * self.context.scale_factor;
-            let stroke = Stroke::new(scaled_heading_border);
-            painter.stroke(&stroke, scroll_transform, heading_color, None, &content_rect);
-        }
-
-        // Render outline if specified
-        decorations::render_outline(painter, &content_rect, style, opacity, self.context.scale_factor as f32, scroll_transform);
-
-        // TODO Render stroke if specified (CSS stroke property)
-        //decorations::render_stroke(painter, &content_rect, &styles.stroke, opacity, scale_factor, scroll_transform);
-
-        let border_color = border_paint.color();
-        let border_alpha_color = color::AlphaColor::from_rgba8(
-            border_color.r(),
-            border_color.g(),
-            border_color.b(),
-            border_color.a(),
+        // Render background images
+        let layout = self.node.final_layout;
+        let content_rect = Rect::new(
+            layout.location.x as f64,
+            layout.location.y as f64,
+            (layout.location.x + layout.size.width) as f64,
+            (layout.location.y + layout.size.height) as f64,
         );
-
-        // Render rounded corners if border radius is specified
-        let border = style.get_border();
-
-        // Calculate border radius in pixels from the Stylo computed values
-        let font = style.get_font();
-        let font_size = font.font_size.computed_size().px();
-
-        // TODO
-        /*decorations::render_rounded_element(
+        let scroll_transform = Affine::translate((
+            -self.context.dom.viewport_scroll.x,
+            -self.context.dom.viewport_scroll.y,
+        ));
+        background::render_background_image(
             painter,
-            content_rect,
-            &border,
-            bg_color.clone(),
-            if should_draw_border { Some(border_alpha_color.clone()) } else { None },
-            scale_factor,
+            &content_rect,
+            &self.style,
+            self.scale_factor as f32,
+            &self.context.background_image_cache,
             scroll_transform,
-        );*/
-
-
-        // Draw background (only if no rounded corners)
-        painter.fill(peniko::Fill::NonZero, scroll_transform, bg_color, None, &content_rect);
-
-        // Render background image if specified
-        background::render_background_image(painter, &content_rect, style, self.context.scale_factor as f32, &self.context.background_image_cache, scroll_transform);
-
-        if should_draw_border {
-            let border_stroke = Stroke::new(border_paint.stroke_width() as f64);
-            painter.stroke(&border_stroke, scroll_transform, border_alpha_color, None, &content_rect);
-        }
-    }
-}
-
-/// Determine if rendering should be skipped for this node (and its children)
-fn should_skip_rendering(dom_node: &DomNode) -> bool {
-    // Skip rendering for non-visual elements like <style>, <script>, etc.
-    match dom_node.data {
-        NodeData::Element(ref element_data) => {
-            let tag = element_data.name.local.to_string();
-            let tag = tag.as_str();
-            // Skip if the tag is one of the non-visual elements
-            tag == "style" || tag == "script" || tag == "head" || tag == "title"
-        },
-        _ => false
-    }
-}
-
-/// Check if the current node is inside a non-visual element
-fn is_inside_non_visual_element(dom_node: &DomNode) -> bool {
-    // Simple approach: just check if this is a text node and skip the parent traversal
-    // Text nodes inside style/script tags should be filtered out during DOM building
-    // or layout phase, not during rendering
-    match &dom_node.data {
-        NodeData::Text { contents } => {
-            // For now, we'll be conservative and not traverse parents to avoid infinite loops
-            // The better approach is to filter these out during layout building
-            false
-        },
-        _ => false
+        );
     }
 }

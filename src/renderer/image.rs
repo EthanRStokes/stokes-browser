@@ -12,57 +12,6 @@ use style::servo_arc::Arc;
 use style::properties::generated::ComputedValues as StyloComputedValues;
 use crate::renderer::background::{to_image_quality, to_peniko_image};
 
-/// Render image content
-pub fn render_image_node(painter: &mut TextPainter, node: &DomNode, dom: &Dom, image_data: &Box<ImageData>, style: &Arc<StyloComputedValues>, scale_factor: f32, scroll_transform: kurbo::Affine) {
-    // TODO reimplement image stuff
-    /*let image_data = image_data;
-    let layout = node.final_layout;
-    let content_rect = Rect::from_xywh(layout.location.x, layout.location.y, layout.size.width, layout.size.height);
-
-    // Early exit if content rect is too small
-    if content_rect.width() < 1.0 || content_rect.height() < 1.0 {
-        return;
-    }
-
-    match &image_data.loading_state {
-        ImageLoadingState::Loaded(data) => {
-            // Try to get the cached decoded image
-            let inherited_box = style.get_inherited_box();
-            let image_rendering = inherited_box.image_rendering;
-
-            // Calculate scale factors to fit image into content_rect
-            let scale_x = content_rect.width() as f64 / data.width as f64;
-            let scale_y = content_rect.height() as f64 / data.height as f64;
-
-            let transform = scroll_transform
-                * Affine::translate((content_rect.left as f64, content_rect.top as f64))
-                * Affine::scale_non_uniform(scale_x, scale_y);
-
-            // Draw the cached image scaled to fit the content rect
-
-            painter.draw_image(to_peniko_image(data, to_image_quality(image_rendering)).as_ref(), transform);
-
-        },
-        ImageLoadingState::Loading => {
-            // Show loading placeholder
-            render_image_placeholder(painter, dom, &content_rect, "Loading...", scale_factor, scroll_transform);
-        },
-        ImageLoadingState::Failed(error) => {
-            // Show error placeholder
-            render_image_placeholder(painter, dom, &content_rect, &format!("Error: {}", error), scale_factor, scroll_transform);
-        },
-        ImageLoadingState::NotLoaded => {
-            // Show placeholder with alt text or src
-            let placeholder_text = if !image_data.alt.is_empty() {
-                &image_data.alt
-            } else {
-                &image_data.src
-            };
-            render_image_placeholder(painter, dom, &content_rect, placeholder_text, scale_factor, scroll_transform);
-        }
-    }*/
-}
-
 /// Render a placeholder for images (when not loaded, loading, or failed)
 pub fn render_image_placeholder(painter: &mut TextPainter, dom: &Dom, rect: &Rect, text: &str, scale_factor: f32, scroll_transform: kurbo::Affine) {
     // Convert to kurbo::Rect

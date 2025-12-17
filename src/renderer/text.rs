@@ -251,6 +251,146 @@ pub fn render_text_node(
     }
 }
 
+/// Render text at a specified position (for fallback when inline layout is not populated)
+pub fn render_text_at_position(
+    painter: &mut TextPainter,
+    node: &DomNode,
+    dom: &Dom,
+    contents: &RefCell<StrTendril>,
+    style: &Arc<ComputedValues>,
+    scale_factor: f32,
+    _scroll_transform: kurbo::Affine,
+    position: kurbo::Point,
+) {
+    let text = contents.borrow();
+    if text.trim().is_empty() {
+        return; // Skip empty or whitespace-only text
+    }
+
+    // Get parent's layout for dimensions
+    let layout = node.final_layout;
+    let parent_width = if layout.size.width > 0.0 {
+        layout.size.width
+    } else {
+        // Fallback to a reasonable width
+        1000.0
+    };
+
+    let mut font_ctx = dom.font_ctx.lock().unwrap();
+    let mut layout_ctx = dom.layout_ctx.lock().unwrap();
+
+    // Apply text transformation to the content
+    let inherited_text = style.get_inherited_text();
+    let text_transform = inherited_text.text_transform.case();
+    let transformed_text: String = match text_transform {
+        TextTransformCase::None => {
+            text.to_string()
+        }
+        TextTransformCase::Uppercase => {
+            text.chars().flat_map(|c| c.to_uppercase()).collect()
+        }
+        TextTransformCase::Lowercase => {
+            text.chars().flat_map(|c| c.to_lowercase()).collect()
+        }
+        TextTransformCase::Capitalize => {
+            let mut capitalize_next = true;
+            text.chars()
+                .map(|c| {
+                    if c.is_whitespace() {
+                        capitalize_next = true;
+                        c
+                    } else if capitalize_next {
+                        capitalize_next = false;
+                        c.to_uppercase().next().unwrap_or(c)
+                    } else {
+                        c
+                    }
+                })
+                .collect()
+        }
+    };
+
+    let mut builder = layout_ctx.ranged_builder(
+        &mut font_ctx,
+        &transformed_text,
+        scale_factor,
+        true,
+    );
+
+    // Extract CSS properties
+    let font = style.get_font();
+    let font_size = font.font_size.computed_size().px();
+    let font_weight = &font.font_weight.value();
+
+    // Set default font family
+    builder.push_default(GenericFamily::SystemUi);
+
+    // Set font size
+    builder.push_default(StyleProperty::FontSize(font_size));
+
+    // Set font weight
+    let font_weight = FontWeight::new(*font_weight);
+    builder.push_default(StyleProperty::FontWeight(font_weight));
+
+    // Set line height
+    let line_height_value = &font.line_height;
+    let line_height_ratio = match line_height_value {
+        style::values::computed::font::LineHeight::Normal => 1.2,
+        style::values::computed::font::LineHeight::Number(num) => num.0,
+        style::values::computed::font::LineHeight::Length(len) => len.px(),
+    };
+    builder.push_default(LineHeight::FontSizeRelative(line_height_ratio));
+
+    // Build the layout
+    let mut text_layout = builder.build(&transformed_text);
+
+    // Break lines based on available width
+    let max_width = Some(parent_width * scale_factor);
+    text_layout.break_all_lines(max_width);
+
+    // Get text color
+    let text_color: AlphaColor<Srgb> = style.clone_color().as_color_color();
+
+    // Calculate transform using position and adding padding/border offset
+    let padding_border = layout.padding + layout.border;
+    let transform = kurbo::Affine::translate((
+        (position.x + padding_border.left as f64) * scale_factor as f64,
+        (position.y + padding_border.top as f64) * scale_factor as f64,
+    ));
+
+    // Render each line
+    for line in text_layout.lines() {
+        for item in line.items() {
+            if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
+                let run = glyph_run.run();
+                let font = run.font();
+                let font_size = run.font_size();
+                let synthesis = run.synthesis();
+                let glyph_xform = synthesis
+                    .skew()
+                    .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
+
+                painter.draw_glyphs(
+                    font,
+                    font_size,
+                    true, // hint
+                    run.normalized_coords(),
+                    Fill::NonZero,
+                    &anyrender::Paint::from(text_color),
+                    1.0, // alpha
+                    transform,
+                    glyph_xform,
+                    glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
+                        id: glyph.id as _,
+                        x: glyph.x,
+                        y: glyph.y,
+                    }),
+                );
+            }
+        }
+    }
+}
+
 // Under this line, anyrender_skia is referenced to create a text renderer
 // Copyright DioxusLabs
 // Licensed under the Apache License, Version 2.0 or the MIT license.

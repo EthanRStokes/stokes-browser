@@ -313,11 +313,9 @@ impl FontFaceHandler {
             self.0 = match &bytes.as_ref()[0..4] {
                 // WOFF (v1) files begin with 0x774F4646 ('wOFF' in ascii)
                 // See: <https://w3c.github.io/woff/woff1/spec/Overview.html#WOFFHeader>
-                #[cfg(any(feature = "woff-c", feature = "woff-rust"))]
                 b"wOFF" => FontFaceSourceFormatKeyword::Woff,
                 // WOFF2 files begin with 0x774F4632 ('wOF2' in ascii)
                 // See: <https://w3c.github.io/woff/woff2/#woff20Header>
-                #[cfg(any(feature = "woff-c", feature = "woff-rust"))]
                 b"wOF2" => FontFaceSourceFormatKeyword::Woff2,
                 // Opentype fonts with CFF data begin with 0x4F54544F ('OTTO' in ascii)
                 // See: <https://learn.microsoft.com/en-us/typography/opentype/spec/otff#organization-of-an-opentype-font>
@@ -332,48 +330,30 @@ impl FontFaceHandler {
             }
         }
 
-        // Satisfy rustc's mutability linting with woff feature both enabled/disabled
-        #[cfg(any(feature = "woff-c", feature = "woff-rust"))]
         let mut bytes = bytes;
 
         match self.0 {
-            #[cfg(any(feature = "woff-c", feature = "woff-rust"))]
             FontFaceSourceFormatKeyword::Woff => {
-                #[cfg(feature = "tracing")]
                 tracing::info!("Decompressing woff1 font");
 
                 // Use woff crate to decompress font
-                #[cfg(feature = "woff-c")]
                 let decompressed = woff::version1::decompress(&bytes);
-
-                // Use wuff crate to decompress font
-                #[cfg(feature = "woff-rust")]
-                let decompressed = wuff::decompress_woff1(&bytes).ok();
 
                 if let Some(decompressed) = decompressed {
                     bytes = Bytes::from(decompressed);
                 } else {
-                    #[cfg(feature = "tracing")]
                     tracing::warn!("Failed to decompress woff1 font");
                 }
             }
-            #[cfg(any(feature = "woff-c", feature = "woff-rust"))]
             FontFaceSourceFormatKeyword::Woff2 => {
-                #[cfg(feature = "tracing")]
                 tracing::info!("Decompressing woff2 font");
 
                 // Use woff crate to decompress font
-                #[cfg(feature = "woff-c")]
                 let decompressed = woff::version2::decompress(&bytes);
-
-                // Use wuff crate to decompress font
-                #[cfg(feature = "woff-rust")]
-                let decompressed = wuff::decompress_woff2(&bytes).ok();
 
                 if let Some(decompressed) = decompressed {
                     bytes = Bytes::from(decompressed);
                 } else {
-                    #[cfg(feature = "tracing")]
                     tracing::warn!("Failed to decompress woff2 font");
                 }
             }
@@ -439,7 +419,6 @@ fn fetch_font_face(
             | FontFaceSourceFormatKeyword::EmbeddedOpentype
             | FontFaceSourceFormatKeyword::Woff) = format
             {
-                #[cfg(feature = "tracing")]
                 tracing::warn!("Skipping unsupported font of type {:?}", _font_format);
                 return;
             }

@@ -1,7 +1,12 @@
 use markup5ever::{ns, QualName};
 use html5ever::local_name;
+use parley::{FontWeight, GenericFamily, InlineBox, LineHeight, StyleProperty, TextStyle};
 use style::selector_parser::RestyleDamage;
+use style::values::computed::font::GenericFontFamily;
 use style::values::computed::{Content, ContentItem, Display, Float, PositionProperty};
+use style::values::computed::font::SingleFontFamily;
+use style::values::specified::text::TextTransformCase;
+use style::values::specified::TextDecorationLine;
 use log::log;
 use slab::Slab;
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
@@ -12,6 +17,7 @@ use crate::dom::{AttributeMap, Dom, DomNode, ElementData, NodeData};
 use crate::dom::node::{DomNodeFlags, NodeKind, SpecialElementData, TextLayout};
 use crate::networking::parse_svg;
 use crate::qual_name;
+use crate::ui::TextBrush;
 
 #[macro_export]
 macro_rules! qual_name {
@@ -207,19 +213,16 @@ pub(crate) fn collect_layout_children(
                 let existing_layout = dom.nodes[node_id]
                     .element_data_mut()
                     .and_then(|el| el.inline_layout_data.take());
-                let layout = existing_layout.unwrap_or_else(|| Box::new(TextLayout::new()));
+                let mut layout = existing_layout.unwrap_or_else(|| Box::new(TextLayout::new()));
 
-                // TODO Queue node for inline layout construction. Deferring construction of inline layouts to a
-                // dedicated phase allows us to multithread the expensive text shaping step.
-                //dom.deferred_construction_nodes.push(ConstructionTask {
-                //    node_id: container_node_id,
-                //    data: ConstructionTaskData::InlineLayout(layout),
-                //});
                 dom.nodes[node_id]
                     .flags
                     .insert(DomNodeFlags::IS_INLINE_ROOT);
                 find_inline_layout_embedded_boxes(dom, node_id, layout_children);
-                let _ = &layout.layout;
+
+                // Build the inline layout with text content
+                build_inline_layout(dom, node_id, &mut layout);
+
                 dom.nodes[node_id].element_data_mut().unwrap().inline_layout_data = Some(layout);
                 return;
             }
@@ -636,3 +639,263 @@ pub(crate) fn find_inline_layout_embedded_boxes(
         }
     }
 }
+
+/// Build the inline layout for a node that is an inline root.
+/// This traverses the inline children and builds the parley layout with proper text and styles.
+pub(crate) fn build_inline_layout(dom: &mut Dom, node_id: usize, layout: &mut TextLayout) {
+    let scale = dom.viewport.scale();
+
+    // Get the root style for the inline container
+    let root_style = dom.nodes[node_id].primary_styles();
+    let root_style = match root_style {
+        Some(s) => s,
+        None => return,
+    };
+
+    // Extract root font properties
+    let font = root_style.get_font();
+    let font_size = font.font_size.computed_size().px();
+    let font_weight_val = font.font_weight.value();
+    let line_height_val = &font.line_height;
+
+    let line_height = match line_height_val {
+        style::values::computed::font::LineHeight::Normal => LineHeight::FontSizeRelative(1.2),
+        style::values::computed::font::LineHeight::Number(num) => LineHeight::FontSizeRelative(num.0),
+        style::values::computed::font::LineHeight::Length(len) => LineHeight::Absolute(len.px()),
+    };
+
+    // Get text brush for root node
+    let root_brush = TextBrush::from_id(node_id);
+
+    // Create root text style
+    let root_text_style = TextStyle {
+        font_stack: parley::FontStack::Source(std::borrow::Cow::Borrowed("sans-serif")),
+        font_size,
+        font_weight: FontWeight::new(font_weight_val),
+        line_height,
+        brush: root_brush,
+        ..Default::default()
+    };
+
+    // Get font and layout contexts
+    let mut font_ctx = dom.font_ctx.lock().unwrap();
+    let mut layout_ctx = dom.layout_ctx.lock().unwrap();
+
+    // Create tree builder
+    let mut builder = layout_ctx.tree_builder(
+        &mut font_ctx,
+        scale,
+        true, // quantize
+        &root_text_style,
+    );
+
+    // Collect inline boxes from layout_children
+    let layout_children = dom.nodes[node_id].layout_children.borrow();
+    let inline_box_ids: Vec<usize> = layout_children.as_ref().map(|c| c.clone()).unwrap_or_default();
+    drop(layout_children);
+    drop(root_style);
+
+    // Track inline boxes that need to be added
+    let mut pending_inline_boxes: Vec<(usize, usize)> = Vec::new(); // (text_index, node_id)
+
+    // Recursively traverse the inline children and build the layout
+    fn traverse_inline_children(
+        dom: &Dom,
+        node_id: usize,
+        builder: &mut parley::TreeBuilder<'_, TextBrush>,
+        inline_box_ids: &[usize],
+        pending_inline_boxes: &mut Vec<(usize, usize)>,
+        text_len: &mut usize,
+        scale: f32,
+    ) {
+        let node = &dom.nodes[node_id];
+
+        // Process pseudo-elements and children
+        if let Some(before_id) = node.before {
+            traverse_inline_node(dom, before_id, builder, inline_box_ids, pending_inline_boxes, text_len, scale);
+        }
+
+        for &child_id in &node.children {
+            traverse_inline_node(dom, child_id, builder, inline_box_ids, pending_inline_boxes, text_len, scale);
+        }
+
+        if let Some(after_id) = node.after {
+            traverse_inline_node(dom, after_id, builder, inline_box_ids, pending_inline_boxes, text_len, scale);
+        }
+    }
+
+    fn traverse_inline_node(
+        dom: &Dom,
+        node_id: usize,
+        builder: &mut parley::TreeBuilder<'_, TextBrush>,
+        inline_box_ids: &[usize],
+        pending_inline_boxes: &mut Vec<(usize, usize)>,
+        text_len: &mut usize,
+        scale: f32,
+    ) {
+        let node = &dom.nodes[node_id];
+
+        match &node.data {
+            NodeData::Text { contents } => {
+                let text = contents.borrow();
+
+                // Apply text transformation if needed
+                let style = node.primary_styles();
+                let transformed_text = if let Some(style) = &style {
+                    let inherited_text = style.get_inherited_text();
+                    let text_transform = inherited_text.text_transform.case();
+                    match text_transform {
+                        TextTransformCase::None => text.to_string(),
+                        TextTransformCase::Uppercase => text.chars().flat_map(|c| c.to_uppercase()).collect(),
+                        TextTransformCase::Lowercase => text.chars().flat_map(|c| c.to_lowercase()).collect(),
+                        TextTransformCase::Capitalize => {
+                            let mut capitalize_next = true;
+                            text.chars()
+                                .map(|c| {
+                                    if c.is_whitespace() {
+                                        capitalize_next = true;
+                                        c
+                                    } else if capitalize_next {
+                                        capitalize_next = false;
+                                        c.to_uppercase().next().unwrap_or(c)
+                                    } else {
+                                        c
+                                    }
+                                })
+                                .collect()
+                        }
+                    }
+                } else {
+                    text.to_string()
+                };
+
+                if !transformed_text.is_empty() {
+                    // Get the parent's style for text properties
+                    if let Some(parent_id) = node.parent {
+                        if let Some(parent_style) = dom.nodes[parent_id].primary_styles() {
+                            let font = parent_style.get_font();
+                            let text_styles = parent_style.get_text();
+
+                            let font_size = font.font_size.computed_size().px();
+                            let font_weight_val = font.font_weight.value();
+
+                            let line_height = match &font.line_height {
+                                style::values::computed::font::LineHeight::Normal => LineHeight::FontSizeRelative(1.2),
+                                style::values::computed::font::LineHeight::Number(num) => LineHeight::FontSizeRelative(num.0),
+                                style::values::computed::font::LineHeight::Length(len) => LineHeight::Absolute(len.px()),
+                            };
+
+                            // Check for text decorations
+                            let text_decoration_line = text_styles.text_decoration_line;
+                            let has_underline = text_decoration_line.contains(TextDecorationLine::UNDERLINE);
+                            let has_strikethrough = text_decoration_line.contains(TextDecorationLine::LINE_THROUGH);
+
+                            let text_style = TextStyle {
+                                font_stack: parley::FontStack::Source(std::borrow::Cow::Borrowed("sans-serif")),
+                                font_size,
+                                font_weight: FontWeight::new(font_weight_val),
+                                line_height,
+                                brush: TextBrush::from_id(parent_id),
+                                has_underline,
+                                has_strikethrough,
+                                ..Default::default()
+                            };
+
+                            builder.push_style_span(text_style);
+                            builder.push_text(&transformed_text);
+                            *text_len += transformed_text.len();
+                            builder.pop_style_span();
+                        } else {
+                            builder.push_text(&transformed_text);
+                            *text_len += transformed_text.len();
+                        }
+                    } else {
+                        builder.push_text(&transformed_text);
+                        *text_len += transformed_text.len();
+                    }
+                }
+            }
+            NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
+                let tag_name = &element_data.name.local;
+
+                // Handle line break
+                if *tag_name == local_name!("br") {
+                    builder.push_text("\n");
+                    *text_len += 1;
+                    return;
+                }
+
+                // Check if this is an inline box (img, svg, input, textarea, button, or block-like elements)
+                let is_inline_box = inline_box_ids.contains(&node_id);
+
+                if is_inline_box {
+                    // This is an inline box - add it to pending list
+                    pending_inline_boxes.push((*text_len, node_id));
+
+                    // Push inline box into the builder
+                    builder.push_inline_box(InlineBox {
+                        id: node_id as u64,
+                        index: *text_len,
+                        width: 0.0, // Will be computed during layout
+                        height: 0.0, // Will be computed during layout
+                    });
+                } else {
+                    // Regular inline element - push style span and recurse
+                    if let Some(style) = node.primary_styles() {
+                        let font = style.get_font();
+                        let text_styles = style.get_text();
+
+                        let font_size = font.font_size.computed_size().px();
+                        let font_weight_val = font.font_weight.value();
+
+                        let line_height = match &font.line_height {
+                            style::values::computed::font::LineHeight::Normal => LineHeight::FontSizeRelative(1.2),
+                            style::values::computed::font::LineHeight::Number(num) => LineHeight::FontSizeRelative(num.0),
+                            style::values::computed::font::LineHeight::Length(len) => LineHeight::Absolute(len.px()),
+                        };
+
+                        let text_decoration_line = text_styles.text_decoration_line;
+                        let has_underline = text_decoration_line.contains(TextDecorationLine::UNDERLINE);
+                        let has_strikethrough = text_decoration_line.contains(TextDecorationLine::LINE_THROUGH);
+
+                        let text_style = TextStyle {
+                            font_stack: parley::FontStack::Source(std::borrow::Cow::Borrowed("sans-serif")),
+                            font_size,
+                            font_weight: FontWeight::new(font_weight_val),
+                            line_height,
+                            brush: TextBrush::from_id(node_id),
+                            has_underline,
+                            has_strikethrough,
+                            ..Default::default()
+                        };
+
+                        builder.push_style_span(text_style);
+                        traverse_inline_children(dom, node_id, builder, inline_box_ids, pending_inline_boxes, text_len, scale);
+                        builder.pop_style_span();
+                    } else {
+                        traverse_inline_children(dom, node_id, builder, inline_box_ids, pending_inline_boxes, text_len, scale);
+                    }
+                }
+            }
+            NodeData::Comment { .. } => {
+                // Skip comments
+            }
+            NodeData::Document => {
+                // Shouldn't happen in inline context
+            }
+        }
+    }
+
+    // Traverse and build
+    let mut text_len = 0usize;
+    traverse_inline_children(&*dom, node_id, &mut builder, &inline_box_ids, &mut pending_inline_boxes, &mut text_len, scale);
+
+    // Build the layout
+    let (parley_layout, text) = builder.build();
+
+    // Store in TextLayout
+    layout.text = text;
+    layout.layout = parley_layout;
+    layout.content_widths = None; // Will be computed on demand
+}
+

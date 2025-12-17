@@ -87,11 +87,9 @@ impl HtmlParser {
 
                 // Special handling for <img> to create Image node variant, otherwise Element
                 if name.local.as_ref().eq_ignore_ascii_case("img") {
-                    // create ImageData from attributes
-                    let src = elem_data.attr(local_name!("src")).unwrap_or_default().to_string();
-                    let alt = elem_data.attr(local_name!("alt")).unwrap_or_default().to_string();
-                    // TODO reimplement image stuff
-                    //elem_data.special_data = SpecialElementData::Image(Box::new(ImageData::new(src.clone(), alt.clone())));
+                    // create ImageData from attributes - start with None, will be loaded later
+                    println!("Parser: Creating img element with src={:?}", elem_data.attr(local_name!("src")));
+                    elem_data.special_data = SpecialElementData::Image(Box::new(ImageData::None));
                 };
                 let node_kind = NodeData::Element(elem_data);
 
