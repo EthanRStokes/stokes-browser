@@ -1,50 +1,11 @@
+use anyrender::PaintScene;
 use crate::renderer::text::{TextPainter, ToColorColor};
-use color::{AlphaColor, Srgb};
-use kurbo::{BezPath, Rect};
+use kurbo::Rect;
 // Text decorations, borders, shadows, and outlines
 use style::computed_values::box_shadow::ComputedList;
 use style::properties::generated::ComputedValues as StyloComputedValues;
-use style::properties::style_structs::Border;
 use style::servo_arc::Arc;
-use style::values::computed::{Au, BorderStyle, OutlineStyle};
-
-/// Render an element with rounded corners
-pub fn render_rounded_element(
-    painter: &mut TextPainter,
-    rect: Rect,
-    border: &Border,
-    bg_color: AlphaColor<Srgb>,
-    border_color: Option<AlphaColor<Srgb>>,
-    scale_factor: f32,
-    scroll_transform: kurbo::Affine,
-) {
-    // Apply scale factor to border radius values
-    /*let scaled_top_left = border.border_top_left_radius.0.width.0.to_pixel_length(Au(rect.width() as i32)) * scale_factor;
-    let scaled_top_right = border_radius_px.top_right * scale_factor;
-    let scaled_bottom_right = border_radius_px.bottom_right * scale_factor;
-    let scaled_bottom_left = border_radius_px.bottom_left * scale_factor;
-
-    // For now, use uniform radius (average of all corners) for simplicity
-    let avg_radius = (scaled_top_left + scaled_top_right + scaled_bottom_right + scaled_bottom_left) / 4.0;
-
-    // Create kurbo rounded rectangle
-    let kurbo_rect = kurbo::Rect::new(
-        rect.left as f64,
-        rect.top as f64,
-        rect.right as f64,
-        rect.bottom as f64,
-    );
-    let rounded_rect = kurbo::RoundedRect::from_rect(kurbo_rect, avg_radius as f64);
-
-    // Draw the background with rounded corners
-    painter.fill(peniko::Fill::NonZero, scroll_transform, bg_color, None, &rounded_rect);
-
-    // Draw border if specified
-    if let Some(border_color) = border_color {
-        let stroke = kurbo::Stroke::new(1.0 * scale_factor as f64);
-        painter.stroke(&stroke, scroll_transform, border_color, None, &rounded_rect);
-    }*/
-}
+use style::values::computed::{BorderStyle, OutlineStyle};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Edge {

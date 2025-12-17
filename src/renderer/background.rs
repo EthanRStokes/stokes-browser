@@ -6,6 +6,7 @@ use skia_safe::Color;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Cursor;
+use anyrender::PaintScene;
 use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::servo::url::ComputedUrl;
 use style::servo_arc::Arc;

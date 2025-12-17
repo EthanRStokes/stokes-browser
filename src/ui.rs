@@ -2,6 +2,7 @@ use blitz_traits::shell::Viewport;
 use skia_safe::{Canvas, Color, ColorSpace, Font, FontStyle, ImageInfo, Paint, Path, Pixmap, Point, Rect, TextBlob};
 use std::f32::consts::PI;
 use std::time::{Duration, Instant};
+use anyrender::PaintScene;
 use color::AlphaColor;
 use kurbo::Affine;
 use parley::{Alignment, AlignmentOptions, FontContext, FontWeight, GenericFamily, LayoutContext, LineHeight, PositionedLayoutItem, StyleProperty};
@@ -1007,7 +1008,7 @@ impl BrowserUI {
             let mut layout = builder.build(&text);
 
             layout.break_all_lines(Some(canvas_width));
-            layout.align(Some(canvas_width), Alignment::Start, AlignmentOptions::default());
+            layout.align(Alignment::Start, AlignmentOptions::default());
             let width = layout.width().ceil() as u32;
             let height = layout.height().ceil() as u32;
             let padded_width = width + 40;

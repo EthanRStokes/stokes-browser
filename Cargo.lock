@@ -528,7 +528,7 @@ dependencies = [
 [[package]]
 name = "blitz-net"
 version = "0.2.1"
-source = "git+https://github.com/DioxusLabs/blitz?rev=63e7c4d#63e7c4dc4f3d7a38ef96763f90f0e6995df03f64"
+source = "git+https://github.com/DioxusLabs/blitz?rev=60be177#60be17789e670dcd72ea57be21671c700022eafe"
 dependencies = [
  "blitz-traits",
  "data-url",
@@ -539,7 +539,7 @@ dependencies = [
 [[package]]
 name = "blitz-traits"
 version = "0.2.0"
-source = "git+https://github.com/DioxusLabs/blitz?rev=63e7c4d#63e7c4dc4f3d7a38ef96763f90f0e6995df03f64"
+source = "git+https://github.com/DioxusLabs/blitz?rev=60be177#60be17789e670dcd72ea57be21671c700022eafe"
 dependencies = [
  "bitflags 2.10.0",
  "bytes",
@@ -1386,7 +1386,7 @@ dependencies = [
 [[package]]
 name = "fontique"
 version = "0.7.0"
-source = "git+https://github.com/linebender/parley?rev=10fedab4bfd4254a227a1a0f9602b6218e1fe447#10fedab4bfd4254a227a1a0f9602b6218e1fe447"
+source = "git+https://github.com/linebender/parley?rev=f6a8485c35367b581b03bd6da55c8465f24e16ef#f6a8485c35367b581b03bd6da55c8465f24e16ef"
 dependencies = [
  "bytemuck",
  "hashbrown 0.16.1",
@@ -3573,7 +3573,7 @@ dependencies = [
 [[package]]
 name = "parley"
 version = "0.7.0"
-source = "git+https://github.com/linebender/parley?rev=10fedab4bfd4254a227a1a0f9602b6218e1fe447#10fedab4bfd4254a227a1a0f9602b6218e1fe447"
+source = "git+https://github.com/linebender/parley?rev=f6a8485c35367b581b03bd6da55c8465f24e16ef#f6a8485c35367b581b03bd6da55c8465f24e16ef"
 dependencies = [
  "fontique",
  "harfrust",
@@ -4966,7 +4966,7 @@ checksum = "422781c4f262636913d07a3f41ac9a8c781c0bab03f3b87c27e18ac2373c289a"
 [[package]]
 name = "stylo_taffy"
 version = "0.2.0"
-source = "git+https://github.com/DioxusLabs/blitz?rev=63e7c4d#63e7c4dc4f3d7a38ef96763f90f0e6995df03f64"
+source = "git+https://github.com/DioxusLabs/blitz?rev=60be177#60be17789e670dcd72ea57be21671c700022eafe"
 dependencies = [
  "stylo",
  "stylo_atoms",
@@ -5077,7 +5077,7 @@ dependencies = [
 [[package]]
 name = "taffy"
 version = "0.9.2"
-source = "git+https://github.com/DioxusLabs/taffy?rev=22868d2812bf903cc4d1dc514cf82197d9849a0b#22868d2812bf903cc4d1dc514cf82197d9849a0b"
+source = "git+https://github.com/DioxusLabs/taffy?rev=6712879d35c13ad316bbbed2c1e4092c270cb650#6712879d35c13ad316bbbed2c1e4092c270cb650"
 dependencies = [
  "arrayvec",
  "grid",

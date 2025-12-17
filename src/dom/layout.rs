@@ -1,6 +1,6 @@
 use markup5ever::{ns, QualName};
 use html5ever::local_name;
-use parley::{FontWeight, GenericFamily, InlineBox, LineHeight, StyleProperty, TextStyle};
+use parley::{FontWeight, GenericFamily, InlineBox, InlineBoxKind, LineHeight, StyleProperty, TextStyle};
 use style::selector_parser::RestyleDamage;
 use style::values::computed::font::GenericFontFamily;
 use style::values::computed::{Content, ContentItem, Display, Float, PositionProperty};
@@ -827,6 +827,17 @@ pub(crate) fn build_inline_layout(dom: &mut Dom, node_id: usize, layout: &mut Te
 
                 // Check if this is an inline box (img, svg, input, textarea, button, or block-like elements)
                 let is_inline_box = inline_box_ids.contains(&node_id);
+                let style = node.primary_styles();
+                let style = style.as_ref();
+                let position = style.map(|s| s.clone_position()).unwrap_or(PositionProperty::Static);
+                let float = style.map(|s| s.clone_float()).unwrap_or(Float::None);
+                let box_kind = if position.is_absolutely_positioned() {
+                    InlineBoxKind::OutOfFlow
+                } else if float.is_floating() {
+                    InlineBoxKind::CustomOutOfFlow
+                } else {
+                    InlineBoxKind::InFlow
+                };
 
                 if is_inline_box {
                     // This is an inline box - add it to pending list
@@ -835,6 +846,7 @@ pub(crate) fn build_inline_layout(dom: &mut Dom, node_id: usize, layout: &mut Te
                     // Push inline box into the builder
                     builder.push_inline_box(InlineBox {
                         id: node_id as u64,
+                        kind: box_kind,
                         index: *text_len,
                         width: 0.0, // Will be computed during layout
                         height: 0.0, // Will be computed during layout

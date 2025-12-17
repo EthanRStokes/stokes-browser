@@ -150,7 +150,6 @@ impl Dom {
                     .unwrap_or(parley::layout::Alignment::Start);
 
                 inline_layout.layout.align(
-                    Some(width),
                     alignment,
                     AlignmentOptions {
                         align_when_overflowing: false,

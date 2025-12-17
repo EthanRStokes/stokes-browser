@@ -30,10 +30,10 @@ parking_lot = "0.12"
 uds_windows = "1.1.0"
 rfd = "0.16.0"
 url = "2"
-taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "22868d2812bf903cc4d1dc514cf82197d9849a0b" }
+taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "6712879d35c13ad316bbbed2c1e4092c270cb650" }
 slab = "0.4.11"
 markup5ever = "0.36.1"
-parley = { git = "https://github.com/linebender/parley", rev = "10fedab4bfd4254a227a1a0f9602b6218e1fe447" }
+parley = { git = "https://github.com/linebender/parley", rev = "f6a8485c35367b581b03bd6da55c8465f24e16ef" }
 euclid = "0.22.11"
 bitflags = "2.10.0"
 atomic_refcell = "0.1.13"
@@ -57,9 +57,9 @@ stylo_dom = "0.9.0"
 selectors = "0.33.0"
 
 # Blitz
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "63e7c4d" }
-blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "63e7c4d" }
-stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "63e7c4d", features = ["floats"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "60be177" }
+blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "60be177" }
+stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "60be177", features = ["floats"] }
 log = "0.4.28"
 woff = "0.6.2"
 

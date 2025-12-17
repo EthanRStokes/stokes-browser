@@ -1,6 +1,9 @@
 use kurbo::Vec2;
 use std::ops::{Mul, MulAssign};
 
+// Copyright DioxusLabs
+// Licensed under the Apache License, Version 2.0 or the MIT license.
+
 /// Radii for each corner of a non-uniform rounded rectangle.
 ///
 /// The use of `top` as in `top_left` assumes a y-down coordinate space. Piet

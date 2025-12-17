@@ -29,7 +29,6 @@ use stylo_atoms::Atom;
 use crate::css::stylo::RecalcStyle;
 use crate::dom::node::{RasterImageData, SpecialElementData};
 use crate::renderer::background::BackgroundImageCache;
-use crate::renderer::paint::DefaultPaints;
 use crate::renderer::text::TextPainter;
 
 /// The core browser engine that coordinates all browser activities
@@ -464,7 +463,6 @@ impl Engine {
             scale_factor: self.viewport.hidpi_scale as f64,
             width: self.viewport_width() as u32,
             height: self.viewport_height() as u32,
-            paints: DefaultPaints::new(),
             background_image_cache: BackgroundImageCache::new(),
         };
 

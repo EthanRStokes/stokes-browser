@@ -1,16 +1,9 @@
-use crate::dom::{Dom, DomNode, ImageData};
-use crate::dom::ImageLoadingState;
-use crate::layout::LayoutBox;
+use crate::dom::Dom;
 use crate::renderer::text::TextPainter;
-// Image rendering functionality
-use skia_safe::{Color, FilterMode, Font, MipmapMode, Paint, Rect, SamplingOptions, TextBlob};
-use std::cell::RefCell;
+use anyrender::PaintScene;
 use color::AlphaColor;
-use kurbo::Affine;
-use style::properties::ComputedValues;
-use style::servo_arc::Arc;
-use style::properties::generated::ComputedValues as StyloComputedValues;
-use crate::renderer::background::{to_image_quality, to_peniko_image};
+// Image rendering functionality
+use skia_safe::{Color, Paint, Rect};
 
 /// Render a placeholder for images (when not loaded, loading, or failed)
 pub fn render_image_placeholder(painter: &mut TextPainter, dom: &Dom, rect: &Rect, text: &str, scale_factor: f32, scroll_transform: kurbo::Affine) {

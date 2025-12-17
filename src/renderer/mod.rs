@@ -1,35 +1,29 @@
-// HTML renderer module - organized into logical components
-pub(crate) mod paint;
 pub(crate) mod text;
 mod image;
 pub(crate) mod background;
 mod decorations;
-mod pseudo;
 mod cache;
 mod kurbo_css;
 mod layers;
 
+use crate::dom::{Dom, DomNode, ElementData, ImageData, NodeData};
+use crate::renderer::background::BackgroundImageCache;
+use crate::renderer::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
+use crate::renderer::layers::maybe_with_layer;
+use crate::renderer::text::{render_text_at_position, TextPainter, ToColorColor};
+use anyrender::PaintScene;
 use kurbo::{Affine, Insets, Point, Rect, Stroke, Vec2};
 use markup5ever::local_name;
 use parley::PositionedLayoutItem;
 use peniko::Fill;
-use crate::dom::{Dom, DomNode, ElementData, ImageData, NodeData};
-use crate::dom::node::DomNodeFlags;
-use crate::layout::LayoutBox;
-use crate::renderer::background::BackgroundImageCache;
-use crate::renderer::paint::DefaultPaints;
-use crate::renderer::text::{TextPainter, ToColorColor, render_text_at_position};
-use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::properties::generated::longhands::visibility::computed_value::T as Visibility;
-use style::properties::{longhands, ComputedValues};
 use style::properties::style_structs::Font;
+use style::properties::ComputedValues;
 use style::servo_arc::Arc;
 use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, OutlineStyle, Overflow, ZIndex};
 use style::values::generics::color::GenericColor;
 use style::values::specified::TextDecorationLine;
 use taffy::Layout;
-use crate::dom::node::SpecialElementData;
-use crate::renderer::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer<'dom> {
@@ -37,7 +31,6 @@ pub struct HtmlRenderer<'dom> {
     pub(crate) scale_factor: f64,
     pub(crate) width: u32,
     pub(crate) height: u32,
-    pub(crate) paints: DefaultPaints,
     pub(crate) background_image_cache: BackgroundImageCache,
 }
 
@@ -160,25 +153,20 @@ impl HtmlRenderer<'_> {
             return; // Skip rendering boxes outside viewport
         }
 
-        // Create scroll transform to offset the view
-        let scroll_transform = kurbo::Affine::translate((-self.dom.viewport_scroll.x, -self.dom.viewport_scroll.y));
-        // Calculate viewport bounds for culling off-screen elements
-        let viewport_rect = Rect::new(
-            self.dom.viewport_scroll.x,
-            self.dom.viewport_scroll.y,
-            painter.base_layer_size().width as f64,
-            painter.base_layer_size().height as f64,
-        );
-
         let mut element = self.element(node, layout, position);
-        //element.render_box(painter, node, &viewport_rect, scroll_transform);
 
-        element.draw_background(painter);
-        element.draw_image(painter);
         element.draw_outline(painter);
+        element.draw_background(painter);
         element.draw_border(painter);
 
-        element.draw_children(painter);
+        let wants_layer = should_clip | has_opacity;
+        let clip = &element.frame.padding_box_path();
+        maybe_with_layer(painter, wants_layer, opacity, element.transform, clip, |painter| {
+            element.draw_image(painter);
+            element.draw_inline_layout(painter);
+
+            element.draw_children(painter);
+        });
     }
 
     fn render_node(&self, scene: &mut TextPainter, node_id: usize, location: Point) {
@@ -294,12 +282,6 @@ struct Element<'a> {
 
 impl Element<'_> {
     fn draw_children(&self, painter: &mut TextPainter) {
-        // Check if this is an inline root - if so, render inline layout instead of children
-        if self.node.flags.contains(DomNodeFlags::IS_INLINE_ROOT) {
-            self.draw_inline_layout(painter);
-            return;
-        }
-
         let layout_children = self.node.layout_children.borrow();
         let mut children_with_z: Vec<(&DomNode, i32)> = layout_children.as_ref().unwrap().iter()
             .map(|child| {

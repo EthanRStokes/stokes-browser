@@ -19,10 +19,12 @@ const _RED_ZONE: usize = 32 * 1024;
 
 /// JavaScript runtime that manages execution context
 pub struct JsRuntime {
-    engine: JSEngine,
-    runtime: Runtime,
+    // IMPORTANT: Field order matters for drop order!
+    // runtime must be dropped before engine since runtime holds a handle to engine
     timer_manager: Rc<TimerManager>,
     user_agent: String,
+    runtime: Runtime,
+    engine: JSEngine,
 }
 
 impl JsRuntime {
@@ -38,10 +40,10 @@ impl JsRuntime {
         let timer_manager = Rc::new(TimerManager::new());
 
         let mut js_runtime = Self {
-            engine,
-            runtime,
             timer_manager: timer_manager.clone(),
             user_agent,
+            runtime,
+            engine,
         };
         let user_agent = js_runtime.user_agent.clone();
 

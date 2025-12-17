@@ -2,9 +2,9 @@ use crate::dom::{Dom, DomNode};
 use crate::renderer::cache::{FontCacheKey, FontCacheKeyBorrowed, GenerationalCache, NormalizedTypefaceCacheKey, NormalizedTypefaceCacheKeyBorrowed};
 use color::{AlphaColor, Srgb};
 use html5ever::tendril::StrTendril;
-use kurbo::{Affine, Stroke};
-use parley::{Alignment, AlignmentOptions, FontWeight, GenericFamily, LineHeight, PositionedLayoutItem, StyleProperty};
-use peniko::{Fill, ImageBrushRef};
+use kurbo::{Affine, Shape, Stroke};
+use parley::{Alignment, AlignmentOptions, FontData, FontWeight, GenericFamily, LineHeight, PositionedLayoutItem, StyleProperty};
+use peniko::{BlendMode, Fill, ImageBrushRef, StyleRef};
 use skia_safe::canvas::{GlyphPositions, SaveLayerRec};
 use skia_safe::font::Edging;
 use skia_safe::font_arguments::variation_position::Coordinate;
@@ -12,6 +12,7 @@ use skia_safe::font_arguments::VariationPosition;
 // Text rendering functionality
 use skia_safe::{BlurStyle, Canvas, Color, ColorSpace, Font, FontArguments, FontHinting, FontMgr, GlyphId, ISize, MaskFilter, Paint, PaintCap, PaintJoin, PaintStyle, Point, RRect, Rect, Shader, Typeface};
 use std::cell::RefCell;
+use anyrender::{Glyph, NormalizedCoord, PaintRef, PaintScene};
 use style::color::AbsoluteColor;
 use style::properties::ComputedValues;
 use style::servo_arc::Arc;
@@ -166,7 +167,7 @@ pub fn render_text_node(
         TextAlignKeyword::MozLeft => Alignment::Left,
         TextAlignKeyword::MozRight => Alignment::Right,
     };
-    layout.align(max_width, alignment, AlignmentOptions::default());
+    layout.align(alignment, AlignmentOptions::default());
 
     // Get text color
     let text_color: AlphaColor<Srgb> = style.clone_color().as_color_color();
@@ -742,12 +743,12 @@ impl TextPainter<'_> {
 }
 
 // painter
-impl TextPainter<'_> {
-    pub(crate) fn reset(&mut self) {
+impl PaintScene for TextPainter<'_> {
+    fn reset(&mut self) {
         self.inner.clear(Color::WHITE);
     }
 
-    pub(crate) fn push_layer(
+    fn push_layer(
         &mut self,
         blend: impl Into<peniko::BlendMode>,
         alpha: f32,
@@ -774,7 +775,7 @@ impl TextPainter<'_> {
         }
     }
 
-    pub(crate) fn push_clip_layer(&mut self, transform: kurbo::Affine, clip: &impl kurbo::Shape) {
+    fn push_clip_layer(&mut self, transform: kurbo::Affine, clip: &impl kurbo::Shape) {
         self.inner.save(); // we need to do two saves because of pop_layer
 
         self.set_matrix(transform);
@@ -782,12 +783,12 @@ impl TextPainter<'_> {
         self.inner.save();
     }
 
-    pub(crate) fn pop_layer(&mut self) {
+    fn pop_layer(&mut self) {
         self.inner.restore();
         self.inner.restore();
     }
 
-    pub(crate) fn stroke<'a>(
+    fn stroke<'a>(
         &mut self,
         style: &kurbo::Stroke,
         transform: kurbo::Affine,
@@ -803,7 +804,7 @@ impl TextPainter<'_> {
         self.draw_shape(shape);
     }
 
-    pub(crate) fn fill<'a>(
+    fn fill<'a>(
         &mut self,
         style: peniko::Fill,
         transform: kurbo::Affine,
@@ -819,7 +820,7 @@ impl TextPainter<'_> {
         self.draw_shape_with_fill(shape, style);
     }
 
-    pub(crate) fn draw_glyphs<'a, 's: 'a>(
+    fn draw_glyphs<'a, 's: 'a>(
         &'s mut self,
         #[allow(unused_mut)] mut font: &'a peniko::FontData,
         font_size: f32,
@@ -868,7 +869,7 @@ impl TextPainter<'_> {
         self.cache.glyph_pos_buf.clear();
     }
 
-    pub(crate) fn draw_box_shadow(
+    fn draw_box_shadow(
         &mut self,
         transform: kurbo::Affine,
         rect: kurbo::Rect,
@@ -904,23 +905,7 @@ impl TextPainter<'_> {
         self.inner.draw_rrect(rrect, &self.cache.paint);
     }
 
-    // Canvas wrapper methods for general rendering
-
-    pub(crate) fn save(&self) {
-        self.inner.save();
-    }
-
-    pub(crate) fn restore(&self) {
-        self.inner.restore();
-    }
-
-
-    pub(crate) fn base_layer_size(&self) -> ISize {
-        let base = self.inner.base_layer_size();
-        ISize::new(base.width, base.height - crate::ui::BrowserUI::CHROME_HEIGHT as i32)
-    }
-
-    pub(crate) fn draw_image(&mut self, image: ImageBrushRef, transform: Affine) {
+    fn draw_image(&mut self, image: ImageBrushRef, transform: Affine) {
         self.fill(
             Fill::NonZero,
             transform,

@@ -1,3 +1,6 @@
+// Copyright DioxusLabs
+// Licensed under the Apache License, Version 2.0 or the MIT license.
+
 //! A rounded rect closer to the browser
 //! Implemented in such a way that splits the border into 4 parts at the midway of each radius
 //!

@@ -3,6 +3,7 @@ use glutin::surface::GlSurface;
 use std::num::NonZeroU32;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+use anyrender::PaintScene;
 use blitz_traits::shell::Viewport;
 use kurbo::Affine;
 use parley::{FontContext, LayoutContext};
