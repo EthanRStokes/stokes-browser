@@ -20,7 +20,7 @@ impl Default for EngineConfig {
         Self {
             user_agent: format!("Stokes-Browser/1.0"),
             homepage: "https://example.com".to_string(),
-            enable_javascript: false, // Not implemented yet
+            enable_javascript: true, // Not implemented yet
             block_ads: false,         // Not implemented yet
             cache_size_mb: 50,
         }

@@ -781,7 +781,7 @@ impl Engine {
         let dom = self.dom_mut();
         let dom = dom as *mut Dom;
         // TODO reimplement JavaScript
-        match JsRuntime::new(/*dom, */user_agent) {
+        match JsRuntime::new(dom, user_agent) {
             Ok(runtime) => {
                 println!("JavaScript runtime initialized successfully");
                 self.js_runtime = Some(runtime);

@@ -1,16 +1,16 @@
-use super::{JsResult, TimerManager};
+use super::{initialize_bindings, JsResult, TimerManager};
 // JavaScript runtime management using Mozilla's SpiderMonkey (mozjs)
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
-use mozjs::rust::{JSEngine, Runtime, RealmOptions, SIMPLE_GLOBAL_CLASS};
-use std::cell::RefCell;
-use std::ffi::CString;
+use mozjs::rust::{JSEngine, Runtime};
 use std::ptr;
 use std::rc::Rc;
 use std::time::Duration;
 use mozjs::context::JSContext;
-use mozjs::jsapi::{CurrentGlobalOrNull, JSObject, JS_ClearPendingException, JS_GetPendingException, JS_GetStringLength, JS_IsExceptionPending, MutableHandleValue, ReadOnlyCompileOptions};
+use mozjs::jsapi::{CurrentGlobalOrNull, JSObject, JS_ClearPendingException, JS_GetPendingException, JS_GetStringLength, JS_IsExceptionPending, MutableHandleValue};
 use mozjs::rust::wrappers2::{JS_GetTwoByteStringCharsAndLength, JS_ValueToSource, RunJobs};
+use crate::dom::Dom;
+use crate::js::dom_bindings::setup_dom_bindings;
 
 // Stack size for growing when needed (16MB to handle very large scripts)
 const STACK_SIZE: usize = 16 * 1024 * 1024;
@@ -27,7 +27,7 @@ pub struct JsRuntime {
 
 impl JsRuntime {
     /// Create a new JavaScript runtime
-    pub fn new(user_agent: String) -> JsResult<Self> {
+    pub fn new(dom: *mut Dom, user_agent: String) -> JsResult<Self> {
         // Initialize the JS engine
         let engine = JSEngine::init().map_err(|_| "Failed to initialize JS engine".to_string())?;
         //let engine = Rc::new(engine);
@@ -43,9 +43,12 @@ impl JsRuntime {
             timer_manager: timer_manager.clone(),
             user_agent,
         };
+        let user_agent = js_runtime.user_agent.clone();
 
         // Set up timers
         super::timers::setup_timers(&mut js_runtime, timer_manager)?;
+
+        initialize_bindings(&mut js_runtime, dom, user_agent)?;
 
         Ok(js_runtime)
     }
@@ -77,8 +80,6 @@ impl JsRuntime {
 
             rooted!(in(raw_cx) let mut rval = UndefinedValue());
 
-            let code_cstring = CString::new(code).map_err(|e| format!("Invalid JS code: {}", e))?;
-            let filename = CString::new("script").unwrap();
 
             let result = mozjs::rust::wrappers::Evaluate(
                 raw_cx,

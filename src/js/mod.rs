@@ -13,7 +13,7 @@ pub use timers::TimerManager;
 pub use alert_callback::{set_alert_callback, clear_alert_callback};
 pub use registry::{get_node, register_node, unregister_node};
 
-use crate::dom::{Dom, DomNode};
+use crate::dom::Dom;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -30,13 +30,13 @@ pub fn execute_script(runtime: &mut JsRuntime, code: &str) -> JsResult<()> {
 }
 
 /// Initialize JavaScript bindings for the browser
-pub fn initialize_bindings(runtime: &mut JsRuntime, _document_root: Rc<RefCell<Dom>>, _user_agent: String) -> JsResult<()> {
+pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, user_agent: String) -> JsResult<()> {
     // Set up console object
     console::setup_console(runtime)?;
 
     // Set up DOM bindings
-    //TODO dom_bindings::setup_dom_bindings(context, document_root, user_agent)?;
-    
+    dom_bindings::setup_dom_bindings(runtime, document_root, user_agent)?;
+
     // Set up fetch API
     fetch::setup_fetch(runtime)?;
 

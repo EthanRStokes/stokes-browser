@@ -1,1063 +1,1094 @@
-/*use super::element_bindings::ElementWrapper;
-use crate::dom::{Dom, DomNode, NodeData};
-use base64::Engine;
-// DOM bindings for JavaScript
-use boa_engine::{object::builtins::JsArray, Context, JsResult as BoaResult, JsResult, JsString, JsValue, NativeFunction};
-use boa_gc::{Finalize, Trace};
-use std::cell::{Ref, RefCell};
+// DOM bindings for JavaScript using mozjs
+use super::runtime::JsRuntime;
+use super::element_bindings;
+use crate::dom::Dom;
+use mozjs::jsval::{JSVal, UndefinedValue, ObjectValue, Int32Value, BooleanValue, StringValue};
+use mozjs::rooted;
+use mozjs::gc::Handle;
+use std::cell::RefCell;
+use std::os::raw::c_uint;
+use std::ptr;
 use std::rc::Rc;
-use html5ever::{ns, LocalName, QualName};
-use crate::js::get_node as registry_get_node; // use registry get_node
+use mozjs::jsapi::{
+    CallArgs, CurrentGlobalOrNull, HandleValueArray, JSContext, JSNative, JSObject, NewArrayObject,
+    JS_DefineFunction, JS_DefineProperty, JS_GetTwoByteStringCharsAndLength, JS_NewPlainObject, JS_NewUCStringCopyN,
+    JSPROP_ENUMERATE,
+};
+use mozjs::rust::wrappers::JS_ValueToSource;
 
-/// Document object wrapper
-#[derive(Clone, Trace, Finalize)]
-struct DocumentWrapper {
-    #[unsafe_ignore_trace]
-    dom: Rc<RefCell<Dom>>,
-}
-
-impl DocumentWrapper {
-    fn new(dom: Rc<RefCell<Dom>>) -> Self {
-        Self { dom }
-    }
-
-    /// document.getElementById implementation
-    fn get_element_by_id(&self, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
-        let id = args.get(0)
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-
-        if id.is_empty() {
-            return Ok(JsValue::null());
-        }
-
-        println!("[JS] document.getElementById('{}') called", id);
-
-        // Search the DOM tree for the element
-        let root = &mut self.dom.borrow_mut().nodes[0];
-        let element = root.get_element_by_id_mut(&id);
-        match element {
-            Some(element) => {
-                if let NodeData::Element(ref data) = element.data {
-                    println!("[JS] Found element with id '{}': <{}>", id, data.name.local);
-                    ElementWrapper::create_js_element(element, context)
-                } else {
-                    Ok(JsValue::null())
-                }
-            }
-            None => {
-                println!("[JS] Element with id '{}' not found", id);
-                Ok(JsValue::null())
-            }
-        }
-    }
-
-    /// document.getElementsByTagName implementation
-    fn get_elements_by_tag_name(&self, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
-        use boa_engine::object::ObjectInitializer;
-
-        let tag_name = args.get(0)
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-
-        println!("[JS] document.getElementsByTagName('{}') called", tag_name);
-
-        let dom = self.dom.borrow();
-        let root = dom.root_node();
-        let elements = root.get_elements_by_tag_name(&tag_name);
-
-        let array = JsArray::new(context);
-        for (i, element) in elements.iter().enumerate() {
-            if let NodeData::Element(ref data) = element.data {
-                // Capture attributes for the closure
-                let attributes = data.attributes.clone();
-
-                let js_element = ObjectInitializer::new(context)
-                    .property(
-                        JsString::from("tagName"),
-                        JsValue::from(JsString::from(data.name.local.to_uppercase())),
-                        boa_engine::property::Attribute::all(),
-                    )
-                    .property(
-                        JsString::from("id"),
-                        JsValue::from(JsString::from(data.id().unwrap_or(""))),
-                        boa_engine::property::Attribute::all(),
-                    )
-                    .property(
-                        JsString::from("nodeName"),
-                        JsValue::from(JsString::from(data.name.local.to_uppercase())),
-                        boa_engine::property::Attribute::all(),
-                    )
-                    .function(
-                        unsafe {
-                            NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                                let attr_name = args.get(0)
-                                    .and_then(|v| v.as_string())
-                                    .map(|s| s.to_std_string_escaped())
-                                    .unwrap_or_default();
-
-                                if let Some(value) = attributes.get(&attr_name) {
-                                    Ok(JsValue::from(JsString::from(value.clone())))
-                                } else {
-                                    Ok(JsValue::null())
-                                }
-                            })
-                        },
-                        JsString::from("getAttribute"),
-                        1,
-                    )
-                    .function(
-                        NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                            let attr_name = args.get(0)
-                                .and_then(|v| v.as_string())
-                                .map(|s| s.to_std_string_escaped())
-                                .unwrap_or_default();
-                            println!("[JS] element.hasAttribute('{}') called", attr_name);
-                            Ok(JsValue::from(false))
-                        }),
-                        JsString::from("hasAttribute"),
-                        1,
-                    )
-                    .build();
-                let _ = array.set(i, js_element, true, context);
-            }
-        }
-
-        println!("[JS] Found {} element(s) with tag '{}'", array.length(context).unwrap_or(0), tag_name);
-        Ok(array.into())
-    }
-
-    /// document.querySelector implementation
-    fn query_selector(&self, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
-        use boa_engine::object::ObjectInitializer;
-
-        let selector = args.get(0)
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-
-        println!("[JS] document.querySelector('{}') called", selector);
-
-        let dom = self.dom.borrow();
-        let root = dom.root_node();
-        let elements = root.query_selector(&selector);
-
-        if let Some(element_rc) = elements.first() {
-            let element = root.get_node(*element_rc);
-            if let NodeData::Element(ref data) = element.data {
-                let js_element = ObjectInitializer::new(context)
-                    .property(
-                        JsString::from("tagName"),
-                        JsValue::from(JsString::from(data.name.local.to_uppercase())),
-                        boa_engine::property::Attribute::all(),
-                    )
-                    .property(
-                        JsString::from("id"),
-                        JsValue::from(JsString::from(data.id().unwrap_or(""))),
-                        boa_engine::property::Attribute::all(),
-                    )
-                    .property(
-                        JsString::from("textContent"),
-                        JsValue::from(JsString::from(element.text_content())),
-                        boa_engine::property::Attribute::all(),
-                    )
-                    .build();
-
-                println!("[JS] Found element matching '{}': <{}>", selector, data.name.local);
-                return Ok(js_element.into());
-            }
-        }
-
-        println!("[JS] No element found matching '{}'", selector);
-        Ok(JsValue::null())
-    }
-
-    /// document.querySelectorAll implementation
-    fn query_selector_all(&self, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
-        use boa_engine::object::ObjectInitializer;
-
-        let selector = args.get(0)
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-
-        println!("[JS] document.querySelectorAll('{}') called", selector);
-
-        let dom = self.dom.borrow();
-        let root = dom.root_node();
-        let elements = root.query_selector(&selector);
-
-        let array = JsArray::new(context);
-        for (i, element_rc) in elements.iter().enumerate() {
-            let element = root.get_node(*element_rc);
-            if let NodeData::Element(ref data) = element.data {
-                let js_element = ObjectInitializer::new(context)
-                    .property(
-                        JsString::from("tagName"),
-                        JsValue::from(JsString::from(data.name.local.to_uppercase())),
-                        boa_engine::property::Attribute::all(),
-                    )
-                    .property(
-                        JsString::from("id"),
-                        JsValue::from(JsString::from(data.id().unwrap_or(""))),
-                        boa_engine::property::Attribute::all(),
-                    )
-                    .property(
-                        JsString::from("textContent"),
-                        JsValue::from(JsString::from(element.text_content())),
-                        boa_engine::property::Attribute::all(),
-                    )
-                    .build();
-                let _ = array.set(i, js_element, true, context);
-            }
-        }
-
-        println!("[JS] Found {} element(s) matching '{}'", array.length(context).unwrap_or(0), selector);
-        Ok(array.into())
-    }
-
-    /// document.createElement implementation
-    fn create_element(&self, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
-        let tag_name = args.get(0)
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-
-        if tag_name.is_empty() {
-            println!("[JS] document.createElement called with empty tag name");
-            return Ok(JsValue::null());
-        }
-
-        println!("[JS] document.createElement('{}') called", tag_name);
-
-        // Use ElementWrapper to create a proper element with working getAttribute/setAttribute
-        ElementWrapper::create_stub_element_(&tag_name, &self.dom, context)
-    }
-}
-
-/// Window object functions
-struct WindowObject;
-
-impl WindowObject {
-    /// window.alert implementation
-    fn alert(_this: &JsValue, args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
-        let message = args.get(0)
-            .map(|v| v.to_string(context))
-            .transpose()?
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-
-        // Use the alert callback system to send the alert to the parent process
-        super::alert_callback::trigger_alert(message);
-        Ok(JsValue::undefined())
-    }
-
-    /// window.requestAnimationFrame implementation
-    fn request_animation_frame(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        println!("[JS] requestAnimationFrame called");
-        // Return a dummy request ID
-        Ok(JsValue::from(1))
-    }
-
-    /// window.cancelAnimationFrame implementation
-    fn cancel_animation_frame(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        println!("[JS] cancelAnimationFrame called");
-        Ok(JsValue::undefined())
-    }
-
-    /// window.getComputedStyle implementation
-    fn get_computed_style(_this: &JsValue, _args: &[JsValue], context: &mut Context) -> BoaResult<JsValue> {
-        use boa_engine::object::ObjectInitializer;
-        println!("[JS] getComputedStyle called");
-        // Return an empty style object
-        let style = ObjectInitializer::new(context).build();
-        Ok(style.into())
-    }
-
-    /// window.addEventListener implementation
-    fn add_event_listener(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        let event_type = args.get(0)
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-        println!("[JS] window.addEventListener('{}') called", event_type);
-        Ok(JsValue::undefined())
-    }
-
-    /// window.removeEventListener implementation
-    fn remove_event_listener(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        let event_type = args.get(0)
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-        println!("[JS] window.removeEventListener('{}') called", event_type);
-        Ok(JsValue::undefined())
-    }
-}
-
-/// Location object functions
-struct LocationObject;
-
-impl LocationObject {
-    fn href(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        Ok(JsValue::from(JsString::from("about:blank")))
-    }
-
-    fn reload(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        println!("[JS] location.reload() called");
-        Ok(JsValue::undefined())
-    }
-}
-
-/// Storage object (localStorage/sessionStorage)
-struct StorageObject;
-
-impl StorageObject {
-    fn get_item(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        let key = args.get(0)
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-        println!("[JS] Storage.getItem('{}') called", key);
-        Ok(JsValue::null())
-    }
-
-    fn set_item(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        let key = args.get(0)
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-        let value = args.get(1)
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-        println!("[JS] Storage.setItem('{}', '{}') called", key, value);
-        Ok(JsValue::undefined())
-    }
-
-    fn remove_item(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        let key = args.get(0)
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-        println!("[JS] Storage.removeItem('{}') called", key);
-        Ok(JsValue::undefined())
-    }
-
-    fn clear(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> BoaResult<JsValue> {
-        println!("[JS] Storage.clear() called");
-        Ok(JsValue::undefined())
-    }
+// Thread-local storage for DOM reference
+thread_local! {
+    static DOM_REF: RefCell<Option<*mut Dom>> = RefCell::new(None);
+    static USER_AGENT: RefCell<String> = RefCell::new(String::new());
 }
 
 /// Set up DOM bindings in the JavaScript context
-pub fn setup_dom_bindings(context: &mut Context, document_root: Rc<RefCell<Dom>>, user_agent: String) -> Result<(), String> {
-    use boa_engine::object::ObjectInitializer;
-
-    // Create the Node constructor with node type constants
-    let node = ObjectInitializer::new(context)
-        .property(JsString::from("ELEMENT_NODE"), 1, boa_engine::property::Attribute::all())
-        .property(JsString::from("ATTRIBUTE_NODE"), 2, boa_engine::property::Attribute::all())
-        .property(JsString::from("TEXT_NODE"), 3, boa_engine::property::Attribute::all())
-        .property(JsString::from("CDATA_SECTION_NODE"), 4, boa_engine::property::Attribute::all())
-        .property(JsString::from("ENTITY_REFERENCE_NODE"), 5, boa_engine::property::Attribute::all())
-        .property(JsString::from("ENTITY_NODE"), 6, boa_engine::property::Attribute::all())
-        .property(JsString::from("PROCESSING_INSTRUCTION_NODE"), 7, boa_engine::property::Attribute::all())
-        .property(JsString::from("COMMENT_NODE"), 8, boa_engine::property::Attribute::all())
-        .property(JsString::from("DOCUMENT_NODE"), 9, boa_engine::property::Attribute::all())
-        .property(JsString::from("DOCUMENT_TYPE_NODE"), 10, boa_engine::property::Attribute::all())
-        .property(JsString::from("DOCUMENT_FRAGMENT_NODE"), 11, boa_engine::property::Attribute::all())
-        .property(JsString::from("NOTATION_NODE"), 12, boa_engine::property::Attribute::all())
-        .build();
-
-    // Create the DocumentWrapper instance
-    let doc_wrapper = DocumentWrapper::new(document_root.clone());
-
-    // Create closures that use the DocumentWrapper methods
-    let get_element_by_id_fn = unsafe {
-        NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
-            //TODO doc_wrapper.get_element_by_id(args, context)
-            Ok(JsValue::null())
-        })
-    };
-
-    let get_elements_by_tag_name_fn = unsafe {
-        NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
-            doc_wrapper.get_elements_by_tag_name(args, context)
-        })
-    };
-
-    let query_selector_fn = unsafe {
-        NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
-            doc_wrapper.query_selector(args, context)
-        })
-    };
-
-    let query_selector_all_fn = unsafe {
-        NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
-            doc_wrapper.query_selector_all(args, context)
-        })
-    };
-
-    let create_element_fn = unsafe {
-        NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
-            doc_wrapper.create_element(args, context)
-        })
-    };
-
-    // Create a documentElement object (represents the <html> element)
-    let document_element = ObjectInitializer::new(context)
-        .property(
-            JsString::from("tagName"),
-            JsValue::from(JsString::from("HTML")),
-            boa_engine::property::Attribute::all(),
-        )
-        .property(
-            JsString::from("nodeName"),
-            JsValue::from(JsString::from("HTML")),
-            boa_engine::property::Attribute::all(),
-        )
-        .property(
-            JsString::from("nodeType"),
-            JsValue::from(1), // ELEMENT_NODE
-            boa_engine::property::Attribute::all(),
-        )
-        .function(
-            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                let attr_name = args.get(0)
-                    .and_then(|v| v.as_string())
-                    .map(|s| s.to_std_string_escaped())
-                    .unwrap_or_default();
-                println!("[JS] documentElement.getAttribute('{}') called", attr_name);
-                Ok(JsValue::null())
-            }),
-            JsString::from("getAttribute"),
-            1,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                let attr_name = args.get(0)
-                    .and_then(|v| v.as_string())
-                    .map(|s| s.to_std_string_escaped())
-                    .unwrap_or_default();
-                let attr_value = args.get(1)
-                    .and_then(|v| v.as_string())
-                    .map(|s| s.to_std_string_escaped())
-                    .unwrap_or_default();
-                println!("[JS] documentElement.setAttribute('{}', '{}') called", attr_name, attr_value);
-                Ok(JsValue::undefined())
-            }),
-            JsString::from("setAttribute"),
-            2,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                let event_type = args.get(0)
-                    .and_then(|v| v.as_string())
-                    .map(|s| s.to_std_string_escaped())
-                    .unwrap_or_default();
-                println!("[JS] documentElement.addEventListener('{}') called", event_type);
-                Ok(JsValue::undefined())
-            }),
-            JsString::from("addEventListener"),
-            3,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-                let event_type = args.get(0)
-                    .and_then(|v| v.as_string())
-                    .map(|s| s.to_std_string_escaped())
-                    .unwrap_or_default();
-                println!("[JS] documentElement.removeEventListener('{}') called", event_type);
-                Ok(JsValue::undefined())
-            }),
-            JsString::from("removeEventListener"),
-            3,
-        )
-        .build();
-
-    // Create the document object with the new closures
-    let document = ObjectInitializer::new(context)
-        .function(
-            get_element_by_id_fn,
-            JsString::from("getElementById"),
-            1,
-        )
-        .function(
-            get_elements_by_tag_name_fn,
-            JsString::from("getElementsByTagName"),
-            1,
-        )
-        .function(
-            query_selector_fn,
-            JsString::from("querySelector"),
-            1,
-        )
-        .function(
-            query_selector_all_fn,
-            JsString::from("querySelectorAll"),
-            1,
-        )
-        .function(
-            create_element_fn,
-            JsString::from("createElement"),
-            1,
-        )
-        .property(
-            JsString::from("documentElement"),
-            document_element,
-            boa_engine::property::Attribute::all(),
-        )
-        .build();
-
-    // Register document object in global scope
-    context.register_global_property(JsString::from("document"), document, boa_engine::property::Attribute::all())
-        .map_err(|e| format!("Failed to register document object: {}", e))?;
-
-    // In browsers, the global object IS the window object
-    // So we need to add window properties to the global object itself
-    let global_object = context.global_object();
-
-    // Add window functions directly to global object
-    global_object.set(
-        JsString::from("alert"),
-        NativeFunction::from_fn_ptr(WindowObject::alert).to_js_function(context.realm()),
-        true,
-        context
-    ).map_err(|e| format!("Failed to set alert: {}", e))?;
-
-    global_object.set(
-        JsString::from("requestAnimationFrame"),
-        NativeFunction::from_fn_ptr(WindowObject::request_animation_frame).to_js_function(context.realm()),
-        true,
-        context
-    ).map_err(|e| format!("Failed to set requestAnimationFrame: {}", e))?;
-
-    global_object.set(
-        JsString::from("cancelAnimationFrame"),
-        NativeFunction::from_fn_ptr(WindowObject::cancel_animation_frame).to_js_function(context.realm()),
-        true,
-        context
-    ).map_err(|e| format!("Failed to set cancelAnimationFrame: {}", e))?;
-
-    global_object.set(
-        JsString::from("getComputedStyle"),
-        NativeFunction::from_fn_ptr(WindowObject::get_computed_style).to_js_function(context.realm()),
-        true,
-        context
-    ).map_err(|e| format!("Failed to set getComputedStyle: {}", e))?;
-
-    global_object.set(
-        JsString::from("addEventListener"),
-        NativeFunction::from_fn_ptr(WindowObject::add_event_listener).to_js_function(context.realm()),
-        true,
-        context
-    ).map_err(|e| format!("Failed to set addEventListener: {}", e))?;
-
-    global_object.set(
-        JsString::from("removeEventListener"),
-        NativeFunction::from_fn_ptr(WindowObject::remove_event_listener).to_js_function(context.realm()),
-        true,
-        context
-    ).map_err(|e| format!("Failed to set removeEventListener: {}", e))?;
-
-    // Register window as the global object itself (circular reference)
-    global_object.set(JsString::from("window"), global_object.clone(), true, context)
-        .map_err(|e| format!("Failed to set window: {}", e))?;
-    global_object.set(JsString::from("self"), global_object.clone(), true, context)
-        .map_err(|e| format!("Failed to set self: {}", e))?;
-    global_object.set(JsString::from("top"), global_object.clone(), true, context)
-        .map_err(|e| format!("Failed to set top: {}", e))?;
-    global_object.set(JsString::from("parent"), global_object.clone(), true, context)
-        .map_err(|e| format!("Failed to set parent: {}", e))?;
-    global_object.set(JsString::from("globalThis"), global_object.clone(), true, context)
-        .map_err(|e| format!("Failed to set globalThis: {}", e))?;
-
-    // Create the navigator object with proper properties (not functions)
-    let languages_array = JsArray::from_iter([JsValue::from(JsString::from("en-US"))], context);
-    let navigator = ObjectInitializer::new(context)
-        .property(
-            JsString::from("userAgent"),
-            JsValue::from(JsString::from(user_agent)),
-            boa_engine::property::Attribute::all(),
-        )
-        .property(
-            JsString::from("language"),
-            JsValue::from(JsString::from("en-US")),
-            boa_engine::property::Attribute::all(),
-        )
-        .property(
-            JsString::from("languages"),
-            languages_array,
-            boa_engine::property::Attribute::all(),
-        )
-        .property(
-            JsString::from("platform"),
-            JsValue::from(JsString::from(std::env::consts::OS)),
-            boa_engine::property::Attribute::all(),
-        )
-        .property(
-            JsString::from("online"),
-            JsValue::from(true),
-            boa_engine::property::Attribute::all(),
-        )
-        .property(
-            JsString::from("appName"),
-            JsValue::from(JsString::from("Stokes Browser")),
-            boa_engine::property::Attribute::all(),
-        )
-        .build();
-
-    // Create the location object
-    let location = ObjectInitializer::new(context)
-        .function(
-            NativeFunction::from_fn_ptr(LocationObject::href),
-            JsString::from("href"),
-            0,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(LocationObject::reload),
-            JsString::from("reload"),
-            0,
-        )
-        .build();
-
-    // Create the storage object (localStorage/sessionStorage)
-    let storage = ObjectInitializer::new(context)
-        .function(
-            NativeFunction::from_fn_ptr(StorageObject::get_item),
-            JsString::from("getItem"),
-            1,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(StorageObject::set_item),
-            JsString::from("setItem"),
-            2,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(StorageObject::remove_item),
-            JsString::from("removeItem"),
-            1,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(StorageObject::clear),
-            JsString::from("clear"),
-            0,
-        )
-        .build();
-
-    // Register node constructor in global scope
-    context.register_global_property(JsString::from("Node"), node, boa_engine::property::Attribute::all())
-        .map_err(|e| format!("Failed to register Node constructor: {}", e))?;
-
-    // Register navigator object in global scope
-    context.register_global_property(JsString::from("navigator"), navigator, boa_engine::property::Attribute::all())
-        .map_err(|e| format!("Failed to register navigator object: {}", e))?;
-
-    // Register location object in global scope
-    context.register_global_property(JsString::from("location"), location, boa_engine::property::Attribute::all())
-        .map_err(|e| format!("Failed to register location object: {}", e))?;
-
-    // Register storage object in global scope
-    context.register_global_property(JsString::from("localStorage"), storage.clone(), boa_engine::property::Attribute::all())
-        .map_err(|e| format!("Failed to register localStorage: {}", e))?;
-    context.register_global_property(JsString::from("sessionStorage"), storage, boa_engine::property::Attribute::all())
-        .map_err(|e| format!("Failed to register sessionStorage: {}", e))?;
-
-    // Create a stub Polymer object (for Polymer library compatibility)
-    let polymer = ObjectInitializer::new(context).build();
-    context.register_global_property(JsString::from("Polymer"), polymer, boa_engine::property::Attribute::all())
-        .map_err(|e| format!("Failed to register Polymer object: {}", e))?;
-
-    let element_ctor_wrapper = ElementWrapper::new(document_root);
-    // Create Element constructor with common constants
-    let element_ctor: JsValue = unsafe {
-        NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
-            // Constructor behavior: document.createElement(tagName)
-            let tag_name = args.get(0)
-                .and_then(|v| v.as_string())
-                .map(|s| s.to_std_string_escaped())
-                .unwrap_or_default();
-
-            if tag_name.is_empty() {
-                println!("[JS] Element constructor called with empty tag name");
-                return Ok(JsValue::null());
-            }
-
-            element_ctor_wrapper.create_stub_element(&tag_name, context)
-        })
-    } .to_js_function(context.realm()).into(); // convert to JsValue
-
-    // Attach a few constants on the constructor (for compatibility)
-    if let Some(elem_obj) = element_ctor.as_object() {
-        let _ = elem_obj.set(JsString::from("ELEMENT_NODE"), JsValue::from(1), true, context);
-        let _ = elem_obj.set(JsString::from("nodeName"), JsValue::from(JsString::from("Element")), true, context);
-    }
-
-    // Register the constructor in global scope
-    context.register_global_property(JsString::from("Element"), element_ctor.clone(), boa_engine::property::Attribute::all())
-        .map_err(|e| format!("Failed to register Element constructor: {}", e))?;
-
-    let html_element_ctor_wrapper = ElementWrapper::new(document_root);
-    // Create HTMLElement constructor as alias of Element (most behavior is same for now)
-    let html_element_ctor: JsValue = unsafe {
-        NativeFunction::from_closure(move |_this: &JsValue, args: &[JsValue], context: &mut Context| {
-            // Behave like Element constructor
-            let tag_name = args.get(0)
-                .and_then(|v| v.as_string())
-                .map(|s| s.to_std_string_escaped())
-                .unwrap_or_default();
-
-            if tag_name.is_empty() {
-                println!("[JS] HTMLElement constructor called with empty tag name");
-                return Ok(JsValue::null());
-            }
-
-            html_element_ctor_wrapper.create_stub_element(&tag_name, context)
-        })
-    } .to_js_function(context.realm()).into(); // convert to JsValue
-
-    if let Some(html_elem_obj) = html_element_ctor.as_object() {
-        let _ = html_elem_obj.set(JsString::from("nodeName"), JsValue::from(JsString::from("HTMLElement")), true, context);
-    }
-
-    context.register_global_property(JsString::from("HTMLElement"), html_element_ctor.clone(), boa_engine::property::Attribute::all())
-        .map_err(|e| format!("Failed to register HTMLElement constructor: {}", e))?;
-
-    // Create a simple Element.prototype with common stub methods
-    // Helper to resolve underlying DomNode from a JS wrapper object
-    fn get_node_from_this(this: &JsValue, context: &mut Context) -> Option<Rc<RefCell<DomNode>>> {
-        if let Some(obj) = this.as_object() {
-            let key = JsString::from("__nodePtr");
-            if let Ok(val) = obj.get(key, context) {
-                if let Some(n) = val.as_number() {
-                    let ptr = n as i64;
-                    return registry_get_node(ptr);
-                }
-            }
-        }
-        None
-    }
-
-    let element_proto = ObjectInitializer::new(context)
-        .function(
-            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], context: &mut Context| {
-                let attr_name = args.get(0)
-                    .and_then(|v| v.as_string())
-                    .map(|s| s.to_std_string_escaped())
-                    .unwrap_or_default();
-
-                if let Some(node_rc) = get_node_from_this(this, context) {
-                    let node = node_rc.borrow();
-                    if let NodeData::Element(ref element_data) = node.data {
-                        if let Some(value) = element_data.attributes.get(&attr_name) {
-                            println!("[JS] Element.prototype.getAttribute('{}') -> '{}'", attr_name, value);
-                            return Ok(JsValue::from(JsString::from(value.clone())));
-                        } else {
-                            return Ok(JsValue::null());
-                        }
-                    }
-                }
-
-                println!("[JS] Element.prototype.getAttribute('{}') called on {:?}", attr_name, this);
-                Ok(JsValue::null())
-            }),
-            JsString::from("getAttribute"),
-            1,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], context: &mut Context| {
-                let attr_name = args.get(0)
-                    .and_then(|v| v.as_string())
-                    .map(|s| s.to_std_string_escaped())
-                    .unwrap_or_default();
-                let attr_value = args.get(1)
-                    .and_then(|v| v.as_string())
-                    .map(|s| s.to_std_string_escaped())
-                    .unwrap_or_default();
-
-                if let Some(node_rc) = get_node_from_this(this, context) {
-                    let mut node = node_rc.borrow_mut();
-                    if let NodeData::Element(ref mut element_data) = node.data {
-                        element_data.attributes.insert(attr_name.clone(), attr_value.clone());
-                        println!("[JS] Element.prototype.setAttribute('{}','{}') on registry node", attr_name, attr_value);
-                        return Ok(JsValue::undefined());
-                    }
-                }
-
-                println!("[JS] Element.prototype.setAttribute('{}','{}') called on {:?}", attr_name, attr_value, this);
-                Ok(JsValue::undefined())
-            }),
-            JsString::from("setAttribute"),
-            2,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], context: &mut Context| {
-                let attr_name = args.get(0)
-                    .and_then(|v| v.as_string())
-                    .map(|s| s.to_std_string_escaped())
-                    .unwrap_or_default();
-
-                if let Some(node_rc) = get_node_from_this(this, context) {
-                    let mut node = node_rc.borrow_mut();
-                    if let NodeData::Element(ref mut element_data) = node.data {
-                        element_data.attributes.remove(&attr_name);
-                        println!("[JS] Element.prototype.removeAttribute('{}') on registry node", attr_name);
-                        return Ok(JsValue::undefined());
-                    }
-                }
-
-                println!("[JS] Element.prototype.removeAttribute('{}') called on {:?}", attr_name, this);
-                Ok(JsValue::undefined())
-            }),
-            JsString::from("removeAttribute"),
-            1,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], context: &mut Context| {
-                let attr_name = args.get(0)
-                    .and_then(|v| v.as_string())
-                    .map(|s| s.to_std_string_escaped())
-                    .unwrap_or_default();
-
-                if let Some(node_rc) = get_node_from_this(this, context) {
-                    let node = node_rc.borrow();
-                    if let NodeData::Element(ref element_data) = node.data {
-                        let has = element_data.attributes.contains_key(&attr_name);
-                        println!("[JS] Element.prototype.hasAttribute('{}') -> {} on registry node", attr_name, has);
-                        return Ok(JsValue::from(has));
-                    }
-                }
-
-                println!("[JS] Element.prototype.hasAttribute('{}') called on {:?}", attr_name, this);
-                Ok(JsValue::from(false))
-            }),
-            JsString::from("hasAttribute"),
-            1,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], context: &mut Context| {
-                // appendChild: if child is a registry node, move it under this node
-                let child_value = args.get(0).cloned().unwrap_or(JsValue::null());
-
-                if let Some(parent_rc) = get_node_from_this(this, context) {
-                    println!("[JS] Element.prototype.appendChild called on registry node");
-
-                    if let Some(child_obj) = child_value.as_object() {
-                        let key = JsString::from("__nodePtr");
-                        if let Ok(ptr_val) = child_obj.get(key, context) {
-                            if let Some(n) = ptr_val.as_number() {
-                                let child_ptr = n as i64;
-                                if let Some(child_rc) = registry_get_node(child_ptr) {
-                                    // Remove child from old parent if present
-                                    let mut child_rc = child_rc.borrow_mut();
-                                    if let Some(old_parent_weak) = child_rc.parent {
-                                        let mut old_parent = child_rc.get_node_mut(old_parent_weak);
-                                        old_parent.children.retain(|c| {
-                                            let child = old_parent.get_node(*c);
-                                            (&raw mut *child) as i64 != child_ptr
-                                        });
-                                    }
-
-                                    // Attach to new parent
-                                    parent_rc.borrow_mut().children.push(child_rc.id);
-                                    child_rc.parent = Some(parent_rc.borrow().id);
-
-                                    println!("[JS] Appended existing registry child to parent");
-                                    return Ok(child_value);
-                                }
-                            }
-                        }
-
-                        // Fallback: try to create a new element from tagName property
-                        // TODO reimplement
-                        /*let tag_key = JsString::from("tagName");
-                        if let Ok(tag_value) = child_obj.get(tag_key, context) {
-                            if let Some(tag_str) = tag_value.as_string() {
-                                let tag_name = tag_str.to_std_string_escaped().to_lowercase();
-                                let qual_name = QualName::new(None, ns!(), LocalName::from(tag_name.as_str()));
-                                let element_data = crate::dom::ElementData::new(qual_name);
-                                let new_child = DomNode::new(NodeData::Element(element_data), None);
-                                let child_rc = Rc::new(RefCell::new(new_child));
-                                parent_rc.borrow_mut().children.push(Rc::clone(&child_rc));
-                                child_rc.borrow_mut().parent = Some(Rc::downgrade(&parent_rc));
-                                println!("[JS] Appended new child created from stub object");
-                                return Ok(child_value);
-                            }
-                        }*/
-                    }
-                }
-
-                println!("[JS] Element.prototype.appendChild() called");
-                Ok(child_value)
-            }),
-            JsString::from("appendChild"),
-            1,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], context: &mut Context| {
-                let child_value = args.get(0).cloned().unwrap_or(JsValue::null());
-
-                if let Some(parent_rc) = get_node_from_this(this, context) {
-                    println!("[JS] Element.prototype.removeChild called on registry node");
-
-                    if let Some(child_obj) = child_value.as_object() {
-                        let key = JsString::from("__nodePtr");
-                        if let Ok(ptr_val) = child_obj.get(key, context) {
-                            if let Some(n) = ptr_val.as_number() {
-                                let child_ptr = n as i64;
-                                let mut parent = parent_rc.borrow_mut();
-                                let initial_count = parent.children.len();
-                                parent.children.retain(|c| {
-                                    let parent = parent_rc.borrow();
-                                    let child = parent.get_node(*c);
-                                    (&raw mut *child) as i64 != child_ptr
-                                });
-                                let final_count = parent.children.len();
-                                if initial_count > final_count {
-                                    println!("[JS] Removed child from parent");
-                                } else {
-                                    println!("[JS] Child not found in parent");
-                                }
-                                return Ok(child_value);
-                            }
-                        }
-                    }
-                }
-
-                println!("[JS] Element.prototype.removeChild() called");
-                Ok(child_value)
-            }),
-            JsString::from("removeChild"),
-            1,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], context: &mut Context| {
-                let selector = args.get(0)
-                    .and_then(|v| v.as_string())
-                    .map(|s| s.to_std_string_escaped())
-                    .unwrap_or_default();
-
-                if let Some(node_rc) = get_node_from_this(this, context) {
-                    let mut node = node_rc.borrow();
-                    let results = node.query_selector(&selector);
-                    if let Some(res_rc) = results.first() {
-                        //drop(node);
-                        return ElementWrapper::create_js_element(&sigma, *res_rc, context);
-                    }
-                    return Ok(JsValue::null());
-                }
-
-                println!("[JS] Element.prototype.querySelector('{}') called on {:?}", selector, this);
-                Ok(JsValue::null())
-            }),
-            JsString::from("querySelector"),
-            1,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(|this: &JsValue, args: &[JsValue], context: &mut Context| {
-                let selector = args.get(0)
-                    .and_then(|v| v.as_string())
-                    .map(|s| s.to_std_string_escaped())
-                    .unwrap_or_default();
-
-                if let Some(node_rc) = get_node_from_this(this, context) {
-                    let node = node_rc.borrow();
-                    let results = node.query_selector(&selector);
-                    let array = JsArray::new(context);
-                    for (i, result_rc) in results.iter().enumerate() {
-                        let result_rc = node.get_node(*result_rc);
-                        if let Ok(js_elem) = ElementWrapper::create_js_element(result_rc, context) {
-                            let _ = array.set(i, js_elem, true, context);
-                        }
-                    }
-                    return Ok(array.into());
-                }
-
-                println!("[JS] Element.prototype.querySelectorAll('{}') called on {:?}", selector, this);
-                let array = JsArray::new(context);
-                Ok(array.into())
-            }),
-            JsString::from("querySelectorAll"),
-            1,
-        )
-        .build();
-
-    // Register Element.prototype and set HTMLElement.prototype to the same object
-    context.register_global_property(JsString::from("ElementPrototype"), element_proto.clone(), boa_engine::property::Attribute::all())
-        .map_err(|e| format!("Failed to register Element.prototype (temporary holder): {}", e))?;
-
-    // Attach prototype to constructors by retrieving them from the global object
-    let global_object = context.global_object();
-    if let Ok(elem_ctor_val) = global_object.get(JsString::from("Element"), context) {
-        if let Some(obj) = elem_ctor_val.as_object() {
-            let _ = obj.set(JsString::from("prototype"), element_proto.clone(), true, context);
-        }
-    }
-    if let Ok(html_ctor_val) = global_object.get(JsString::from("HTMLElement"), context) {
-        if let Some(obj) = html_ctor_val.as_object() {
-            let _ = obj.set(JsString::from("prototype"), element_proto.clone(), true, context);
-        }
-    }
-
-    // Create Event constructor
-    let event = ObjectInitializer::new(context).build();
-    context.register_global_property(JsString::from("Event"), event, boa_engine::property::Attribute::all())
-        .map_err(|e| format!("Failed to register Event constructor: {}", e))?;
-
-    // Create CustomEvent constructor
-    let custom_event = ObjectInitializer::new(context).build();
-    context.register_global_property(JsString::from("CustomEvent"), custom_event, boa_engine::property::Attribute::all())
-        .map_err(|e| format!("Failed to register CustomEvent constructor: {}", e))?;
-
-    // Create XMLHttpRequest constructor
-    let xhr = ObjectInitializer::new(context).build();
-    context.register_global_property(JsString::from("XMLHttpRequest"), xhr, boa_engine::property::Attribute::all())
-        .map_err(|e| format!("Failed to register XMLHttpRequest constructor: {}", e))?;
-
-    // Note: fetch API is now registered in the fetch module
-
-    // Create atob/btoa functions for base64 encoding/decoding
-    let atob_fn = NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-        let encoded = args.get(0)
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-
-        match base64::engine::general_purpose::STANDARD.decode(encoded.as_bytes()) {
-            Ok(decoded) => {
-                if let Ok(s) = String::from_utf8(decoded) {
-                    Ok(JsValue::from(JsString::from(s)))
-                } else {
-                    Ok(JsValue::from(JsString::from("")))
-                }
-            }
-            Err(_) => Ok(JsValue::from(JsString::from("")))
-        }
+pub fn setup_dom_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, user_agent: String) -> Result<(), String> {
+    let raw_cx = unsafe { runtime.cx().raw_cx() };
+
+    // Store DOM reference in thread-local storage
+    DOM_REF.with(|dom| {
+        *dom.borrow_mut() = Some(document_root);
     });
-    context.register_global_builtin_callable(JsString::from("atob"), 1, atob_fn)
-        .map_err(|e| format!("Failed to register atob: {}", e))?;
-
-    let btoa_fn = NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], _context: &mut Context| {
-        let data = args.get(0)
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-
-        let encoded = base64::engine::general_purpose::STANDARD.encode(data.as_bytes());
-        Ok(JsValue::from(JsString::from(encoded)))
+    USER_AGENT.with(|ua| {
+        *ua.borrow_mut() = user_agent.clone();
     });
-    context.register_global_builtin_callable(JsString::from("btoa"), 1, btoa_fn)
-        .map_err(|e| format!("Failed to register btoa: {}", e))?;
 
-    // Initialize dataLayer as an empty array (for Google Analytics/Tag Manager compatibility)
-    let data_layer = JsArray::new(context);
-    context.register_global_property(JsString::from("dataLayer"), data_layer, boa_engine::property::Attribute::all())
-        .map_err(|e| format!("Failed to register dataLayer: {}", e))?;
+    unsafe {
+        rooted!(in(raw_cx) let global = CurrentGlobalOrNull(raw_cx));
+        if global.get().is_null() {
+            return Err("No global object for DOM setup".to_string());
+        }
+
+        // Create and set up document object
+        setup_document(raw_cx, global.handle().get())?;
+
+        // Set up window object (as alias to global)
+        setup_window(raw_cx, global.handle().get(), &user_agent)?;
+
+        // Set up navigator object
+        setup_navigator(raw_cx, global.handle().get(), &user_agent)?;
+
+        // Set up location object
+        setup_location(raw_cx, global.handle().get())?;
+
+        // Set up localStorage and sessionStorage
+        setup_storage(raw_cx, global.handle().get())?;
+
+        // Set up Node constructor with constants
+        setup_node_constructor(raw_cx, global.handle().get())?;
+
+        // Set up Element and HTMLElement constructors
+        setup_element_constructors(raw_cx, global.handle().get())?;
+
+        // Set up Event and CustomEvent constructors
+        setup_event_constructors(raw_cx, global.handle().get())?;
+
+        // Set up XMLHttpRequest constructor
+        setup_xhr_constructor(raw_cx, global.handle().get())?;
+
+        // Set up atob/btoa functions
+        setup_base64_functions(raw_cx, global.handle().get())?;
+
+        // Set up dataLayer for Google Analytics compatibility
+        setup_data_layer(raw_cx, global.handle().get())?;
+    }
 
     println!("[JS] DOM bindings initialized");
     Ok(())
 }
-*/
+
+/// Set up the document object
+unsafe fn setup_document(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+    rooted!(in(raw_cx) let document = JS_NewPlainObject(raw_cx));
+    if document.get().is_null() {
+        return Err("Failed to create document object".to_string());
+    }
+
+    // Define document methods
+    define_function(raw_cx, document.get(), "getElementById", Some(document_get_element_by_id), 1)?;
+    define_function(raw_cx, document.get(), "getElementsByTagName", Some(document_get_elements_by_tag_name), 1)?;
+    define_function(raw_cx, document.get(), "getElementsByClassName", Some(document_get_elements_by_class_name), 1)?;
+    define_function(raw_cx, document.get(), "querySelector", Some(document_query_selector), 1)?;
+    define_function(raw_cx, document.get(), "querySelectorAll", Some(document_query_selector_all), 1)?;
+    define_function(raw_cx, document.get(), "createElement", Some(document_create_element), 1)?;
+    define_function(raw_cx, document.get(), "createTextNode", Some(document_create_text_node), 1)?;
+    define_function(raw_cx, document.get(), "createDocumentFragment", Some(document_create_document_fragment), 0)?;
+
+    // Create documentElement (represents <html>)
+    rooted!(in(raw_cx) let document_element = JS_NewPlainObject(raw_cx));
+    if !document_element.get().is_null() {
+        set_string_property(raw_cx, document_element.get(), "tagName", "HTML")?;
+        set_string_property(raw_cx, document_element.get(), "nodeName", "HTML")?;
+        set_int_property(raw_cx, document_element.get(), "nodeType", 1)?;
+
+        rooted!(in(raw_cx) let doc_elem_val = ObjectValue(document_element.get()));
+        let name = std::ffi::CString::new("documentElement").unwrap();
+        rooted!(in(raw_cx) let document_rooted = document.get());
+        JS_DefineProperty(
+            raw_cx,
+            document_rooted.handle().into(),
+            name.as_ptr(),
+            doc_elem_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+
+    // Set document on global
+    rooted!(in(raw_cx) let document_val = ObjectValue(document.get()));
+    rooted!(in(raw_cx) let global_rooted = global);
+    let name = std::ffi::CString::new("document").unwrap();
+    if !JS_DefineProperty(
+        raw_cx,
+        global_rooted.handle().into(),
+        name.as_ptr(),
+        document_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    ) {
+        return Err("Failed to define document property".to_string());
+    }
+
+    Ok(())
+}
+
+/// Set up the window object (as alias to global)
+unsafe fn setup_window(raw_cx: *mut JSContext, global: *mut JSObject, user_agent: &str) -> Result<(), String> {
+    rooted!(in(raw_cx) let global_val = ObjectValue(global));
+    rooted!(in(raw_cx) let global_rooted = global);
+
+    // window, self, top, parent, globalThis all point to global
+    for name in &["window", "self", "top", "parent", "globalThis"] {
+        let cname = std::ffi::CString::new(*name).unwrap();
+        JS_DefineProperty(
+            raw_cx,
+            global_rooted.handle().into(),
+            cname.as_ptr(),
+            global_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+
+    // Define window functions on global
+    define_function(raw_cx, global, "alert", Some(window_alert), 1)?;
+    define_function(raw_cx, global, "confirm", Some(window_confirm), 1)?;
+    define_function(raw_cx, global, "prompt", Some(window_prompt), 2)?;
+    define_function(raw_cx, global, "requestAnimationFrame", Some(window_request_animation_frame), 1)?;
+    define_function(raw_cx, global, "cancelAnimationFrame", Some(window_cancel_animation_frame), 1)?;
+    define_function(raw_cx, global, "getComputedStyle", Some(window_get_computed_style), 1)?;
+    define_function(raw_cx, global, "addEventListener", Some(window_add_event_listener), 3)?;
+    define_function(raw_cx, global, "removeEventListener", Some(window_remove_event_listener), 3)?;
+    define_function(raw_cx, global, "scrollTo", Some(window_scroll_to), 2)?;
+    define_function(raw_cx, global, "scrollBy", Some(window_scroll_by), 2)?;
+
+    // Set innerWidth/innerHeight properties
+    set_int_property(raw_cx, global, "innerWidth", 1920)?;
+    set_int_property(raw_cx, global, "innerHeight", 1080)?;
+    set_int_property(raw_cx, global, "outerWidth", 1920)?;
+    set_int_property(raw_cx, global, "outerHeight", 1080)?;
+    set_int_property(raw_cx, global, "screenX", 0)?;
+    set_int_property(raw_cx, global, "screenY", 0)?;
+    set_int_property(raw_cx, global, "scrollX", 0)?;
+    set_int_property(raw_cx, global, "scrollY", 0)?;
+    set_int_property(raw_cx, global, "pageXOffset", 0)?;
+    set_int_property(raw_cx, global, "pageYOffset", 0)?;
+    set_int_property(raw_cx, global, "devicePixelRatio", 1)?;
+
+    Ok(())
+}
+
+/// Set up the navigator object
+unsafe fn setup_navigator(raw_cx: *mut JSContext, global: *mut JSObject, user_agent: &str) -> Result<(), String> {
+    rooted!(in(raw_cx) let navigator = JS_NewPlainObject(raw_cx));
+    if navigator.get().is_null() {
+        return Err("Failed to create navigator object".to_string());
+    }
+
+    set_string_property(raw_cx, navigator.get(), "userAgent", user_agent)?;
+    set_string_property(raw_cx, navigator.get(), "language", "en-US")?;
+    set_string_property(raw_cx, navigator.get(), "platform", std::env::consts::OS)?;
+    set_string_property(raw_cx, navigator.get(), "appName", "Stokes Browser")?;
+    set_string_property(raw_cx, navigator.get(), "appVersion", "1.0")?;
+    set_string_property(raw_cx, navigator.get(), "vendor", "Stokes")?;
+    set_bool_property(raw_cx, navigator.get(), "onLine", true)?;
+    set_bool_property(raw_cx, navigator.get(), "cookieEnabled", true)?;
+
+    // Set navigator on global
+    rooted!(in(raw_cx) let navigator_val = ObjectValue(navigator.get()));
+    rooted!(in(raw_cx) let global_rooted = global);
+    let name = std::ffi::CString::new("navigator").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        global_rooted.handle().into(),
+        name.as_ptr(),
+        navigator_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    Ok(())
+}
+
+/// Set up the location object
+unsafe fn setup_location(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+    rooted!(in(raw_cx) let location = JS_NewPlainObject(raw_cx));
+    if location.get().is_null() {
+        return Err("Failed to create location object".to_string());
+    }
+
+    set_string_property(raw_cx, location.get(), "href", "about:blank")?;
+    set_string_property(raw_cx, location.get(), "protocol", "about:")?;
+    set_string_property(raw_cx, location.get(), "host", "")?;
+    set_string_property(raw_cx, location.get(), "hostname", "")?;
+    set_string_property(raw_cx, location.get(), "port", "")?;
+    set_string_property(raw_cx, location.get(), "pathname", "blank")?;
+    set_string_property(raw_cx, location.get(), "search", "")?;
+    set_string_property(raw_cx, location.get(), "hash", "")?;
+    set_string_property(raw_cx, location.get(), "origin", "null")?;
+
+    define_function(raw_cx, location.get(), "reload", Some(location_reload), 0)?;
+    define_function(raw_cx, location.get(), "assign", Some(location_assign), 1)?;
+    define_function(raw_cx, location.get(), "replace", Some(location_replace), 1)?;
+
+    // Set location on global
+    rooted!(in(raw_cx) let location_val = ObjectValue(location.get()));
+    rooted!(in(raw_cx) let global_rooted = global);
+    let name = std::ffi::CString::new("location").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        global_rooted.handle().into(),
+        name.as_ptr(),
+        location_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    Ok(())
+}
+
+/// Set up localStorage and sessionStorage
+unsafe fn setup_storage(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+    // Create storage object with getItem, setItem, removeItem, clear methods
+    rooted!(in(raw_cx) let storage = JS_NewPlainObject(raw_cx));
+    if storage.get().is_null() {
+        return Err("Failed to create storage object".to_string());
+    }
+
+    define_function(raw_cx, storage.get(), "getItem", Some(storage_get_item), 1)?;
+    define_function(raw_cx, storage.get(), "setItem", Some(storage_set_item), 2)?;
+    define_function(raw_cx, storage.get(), "removeItem", Some(storage_remove_item), 1)?;
+    define_function(raw_cx, storage.get(), "clear", Some(storage_clear), 0)?;
+    define_function(raw_cx, storage.get(), "key", Some(storage_key), 1)?;
+    set_int_property(raw_cx, storage.get(), "length", 0)?;
+
+    rooted!(in(raw_cx) let storage_val = ObjectValue(storage.get()));
+    rooted!(in(raw_cx) let global_rooted = global);
+
+    // localStorage
+    let name = std::ffi::CString::new("localStorage").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        global_rooted.handle().into(),
+        name.as_ptr(),
+        storage_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    // sessionStorage (same object for now)
+    let name = std::ffi::CString::new("sessionStorage").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        global_rooted.handle().into(),
+        name.as_ptr(),
+        storage_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    Ok(())
+}
+
+/// Set up Node constructor with node type constants
+unsafe fn setup_node_constructor(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+    rooted!(in(raw_cx) let node = JS_NewPlainObject(raw_cx));
+    if node.get().is_null() {
+        return Err("Failed to create Node constructor".to_string());
+    }
+
+    set_int_property(raw_cx, node.get(), "ELEMENT_NODE", 1)?;
+    set_int_property(raw_cx, node.get(), "ATTRIBUTE_NODE", 2)?;
+    set_int_property(raw_cx, node.get(), "TEXT_NODE", 3)?;
+    set_int_property(raw_cx, node.get(), "CDATA_SECTION_NODE", 4)?;
+    set_int_property(raw_cx, node.get(), "ENTITY_REFERENCE_NODE", 5)?;
+    set_int_property(raw_cx, node.get(), "ENTITY_NODE", 6)?;
+    set_int_property(raw_cx, node.get(), "PROCESSING_INSTRUCTION_NODE", 7)?;
+    set_int_property(raw_cx, node.get(), "COMMENT_NODE", 8)?;
+    set_int_property(raw_cx, node.get(), "DOCUMENT_NODE", 9)?;
+    set_int_property(raw_cx, node.get(), "DOCUMENT_TYPE_NODE", 10)?;
+    set_int_property(raw_cx, node.get(), "DOCUMENT_FRAGMENT_NODE", 11)?;
+    set_int_property(raw_cx, node.get(), "NOTATION_NODE", 12)?;
+
+    rooted!(in(raw_cx) let node_val = ObjectValue(node.get()));
+    rooted!(in(raw_cx) let global_rooted = global);
+    let name = std::ffi::CString::new("Node").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        global_rooted.handle().into(),
+        name.as_ptr(),
+        node_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    Ok(())
+}
+
+/// Set up Element and HTMLElement constructors
+unsafe fn setup_element_constructors(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+    // Element constructor
+    rooted!(in(raw_cx) let element = JS_NewPlainObject(raw_cx));
+    if element.get().is_null() {
+        return Err("Failed to create Element constructor".to_string());
+    }
+    set_int_property(raw_cx, element.get(), "ELEMENT_NODE", 1)?;
+
+    rooted!(in(raw_cx) let element_val = ObjectValue(element.get()));
+    rooted!(in(raw_cx) let global_rooted = global);
+    let name = std::ffi::CString::new("Element").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        global_rooted.handle().into(),
+        name.as_ptr(),
+        element_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    // HTMLElement constructor (alias for now)
+    let name = std::ffi::CString::new("HTMLElement").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        global_rooted.handle().into(),
+        name.as_ptr(),
+        element_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    Ok(())
+}
+
+/// Set up Event and CustomEvent constructors
+unsafe fn setup_event_constructors(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+    rooted!(in(raw_cx) let event = JS_NewPlainObject(raw_cx));
+    if event.get().is_null() {
+        return Err("Failed to create Event constructor".to_string());
+    }
+
+    rooted!(in(raw_cx) let event_val = ObjectValue(event.get()));
+    rooted!(in(raw_cx) let global_rooted = global);
+
+    let name = std::ffi::CString::new("Event").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        global_rooted.handle().into(),
+        name.as_ptr(),
+        event_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    let name = std::ffi::CString::new("CustomEvent").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        global_rooted.handle().into(),
+        name.as_ptr(),
+        event_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    Ok(())
+}
+
+/// Set up XMLHttpRequest constructor
+unsafe fn setup_xhr_constructor(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+    rooted!(in(raw_cx) let xhr = JS_NewPlainObject(raw_cx));
+    if xhr.get().is_null() {
+        return Err("Failed to create XMLHttpRequest constructor".to_string());
+    }
+
+    rooted!(in(raw_cx) let xhr_val = ObjectValue(xhr.get()));
+    rooted!(in(raw_cx) let global_rooted = global);
+    let name = std::ffi::CString::new("XMLHttpRequest").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        global_rooted.handle().into(),
+        name.as_ptr(),
+        xhr_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    Ok(())
+}
+
+/// Set up atob/btoa functions
+unsafe fn setup_base64_functions(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+    define_function(raw_cx, global, "atob", Some(window_atob), 1)?;
+    define_function(raw_cx, global, "btoa", Some(window_btoa), 1)?;
+    Ok(())
+}
+
+/// Set up dataLayer for Google Analytics compatibility
+unsafe fn setup_data_layer(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+    // Create an empty array for dataLayer
+    rooted!(in(raw_cx) let data_layer = create_empty_array(raw_cx));
+    if data_layer.get().is_null() {
+        return Err("Failed to create dataLayer array".to_string());
+    }
+
+    rooted!(in(raw_cx) let data_layer_val = ObjectValue(data_layer.get()));
+    rooted!(in(raw_cx) let global_rooted = global);
+    let name = std::ffi::CString::new("dataLayer").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        global_rooted.handle().into(),
+        name.as_ptr(),
+        data_layer_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    Ok(())
+}
+
+// ============================================================================
+// Helper functions
+// ============================================================================
+
+/// Create an empty JavaScript array
+unsafe fn create_empty_array(raw_cx: *mut JSContext) -> *mut JSObject {
+    NewArrayObject(raw_cx, &HandleValueArray::empty())
+}
+
+unsafe fn define_function(
+    raw_cx: *mut JSContext,
+    obj: *mut JSObject,
+    name: &str,
+    func: JSNative,
+    nargs: u32,
+) -> Result<(), String> {
+    let cname = std::ffi::CString::new(name).unwrap();
+    rooted!(in(raw_cx) let obj_rooted = obj);
+    if JS_DefineFunction(
+        raw_cx,
+        obj_rooted.handle().into(),
+        cname.as_ptr(),
+        func,
+        nargs,
+        JSPROP_ENUMERATE as u32,
+    ).is_null() {
+        Err(format!("Failed to define function {}", name))
+    } else {
+        Ok(())
+    }
+}
+
+unsafe fn set_string_property(
+    raw_cx: *mut JSContext,
+    obj: *mut JSObject,
+    name: &str,
+    value: &str,
+) -> Result<(), String> {
+    let utf16: Vec<u16> = value.encode_utf16().collect();
+    rooted!(in(raw_cx) let str_val = JS_NewUCStringCopyN(raw_cx, utf16.as_ptr(), utf16.len()));
+    rooted!(in(raw_cx) let val = StringValue(&*str_val.get()));
+    rooted!(in(raw_cx) let obj_rooted = obj);
+    let cname = std::ffi::CString::new(name).unwrap();
+    if !JS_DefineProperty(
+        raw_cx,
+        obj_rooted.handle().into(),
+        cname.as_ptr(),
+        val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    ) {
+        Err(format!("Failed to set property {}", name))
+    } else {
+        Ok(())
+    }
+}
+
+unsafe fn set_int_property(
+    raw_cx: *mut JSContext,
+    obj: *mut JSObject,
+    name: &str,
+    value: i32,
+) -> Result<(), String> {
+    rooted!(in(raw_cx) let val = Int32Value(value));
+    rooted!(in(raw_cx) let obj_rooted = obj);
+    let cname = std::ffi::CString::new(name).unwrap();
+    if !JS_DefineProperty(
+        raw_cx,
+        obj_rooted.handle().into(),
+        cname.as_ptr(),
+        val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    ) {
+        Err(format!("Failed to set property {}", name))
+    } else {
+        Ok(())
+    }
+}
+
+unsafe fn set_bool_property(
+    raw_cx: *mut JSContext,
+    obj: *mut JSObject,
+    name: &str,
+    value: bool,
+) -> Result<(), String> {
+    rooted!(in(raw_cx) let val = BooleanValue(value));
+    rooted!(in(raw_cx) let obj_rooted = obj);
+    let cname = std::ffi::CString::new(name).unwrap();
+    if !JS_DefineProperty(
+        raw_cx,
+        obj_rooted.handle().into(),
+        cname.as_ptr(),
+        val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    ) {
+        Err(format!("Failed to set property {}", name))
+    } else {
+        Ok(())
+    }
+}
+
+/// Convert a JS value to a Rust string
+unsafe fn js_value_to_string(raw_cx: *mut JSContext, val: JSVal) -> String {
+    if val.is_undefined() {
+        return "undefined".to_string();
+    }
+    if val.is_null() {
+        return "null".to_string();
+    }
+    if val.is_boolean() {
+        return val.to_boolean().to_string();
+    }
+    if val.is_int32() {
+        return val.to_int32().to_string();
+    }
+    if val.is_double() {
+        return val.to_double().to_string();
+    }
+    if val.is_string() {
+        rooted!(in(raw_cx) let str_val = val.to_string());
+        if str_val.get().is_null() {
+            return String::new();
+        }
+        let mut length = 0;
+        let chars = JS_GetTwoByteStringCharsAndLength(raw_cx, ptr::null(), *str_val.handle(), &mut length);
+        if chars.is_null() {
+            return String::new();
+        }
+        let slice = std::slice::from_raw_parts(chars, length);
+        return String::from_utf16_lossy(slice);
+    }
+
+    // For objects, try to convert to source
+    rooted!(in(raw_cx) let str_val = JS_ValueToSource(raw_cx, Handle::from_marked_location(&val)));
+    if str_val.get().is_null() {
+        return "[object]".to_string();
+    }
+    let mut length = 0;
+    let chars = JS_GetTwoByteStringCharsAndLength(raw_cx, ptr::null(), *str_val.handle(), &mut length);
+    if chars.is_null() {
+        return "[string conversion failed]".to_string();
+    }
+    let slice = std::slice::from_raw_parts(chars, length);
+    String::from_utf16_lossy(slice)
+}
+
+/// Create a JS string from a Rust string
+unsafe fn create_js_string(raw_cx: *mut JSContext, s: &str) -> JSVal {
+    let utf16: Vec<u16> = s.encode_utf16().collect();
+    rooted!(in(raw_cx) let str_val = JS_NewUCStringCopyN(raw_cx, utf16.as_ptr(), utf16.len()));
+    StringValue(&*str_val.get())
+}
+
+// ============================================================================
+// Document methods
+// ============================================================================
+
+/// document.getElementById implementation
+unsafe extern "C" fn document_get_element_by_id(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let id = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    if id.is_empty() {
+        args.rval().set(mozjs::jsval::NullValue());
+        return true;
+    }
+
+    println!("[JS] document.getElementById('{}') called", id);
+
+    // Try to find the element in the DOM
+    let element = DOM_REF.with(|dom_ref| {
+        if let Some(ref dom) = *dom_ref.borrow() {
+            let dom = &**dom;
+            // Search for element with matching id
+            if let Some(&node_id) = dom.nodes_to_id.get(&id) {
+                Some(node_id)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    });
+
+    if let Some(node_id) = element {
+        // Create a JS element wrapper
+        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, node_id) {
+            args.rval().set(js_elem);
+        } else {
+            args.rval().set(mozjs::jsval::NullValue());
+        }
+    } else {
+        println!("[JS] Element with id '{}' not found", id);
+        args.rval().set(mozjs::jsval::NullValue());
+    }
+
+    true
+}
+
+/// document.getElementsByTagName implementation
+unsafe extern "C" fn document_get_elements_by_tag_name(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let tag_name = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    println!("[JS] document.getElementsByTagName('{}') called", tag_name);
+
+    // Return an empty array for now
+    rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
+    args.rval().set(ObjectValue(array.get()));
+    true
+}
+
+/// document.getElementsByClassName implementation
+unsafe extern "C" fn document_get_elements_by_class_name(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let class_name = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    println!("[JS] document.getElementsByClassName('{}') called", class_name);
+
+    // Return an empty array for now
+    rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
+    args.rval().set(ObjectValue(array.get()));
+    true
+}
+
+/// document.querySelector implementation
+unsafe extern "C" fn document_query_selector(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let selector = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    println!("[JS] document.querySelector('{}') called", selector);
+
+    // Return null for now
+    args.rval().set(mozjs::jsval::NullValue());
+    true
+}
+
+/// document.querySelectorAll implementation
+unsafe extern "C" fn document_query_selector_all(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let selector = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    println!("[JS] document.querySelectorAll('{}') called", selector);
+
+    // Return an empty array for now
+    rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
+    args.rval().set(ObjectValue(array.get()));
+    true
+}
+
+/// document.createElement implementation
+unsafe extern "C" fn document_create_element(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let tag_name = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    if tag_name.is_empty() {
+        args.rval().set(mozjs::jsval::NullValue());
+        return true;
+    }
+
+    println!("[JS] document.createElement('{}') called", tag_name);
+
+    // Create a stub element
+    match element_bindings::create_stub_element(raw_cx, &tag_name) {
+        Ok(elem) => args.rval().set(elem),
+        Err(_) => args.rval().set(mozjs::jsval::NullValue()),
+    }
+    true
+}
+
+/// document.createTextNode implementation
+unsafe extern "C" fn document_create_text_node(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let text = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    println!("[JS] document.createTextNode('{}') called", text);
+
+    // Create a text node object
+    rooted!(in(raw_cx) let text_node = JS_NewPlainObject(raw_cx));
+    if !text_node.get().is_null() {
+        let _ = set_int_property(raw_cx, text_node.get(), "nodeType", 3);
+        let _ = set_string_property(raw_cx, text_node.get(), "nodeName", "#text");
+        let _ = set_string_property(raw_cx, text_node.get(), "textContent", &text);
+        let _ = set_string_property(raw_cx, text_node.get(), "nodeValue", &text);
+        args.rval().set(ObjectValue(text_node.get()));
+    } else {
+        args.rval().set(mozjs::jsval::NullValue());
+    }
+    true
+}
+
+/// document.createDocumentFragment implementation
+unsafe extern "C" fn document_create_document_fragment(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    println!("[JS] document.createDocumentFragment() called");
+
+    // Create a document fragment object
+    rooted!(in(raw_cx) let fragment = JS_NewPlainObject(raw_cx));
+    if !fragment.get().is_null() {
+        let _ = set_int_property(raw_cx, fragment.get(), "nodeType", 11);
+        let _ = set_string_property(raw_cx, fragment.get(), "nodeName", "#document-fragment");
+        let _ = define_function(raw_cx, fragment.get(), "appendChild", Some(element_append_child), 1);
+        let _ = define_function(raw_cx, fragment.get(), "querySelector", Some(document_query_selector), 1);
+        let _ = define_function(raw_cx, fragment.get(), "querySelectorAll", Some(document_query_selector_all), 1);
+        args.rval().set(ObjectValue(fragment.get()));
+    } else {
+        args.rval().set(mozjs::jsval::NullValue());
+    }
+    true
+}
+
+// ============================================================================
+// Window methods
+// ============================================================================
+
+/// window.alert implementation
+unsafe extern "C" fn window_alert(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let message = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    super::alert_callback::trigger_alert(message);
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// window.confirm implementation
+unsafe extern "C" fn window_confirm(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let message = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    println!("[JS] window.confirm('{}') called - returning false", message);
+    args.rval().set(BooleanValue(false));
+    true
+}
+
+/// window.prompt implementation
+unsafe extern "C" fn window_prompt(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let message = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    println!("[JS] window.prompt('{}') called - returning null", message);
+    args.rval().set(mozjs::jsval::NullValue());
+    true
+}
+
+/// window.requestAnimationFrame implementation
+unsafe extern "C" fn window_request_animation_frame(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] requestAnimationFrame called");
+    args.rval().set(Int32Value(1)); // Return a dummy request ID
+    true
+}
+
+/// window.cancelAnimationFrame implementation
+unsafe extern "C" fn window_cancel_animation_frame(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] cancelAnimationFrame called");
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// window.getComputedStyle implementation
+unsafe extern "C" fn window_get_computed_style(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] getComputedStyle called");
+
+    // Return an empty style object
+    rooted!(in(raw_cx) let style = JS_NewPlainObject(raw_cx));
+    if !style.get().is_null() {
+        let _ = define_function(raw_cx, style.get(), "getPropertyValue", Some(style_get_property_value), 1);
+        args.rval().set(ObjectValue(style.get()));
+    } else {
+        args.rval().set(mozjs::jsval::NullValue());
+    }
+    true
+}
+
+/// window.addEventListener implementation
+unsafe extern "C" fn window_add_event_listener(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let event_type = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    println!("[JS] window.addEventListener('{}') called", event_type);
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// window.removeEventListener implementation
+unsafe extern "C" fn window_remove_event_listener(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let event_type = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    println!("[JS] window.removeEventListener('{}') called", event_type);
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// window.scrollTo implementation
+unsafe extern "C" fn window_scroll_to(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] window.scrollTo called");
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// window.scrollBy implementation
+unsafe extern "C" fn window_scroll_by(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] window.scrollBy called");
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// window.atob implementation (base64 decode)
+unsafe extern "C" fn window_atob(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let encoded = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    use base64::Engine;
+    match base64::engine::general_purpose::STANDARD.decode(encoded.as_bytes()) {
+        Ok(decoded) => {
+            if let Ok(s) = String::from_utf8(decoded) {
+                args.rval().set(create_js_string(raw_cx, &s));
+            } else {
+                args.rval().set(create_js_string(raw_cx, ""));
+            }
+        }
+        Err(_) => {
+            args.rval().set(create_js_string(raw_cx, ""));
+        }
+    }
+    true
+}
+
+/// window.btoa implementation (base64 encode)
+unsafe extern "C" fn window_btoa(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let data = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(data.as_bytes());
+    args.rval().set(create_js_string(raw_cx, &encoded));
+    true
+}
+
+// ============================================================================
+// Location methods
+// ============================================================================
+
+/// location.reload implementation
+unsafe extern "C" fn location_reload(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] location.reload() called");
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// location.assign implementation
+unsafe extern "C" fn location_assign(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let url = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    println!("[JS] location.assign('{}') called", url);
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// location.replace implementation
+unsafe extern "C" fn location_replace(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let url = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    println!("[JS] location.replace('{}') called", url);
+    args.rval().set(UndefinedValue());
+    true
+}
+
+// ============================================================================
+// Storage methods
+// ============================================================================
+
+/// Storage.getItem implementation
+unsafe extern "C" fn storage_get_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let key = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    println!("[JS] Storage.getItem('{}') called", key);
+    args.rval().set(mozjs::jsval::NullValue());
+    true
+}
+
+/// Storage.setItem implementation
+unsafe extern "C" fn storage_set_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let key = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+    let value = if argc > 1 {
+        js_value_to_string(raw_cx, *args.get(1))
+    } else {
+        String::new()
+    };
+
+    println!("[JS] Storage.setItem('{}', '{}') called", key, value);
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// Storage.removeItem implementation
+unsafe extern "C" fn storage_remove_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let key = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    println!("[JS] Storage.removeItem('{}') called", key);
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// Storage.clear implementation
+unsafe extern "C" fn storage_clear(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] Storage.clear() called");
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// Storage.key implementation
+unsafe extern "C" fn storage_key(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] Storage.key() called");
+    args.rval().set(mozjs::jsval::NullValue());
+    true
+}
+
+// ============================================================================
+// Element methods (shared)
+// ============================================================================
+
+/// element.appendChild implementation
+unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    println!("[JS] element.appendChild() called");
+
+    if argc > 0 {
+        args.rval().set(*args.get(0));
+    } else {
+        args.rval().set(UndefinedValue());
+    }
+    true
+}
+
+/// style.getPropertyValue implementation
+unsafe extern "C" fn style_get_property_value(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let property = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    println!("[JS] style.getPropertyValue('{}') called", property);
+    args.rval().set(create_js_string(raw_cx, ""));
+    true
+}
+
