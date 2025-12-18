@@ -163,7 +163,7 @@ impl JsRuntime {
                         rooted!(in(raw_cx) let exc_str = JS_ValueToSource(cx, exception.handle()));
                         if !exc_str.get().is_null() {
                             let msg = jsstr_to_string(raw_cx, NonNull::new(exc_str.handle().get()).unwrap());
-                            return Err(format!("JavaScript evaluation error: {}", msg));
+                            return Err(format!("JavaScript evaluation error: {}\n{}", msg, code));
                         }
                     }
                 }
