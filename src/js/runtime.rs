@@ -1,6 +1,6 @@
 use super::{initialize_bindings, JsResult};
 // JavaScript runtime management using Mozilla's SpiderMonkey (mozjs)
-use mozjs::jsval::{JSVal, PrivateValue, UndefinedValue};
+use mozjs::jsval::{PrivateValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::{JSEngine, Runtime, RealmOptions, SIMPLE_GLOBAL_CLASS, CompileOptionsWrapper, transform_str_to_source_text};
 use std::ptr;
@@ -9,12 +9,11 @@ use std::rc::Rc;
 use std::time::Duration;
 use mozjs::context::JSContext;
 use mozjs::conversions::jsstr_to_string;
-use mozjs::jsapi::{JSObject, JS_ClearPendingException, JS_GetPendingException, JS_GetStringLength, JS_IsExceptionPending, MutableHandleValue, OnNewGlobalHookOption, Heap, SetScriptPrivate, JSScript, JSContext as RawJSContext, Compile1, JS_ExecuteScript, Handle};
+use mozjs::jsapi::{JSObject, JS_ClearPendingException, JS_GetPendingException, JS_IsExceptionPending, MutableHandleValue, OnNewGlobalHookOption, Heap, SetScriptPrivate, JSScript, JSContext as RawJSContext, Compile1, JS_ExecuteScript, Handle};
 use mozjs::panic::maybe_resume_unwind;
 use mozjs::rust::wrappers2::{JS_NewGlobalObject, JS_ValueToSource, JS_GetScriptPrivate};
 use url::Url;
 use crate::dom::Dom;
-use crate::js::bindings::timers;
 use crate::js::bindings::timers::TimerManager;
 
 // Stack size for growing when needed (16MB to handle very large scripts)
@@ -242,12 +241,19 @@ impl JsRuntime {
     }
 
     /// Run all pending jobs in the job queue (for Promises)
-    /// Note: Currently a no-op because RunJobs requires a properly configured job queue.
-    /// To enable promise support, a custom JobQueue needs to be set up via SetJobQueue.
-    fn run_pending_jobs(&mut self) {
-        // TODO: Implement proper job queue support for Promises
-        // RunJobs requires SetJobQueue to be called first with a valid JobQueue implementation.
-        // Without it, RunJobs will SIGSEGV.
+    /// This handles microtasks like Promise callbacks and needs proper error handling
+    ///
+    /// NOTE: Currently a no-op because UseInternalJobQueues causes SIGSEGV.
+    /// TODO: Implement custom job queue using SetEnqueuePromiseJobCallback
+    pub fn run_pending_jobs(&mut self) {
+        // Without UseInternalJobQueues, RunJobs will crash or have no effect.
+        // For now, this is a no-op. Promise callbacks will not be executed until
+        // we implement a custom job queue.
+        //
+        // To properly support Promises, we need to:
+        // 1. Call SetEnqueuePromiseJobCallback to register a custom callback
+        // 2. Store pending jobs in our own queue
+        // 3. Process them here
     }
 
     /// Check if there are any active timers
@@ -258,6 +264,21 @@ impl JsRuntime {
     /// Get the time until the next timer should fire
     pub fn time_until_next_timer(&self) -> Option<Duration> {
         self.timer_manager.time_until_next_timer()
+    }
+
+    /// Process pending timers (setTimeout/setInterval callbacks)
+    /// Returns true if any timers were executed
+    pub fn process_timers(&mut self) -> bool {
+        let timer_manager = self.timer_manager.clone();
+        let had_timers = timer_manager.process_timers(self);
+
+        if had_timers {
+            // After executing timer callbacks, run any pending promise jobs
+            // that may have been scheduled by the timer callbacks
+            self.run_pending_jobs();
+        }
+
+        had_timers
     }
 
     /// Get the runtime reference

@@ -1,12 +1,38 @@
 // Fetch API implementation for JavaScript using mozjs
 use crate::networking::HttpClient;
 use mozjs::conversions::jsstr_to_string;
-use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, Handle, JSContext, JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JS_ParseJSON, JS_ValueToSource, MutableHandleValue, JSPROP_ENUMERATE};
+use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, Handle, JSContext, JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JS_ParseJSON, JS_ValueToSource, MutableHandleValue, JSPROP_ENUMERATE, Compile1, JS_ExecuteScript};
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
+use mozjs::rust::{CompileOptionsWrapper, transform_str_to_source_text};
 use std::os::raw::c_uint;
 use std::ptr::NonNull;
 use crate::js::JsRuntime;
+use mozjs::context::JSContext as SafeJSContext;
+
+/// Helper function to evaluate JavaScript code and return the result
+unsafe fn eval_js(cx: *mut JSContext, code: &str, rval: MutableHandleValue) -> bool {
+    rooted!(in(cx) let global = CurrentGlobalOrNull(cx));
+    if global.get().is_null() {
+        return false;
+    }
+
+    // Create a safe JSContext wrapper for the compile options
+    // SAFETY: We're within a valid JSContext scope, and the raw pointer is valid
+    let safe_cx: &SafeJSContext = std::mem::transmute(&cx);
+    let options = CompileOptionsWrapper::new(safe_cx, "fetch_eval", 1);
+
+    // Compile the script
+    let script = Compile1(cx, options.ptr, &mut transform_str_to_source_text(code));
+    if script.is_null() {
+        return false;
+    }
+
+    rooted!(in(cx) let script_root = script);
+
+    // Execute the script
+    JS_ExecuteScript(cx, Handle::from(script_root.handle()), rval)
+}
 
 /// Response data stored between calls
 struct FetchResponseData {
@@ -151,20 +177,22 @@ unsafe fn get_object_property_string(cx: *mut JSContext, obj_val: JSVal, name: &
 
 /// Create a rejected promise and set it as return value
 unsafe fn create_rejected_promise(cx: *mut JSContext, mut rval: MutableHandleValue, error_msg: &str) -> bool {
-    // Create the error message as a JS string
-    let error_code = format!("Promise.reject(new Error({}))",
-        serde_json::to_string(error_msg).unwrap_or_else(|_| "\"Error\"".to_string()));
+    // Escape the error message for use in JS code
+    let escaped_msg = error_msg.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n");
 
-    rooted!(in(cx) let mut result = UndefinedValue());
-    let code_utf16: Vec<u16> = error_code.encode_utf16().collect();
+    // Use JS evaluation to create a properly rejected Promise
+    let promise_code = format!("Promise.reject(new Error('{}'))", escaped_msg);
 
-    // Evaluate the promise code
-    let filename = std::ffi::CString::new("fetch").unwrap();
-    rooted!(in(cx) let global = CurrentGlobalOrNull(cx));
+    rooted!(in(cx) let mut promise_result = UndefinedValue());
 
-    // For simplicity, we'll just return undefined on error
-    rval.set(UndefinedValue());
-    true
+    if eval_js(cx, &promise_code, promise_result.handle_mut().into()) && !promise_result.get().is_undefined() {
+        rval.set(promise_result.get());
+        true
+    } else {
+        println!("[JS] Failed to create rejected promise");
+        rval.set(UndefinedValue());
+        false
+    }
 }
 
 /// Create a response object wrapped in a resolved promise
@@ -208,14 +236,28 @@ unsafe fn create_response_promise(cx: *mut JSContext, mut rval: MutableHandleVal
     let json_name = std::ffi::CString::new("json").unwrap();
     JS_DefineFunction(cx, response.handle().into(), json_name.as_ptr(), Some(response_json), 0, JSPROP_ENUMERATE as u32);
 
-    // Wrap in Promise.resolve()
-    // For simplicity, just return the response object directly (caller should wrap in promise)
+    // Store the response object in a global variable so we can use it from JS
+    let fetch_response_name = std::ffi::CString::new("__fetchResponse__").unwrap();
     rooted!(in(cx) let response_val = ObjectValue(response.get()));
-    rval.set(response_val.get());
+    JS_DefineProperty(cx, global.handle().into(), fetch_response_name.as_ptr(), response_val.handle().into(), JSPROP_ENUMERATE as u32);
+
+    // Use JS evaluation to create a properly resolved Promise
+    // This ensures the Promise machinery works correctly through the JS engine
+    let promise_code = "Promise.resolve(__fetchResponse__)";
+
+    rooted!(in(cx) let mut promise_result = UndefinedValue());
+
+    if eval_js(cx, promise_code, promise_result.handle_mut().into()) && !promise_result.get().is_undefined() {
+        rval.set(promise_result.get());
+    } else {
+        // Fallback: return the raw response object if Promise creation failed
+        rval.set(response_val.get());
+    }
+
     true
 }
 
-/// Response.text() implementation
+/// Response.text() implementation - returns a Promise that resolves to the body text
 unsafe extern "C" fn response_text(cx: *mut JSContext, _argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
 
@@ -223,16 +265,32 @@ unsafe extern "C" fn response_text(cx: *mut JSContext, _argc: c_uint, vp: *mut J
         pr.borrow().as_ref().map(|r| r.body.clone()).unwrap_or_default()
     });
 
-    // Create the body as a JS string
+    rooted!(in(cx) let global = CurrentGlobalOrNull(cx));
+
+    // Store the body text in a global variable
     let body_utf16: Vec<u16> = body.encode_utf16().collect();
     rooted!(in(cx) let body_str = JS_NewUCStringCopyN(cx, body_utf16.as_ptr(), body_utf16.len()));
     rooted!(in(cx) let body_val = StringValue(&*body_str.get()));
 
-    args.rval().set(body_val.get());
+    let fetch_text_name = std::ffi::CString::new("__fetchText__").unwrap();
+    JS_DefineProperty(cx, global.handle().into(), fetch_text_name.as_ptr(), body_val.handle().into(), JSPROP_ENUMERATE as u32);
+
+    // Use JS evaluation to create a properly resolved Promise
+    let promise_code = "Promise.resolve(__fetchText__)";
+
+    rooted!(in(cx) let mut promise_result = UndefinedValue());
+
+    if eval_js(cx, promise_code, promise_result.handle_mut().into()) && !promise_result.get().is_undefined() {
+        args.rval().set(promise_result.get());
+    } else {
+        // Fallback: return the raw string if Promise creation failed
+        args.rval().set(body_val.get());
+    }
+
     true
 }
 
-/// Response.json() implementation
+/// Response.json() implementation - returns a Promise that resolves to the parsed JSON
 unsafe extern "C" fn response_json(cx: *mut JSContext, _argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
 
@@ -240,14 +298,39 @@ unsafe extern "C" fn response_json(cx: *mut JSContext, _argc: c_uint, vp: *mut J
         pr.borrow().as_ref().map(|r| r.body.clone()).unwrap_or_default()
     });
 
+    rooted!(in(cx) let global = CurrentGlobalOrNull(cx));
+
     // Parse JSON using JS_ParseJSON
     let body_utf16: Vec<u16> = body.encode_utf16().collect();
     rooted!(in(cx) let mut result = UndefinedValue());
 
     if JS_ParseJSON(cx, body_utf16.as_ptr(), body_utf16.len() as u32, result.handle_mut().into()) {
-        args.rval().set(result.get());
+        // Store the parsed JSON in a global variable
+        let fetch_json_name = std::ffi::CString::new("__fetchJson__").unwrap();
+        JS_DefineProperty(cx, global.handle().into(), fetch_json_name.as_ptr(), result.handle().into(), JSPROP_ENUMERATE as u32);
+
+        // Use JS evaluation to create a properly resolved Promise
+        let promise_code = "Promise.resolve(__fetchJson__)";
+
+        rooted!(in(cx) let mut promise_result = UndefinedValue());
+
+        if eval_js(cx, promise_code, promise_result.handle_mut().into()) && !promise_result.get().is_undefined() {
+            args.rval().set(promise_result.get());
+        } else {
+            // Fallback: return the raw JSON if Promise creation failed
+            args.rval().set(result.get());
+        }
     } else {
-        args.rval().set(UndefinedValue());
+        // Use JS evaluation to create a properly rejected Promise
+        let promise_code = "Promise.reject(new Error('JSON parse error'))";
+
+        rooted!(in(cx) let mut promise_result = UndefinedValue());
+
+        if eval_js(cx, promise_code, promise_result.handle_mut().into()) && !promise_result.get().is_undefined() {
+            args.rval().set(promise_result.get());
+        } else {
+            args.rval().set(UndefinedValue());
+        }
     }
 
     true
