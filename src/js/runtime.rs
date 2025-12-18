@@ -10,7 +10,7 @@ use std::time::Duration;
 use mozjs::context::JSContext;
 use mozjs::jsapi::{JSObject, JS_ClearPendingException, JS_GetPendingException, JS_GetStringLength, JS_IsExceptionPending, MutableHandleValue, OnNewGlobalHookOption, Heap, SetScriptPrivate, JSScript, JSContext as RawJSContext, Compile1, JS_ExecuteScript, Handle};
 use mozjs::panic::maybe_resume_unwind;
-use mozjs::rust::wrappers2::{JS_GetTwoByteStringCharsAndLength, JS_NewGlobalObject, JS_ValueToSource, RunJobs, JS_GetScriptPrivate};
+use mozjs::rust::wrappers2::{JS_GetTwoByteStringCharsAndLength, JS_NewGlobalObject, JS_ValueToSource, JS_GetScriptPrivate};
 use url::Url;
 use crate::dom::Dom;
 
@@ -122,6 +122,9 @@ impl JsRuntime {
                 return Err("No global object".to_string());
             }
 
+            // Must enter the realm before compiling or executing scripts
+            let _realm = mozjs::jsapi::JSAutoRealm::new(raw_cx, global.get());
+
             rooted!(in(raw_cx) let mut rval = UndefinedValue());
             let rval = rval.handle_mut();
 
@@ -209,14 +212,12 @@ impl JsRuntime {
     }
 
     /// Run all pending jobs in the job queue (for Promises)
+    /// Note: Currently a no-op because RunJobs requires a properly configured job queue.
+    /// To enable promise support, a custom JobQueue needs to be set up via SetJobQueue.
     fn run_pending_jobs(&mut self) {
-        let cx = self.runtime.cx();
-        unsafe {
-            // Run microtask checkpoint to process promise jobs
-            for _ in 0..100 {
-                RunJobs(cx);
-            }
-        }
+        // TODO: Implement proper job queue support for Promises
+        // RunJobs requires SetJobQueue to be called first with a valid JobQueue implementation.
+        // Without it, RunJobs will SIGSEGV.
     }
 
     /// Check if there are any active timers
