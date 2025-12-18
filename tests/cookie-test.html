@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cookie Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .test-section {
+            margin: 10px 0;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        .pass {
+            background-color: #d4edda;
+            color: #155724;
+            border-color: #c3e6cb;
+        }
+        .fail {
+            background-color: #f8d7da;
+            color: #721c24;
+            border-color: #f5c6cb;
+        }
+        .info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border-color: #bee5eb;
+        }
+        h1 {
+            color: #333;
+        }
+        h2 {
+            margin-top: 30px;
+            color: #555;
+        }
+        #summary {
+            font-size: 1.5em;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 10px;
+        }
+        #cookieDisplay {
+            font-family: monospace;
+            background-color: #f5f5f5;
+            padding: 15px;
+            border-radius: 5px;
+            word-break: break-all;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>🍪 Cookie Test Page</h1>
+    <p>Tests run automatically on page load.</p>
+
+    <div id="summary" class="test-section info">Running tests...</div>
+
+    <h2>Current Cookies</h2>
+    <div id="cookieDisplay">Loading...</div>
+
+    <h2>Test Results</h2>
+    <div id="results"></div>
+
+    <h2>Persistence Test</h2>
+    <div id="persistenceTest" class="test-section info">Checking...</div>
+
+    <script>
+        var results = [];
+        var resultsDiv = document.getElementById('results');
+
+        function log(message) {
+            console.log(message);
+        }
+
+        function addResult(name, passed, message) {
+            results.push({ name: name, passed: passed, message: message });
+            var div = document.createElement('div');
+            div.className = 'test-section ' + (passed ? 'pass' : 'fail');
+            div.textContent = (passed ? '✅ ' : '❌ ') + name + ': ' + message;
+            resultsDiv.appendChild(div);
+            log((passed ? 'PASS' : 'FAIL') + ' - ' + name + ': ' + message);
+        }
+
+        function getCookieValue(name) {
+            var cookies = document.cookie.split(';');
+            for (var i = 0; i < cookies.length; i++) {
+                var cookie = cookies[i].trim();
+                if (cookie.indexOf(name + '=') === 0) {
+                    return cookie.substring(name.length + 1);
+                }
+            }
+            return null;
+        }
+
+        function updateCookieDisplay() {
+            var display = document.getElementById('cookieDisplay');
+            var cookies = document.cookie;
+            if (cookies === '') {
+                display.textContent = '(no cookies set)';
+            } else {
+                display.textContent = cookies;
+            }
+        }
+
+        // Test 1: Simple cookie
+        function testSimpleCookie() {
+            document.cookie = 'testSimple=hello';
+            var value = getCookieValue('testSimple');
+            addResult('Simple Cookie', value === 'hello',
+                'Expected "hello", got "' + value + '"');
+        }
+
+        // Test 2: Cookie with expiration
+        function testExpiringCookie() {
+            var futureDate = new Date();
+            futureDate.setFullYear(futureDate.getFullYear() + 1);
+            document.cookie = 'testExpiring=future; expires=' + futureDate.toUTCString();
+            var value = getCookieValue('testExpiring');
+            addResult('Expiring Cookie', value === 'future',
+                'Expected "future", got "' + value + '"');
+        }
+
+        // Test 3: Cookie with max-age
+        function testMaxAgeCookie() {
+            document.cookie = 'testMaxAge=persistent; max-age=86400';
+            var value = getCookieValue('testMaxAge');
+            addResult('Max-Age Cookie', value === 'persistent',
+                'Expected "persistent", got "' + value + '"');
+        }
+
+        // Test 4: Cookie with path
+        function testPathCookie() {
+            document.cookie = 'testPath=pathvalue; path=/';
+            var value = getCookieValue('testPath');
+            addResult('Path Cookie', value === 'pathvalue',
+                'Expected "pathvalue", got "' + value + '"');
+        }
+
+        // Test 5: Update existing cookie
+        function testUpdateCookie() {
+            document.cookie = 'testUpdate=original';
+            var value1 = getCookieValue('testUpdate');
+            document.cookie = 'testUpdate=updated';
+            var value2 = getCookieValue('testUpdate');
+            var passed = value1 === 'original' && value2 === 'updated';
+            addResult('Update Cookie', passed,
+                'First: "' + value1 + '", After update: "' + value2 + '"');
+        }
+
+        // Test 6: Delete cookie with max-age=0
+        function testDeleteCookie() {
+            document.cookie = 'testDelete=toberemoved';
+            var value1 = getCookieValue('testDelete');
+            document.cookie = 'testDelete=; max-age=0';
+            var value2 = getCookieValue('testDelete');
+            var passed = value1 === 'toberemoved' && value2 === null;
+            addResult('Delete Cookie', passed,
+                'Before: "' + value1 + '", After delete: "' + value2 + '"');
+        }
+
+        // Test 7: Multiple cookies
+        function testMultipleCookies() {
+            document.cookie = 'multi1=value1';
+            document.cookie = 'multi2=value2';
+            document.cookie = 'multi3=value3';
+            var v1 = getCookieValue('multi1');
+            var v2 = getCookieValue('multi2');
+            var v3 = getCookieValue('multi3');
+            var passed = v1 === 'value1' && v2 === 'value2' && v3 === 'value3';
+            addResult('Multiple Cookies', passed,
+                'multi1="' + v1 + '", multi2="' + v2 + '", multi3="' + v3 + '"');
+        }
+
+        // Test 8: Cookie with special characters in value
+        function testSpecialChars() {
+            document.cookie = 'testSpecial=hello%20world';
+            var value = getCookieValue('testSpecial');
+            addResult('Special Characters', value === 'hello%20world',
+                'Expected "hello%20world", got "' + value + '"');
+        }
+
+        // Persistence test - set a cookie and check if it was already there
+        function testPersistence() {
+            var persistDiv = document.getElementById('persistenceTest');
+            var existingValue = getCookieValue('persistenceTest');
+
+            if (existingValue === 'IWillSurvive') {
+                persistDiv.className = 'test-section pass';
+                persistDiv.textContent = '✅ PERSISTENCE WORKS! Cookie survived from previous page load. Value: "' + existingValue + '"';
+                log('PASS - Persistence: Cookie survived!');
+            } else {
+                // Set the cookie for next time
+                var futureDate = new Date();
+                futureDate.setFullYear(futureDate.getFullYear() + 1);
+                document.cookie = 'persistenceTest=IWillSurvive; expires=' + futureDate.toUTCString();
+
+                persistDiv.className = 'test-section info';
+                persistDiv.textContent = 'ℹ️ Persistence cookie set. Refresh the page or restart the browser to test persistence. Previous value was: "' + existingValue + '"';
+                log('INFO - Persistence: Cookie set, refresh to test');
+            }
+        }
+
+        // Run all tests
+        function runAllTests() {
+            log('=== Starting Cookie Tests ===');
+
+            testSimpleCookie();
+            testExpiringCookie();
+            testMaxAgeCookie();
+            testPathCookie();
+            testUpdateCookie();
+            testDeleteCookie();
+            testMultipleCookies();
+            testSpecialChars();
+
+            updateCookieDisplay();
+            testPersistence();
+
+            // Update summary
+            var passed = 0;
+            var total = results.length;
+            for (var i = 0; i < results.length; i++) {
+                if (results[i].passed) passed++;
+            }
+
+            var summaryDiv = document.getElementById('summary');
+            summaryDiv.className = 'test-section ' + (passed === total ? 'pass' : 'fail');
+            summaryDiv.textContent = '🍪 Tests Passed: ' + passed + ' / ' + total;
+
+            log('=== Tests Complete: ' + passed + '/' + total + ' passed ===');
+        }
+
+        // Run tests when page loads
+        runAllTests();
+    </script>
+</body>
+</html>
+

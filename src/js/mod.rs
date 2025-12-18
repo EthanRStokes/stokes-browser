@@ -12,6 +12,7 @@ pub use runtime::JsRuntime;
 pub use timers::TimerManager;
 pub use alert_callback::{set_alert_callback, clear_alert_callback};
 pub use registry::{get_node, register_node, unregister_node};
+pub use dom_bindings::{Cookie, CookieJar, get_cookies_for_request, set_cookie_from_response, clear_all_cookies};
 
 use crate::dom::Dom;
 use std::cell::RefCell;
@@ -39,6 +40,10 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
 
     // Set up fetch API
     fetch::setup_fetch(runtime)?;
+
+    // Set up document.cookie property (must be done after DOM bindings are set up)
+    // This uses Object.defineProperty which requires the document object to exist
+    dom_bindings::setup_cookie_property_deferred(runtime)?;
 
     Ok(())
 }
