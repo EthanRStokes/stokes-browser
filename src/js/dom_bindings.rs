@@ -131,12 +131,13 @@ unsafe fn setup_document(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
 
 /// Set up the window object (as alias to global)
 // FIXME: Window dimensions, scroll positions, and devicePixelRatio are hardcoded - should get actual values from renderer
-unsafe fn setup_window(raw_cx: *mut JSContext, global: *mut JSObject, user_agent: &str) -> Result<(), String> {
+unsafe fn setup_window(raw_cx: *mut JSContext, global: *mut JSObject, user_agent: &str) -> Result<(), String> { unsafe {
     rooted!(in(raw_cx) let global_val = ObjectValue(global));
     rooted!(in(raw_cx) let global_rooted = global);
 
-    // window, self, top, parent, globalThis all point to global
-    for name in &["window", "self", "top", "parent", "globalThis"] {
+    // window, self, top, parent, globalThis, frames all point to global
+    // FIXME: `frames` should be a proper WindowProxy collection that allows indexed access to child iframes (e.g., frames[0], frames['name'])
+    for name in &["window", "self", "top", "parent", "globalThis", "frames"] {
         let cname = std::ffi::CString::new(*name).unwrap();
         JS_DefineProperty(
             raw_cx,
@@ -160,20 +161,56 @@ unsafe fn setup_window(raw_cx: *mut JSContext, global: *mut JSObject, user_agent
     define_function(raw_cx, global, "scrollBy", Some(window_scroll_by), 2)?;
 
     // Set innerWidth/innerHeight properties
-    set_int_property(raw_cx, global, "innerWidth", 1920)?;
-    set_int_property(raw_cx, global, "innerHeight", 1080)?;
+    set_int_property(raw_cx, global, "innerWidth", DOM_REF.with(|dom| {
+        if let Some(ref dom) = *dom.borrow() {
+            let dom = &**dom;
+            return dom.viewport.window_size.0 as i32;
+        }
+        1920
+    }))?;
+    set_int_property(raw_cx, global, "innerHeight", DOM_REF.with(|dom| {
+        if let Some(ref dom) = *dom.borrow() {
+            let dom = &**dom;
+            return dom.viewport.window_size.1 as i32;
+        }
+        1080
+    }))?;
     set_int_property(raw_cx, global, "outerWidth", 1920)?;
     set_int_property(raw_cx, global, "outerHeight", 1080)?;
     set_int_property(raw_cx, global, "screenX", 0)?;
     set_int_property(raw_cx, global, "screenY", 0)?;
-    set_int_property(raw_cx, global, "scrollX", 0)?;
-    set_int_property(raw_cx, global, "scrollY", 0)?;
-    set_int_property(raw_cx, global, "pageXOffset", 0)?;
-    set_int_property(raw_cx, global, "pageYOffset", 0)?;
+    set_int_property(raw_cx, global, "scrollX", DOM_REF.with(|dom| {
+        if let Some(ref dom) = *dom.borrow() {
+            let dom = &**dom;
+            return dom.viewport_scroll.x as i32;
+        }
+        0
+    }))?;
+    set_int_property(raw_cx, global, "scrollY", DOM_REF.with(|dom| {
+        if let Some(ref dom) = *dom.borrow() {
+            let dom = &**dom;
+            return dom.viewport_scroll.y as i32;
+        }
+        0
+    }))?;
+    set_int_property(raw_cx, global, "pageXOffset", DOM_REF.with(|dom| {
+        if let Some(ref dom) = *dom.borrow() {
+            let dom = &**dom;
+            return dom.viewport_scroll.x as i32;
+        }
+        0
+    }))?;
+    set_int_property(raw_cx, global, "pageYOffset", DOM_REF.with(|dom| {
+        if let Some(ref dom) = *dom.borrow() {
+            let dom = &**dom;
+            return dom.viewport_scroll.y as i32;
+        }
+        0
+    }))?;
     set_int_property(raw_cx, global, "devicePixelRatio", 1)?;
 
     Ok(())
-}
+} }
 
 /// Set up the navigator object
 // TODO: Many navigator properties are hardcoded (language, platform) - should detect from system
