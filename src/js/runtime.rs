@@ -1,14 +1,17 @@
 use super::{initialize_bindings, JsResult, TimerManager};
 // JavaScript runtime management using Mozilla's SpiderMonkey (mozjs)
-use mozjs::jsval::{JSVal, UndefinedValue};
+use mozjs::jsval::{JSVal, PrivateValue, UndefinedValue};
 use mozjs::rooted;
-use mozjs::rust::{JSEngine, Runtime, RealmOptions, SIMPLE_GLOBAL_CLASS};
+use mozjs::rust::{JSEngine, Runtime, RealmOptions, SIMPLE_GLOBAL_CLASS, CompileOptionsWrapper, transform_str_to_source_text};
 use std::ptr;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::Duration;
 use mozjs::context::JSContext;
-use mozjs::jsapi::{JSObject, JS_ClearPendingException, JS_GetPendingException, JS_GetStringLength, JS_IsExceptionPending, MutableHandleValue, OnNewGlobalHookOption, Heap};
-use mozjs::rust::wrappers2::{JS_GetTwoByteStringCharsAndLength, JS_NewGlobalObject, JS_ValueToSource, RunJobs};
+use mozjs::jsapi::{JSObject, JS_ClearPendingException, JS_GetPendingException, JS_GetStringLength, JS_IsExceptionPending, MutableHandleValue, OnNewGlobalHookOption, Heap, SetScriptPrivate, JSScript, JSContext as RawJSContext, Compile1, JS_ExecuteScript, Handle};
+use mozjs::panic::maybe_resume_unwind;
+use mozjs::rust::wrappers2::{JS_GetTwoByteStringCharsAndLength, JS_NewGlobalObject, JS_ValueToSource, RunJobs, JS_GetScriptPrivate};
+use url::Url;
 use crate::dom::Dom;
 
 // Stack size for growing when needed (16MB to handle very large scripts)
@@ -20,6 +23,7 @@ const _RED_ZONE: usize = 32 * 1024;
 pub struct JsRuntime {
     // IMPORTANT: Field order matters for drop order!
     // runtime must be dropped before engine since runtime holds a handle to engine
+    dom: *mut Dom,
     timer_manager: Rc<TimerManager>,
     user_agent: String,
     global: Box<Heap<*mut JSObject>>,
@@ -62,6 +66,7 @@ impl JsRuntime {
         }
 
         let mut js_runtime = Self {
+            dom,
             timer_manager: timer_manager.clone(),
             user_agent,
             global,
@@ -105,7 +110,7 @@ impl JsRuntime {
     }
 
     /// Execute JavaScript code
-    pub fn execute(&mut self, code: &str) -> JsResult<JSVal> {
+    pub fn execute(&mut self, code: &str) -> JsResult<()> {
         let cx = self.runtime.cx();
         let raw_cx = unsafe { cx.raw_cx() };
         let global_ptr = self.global.get();
@@ -117,27 +122,22 @@ impl JsRuntime {
                 return Err("No global object".to_string());
             }
 
-            let _realm = mozjs::jsapi::JSAutoRealm::new(raw_cx, global.get());
-
             rooted!(in(raw_cx) let mut rval = UndefinedValue());
+            let rval = rval.handle_mut();
 
+            let dom_ref = &*self.dom;
+            let url = Url::from(&dom_ref.url);
 
-            let result = mozjs::rust::wrappers::Evaluate(
-                raw_cx,
-                std::ptr::null(),
-                &mut transform_u16_to_source_text(code),
-                rval.handle_mut(),
-            );
+            // Compile the script first
+            rooted!(in(raw_cx) let mut compiled_script = ptr::null_mut::<JSScript>());
+            compiled_script.set(Self::compile_script(cx, code, "", 1));
 
-            if result {
-                Ok(rval.get())
-            } else {
-                // Get the exception if there was one
+            if compiled_script.is_null() {
+                // Handle compilation error
                 if JS_IsExceptionPending(raw_cx) {
                     rooted!(in(raw_cx) let mut exception = UndefinedValue());
                     if JS_GetPendingException(raw_cx, MutableHandleValue::from(exception.handle_mut())) {
                         JS_ClearPendingException(raw_cx);
-                        // Try to convert exception to string
                         rooted!(in(raw_cx) let exc_str = JS_ValueToSource(cx, exception.handle()));
                         if !exc_str.get().is_null() {
                             let chars = JS_GetTwoByteStringCharsAndLength(cx, *exc_str.handle(), &mut JS_GetStringLength(exc_str.get()));
@@ -145,14 +145,52 @@ impl JsRuntime {
                                 let len = JS_GetStringLength(exc_str.get());
                                 let slice = std::slice::from_raw_parts(chars, len as usize);
                                 let msg = String::from_utf16_lossy(slice);
-                                return Err(format!("JavaScript error: {}", msg));
+                                return Err(format!("JavaScript compilation error: {}", msg));
                             }
                         }
                     }
                 }
-                Err("JavaScript execution failed".to_string())
+                return Err("JavaScript compilation failed".to_string());
             }
+
+            let script = NonNull::new(*compiled_script).expect("Can't be null");
+
+            if !Self::evaluate_script(raw_cx, script, url, MutableHandleValue::from(rval)) {
+                return Err("JavaScript evaluation failed".to_string());
+            }
+            maybe_resume_unwind();
+            Ok(())
         }
+    }
+
+    fn compile_script(
+        context: &mut JSContext,
+        text: &str,
+        filename: &str,
+        line_number: u32,
+    ) -> *mut JSScript {
+        let options = unsafe { CompileOptionsWrapper::new(&context, filename, line_number) };
+        unsafe { Compile1(context.raw_cx(), options.ptr, &mut transform_str_to_source_text(text)) }
+    }
+
+    fn evaluate_script(
+        context: *mut RawJSContext,
+        compiled_script: NonNull<JSScript>,
+        url: Url,
+        rval: MutableHandleValue,
+    ) -> bool {
+        rooted!(in(context) let record = compiled_script.as_ptr());
+        rooted!(in(context) let mut script_private = UndefinedValue());
+
+        unsafe { JS_GetScriptPrivate(*record, script_private.handle_mut()) };
+
+        if script_private.is_undefined() {
+            // Set script private data if needed
+            let url = Rc::new(url);
+            unsafe { SetScriptPrivate(*record, &PrivateValue(Rc::into_raw(url) as *const _)) };
+        }
+
+        unsafe { JS_ExecuteScript(context, Handle::from(record.handle()), rval) }
     }
 
     /// Execute JavaScript code from a script tag

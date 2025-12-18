@@ -47,6 +47,12 @@ impl From<style::servo_arc::Arc<Url>> for DocUrl {
     }
 }
 
+impl From<&DocUrl> for Url {
+    fn from(value: &DocUrl) -> Self {
+        (*value.base_url).clone()
+    }
+}
+
 impl Deref for DocUrl {
     type Target = Url;
 
