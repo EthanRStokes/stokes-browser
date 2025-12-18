@@ -145,7 +145,7 @@ impl JsRuntime {
                         rooted!(in(raw_cx) let exc_str = JS_ValueToSource(cx, exception.handle()));
                         if !exc_str.get().is_null() {
                             let msg = jsstr_to_string(raw_cx, NonNull::new(exc_str.handle().get()).unwrap());
-                            return Err(format!("JavaScript compilation error: {}", msg));
+                            return Err(format!("JavaScript COMPILE error: {}\n{}", msg, code));
                         }
                     }
                 }
@@ -163,7 +163,7 @@ impl JsRuntime {
                         rooted!(in(raw_cx) let exc_str = JS_ValueToSource(cx, exception.handle()));
                         if !exc_str.get().is_null() {
                             let msg = jsstr_to_string(raw_cx, NonNull::new(exc_str.handle().get()).unwrap());
-                            return Err(format!("JavaScript evaluation error: {}\n{}", msg, code));
+                            return Err(format!("JavaScript EVAL error: {}\n{}", msg, code));
                         }
                     }
                 }
@@ -181,7 +181,30 @@ impl JsRuntime {
         line_number: u32,
     ) -> *mut JSScript {
         let options = unsafe { CompileOptionsWrapper::new(&context, filename, line_number) };
-        unsafe { Compile1(context.raw_cx(), options.ptr, &mut transform_str_to_source_text(text)) }
+
+        // First try to compile the script as-is
+        let result = unsafe { Compile1(context.raw_cx(), options.ptr, &mut transform_str_to_source_text(text)) };
+
+        // If compilation failed and the code looks like a JSON object or array,
+        // wrap it in parentheses to make it a valid expression.
+        // This handles cases where a script is just a large JSON structure.
+        if result.is_null() {
+            let trimmed = text.trim();
+            if (trimmed.starts_with('{') && trimmed.ends_with('}'))
+                || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+            {
+                // Clear any pending exception from the first compile attempt
+                unsafe { JS_ClearPendingException(context.raw_cx()) };
+
+                // Wrap as an assignment to window.__INLINE_DATA__ so other scripts can access it
+                // This mimics how browsers handle inline JSON configuration scripts
+                let wrapped = format!("(window.__INLINE_DATA__ = window.__INLINE_DATA__ || []).push({})", text);
+                let options = unsafe { CompileOptionsWrapper::new(&context, filename, line_number) };
+                return unsafe { Compile1(context.raw_cx(), options.ptr, &mut transform_str_to_source_text(&wrapped)) };
+            }
+        }
+
+        result
     }
 
     fn evaluate_script(
