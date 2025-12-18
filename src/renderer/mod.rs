@@ -32,6 +32,8 @@ pub struct HtmlRenderer<'dom> {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) background_image_cache: BackgroundImageCache,
+    /// Debug: Show hitboxes for all elements
+    pub(crate) debug_hitboxes: bool,
 }
 
 impl HtmlRenderer<'_> {
@@ -98,7 +100,235 @@ impl HtmlRenderer<'_> {
                 x: -scroll.x,
                 y: -scroll.y,
             },
-        )
+        );
+
+        // Draw debug hitboxes if enabled
+        if self.debug_hitboxes {
+            self.render_debug_hitboxes(painter, root_id, 0.0, 0.0);
+        }
+    }
+
+    /// Render debug hitboxes for all elements (showing click target areas)
+    fn render_debug_hitboxes(&self, painter: &mut TextPainter, node_id: usize, parent_x: f64, parent_y: f64) {
+        let node = &self.dom.tree()[node_id];
+        let layout = node.final_layout;
+
+        // Calculate absolute position (same logic as find_element_at_position)
+        let abs_x = parent_x + layout.location.x as f64;
+        let abs_y = parent_y + layout.location.y as f64;
+
+        // Only draw hitbox if node has non-zero size
+        if layout.size.width > 0.0 && layout.size.height > 0.0 {
+            // Determine hitbox color based on element type
+            let color = match &node.data {
+                NodeData::Element(elem) => {
+                    let tag = elem.name.local.as_ref();
+                    if tag == "a" {
+                        // Links are blue
+                        peniko::Color::new([0.0, 0.0, 1.0, 0.3])
+                    } else if tag == "button" || tag == "input" {
+                        // Interactive elements are green
+                        peniko::Color::new([0.0, 1.0, 0.0, 0.3])
+                    } else {
+                        // Other elements are red (very transparent)
+                        peniko::Color::new([1.0, 0.0, 0.0, 0.1])
+                    }
+                }
+                NodeData::Text { .. } => {
+                    // Text nodes are yellow
+                    peniko::Color::new([1.0, 1.0, 0.0, 0.3])
+                }
+                _ => {
+                    // Other nodes are gray
+                    peniko::Color::new([0.5, 0.5, 0.5, 0.1])
+                }
+            };
+
+            // Apply scroll offset for drawing
+            let scroll = self.dom.viewport_scroll;
+            let draw_x = (abs_x - scroll.x) * self.scale_factor;
+            let draw_y = (abs_y - scroll.y) * self.scale_factor;
+            let draw_w = layout.size.width as f64 * self.scale_factor;
+            let draw_h = layout.size.height as f64 * self.scale_factor;
+
+            let rect = Rect::from_origin_size((draw_x, draw_y), (draw_w, draw_h));
+
+            // Fill with semi-transparent color
+            painter.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
+
+            // Draw border
+            let border_color = peniko::Color::new([color.components[0], color.components[1], color.components[2], 0.8]);
+            painter.stroke(&Stroke::new(1.0), Affine::IDENTITY, border_color, None, &rect);
+        }
+
+        // Recursively draw hitboxes for layout children
+        if let Some(layout_children) = node.layout_children.borrow().as_ref() {
+            for &child_id in layout_children.iter() {
+                self.render_debug_hitboxes(painter, child_id, abs_x, abs_y);
+            }
+        }
+
+        // Draw hitboxes for inline boxes (hyperlinks and inline elements inside text)
+        if let Some(element_data) = node.element_data() {
+            if let Some(inline_layout) = &element_data.inline_layout_data {
+                // Get content offset (padding + border)
+                let padding_border = layout.padding + layout.border;
+                let content_x = abs_x + padding_border.left as f64;
+                let content_y = abs_y + padding_border.top as f64;
+
+                for line in inline_layout.layout.lines() {
+                    for item in line.items() {
+                        match item {
+                            PositionedLayoutItem::InlineBox(ibox) => {
+                                let box_id = ibox.id as usize;
+                                let box_node = &self.dom.tree()[box_id];
+
+                                let box_x = content_x + ibox.x as f64;
+                                let box_y = content_y + ibox.y as f64;
+                                let box_w = ibox.width as f64;
+                                let box_h = ibox.height as f64;
+
+                                let color = match &box_node.data {
+                                    NodeData::Element(elem) => {
+                                        let tag = elem.name.local.as_ref();
+                                        if tag == "a" {
+                                            peniko::Color::new([0.0, 0.5, 1.0, 0.4])
+                                        } else if tag == "button" || tag == "input" {
+                                            peniko::Color::new([0.0, 1.0, 0.0, 0.4])
+                                        } else {
+                                            peniko::Color::new([0.0, 1.0, 1.0, 0.3])
+                                        }
+                                    }
+                                    _ => peniko::Color::new([0.5, 0.5, 0.5, 0.2]),
+                                };
+
+                                let scroll = self.dom.viewport_scroll;
+                                let draw_x = (box_x - scroll.x) * self.scale_factor;
+                                let draw_y = (box_y - scroll.y) * self.scale_factor;
+                                let draw_w = box_w * self.scale_factor;
+                                let draw_h = box_h * self.scale_factor;
+
+                                let rect = Rect::from_origin_size((draw_x, draw_y), (draw_w, draw_h));
+                                painter.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
+
+                                let border_color = peniko::Color::new([color.components[0], color.components[1], color.components[2], 0.9]);
+                                painter.stroke(&Stroke::new(2.0), Affine::IDENTITY, border_color, None, &rect);
+
+                                self.render_debug_hitboxes_inline(painter, box_id, content_x, content_y);
+                            }
+                            PositionedLayoutItem::GlyphRun(glyph_run) => {
+                                // Draw hitbox for glyph runs - these represent text inside inline elements
+                                let brush_node_id = glyph_run.style().brush.id;
+
+                                // Check if this text belongs to a link
+                                let is_link = self.is_node_or_ancestor_link(brush_node_id);
+
+                                if is_link {
+                                    let run_x = content_x + glyph_run.offset() as f64;
+                                    let run_y = content_y + (glyph_run.baseline() - glyph_run.run().metrics().ascent) as f64;
+                                    let run_w = glyph_run.advance() as f64;
+                                    let run_h = (glyph_run.run().metrics().ascent + glyph_run.run().metrics().descent) as f64;
+
+                                    let scroll = self.dom.viewport_scroll;
+                                    let draw_x = (run_x - scroll.x) * self.scale_factor;
+                                    let draw_y = (run_y - scroll.y) * self.scale_factor;
+                                    let draw_w = run_w * self.scale_factor;
+                                    let draw_h = run_h * self.scale_factor;
+
+                                    // Blue for links
+                                    let color = peniko::Color::new([0.0, 0.5, 1.0, 0.4]);
+                                    let rect = Rect::from_origin_size((draw_x, draw_y), (draw_w, draw_h));
+                                    painter.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
+
+                                    let border_color = peniko::Color::new([0.0, 0.5, 1.0, 0.9]);
+                                    painter.stroke(&Stroke::new(2.0), Affine::IDENTITY, border_color, None, &rect);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Check if a node or any of its ancestors is a link (<a> tag)
+    fn is_node_or_ancestor_link(&self, node_id: usize) -> bool {
+        let mut current_id = Some(node_id);
+        let mut depth = 0;
+        while let Some(id) = current_id {
+            if depth > 50 { break; } // Prevent infinite loops
+            depth += 1;
+
+            let node = &self.dom.tree()[id];
+            if let NodeData::Element(elem) = &node.data {
+                if elem.name.local.as_ref() == "a" {
+                    return true;
+                }
+            }
+            current_id = node.parent;
+        }
+        false
+    }
+
+    /// Render debug hitboxes for inline box children
+    fn render_debug_hitboxes_inline(&self, painter: &mut TextPainter, node_id: usize, container_x: f64, container_y: f64) {
+        let node = &self.dom.tree()[node_id];
+        let layout = node.final_layout;
+
+        // For inline boxes, location is relative to the inline container
+        let abs_x = container_x + layout.location.x as f64;
+        let abs_y = container_y + layout.location.y as f64;
+
+        // Recursively check layout children
+        if let Some(layout_children) = node.layout_children.borrow().as_ref() {
+            for &child_id in layout_children.iter() {
+                self.render_debug_hitboxes(painter, child_id, abs_x, abs_y);
+            }
+        }
+
+        // Check for nested inline layouts
+        if let Some(element_data) = node.element_data() {
+            if let Some(inline_layout) = &element_data.inline_layout_data {
+                let padding_border = layout.padding + layout.border;
+                let content_x = abs_x + padding_border.left as f64;
+                let content_y = abs_y + padding_border.top as f64;
+
+                for line in inline_layout.layout.lines() {
+                    for item in line.items() {
+                        if let PositionedLayoutItem::InlineBox(ibox) = item {
+                            let box_id = ibox.id as usize;
+                            let box_node = &self.dom.tree()[box_id];
+
+                            let box_x = content_x + ibox.x as f64;
+                            let box_y = content_y + ibox.y as f64;
+                            let box_w = ibox.width as f64;
+                            let box_h = ibox.height as f64;
+
+                            let color = match &box_node.data {
+                                NodeData::Element(elem) if elem.name.local.as_ref() == "a" => {
+                                    peniko::Color::new([0.0, 0.5, 1.0, 0.4])
+                                }
+                                _ => peniko::Color::new([0.0, 1.0, 1.0, 0.3]),
+                            };
+
+                            let scroll = self.dom.viewport_scroll;
+                            let draw_x = (box_x - scroll.x) * self.scale_factor;
+                            let draw_y = (box_y - scroll.y) * self.scale_factor;
+                            let draw_w = box_w * self.scale_factor;
+                            let draw_h = box_h * self.scale_factor;
+
+                            let rect = Rect::from_origin_size((draw_x, draw_y), (draw_w, draw_h));
+                            painter.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
+
+                            let border_color = peniko::Color::new([color.components[0], color.components[1], color.components[2], 0.9]);
+                            painter.stroke(&Stroke::new(2.0), Affine::IDENTITY, border_color, None, &rect);
+
+                            self.render_debug_hitboxes_inline(painter, box_id, content_x, content_y);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn render_element(

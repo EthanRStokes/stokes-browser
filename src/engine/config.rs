@@ -13,6 +13,8 @@ pub struct EngineConfig {
     pub block_ads: bool,
     /// Cache size in MB
     pub cache_size_mb: u32,
+    /// Debug: Show hitboxes for clickable elements
+    pub debug_hitboxes: bool,
 }
 
 impl Default for EngineConfig {
@@ -23,6 +25,7 @@ impl Default for EngineConfig {
             enable_javascript: true, // Not implemented yet
             block_ads: false,         // Not implemented yet
             cache_size_mb: 50,
+            debug_hitboxes: true, // Enable for debugging click issues
         }
     }
 }

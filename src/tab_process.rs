@@ -244,14 +244,16 @@ impl TabProcess {
                 self.render_frame()?;
             }
             ParentToTabMessage::Scroll { delta_x, delta_y } => {
-                self.engine.scroll(delta_x, delta_y);
-                self.render_frame()?;
+                if self.engine.dom.is_some() {
+                    self.engine.scroll(delta_x, delta_y);
+                    self.render_frame()?;
+                }
             }
             ParentToTabMessage::Click { x, y, modifiers } => {
                 // Handle click and check if a link was clicked
                 if let Some(href) = self.engine.handle_click(x, y) {
                     println!("[Tab Process] Link clicked: {}", href);
-                    
+
                     // Resolve the href against the current page URL
                     match self.engine.resolve_url(&href) {
                         Ok(resolved_url) => {

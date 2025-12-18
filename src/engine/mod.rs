@@ -462,6 +462,7 @@ impl Engine {
             width: self.viewport_width() as u32,
             height: self.viewport_height() as u32,
             background_image_cache: BackgroundImageCache::new(),
+            debug_hitboxes: self.config.debug_hitboxes,
         };
 
         renderer.render(
@@ -791,8 +792,111 @@ impl Engine {
                 }
             }
 
+            // Check inline boxes from inline layout data (for hyperlinks and inline elements)
+            if let Some(element_data) = node.element_data() {
+                if let Some(inline_layout) = &element_data.inline_layout_data {
+                    // Get content offset (padding + border)
+                    let padding_border = layout.padding + layout.border;
+                    let content_x = abs_x + padding_border.left;
+                    let content_y = abs_y + padding_border.top;
+
+                    let line_count = inline_layout.layout.lines().count();
+
+                    // Check each line and item for hit testing
+                    for line in inline_layout.layout.lines() {
+                        for item in line.items() {
+                            match item {
+                                parley::PositionedLayoutItem::InlineBox(ibox) => {
+                                    let box_left = content_x + ibox.x;
+                                    let box_top = content_y + ibox.y;
+                                    let box_right = box_left + ibox.width;
+                                    let box_bottom = box_top + ibox.height;
+
+                                    if x >= box_left && x <= box_right && y >= box_top && y <= box_bottom {
+                                        let box_id = ibox.id as usize;
+                                        if let Some(result) = self.find_element_in_inline_box(box_id, x, y, content_x, content_y) {
+                                            return Some(result);
+                                        }
+                                        return Some(box_id);
+                                    }
+                                }
+                                parley::PositionedLayoutItem::GlyphRun(glyph_run) => {
+                                    // For glyph runs, check if click is within the run's bounds
+                                    // The run's style.brush.id contains the node ID this text belongs to
+                                    let run_x = content_x + glyph_run.offset();
+                                    let run_y = content_y + glyph_run.baseline() - glyph_run.run().metrics().ascent;
+                                    let run_width = glyph_run.advance();
+                                    let run_height = glyph_run.run().metrics().ascent + glyph_run.run().metrics().descent;
+
+                                    let run_left = run_x;
+                                    let run_top = run_y;
+                                    let run_right = run_left + run_width;
+                                    let run_bottom = run_top + run_height;
+
+                                    let brush_node_id = glyph_run.style().brush.id;
+
+                                    if x >= run_left && x <= run_right && y >= run_top && y <= run_bottom {
+                                        return Some(brush_node_id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // If no child matched, return this node
             return Some(node_id);
+        }
+
+        None
+    }
+
+    /// Find element within an inline box (like <a> tags inside text)
+    fn find_element_in_inline_box(&self, node_id: usize, x: f32, y: f32, container_x: f32, container_y: f32) -> Option<usize> {
+        let dom = self.dom.as_ref()?;
+        let node = dom.get_node(node_id)?;
+        let layout = node.final_layout;
+
+        // For inline boxes, location is relative to the inline container
+        let abs_x = container_x + layout.location.x;
+        let abs_y = container_y + layout.location.y;
+
+        // Check children of this inline box
+        if let Some(layout_children) = node.layout_children.borrow().as_ref() {
+            for &child_id in layout_children.iter().rev() {
+                if let Some(child_node_id) = self.find_element_at_position(child_id, x, y, abs_x, abs_y) {
+                    return Some(child_node_id);
+                }
+            }
+        }
+
+        // Check inline layout within this inline box
+        if let Some(element_data) = node.element_data() {
+            if let Some(inline_layout) = &element_data.inline_layout_data {
+                let padding_border = layout.padding + layout.border;
+                let content_x = abs_x + padding_border.left;
+                let content_y = abs_y + padding_border.top;
+
+                for line in inline_layout.layout.lines() {
+                    for item in line.items() {
+                        if let parley::PositionedLayoutItem::InlineBox(ibox) = item {
+                            let box_left = content_x + ibox.x;
+                            let box_top = content_y + ibox.y;
+                            let box_right = box_left + ibox.width;
+                            let box_bottom = box_top + ibox.height;
+
+                            if x >= box_left && x <= box_right && y >= box_top && y <= box_bottom {
+                                let box_id = ibox.id as usize;
+                                if let Some(result) = self.find_element_in_inline_box(box_id, x, y, content_x, content_y) {
+                                    return Some(result);
+                                }
+                                return Some(box_id);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         None
