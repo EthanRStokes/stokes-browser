@@ -28,7 +28,7 @@ pub(crate) struct Env {
 
 pub(crate) fn create_window(el: &EventLoop<()>) -> Env {
     // Load and set window icon
-    let icon_data = include_bytes!("../assets/icon.png");
+    let icon_data = include_bytes!("../assets/com.ethanstokes.stokes-browser.png");
     let icon = image::load_from_memory(icon_data)
         .expect("Failed to load icon")
         .into_rgba8();

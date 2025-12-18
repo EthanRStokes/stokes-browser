@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Stokes Browser
+Comment=Web browser developed by Ethan Stokes
+Exec=stokes-browser
+Terminal=false
+Type=Application
+Icon=com.ethanstokes.stokes-browser
+Categories=Internet;WebBrowser;
+Keywords=Browser;Stokes;Web;
