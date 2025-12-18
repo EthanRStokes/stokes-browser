@@ -133,7 +133,7 @@ impl LayoutPartialTree for Dom {
                                     },
                                 );
                             }
-                            None | Some("text" | "password" | "email") => {
+                            None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
                                 return compute_leaf_layout(
                                     inputs,
                                     &node.taffy_style,
@@ -225,11 +225,16 @@ impl LayoutPartialTree for Dom {
                             dom: tree,
                             ctx: context,
                         };
-                        return compute_grid_layout(&mut table_wrapper, node_id, inputs);
+                        let mut output = compute_grid_layout(&mut table_wrapper, node_id, inputs);
+
+                        output.content_size.width = output.content_size.width.min(output.size.width);
+                        output.content_size.height = output.content_size.height.min(output.size.height);
+
+                        return output;
                     }
 
                     if node.flags.is_inline_root() {
-                        return tree.compute_inline_layout(usize::from(node_id), inputs)
+                        return tree.compute_inline_layout(usize::from(node_id), inputs, None)
                     }
 
                     // The default CSS file will set
@@ -240,6 +245,7 @@ impl LayoutPartialTree for Dom {
                         Display::None => taffy::LayoutOutput::HIDDEN,
                     }
                 }
+
                 _ => LayoutOutput::HIDDEN,
             }
         })
