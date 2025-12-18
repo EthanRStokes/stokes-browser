@@ -764,29 +764,20 @@ impl Element<'_> {
     fn draw_image(&self, painter: &mut TextPainter) {
         // Check if this element has image data
         if let Some(image_data) = self.element.image_data() {
-            println!("draw_image called with image_data: {:?}", std::mem::discriminant(image_data));
-
             // Use the element's transform (which includes position and scale)
             // and the content box for positioning
             let content_box = self.frame.content_box;
 
             match image_data {
                 ImageData::Raster(data) => {
-                    println!("draw_image: Rendering raster image {}x{}", data.width, data.height);
-                    println!("draw_image: content_box={:?}, self.transform={:?}", content_box, self.transform);
-
                     // Calculate scale factors to fit image into content box
                     let scale_x = content_box.width() / data.width as f64;
                     let scale_y = content_box.height() / data.height as f64;
-
-                    println!("draw_image: scale_x={}, scale_y={}", scale_x, scale_y);
 
                     // Apply the element's transform, then translate to content box origin, then scale the image
                     let image_transform = self.transform
                         * Affine::translate((content_box.x0, content_box.y0))
                         * Affine::scale_non_uniform(scale_x, scale_y);
-
-                    println!("draw_image: image_transform={:?}", image_transform);
 
                     let inherited_box = self.style.get_inherited_box();
                     let image_rendering = inherited_box.image_rendering;

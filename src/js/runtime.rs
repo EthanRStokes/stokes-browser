@@ -155,6 +155,18 @@ impl JsRuntime {
             let script = NonNull::new(*compiled_script).expect("Can't be null");
 
             if !Self::evaluate_script(raw_cx, script, url, MutableHandleValue::from(rval)) {
+                // Handle evaluation error
+                if JS_IsExceptionPending(raw_cx) {
+                    rooted!(in(raw_cx) let mut exception = UndefinedValue());
+                    if JS_GetPendingException(raw_cx, MutableHandleValue::from(exception.handle_mut())) {
+                        JS_ClearPendingException(raw_cx);
+                        rooted!(in(raw_cx) let exc_str = JS_ValueToSource(cx, exception.handle()));
+                        if !exc_str.get().is_null() {
+                            let msg = jsstr_to_string(raw_cx, NonNull::new(exc_str.handle().get()).unwrap());
+                            return Err(format!("JavaScript evaluation error: {}", msg));
+                        }
+                    }
+                }
                 return Err("JavaScript evaluation failed".to_string());
             }
             maybe_resume_unwind();
