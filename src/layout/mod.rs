@@ -1,5 +1,4 @@
 // Layout engine for computing element positions and sizes
-pub(crate) mod box_model;
 mod taffy;
 mod inline;
 pub(crate) mod table;
