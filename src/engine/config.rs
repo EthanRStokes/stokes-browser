@@ -7,7 +7,7 @@ pub struct EngineConfig {
     pub user_agent: String,
     /// Default homepage URL
     pub homepage: String,
-    /// Whether to enable JavaScript (stub for now)
+    /// Whether to enable JavaScript
     pub enable_javascript: bool,
     /// Whether to block ads (stub for now)
     pub block_ads: bool,

@@ -19,6 +19,8 @@ use std::ptr::NonNull;
 thread_local! {
     static DOM_REF: RefCell<Option<*mut Dom>> = RefCell::new(None);
     static USER_AGENT: RefCell<String> = RefCell::new(String::new());
+    static LOCAL_STORAGE: RefCell<std::collections::HashMap<String, String>> = RefCell::new(std::collections::HashMap::new());
+    static SESSION_STORAGE: RefCell<std::collections::HashMap<String, String>> = RefCell::new(std::collections::HashMap::new());
 }
 
 /// Set up DOM bindings in the JavaScript context
@@ -128,6 +130,7 @@ unsafe fn setup_document(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
 }
 
 /// Set up the window object (as alias to global)
+// FIXME: Window dimensions, scroll positions, and devicePixelRatio are hardcoded - should get actual values from renderer
 unsafe fn setup_window(raw_cx: *mut JSContext, global: *mut JSObject, user_agent: &str) -> Result<(), String> {
     rooted!(in(raw_cx) let global_val = ObjectValue(global));
     rooted!(in(raw_cx) let global_rooted = global);
@@ -173,6 +176,7 @@ unsafe fn setup_window(raw_cx: *mut JSContext, global: *mut JSObject, user_agent
 }
 
 /// Set up the navigator object
+// TODO: Many navigator properties are hardcoded (language, platform) - should detect from system
 unsafe fn setup_navigator(raw_cx: *mut JSContext, global: *mut JSObject, user_agent: &str) -> Result<(), String> {
     rooted!(in(raw_cx) let navigator = JS_NewPlainObject(raw_cx));
     if navigator.get().is_null() {
@@ -204,6 +208,7 @@ unsafe fn setup_navigator(raw_cx: *mut JSContext, global: *mut JSObject, user_ag
 }
 
 /// Set up the location object
+// FIXME: Location properties are hardcoded to "about:blank" - should reflect actual page URL
 unsafe fn setup_location(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
     rooted!(in(raw_cx) let location = JS_NewPlainObject(raw_cx));
     if location.get().is_null() {
@@ -240,40 +245,53 @@ unsafe fn setup_location(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
 }
 
 /// Set up localStorage and sessionStorage
+// TODO: Storage length property is set to 0 and not dynamically updated when items are added/removed
 unsafe fn setup_storage(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
-    // Create storage object with getItem, setItem, removeItem, clear methods
-    rooted!(in(raw_cx) let storage = JS_NewPlainObject(raw_cx));
-    if storage.get().is_null() {
-        return Err("Failed to create storage object".to_string());
-    }
-
-    define_function(raw_cx, storage.get(), "getItem", Some(storage_get_item), 1)?;
-    define_function(raw_cx, storage.get(), "setItem", Some(storage_set_item), 2)?;
-    define_function(raw_cx, storage.get(), "removeItem", Some(storage_remove_item), 1)?;
-    define_function(raw_cx, storage.get(), "clear", Some(storage_clear), 0)?;
-    define_function(raw_cx, storage.get(), "key", Some(storage_key), 1)?;
-    set_int_property(raw_cx, storage.get(), "length", 0)?;
-
-    rooted!(in(raw_cx) let storage_val = ObjectValue(storage.get()));
     rooted!(in(raw_cx) let global_rooted = global);
 
-    // localStorage
+    // Create localStorage object
+    rooted!(in(raw_cx) let local_storage = JS_NewPlainObject(raw_cx));
+    if local_storage.get().is_null() {
+        return Err("Failed to create localStorage object".to_string());
+    }
+
+    define_function(raw_cx, local_storage.get(), "getItem", Some(local_storage_get_item), 1)?;
+    define_function(raw_cx, local_storage.get(), "setItem", Some(local_storage_set_item), 2)?;
+    define_function(raw_cx, local_storage.get(), "removeItem", Some(local_storage_remove_item), 1)?;
+    define_function(raw_cx, local_storage.get(), "clear", Some(local_storage_clear), 0)?;
+    define_function(raw_cx, local_storage.get(), "key", Some(local_storage_key), 1)?;
+    set_int_property(raw_cx, local_storage.get(), "length", 0)?;
+
+    rooted!(in(raw_cx) let local_storage_val = ObjectValue(local_storage.get()));
     let name = std::ffi::CString::new("localStorage").unwrap();
     JS_DefineProperty(
         raw_cx,
         global_rooted.handle().into(),
         name.as_ptr(),
-        storage_val.handle().into(),
+        local_storage_val.handle().into(),
         JSPROP_ENUMERATE as u32,
     );
 
-    // sessionStorage (same object for now)
+    // Create sessionStorage object
+    rooted!(in(raw_cx) let session_storage = JS_NewPlainObject(raw_cx));
+    if session_storage.get().is_null() {
+        return Err("Failed to create sessionStorage object".to_string());
+    }
+
+    define_function(raw_cx, session_storage.get(), "getItem", Some(session_storage_get_item), 1)?;
+    define_function(raw_cx, session_storage.get(), "setItem", Some(session_storage_set_item), 2)?;
+    define_function(raw_cx, session_storage.get(), "removeItem", Some(session_storage_remove_item), 1)?;
+    define_function(raw_cx, session_storage.get(), "clear", Some(session_storage_clear), 0)?;
+    define_function(raw_cx, session_storage.get(), "key", Some(session_storage_key), 1)?;
+    set_int_property(raw_cx, session_storage.get(), "length", 0)?;
+
+    rooted!(in(raw_cx) let session_storage_val = ObjectValue(session_storage.get()));
     let name = std::ffi::CString::new("sessionStorage").unwrap();
     JS_DefineProperty(
         raw_cx,
         global_rooted.handle().into(),
         name.as_ptr(),
-        storage_val.handle().into(),
+        session_storage_val.handle().into(),
         JSPROP_ENUMERATE as u32,
     );
 
@@ -568,6 +586,154 @@ unsafe fn create_js_string(raw_cx: *mut JSContext, s: &str) -> JSVal {
     StringValue(&*str_val.get())
 }
 
+/// Basic CSS selector matching for single selectors
+/// Supports: tag, .class, #id, tag.class, tag#id, [attr], [attr=value]
+// TODO: Doesn't support complex selectors (descendant, child, sibling combinators, :pseudo-classes, ::pseudo-elements)
+fn matches_selector(selector: &str, tag_name: &str, attributes: &AttributeMap) -> bool {
+    // Handle comma-separated selectors (any match)
+    if selector.contains(',') {
+        return selector.split(',')
+            .any(|s| matches_selector(s.trim(), tag_name, attributes));
+    }
+
+    // Get element's id and class
+    let id_attr = attributes.iter()
+        .find(|attr| attr.name.local.as_ref() == "id")
+        .map(|attr| attr.value.as_str())
+        .unwrap_or("");
+    let class_attr = attributes.iter()
+        .find(|attr| attr.name.local.as_ref() == "class")
+        .map(|attr| attr.value.as_str())
+        .unwrap_or("");
+    let classes: Vec<&str> = class_attr.split_whitespace().collect();
+
+    let selector = selector.trim();
+
+    // ID selector: #id
+    if selector.starts_with('#') {
+        let id = &selector[1..];
+        // Could be #id.class or #id[attr]
+        if let Some(dot_pos) = id.find('.') {
+            let (id_part, class_part) = id.split_at(dot_pos);
+            return id_attr == id_part && classes.contains(&&class_part[1..]);
+        }
+        if let Some(bracket_pos) = id.find('[') {
+            let id_part = &id[..bracket_pos];
+            return id_attr == id_part && matches_attribute_selector(&id[bracket_pos..], attributes);
+        }
+        return id_attr == id;
+    }
+
+    // Class selector: .class
+    if selector.starts_with('.') {
+        let class_selector = &selector[1..];
+        // Could be .class1.class2
+        if class_selector.contains('.') {
+            return class_selector.split('.').all(|c| !c.is_empty() && classes.contains(&c));
+        }
+        // Could be .class[attr]
+        if let Some(bracket_pos) = class_selector.find('[') {
+            let class_part = &class_selector[..bracket_pos];
+            return classes.contains(&class_part) && matches_attribute_selector(&class_selector[bracket_pos..], attributes);
+        }
+        return classes.contains(&class_selector);
+    }
+
+    // Attribute selector: [attr] or [attr=value]
+    if selector.starts_with('[') {
+        return matches_attribute_selector(selector, attributes);
+    }
+
+    // Tag selector: tag, tag.class, tag#id, tag[attr]
+    let tag_lower = tag_name.to_lowercase();
+
+    // Handle tag.class
+    if let Some(dot_pos) = selector.find('.') {
+        let tag_part = &selector[..dot_pos];
+        let class_part = &selector[dot_pos + 1..];
+        if !tag_part.is_empty() && tag_lower != tag_part.to_lowercase() {
+            return false;
+        }
+        // Handle multiple classes: tag.class1.class2
+        return class_part.split('.').all(|c| !c.is_empty() && classes.contains(&c));
+    }
+
+    // Handle tag#id
+    if let Some(hash_pos) = selector.find('#') {
+        let tag_part = &selector[..hash_pos];
+        let id_part = &selector[hash_pos + 1..];
+        if !tag_part.is_empty() && tag_lower != tag_part.to_lowercase() {
+            return false;
+        }
+        return id_attr == id_part;
+    }
+
+    // Handle tag[attr]
+    if let Some(bracket_pos) = selector.find('[') {
+        let tag_part = &selector[..bracket_pos];
+        if !tag_part.is_empty() && tag_lower != tag_part.to_lowercase() {
+            return false;
+        }
+        return matches_attribute_selector(&selector[bracket_pos..], attributes);
+    }
+
+    // Simple tag match
+    if selector == "*" {
+        return true;
+    }
+    tag_lower == selector.to_lowercase()
+}
+
+/// Match an attribute selector like [attr], [attr=value], [attr^=value], etc.
+fn matches_attribute_selector(selector: &str, attributes: &AttributeMap) -> bool {
+    if !selector.starts_with('[') || !selector.ends_with(']') {
+        return false;
+    }
+    let inner = &selector[1..selector.len()-1];
+
+    // [attr=value] or [attr="value"]
+    if let Some(eq_pos) = inner.find('=') {
+        let operator_start = if eq_pos > 0 {
+            match inner.chars().nth(eq_pos - 1) {
+                Some('^') | Some('$') | Some('*') | Some('~') | Some('|') => eq_pos - 1,
+                _ => eq_pos,
+            }
+        } else {
+            eq_pos
+        };
+
+        let attr_name = &inner[..operator_start];
+        let operator = &inner[operator_start..eq_pos + 1];
+        let mut attr_value = &inner[eq_pos + 1..];
+
+        // Remove quotes if present
+        if (attr_value.starts_with('"') && attr_value.ends_with('"'))
+            || (attr_value.starts_with('\'') && attr_value.ends_with('\'')) {
+            attr_value = &attr_value[1..attr_value.len()-1];
+        }
+
+        let actual_value = attributes.iter()
+            .find(|attr| attr.name.local.as_ref() == attr_name)
+            .map(|attr| attr.value.as_str());
+
+        match actual_value {
+            Some(val) => match operator {
+                "=" => val == attr_value,
+                "^=" => val.starts_with(attr_value),
+                "$=" => val.ends_with(attr_value),
+                "*=" => val.contains(attr_value),
+                "~=" => val.split_whitespace().any(|v| v == attr_value),
+                "|=" => val == attr_value || val.starts_with(&format!("{}-", attr_value)),
+                _ => false,
+            },
+            None => false,
+        }
+    } else {
+        // [attr] - just check if attribute exists
+        attributes.iter().any(|attr| attr.name.local.as_ref() == inner)
+    }
+}
+
 // ============================================================================
 // Document methods
 // ============================================================================
@@ -683,8 +849,45 @@ unsafe extern "C" fn document_get_elements_by_class_name(raw_cx: *mut JSContext,
 
     println!("[JS] document.getElementsByClassName('{}') called", class_name);
 
-    // Return an empty array for now
+    // Split the class name into multiple classes (space-separated)
+    let search_classes: Vec<&str> = class_name.split_whitespace().collect();
+
+    // Collect matching elements from the DOM
+    let matching_elements: Vec<(usize, String, AttributeMap)> = DOM_REF.with(|dom_ref| {
+        let mut results = Vec::new();
+        if let Some(ref dom) = *dom_ref.borrow() {
+            let dom = &**dom;
+
+            // Traverse all nodes in the DOM
+            for (node_id, node) in dom.nodes.iter() {
+                if let crate::dom::NodeData::Element(ref elem_data) = node.data {
+                    // Get the class attribute
+                    if let Some(class_attr) = elem_data.attributes.iter()
+                        .find(|attr| attr.name.local.as_ref() == "class")
+                    {
+                        let element_classes: Vec<&str> = class_attr.value.split_whitespace().collect();
+                        // Check if all search classes are present
+                        if search_classes.iter().all(|sc| element_classes.contains(sc)) {
+                            results.push((node_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        results
+    });
+
+    // Create JS array with the matching elements
     rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
+
+    for (index, (node_id, tag, attrs)) in matching_elements.iter().enumerate() {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, *node_id, tag, &attrs) {
+            rooted!(in(raw_cx) let elem_val = js_elem);
+            rooted!(in(raw_cx) let array_obj = array.get());
+            mozjs::rust::wrappers::JS_SetElement(raw_cx, array_obj.handle().into(), index as u32, elem_val.handle().into());
+        }
+    }
+
     args.rval().set(ObjectValue(array.get()));
     true
 }
@@ -701,8 +904,30 @@ unsafe extern "C" fn document_query_selector(raw_cx: *mut JSContext, argc: c_uin
 
     println!("[JS] document.querySelector('{}') called", selector);
 
-    // Return null for now
-    args.rval().set(mozjs::jsval::NullValue());
+    // Find the first matching element
+    let element_data = DOM_REF.with(|dom_ref| {
+        if let Some(ref dom) = *dom_ref.borrow() {
+            let dom = &**dom;
+            for (node_id, node) in dom.nodes.iter() {
+                if let crate::dom::NodeData::Element(ref elem_data) = node.data {
+                    if matches_selector(&selector, &elem_data.name.local.to_string(), &elem_data.attributes) {
+                        return Some((node_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
+                    }
+                }
+            }
+        }
+        None
+    });
+
+    if let Some((node_id, tag_name, attributes)) = element_data {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, node_id, &tag_name, &attributes) {
+            args.rval().set(js_elem);
+        } else {
+            args.rval().set(mozjs::jsval::NullValue());
+        }
+    } else {
+        args.rval().set(mozjs::jsval::NullValue());
+    }
     true
 }
 
@@ -718,8 +943,33 @@ unsafe extern "C" fn document_query_selector_all(raw_cx: *mut JSContext, argc: c
 
     println!("[JS] document.querySelectorAll('{}') called", selector);
 
-    // Return an empty array for now
+    // Collect all matching elements from the DOM
+    let matching_elements: Vec<(usize, String, AttributeMap)> = DOM_REF.with(|dom_ref| {
+        let mut results = Vec::new();
+        if let Some(ref dom) = *dom_ref.borrow() {
+            let dom = &**dom;
+            for (node_id, node) in dom.nodes.iter() {
+                if let crate::dom::NodeData::Element(ref elem_data) = node.data {
+                    if matches_selector(&selector, &elem_data.name.local.to_string(), &elem_data.attributes) {
+                        results.push((node_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
+                    }
+                }
+            }
+        }
+        results
+    });
+
+    // Create JS array with the matching elements
     rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
+
+    for (index, (node_id, tag, attrs)) in matching_elements.iter().enumerate() {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, *node_id, tag, &attrs) {
+            rooted!(in(raw_cx) let elem_val = js_elem);
+            rooted!(in(raw_cx) let array_obj = array.get());
+            mozjs::rust::wrappers::JS_SetElement(raw_cx, array_obj.handle().into(), index as u32, elem_val.handle().into());
+        }
+    }
+
     args.rval().set(ObjectValue(array.get()));
     true
 }
@@ -1008,11 +1258,11 @@ unsafe extern "C" fn location_replace(raw_cx: *mut JSContext, argc: c_uint, vp: 
 }
 
 // ============================================================================
-// Storage methods
+// localStorage methods
 // ============================================================================
 
-/// Storage.getItem implementation
-unsafe extern "C" fn storage_get_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+/// localStorage.getItem implementation
+unsafe extern "C" fn local_storage_get_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let key = if argc > 0 {
@@ -1021,13 +1271,20 @@ unsafe extern "C" fn storage_get_item(raw_cx: *mut JSContext, argc: c_uint, vp: 
         String::new()
     };
 
-    println!("[JS] Storage.getItem('{}') called", key);
-    args.rval().set(mozjs::jsval::NullValue());
+    let value = LOCAL_STORAGE.with(|storage| {
+        storage.borrow().get(&key).cloned()
+    });
+
+    if let Some(val) = value {
+        args.rval().set(create_js_string(raw_cx, &val));
+    } else {
+        args.rval().set(mozjs::jsval::NullValue());
+    }
     true
 }
 
-/// Storage.setItem implementation
-unsafe extern "C" fn storage_set_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+/// localStorage.setItem implementation
+unsafe extern "C" fn local_storage_set_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let key = if argc > 0 {
@@ -1041,13 +1298,16 @@ unsafe extern "C" fn storage_set_item(raw_cx: *mut JSContext, argc: c_uint, vp: 
         String::new()
     };
 
-    println!("[JS] Storage.setItem('{}', '{}') called", key, value);
+    LOCAL_STORAGE.with(|storage| {
+        storage.borrow_mut().insert(key, value);
+    });
+
     args.rval().set(UndefinedValue());
     true
 }
 
-/// Storage.removeItem implementation
-unsafe extern "C" fn storage_remove_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+/// localStorage.removeItem implementation
+unsafe extern "C" fn local_storage_remove_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let key = if argc > 0 {
@@ -1056,24 +1316,162 @@ unsafe extern "C" fn storage_remove_item(raw_cx: *mut JSContext, argc: c_uint, v
         String::new()
     };
 
-    println!("[JS] Storage.removeItem('{}') called", key);
+    LOCAL_STORAGE.with(|storage| {
+        storage.borrow_mut().remove(&key);
+    });
+
     args.rval().set(UndefinedValue());
     true
 }
 
-/// Storage.clear implementation
-unsafe extern "C" fn storage_clear(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+/// localStorage.clear implementation
+unsafe extern "C" fn local_storage_clear(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    println!("[JS] Storage.clear() called");
+
+    LOCAL_STORAGE.with(|storage| {
+        storage.borrow_mut().clear();
+    });
+
     args.rval().set(UndefinedValue());
     true
 }
 
-/// Storage.key implementation
-unsafe extern "C" fn storage_key(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+/// localStorage.key implementation
+unsafe extern "C" fn local_storage_key(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    println!("[JS] Storage.key() called");
-    args.rval().set(mozjs::jsval::NullValue());
+
+    let index = if argc > 0 {
+        let val = *args.get(0);
+        if val.is_int32() {
+            val.to_int32() as usize
+        } else if val.is_double() {
+            val.to_double() as usize
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    let key = LOCAL_STORAGE.with(|storage| {
+        let storage = storage.borrow();
+        storage.keys().nth(index).cloned()
+    });
+
+    if let Some(k) = key {
+        args.rval().set(create_js_string(raw_cx, &k));
+    } else {
+        args.rval().set(mozjs::jsval::NullValue());
+    }
+    true
+}
+
+// ============================================================================
+// sessionStorage methods
+// ============================================================================
+
+/// sessionStorage.getItem implementation
+unsafe extern "C" fn session_storage_get_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let key = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    let value = SESSION_STORAGE.with(|storage| {
+        storage.borrow().get(&key).cloned()
+    });
+
+    if let Some(val) = value {
+        args.rval().set(create_js_string(raw_cx, &val));
+    } else {
+        args.rval().set(mozjs::jsval::NullValue());
+    }
+    true
+}
+
+/// sessionStorage.setItem implementation
+unsafe extern "C" fn session_storage_set_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let key = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+    let value = if argc > 1 {
+        js_value_to_string(raw_cx, *args.get(1))
+    } else {
+        String::new()
+    };
+
+    SESSION_STORAGE.with(|storage| {
+        storage.borrow_mut().insert(key, value);
+    });
+
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// sessionStorage.removeItem implementation
+unsafe extern "C" fn session_storage_remove_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let key = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    SESSION_STORAGE.with(|storage| {
+        storage.borrow_mut().remove(&key);
+    });
+
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// sessionStorage.clear implementation
+unsafe extern "C" fn session_storage_clear(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    SESSION_STORAGE.with(|storage| {
+        storage.borrow_mut().clear();
+    });
+
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// sessionStorage.key implementation
+unsafe extern "C" fn session_storage_key(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let index = if argc > 0 {
+        let val = *args.get(0);
+        if val.is_int32() {
+            val.to_int32() as usize
+        } else if val.is_double() {
+            val.to_double() as usize
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    let key = SESSION_STORAGE.with(|storage| {
+        let storage = storage.borrow();
+        storage.keys().nth(index).cloned()
+    });
+
+    if let Some(k) = key {
+        args.rval().set(create_js_string(raw_cx, &k));
+    } else {
+        args.rval().set(mozjs::jsval::NullValue());
+    }
     true
 }
 
@@ -1109,4 +1507,5 @@ unsafe extern "C" fn style_get_property_value(raw_cx: *mut JSContext, argc: c_ui
     args.rval().set(create_js_string(raw_cx, ""));
     true
 }
+
 
