@@ -1,11 +1,9 @@
 use super::cookies::{Cookie, ensure_cookie_jar_initialized, set_document_url, COOKIE_JAR, DOCUMENT_URL};
 use super::element_bindings;
-use super::helpers::{
+use super::super::helpers::{
     create_empty_array, create_js_string, define_function, js_value_to_string,
     set_bool_property, set_int_property, set_string_property,
 };
-use super::runtime::JsRuntime;
-use super::selectors::matches_selector;
 // DOM bindings for JavaScript using mozjs
 use crate::dom::{AttributeMap, Dom};
 use mozjs::jsapi::{
@@ -16,6 +14,8 @@ use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, UndefinedValue}
 use mozjs::rooted;
 use std::cell::RefCell;
 use std::os::raw::c_uint;
+use crate::js::JsRuntime;
+use crate::js::selectors::matches_selector;
 
 // Thread-local storage for DOM reference
 thread_local! {

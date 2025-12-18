@@ -1,5 +1,4 @@
 // Fetch API implementation for JavaScript using mozjs
-use super::runtime::JsRuntime;
 use crate::networking::HttpClient;
 use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, Handle, JSContext, JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JS_ParseJSON, JS_ValueToSource, MutableHandleValue, JSPROP_ENUMERATE};
@@ -7,6 +6,7 @@ use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, StringValue, Un
 use mozjs::rooted;
 use std::os::raw::c_uint;
 use std::ptr::NonNull;
+use crate::js::JsRuntime;
 
 /// Response data stored between calls
 struct FetchResponseData {

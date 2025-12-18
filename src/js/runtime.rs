@@ -1,4 +1,4 @@
-use super::{initialize_bindings, JsResult, TimerManager};
+use super::{initialize_bindings, JsResult};
 // JavaScript runtime management using Mozilla's SpiderMonkey (mozjs)
 use mozjs::jsval::{JSVal, PrivateValue, UndefinedValue};
 use mozjs::rooted;
@@ -14,6 +14,8 @@ use mozjs::panic::maybe_resume_unwind;
 use mozjs::rust::wrappers2::{JS_NewGlobalObject, JS_ValueToSource, JS_GetScriptPrivate};
 use url::Url;
 use crate::dom::Dom;
+use crate::js::bindings::timers;
+use crate::js::bindings::timers::TimerManager;
 
 // Stack size for growing when needed (16MB to handle very large scripts)
 const STACK_SIZE: usize = 16 * 1024 * 1024;
@@ -92,10 +94,7 @@ impl JsRuntime {
             rooted!(in(raw_cx) let global_root = global_ptr);
             let _realm = mozjs::jsapi::JSAutoRealm::new(raw_cx, global_root.get());
 
-            // Set up timers
-            super::timers::setup_timers(self, timer_manager)?;
-
-            initialize_bindings(self, dom, user_agent)?;
+            initialize_bindings(self, dom, user_agent, timer_manager)?;
         }
         Ok(())
     }

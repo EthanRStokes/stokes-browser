@@ -1,5 +1,4 @@
 // Timer implementation for setTimeout and setInterval using mozjs
-use super::runtime::JsRuntime;
 use mozjs::context::RawJSContext;
 use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, JS_DefineFunction, JSPROP_ENUMERATE};
 use mozjs::jsval::{Int32Value, JSVal, UndefinedValue};
@@ -12,6 +11,7 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use mozjs::conversions::jsstr_to_string;
+use crate::js::JsRuntime;
 
 /// A pending timer that will execute a callback after a delay
 #[derive(Debug)]

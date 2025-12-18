@@ -1,9 +1,4 @@
 // Element bindings for JavaScript using mozjs
-use super::helpers::{
-    create_empty_array, create_js_string, define_function, get_node_id_from_this,
-    js_value_to_string, set_int_property, set_string_property, to_css_property_name,
-};
-use super::selectors::matches_selector;
 use crate::dom::{AttributeMap, Dom, NodeData};
 use markup5ever::QualName;
 use mozjs::jsapi::{
@@ -14,6 +9,8 @@ use mozjs::rooted;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::os::raw::c_uint;
+use crate::js::helpers::{create_empty_array, create_js_string, define_function, get_node_id_from_this, js_value_to_string, set_int_property, set_string_property, to_css_property_name};
+use crate::js::selectors::matches_selector;
 
 // Thread-local storage for DOM reference (shared with dom_bindings)
 thread_local! {
