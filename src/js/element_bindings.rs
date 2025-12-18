@@ -1,20 +1,19 @@
-use mozjs::conversions::jsstr_to_string;
-use mozjs::gc::Handle;
-use mozjs::jsapi::{
-    CallArgs, HandleValueArray, JSContext, JSObject, JS_DefineFunction,
-    JS_DefineProperty, JS_NewPlainObject, JS_NewUCStringCopyN, NewArrayObject,
-    JSPROP_ENUMERATE,
-};
 // Element bindings for JavaScript using mozjs
-use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, StringValue, UndefinedValue};
+use super::helpers::{
+    create_empty_array, create_js_string, define_function, get_node_id_from_this,
+    js_value_to_string, set_int_property, set_string_property, to_css_property_name,
+};
+use super::selectors::matches_selector;
+use crate::dom::{AttributeMap, Dom, NodeData};
+use markup5ever::QualName;
+use mozjs::jsapi::{
+    CallArgs, JSContext, JSObject, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE,
+};
+use mozjs::jsval::{BooleanValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::rooted;
-use mozjs::rust::wrappers::JS_ValueToSource;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::os::raw::c_uint;
-use std::ptr::NonNull;
-use crate::dom::{AttributeMap, Dom, NodeData};
-use markup5ever::QualName;
 
 // Thread-local storage for DOM reference (shared with dom_bindings)
 thread_local! {
@@ -316,246 +315,16 @@ pub unsafe fn create_stub_element(raw_cx: *mut JSContext, tag_name: &str) -> Res
 }
 
 // ============================================================================
-// Helper functions
+// Local helper functions
 // ============================================================================
 
-/// Create an empty JavaScript array
-unsafe fn create_empty_array(raw_cx: *mut JSContext) -> *mut JSObject {
-    NewArrayObject(raw_cx, &HandleValueArray::empty())
-}
-
-unsafe fn define_function(
-    raw_cx: *mut JSContext,
-    obj: *mut JSObject,
-    name: &str,
-    func: mozjs::jsapi::JSNative,
-    nargs: u32,
-) -> Result<(), String> {
-    let cname = std::ffi::CString::new(name).unwrap();
-    rooted!(in(raw_cx) let obj_rooted = obj);
-    if JS_DefineFunction(
-        raw_cx,
-        obj_rooted.handle().into(),
-        cname.as_ptr(),
-        func,
-        nargs,
-        JSPROP_ENUMERATE as u32,
-    ).is_null() {
-        Err(format!("Failed to define function {}", name))
-    } else {
-        Ok(())
-    }
-}
-
-unsafe fn set_string_property(
-    raw_cx: *mut JSContext,
-    obj: *mut JSObject,
-    name: &str,
-    value: &str,
-) -> Result<(), String> {
-    let utf16: Vec<u16> = value.encode_utf16().collect();
-    rooted!(in(raw_cx) let str_val = JS_NewUCStringCopyN(raw_cx, utf16.as_ptr(), utf16.len()));
-    rooted!(in(raw_cx) let val = StringValue(&*str_val.get()));
-    rooted!(in(raw_cx) let obj_rooted = obj);
-    let cname = std::ffi::CString::new(name).unwrap();
-    if !JS_DefineProperty(
-        raw_cx,
-        obj_rooted.handle().into(),
-        cname.as_ptr(),
-        val.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    ) {
-        Err(format!("Failed to set property {}", name))
-    } else {
-        Ok(())
-    }
-}
-
-unsafe fn set_int_property(
-    raw_cx: *mut JSContext,
-    obj: *mut JSObject,
-    name: &str,
-    value: i32,
-) -> Result<(), String> {
-    rooted!(in(raw_cx) let val = Int32Value(value));
-    rooted!(in(raw_cx) let obj_rooted = obj);
-    let cname = std::ffi::CString::new(name).unwrap();
-    if !JS_DefineProperty(
-        raw_cx,
-        obj_rooted.handle().into(),
-        cname.as_ptr(),
-        val.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    ) {
-        Err(format!("Failed to set property {}", name))
-    } else {
-        Ok(())
-    }
-}
-
-/// Convert a JS value to a Rust string
-unsafe fn js_value_to_string(raw_cx: *mut JSContext, val: JSVal) -> String {
-    if val.is_undefined() {
-        return "undefined".to_string();
-    }
-    if val.is_null() {
-        return "null".to_string();
-    }
-    if val.is_boolean() {
-        return val.to_boolean().to_string();
-    }
-    if val.is_int32() {
-        return val.to_int32().to_string();
-    }
-    if val.is_double() {
-        return val.to_double().to_string();
-    }
-    if val.is_string() {
-        rooted!(in(raw_cx) let str_val = val.to_string());
-        if str_val.get().is_null() {
-            return String::new();
-        }
-        return jsstr_to_string(raw_cx, NonNull::new(str_val.get()).unwrap());
-    }
-
-    // For objects, try to convert to source
-    rooted!(in(raw_cx) let str_val = JS_ValueToSource(raw_cx, Handle::from_marked_location(&val)));
-    if str_val.get().is_null() {
-        return "[object]".to_string();
-    }
-    jsstr_to_string(raw_cx, NonNull::new(str_val.get()).unwrap())
-}
-
-/// Create a JS string from a Rust string
-unsafe fn create_js_string(raw_cx: *mut JSContext, s: &str) -> JSVal {
-    let utf16: Vec<u16> = s.encode_utf16().collect();
-    rooted!(in(raw_cx) let str_val = JS_NewUCStringCopyN(raw_cx, utf16.as_ptr(), utf16.len()));
-    StringValue(&*str_val.get())
-}
-
-/// Basic CSS selector matching for single selectors
-/// Supports: tag, .class, #id, tag.class, tag#id, [attr], [attr=value]
-fn matches_simple_selector(selector: &str, tag_name: &str, attributes: &crate::dom::AttributeMap) -> bool {
-    // Handle comma-separated selectors (any match)
-    if selector.contains(',') {
-        return selector.split(',')
-            .any(|s| matches_simple_selector(s.trim(), tag_name, attributes));
-    }
-
-    // Get element's id and class
-    let id_attr = attributes.iter()
-        .find(|attr| attr.name.local.as_ref() == "id")
-        .map(|attr| attr.value.as_str())
-        .unwrap_or("");
-    let class_attr = attributes.iter()
-        .find(|attr| attr.name.local.as_ref() == "class")
-        .map(|attr| attr.value.as_str())
-        .unwrap_or("");
-    let classes: Vec<&str> = class_attr.split_whitespace().collect();
-
-    let selector = selector.trim();
-
-    // ID selector: #id
-    if selector.starts_with('#') {
-        let id = &selector[1..];
-        if let Some(dot_pos) = id.find('.') {
-            let (id_part, class_part) = id.split_at(dot_pos);
-            return id_attr == id_part && classes.contains(&&class_part[1..]);
-        }
-        return id_attr == id;
-    }
-
-    // Class selector: .class
-    if selector.starts_with('.') {
-        let class = &selector[1..];
-        if class.contains('.') {
-            return class.split('.').all(|c| !c.is_empty() && classes.contains(&c));
-        }
-        return classes.contains(&class);
-    }
-
-    // Attribute selector: [attr] or [attr=value]
-    if selector.starts_with('[') && selector.ends_with(']') {
-        let inner = &selector[1..selector.len()-1];
-        if let Some(eq_pos) = inner.find('=') {
-            let attr_name = &inner[..eq_pos];
-            let mut attr_value = &inner[eq_pos + 1..];
-            if (attr_value.starts_with('"') && attr_value.ends_with('"'))
-                || (attr_value.starts_with('\'') && attr_value.ends_with('\'')) {
-                attr_value = &attr_value[1..attr_value.len()-1];
-            }
-            return attributes.iter()
-                .find(|attr| attr.name.local.as_ref() == attr_name)
-                .map(|attr| attr.value.as_str() == attr_value)
-                .unwrap_or(false);
-        } else {
-            return attributes.iter().any(|attr| attr.name.local.as_ref() == inner);
-        }
-    }
-
-    // Tag selector: tag, tag.class, tag#id
-    let tag_lower = tag_name.to_lowercase();
-
-    if let Some(dot_pos) = selector.find('.') {
-        let tag_part = &selector[..dot_pos];
-        let class_part = &selector[dot_pos + 1..];
-        if !tag_part.is_empty() && tag_lower != tag_part.to_lowercase() {
-            return false;
-        }
-        return class_part.split('.').all(|c| !c.is_empty() && classes.contains(&c));
-    }
-
-    if let Some(hash_pos) = selector.find('#') {
-        let tag_part = &selector[..hash_pos];
-        let id_part = &selector[hash_pos + 1..];
-        if !tag_part.is_empty() && tag_lower != tag_part.to_lowercase() {
-            return false;
-        }
-        return id_attr == id_part;
-    }
-
-    // Simple tag match
-    if selector == "*" {
-        return true;
-    }
-    tag_lower == selector.to_lowercase()
-}
-
-/// Get the node ID from a JS element object
-unsafe fn get_node_id_from_this(raw_cx: *mut JSContext, args: &CallArgs) -> Option<usize> {
-    let this_val = args.thisv();
-    if !this_val.get().is_object() || this_val.get().is_null() {
-        return None;
-    }
-
-    rooted!(in(raw_cx) let this_obj = this_val.get().to_object());
-    rooted!(in(raw_cx) let mut ptr_val = UndefinedValue());
-
-    let cname = std::ffi::CString::new("__nodeId").unwrap();
-    if !mozjs::jsapi::JS_GetProperty(raw_cx, this_obj.handle().into(), cname.as_ptr(), ptr_val.handle_mut().into()) {
-        return None;
-    }
-
-    if ptr_val.get().is_double() {
-        Some(ptr_val.get().to_double() as usize)
-    } else if ptr_val.get().is_int32() {
-        Some(ptr_val.get().to_int32() as usize)
-    } else {
-        None
-    }
-}
-
 /// Get the node ID from classList's parent element
-/// classList is a property on the element, so we need to traverse up to get the element's __nodeId
 unsafe fn get_classlist_parent_node_id(raw_cx: *mut JSContext, args: &CallArgs) -> Option<usize> {
     // First try to get __nodeId directly from this (for when classList is on the element directly)
     if let Some(id) = get_node_id_from_this(raw_cx, args) {
         return Some(id);
     }
-
-    // classList doesn't have __nodeId directly, we need to find it from the parent element
-    // This is a limitation - for now, we'll return None and the classList methods won't work on nested objects
-    // A proper implementation would store a reference back to the parent element
+    // classList doesn't have __nodeId directly - this is a limitation
     None
 }
 
@@ -866,7 +635,7 @@ unsafe extern "C" fn element_query_selector(raw_cx: *mut JSContext, argc: c_uint
                         for child_id in &parent_node.children {
                             if let Some(child_node) = dom.get_node(*child_id) {
                                 if let crate::dom::NodeData::Element(ref elem_data) = child_node.data {
-                                    if matches_simple_selector(selector, &elem_data.name.local.to_string(), &elem_data.attributes) {
+                                    if matches_selector(selector, &elem_data.name.local.to_string(), &elem_data.attributes) {
                                         return Some((*child_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
                                     }
                                 }
@@ -926,7 +695,7 @@ unsafe extern "C" fn element_query_selector_all(raw_cx: *mut JSContext, argc: c_
                             for child_id in &parent_node.children {
                                 if let Some(child_node) = dom.get_node(*child_id) {
                                     if let crate::dom::NodeData::Element(ref elem_data) = child_node.data {
-                                        if matches_simple_selector(selector, &elem_data.name.local.to_string(), &elem_data.attributes) {
+                                        if matches_selector(selector, &elem_data.name.local.to_string(), &elem_data.attributes) {
                                             results.push((*child_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
                                         }
                                     }
@@ -1078,7 +847,7 @@ unsafe extern "C" fn element_closest(raw_cx: *mut JSContext, argc: c_uint, vp: *
                     if let Some(node) = dom.get_node(id) {
                         if let NodeData::Element(ref elem_data) = node.data {
                             // Check if this element matches the selector
-                            if matches_simple_selector(&selector, &elem_data.name.local.to_string(), &elem_data.attributes) {
+                            if matches_selector(&selector, &elem_data.name.local.to_string(), &elem_data.attributes) {
                                 return Some((id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
                             }
                         }
@@ -1127,7 +896,7 @@ unsafe extern "C" fn element_matches(raw_cx: *mut JSContext, argc: c_uint, vp: *
                     let dom = &*dom_ptr;
                     if let Some(node) = dom.get_node(node_id) {
                         if let NodeData::Element(ref elem_data) = node.data {
-                            result = matches_simple_selector(&selector, &elem_data.name.local.to_string(), &elem_data.attributes);
+                            result = matches_selector(&selector, &elem_data.name.local.to_string(), &elem_data.attributes);
                         }
                     }
                 }
@@ -1332,20 +1101,6 @@ unsafe extern "C" fn style_set_property(raw_cx: *mut JSContext, argc: c_uint, vp
     true
 }
 
-/// Convert JavaScript camelCase property name to CSS kebab-case
-fn to_css_property_name(js_name: &str) -> String {
-    let mut result = String::with_capacity(js_name.len() + 5);
-    for ch in js_name.chars() {
-        if ch.is_uppercase() {
-            result.push('-');
-            result.push(ch.to_ascii_lowercase());
-        } else {
-            result.push(ch);
-        }
-    }
-    result
-}
-
 /// style.removeProperty implementation
 unsafe extern "C" fn style_remove_property(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -1412,10 +1167,6 @@ unsafe extern "C" fn style_remove_property(raw_cx: *mut JSContext, argc: c_uint,
     args.rval().set(create_js_string(raw_cx, &old_value));
     true
 }
-
-// ============================================================================
-// ClassList methods
-// ============================================================================
 
 /// classList.add implementation
 unsafe extern "C" fn class_list_add(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
@@ -1705,7 +1456,6 @@ unsafe extern "C" fn class_list_replace(raw_cx: *mut JSContext, argc: c_uint, vp
     args.rval().set(BooleanValue(result));
     true
 }
-
 
 
 

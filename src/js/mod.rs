@@ -1,9 +1,12 @@
 // JavaScript engine module (using Mozilla's SpiderMonkey via mozjs)
 mod runtime;
 mod console;
+mod cookies;
 mod dom_bindings;
 mod element_bindings;
 mod fetch;
+mod helpers;
+mod selectors;
 mod timers;
 mod alert_callback;
 mod registry;
@@ -12,7 +15,7 @@ pub use runtime::JsRuntime;
 pub use timers::TimerManager;
 pub use alert_callback::{set_alert_callback, clear_alert_callback};
 pub use registry::{get_node, register_node, unregister_node};
-pub use dom_bindings::{Cookie, CookieJar, get_cookies_for_request, set_cookie_from_response, clear_all_cookies};
+pub use cookies::{Cookie, CookieJar, get_cookies_for_request, set_cookie_from_response, clear_all_cookies};
 
 use crate::dom::Dom;
 use std::cell::RefCell;
