@@ -1078,6 +1078,10 @@ impl BrowserUI {
             }
         }
 
+        // Reset the canvas matrix to identity before drawing UI components
+        // (the text rendering above may have modified it)
+        painter.set_matrix(Affine::IDENTITY);
+
         // Scale other text rendering properties
         let text_padding = 5.0 * self.viewport.hidpi_scale;
         let cursor_margin = 6.0 * self.viewport.hidpi_scale;
