@@ -264,7 +264,7 @@ impl taffy::TraversePartialTree for TableTreeWrapper<'_> {
 
     #[inline(always)]
     fn child_count(&self, node_id: taffy::NodeId) -> usize {
-        self.dom.child_count(node_id)
+        self.ctx.items.len()
     }
 
     #[inline(always)]

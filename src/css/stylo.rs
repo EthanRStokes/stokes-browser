@@ -2,21 +2,24 @@
 // Blitz is dual licensed under Apache-2.0 and MIT
 // Blitz was used as a reference because it's the only good example of how Stylo can be used
 
-use std::hash::{Hash, Hasher};
-use std::ptr::NonNull;
-use std::sync::atomic::Ordering;
+use crate::css::parse::{parse_color, parse_size};
+use crate::dom::{damage, DomNode, NodeData};
 use atomic_refcell::{AtomicRef, AtomicRefMut};
+use html5ever::ns;
 use markup5ever::{local_name, LocalName, LocalNameStaticSet, Namespace, NamespaceStaticSet};
-use selectors::{Element, OpaqueElement};
 use selectors::attr::{AttrSelectorOperation, AttrSelectorOperator, CaseSensitivity, NamespaceConstraint};
-use selectors::bloom::BloomFilter;
+use selectors::bloom::{BloomFilter, BLOOM_HASH_MASK};
 use selectors::context::{MatchingContext, VisitedHandlingMode};
 use selectors::matching::ElementSelectorFlags;
 use selectors::sink::Push;
+use selectors::{Element, OpaqueElement};
 use skia_safe::wrapper::NativeTransmutableWrapper;
+use std::hash::{Hash, Hasher};
+use std::ptr::NonNull;
+use std::sync::atomic::Ordering;
 use style::animation::AnimationSetKey;
 use style::applicable_declarations::ApplicableDeclarationBlock;
-use style::CaseSensitivityExt;
+use style::bloom::each_relevant_element_hash;
 use style::color::AbsoluteColor;
 use style::context::{QuirksMode, SharedStyleContext, StyleContext};
 use style::data::ElementData;
@@ -29,13 +32,11 @@ use style::shared_lock::{Locked, SharedRwLock};
 use style::stylesheets::layer_rule::LayerOrder;
 use style::stylist::CascadeData;
 use style::traversal::{recalc_style_at, DomTraversal, PerLevelTraversalData};
-use style::traversal_flags::TraversalFlags;
+use style::values::computed::{Au, Display};
 use style::values::{AtomIdent, AtomString, GenericAtomIdent};
-use style::values::computed::{Au, Display, Percentage};
+use style::CaseSensitivityExt;
 use stylo_atoms::Atom;
 use stylo_dom::ElementState;
-use crate::css::parse::{parse_color, parse_size};
-use crate::dom::{damage, DomNode, NodeData};
 
 type Node<'a> = &'a DomNode;
 
@@ -118,6 +119,7 @@ impl<'a> TNode for Node<'a> {
     }
 
     fn is_in_document(&self) -> bool {
+        //FIXME self.flags.contains(DomNodeFlags::IS_IN_DOCUMENT)
         true
     }
 
@@ -204,7 +206,7 @@ impl selectors::Element for Node<'_> {
     }
 
     fn is_html_element_in_html_document(&self) -> bool {
-        true
+        self.is_html_element() && self.is_in_document()
     }
 
     fn has_local_name(&self, local_name: &LocalName) -> bool {
@@ -335,7 +337,7 @@ impl selectors::Element for Node<'_> {
     }
 
     fn is_html_slot_element(&self) -> bool {
-        false
+        self.is_html_element() && self.local_name() == &local_name!("slot")
     }
 
     fn has_id(
@@ -375,7 +377,15 @@ impl selectors::Element for Node<'_> {
     }
 
     fn is_part(&self, name: &<Self::Impl as selectors::SelectorImpl>::Identifier) -> bool {
-        false
+        self.attr(local_name!("part")).is_some_and(|attr| {
+            for token in attr.split_ascii_whitespace() {
+                let atom = Atom::from(token);
+                if CaseSensitivity::CaseSensitive.eq_atom(&atom, name) {
+                    return true;
+                }
+            }
+            false
+        })
     }
 
     fn is_empty(&self) -> bool {
@@ -387,7 +397,8 @@ impl selectors::Element for Node<'_> {
     }
 
     fn add_element_unique_hashes(&self, filter: &mut BloomFilter) -> bool {
-        false
+        each_relevant_element_hash(*self, |hash| filter.insert_hash(hash & BLOOM_HASH_MASK));
+        true
     }
 }
 
@@ -408,15 +419,15 @@ impl<'a> TElement for Node<'a> {
     }
 
     fn is_html_element(&self) -> bool {
-        self.is_element()
+        self.is_element() && *self.namespace() == ns!(html)
     }
 
     fn is_mathml_element(&self) -> bool {
-        false // Not implemented
+        self.is_element() && *self.namespace() == ns!(mathml)
     }
 
     fn is_svg_element(&self) -> bool {
-        false // idk
+        self.is_element() && *self.namespace() == ns!(svg)
     }
 
     fn style_attribute(&self) -> Option<ArcBorrow<'_, Locked<PropertyDeclarationBlock>>> {
@@ -448,11 +459,11 @@ impl<'a> TElement for Node<'a> {
     }
 
     fn has_part_attr(&self) -> bool {
-        false
+        self.attr(local_name!("part")).is_some()
     }
 
     fn exports_any_part(&self) -> bool {
-        false
+        self.attr(local_name!("exportparts")).is_some()
     }
 
     fn id(&self) -> Option<&Atom> {
