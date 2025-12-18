@@ -228,7 +228,6 @@ impl HtmlRenderer<'_> {
                                     let run_y = content_y + (glyph_run.baseline() - glyph_run.run().metrics().ascent) as f64;
                                     let run_w = glyph_run.advance() as f64;
                                     let run_h = (glyph_run.run().metrics().ascent + glyph_run.run().metrics().descent) as f64;
-
                                     let scroll = self.dom.viewport_scroll;
                                     let draw_x = (run_x - scroll.x) * self.scale_factor;
                                     let draw_y = (run_y - scroll.y) * self.scale_factor;

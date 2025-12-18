@@ -25,7 +25,7 @@ impl Default for EngineConfig {
             enable_javascript: true, // Not implemented yet
             block_ads: false,         // Not implemented yet
             cache_size_mb: 50,
-            debug_hitboxes: true, // Enable for debugging click issues
+            debug_hitboxes: false, // Enable for debugging click issues
         }
     }
 }

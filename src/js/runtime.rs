@@ -2,15 +2,14 @@ use super::{initialize_bindings, JsResult, TimerManager};
 // JavaScript runtime management using Mozilla's SpiderMonkey (mozjs)
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
-use mozjs::rust::{JSEngine, Runtime};
+use mozjs::rust::{JSEngine, Runtime, RealmOptions, SIMPLE_GLOBAL_CLASS};
 use std::ptr;
 use std::rc::Rc;
 use std::time::Duration;
 use mozjs::context::JSContext;
-use mozjs::jsapi::{CurrentGlobalOrNull, JSObject, JS_ClearPendingException, JS_GetPendingException, JS_GetStringLength, JS_IsExceptionPending, MutableHandleValue};
-use mozjs::rust::wrappers2::{JS_GetTwoByteStringCharsAndLength, JS_ValueToSource, RunJobs};
+use mozjs::jsapi::{JSObject, JS_ClearPendingException, JS_GetPendingException, JS_GetStringLength, JS_IsExceptionPending, MutableHandleValue, OnNewGlobalHookOption, Heap};
+use mozjs::rust::wrappers2::{JS_GetTwoByteStringCharsAndLength, JS_NewGlobalObject, JS_ValueToSource, RunJobs};
 use crate::dom::Dom;
-use crate::js::dom_bindings::setup_dom_bindings;
 
 // Stack size for growing when needed (16MB to handle very large scripts)
 const STACK_SIZE: usize = 16 * 1024 * 1024;
@@ -23,6 +22,7 @@ pub struct JsRuntime {
     // runtime must be dropped before engine since runtime holds a handle to engine
     timer_manager: Rc<TimerManager>,
     user_agent: String,
+    global: Box<Heap<*mut JSObject>>,
     runtime: Runtime,
     engine: JSEngine,
 }
@@ -32,27 +32,66 @@ impl JsRuntime {
     pub fn new(dom: *mut Dom, user_agent: String) -> JsResult<Self> {
         // Initialize the JS engine
         let engine = JSEngine::init().map_err(|_| "Failed to initialize JS engine".to_string())?;
-        //let engine = Rc::new(engine);
 
-        let runtime = Runtime::new(engine.handle());
+        let mut runtime = Runtime::new(engine.handle());
 
         // Create and set up timer manager
         let timer_manager = Rc::new(TimerManager::new());
 
+        // Create a global object
+        let global = Box::new(Heap::default());
+        {
+            let cx = runtime.cx();
+            let options = RealmOptions::default();
+
+            unsafe {
+                rooted!(&in(cx) let global_root = JS_NewGlobalObject(
+                    cx,
+                    &SIMPLE_GLOBAL_CLASS,
+                    ptr::null_mut(),
+                    OnNewGlobalHookOption::FireOnNewGlobalHook,
+                    &*options,
+                ));
+
+                if global_root.get().is_null() {
+                    return Err("Failed to create global object".to_string());
+                }
+
+                global.set(global_root.get());
+            }
+        }
+
         let mut js_runtime = Self {
             timer_manager: timer_manager.clone(),
             user_agent,
+            global,
             runtime,
             engine,
         };
         let user_agent = js_runtime.user_agent.clone();
 
-        // Set up timers
-        super::timers::setup_timers(&mut js_runtime, timer_manager)?;
-
-        initialize_bindings(&mut js_runtime, dom, user_agent)?;
+        // Enter the realm for the global object before setting up bindings
+        js_runtime.enter_realm_and_initialize(dom, user_agent, timer_manager)?;
 
         Ok(js_runtime)
+    }
+
+    /// Enter the realm and initialize bindings
+    fn enter_realm_and_initialize(&mut self, dom: *mut Dom, user_agent: String, timer_manager: Rc<TimerManager>) -> JsResult<()> {
+        // Get raw pointers before entering the realm to avoid borrow conflicts
+        let raw_cx = unsafe { self.runtime.cx().raw_cx() };
+        let global_ptr = self.global.get();
+
+        unsafe {
+            rooted!(in(raw_cx) let global_root = global_ptr);
+            let _realm = mozjs::jsapi::JSAutoRealm::new(raw_cx, global_root.get());
+
+            // Set up timers
+            super::timers::setup_timers(self, timer_manager)?;
+
+            initialize_bindings(self, dom, user_agent)?;
+        }
+        Ok(())
     }
 
     /// Get the raw JSContext pointer
@@ -61,24 +100,24 @@ impl JsRuntime {
     }
 
     /// Get the global object
-    pub fn global(&mut self) -> *mut JSObject {
-        unsafe {
-            let raw_cx = self.cx().raw_cx();
-            rooted!(in(raw_cx) let global = CurrentGlobalOrNull(raw_cx));
-            global.get()
-        }
+    pub fn global(&self) -> *mut JSObject {
+        self.global.get()
     }
 
     /// Execute JavaScript code
     pub fn execute(&mut self, code: &str) -> JsResult<JSVal> {
         let cx = self.runtime.cx();
         let raw_cx = unsafe { cx.raw_cx() };
+        let global_ptr = self.global.get();
 
         unsafe {
-            rooted!(in(raw_cx) let global = CurrentGlobalOrNull(raw_cx));
+            // Enter the realm of our global object
+            rooted!(in(raw_cx) let global = global_ptr);
             if global.get().is_null() {
                 return Err("No global object".to_string());
             }
+
+            let _realm = mozjs::jsapi::JSAutoRealm::new(raw_cx, global.get());
 
             rooted!(in(raw_cx) let mut rval = UndefinedValue());
 
