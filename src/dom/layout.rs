@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use markup5ever::{ns, QualName};
 use html5ever::local_name;
 use parley::{FontWeight, GenericFamily, InlineBox, InlineBoxKind, LineHeight, StyleProperty, TextStyle};
@@ -15,6 +16,7 @@ use style::shared_lock::StylesheetGuards;
 use crate::dom::damage::{ALL_DAMAGE, CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC};
 use crate::dom::{AttributeMap, Dom, DomNode, ElementData, NodeData};
 use crate::dom::node::{DomNodeFlags, NodeKind, SpecialElementData, TextLayout};
+use crate::layout::table::build_table_context;
 use crate::networking::parse_svg;
 use crate::qual_name;
 use crate::ui::TextBrush;
@@ -289,10 +291,23 @@ pub(crate) fn collect_layout_children(
             );
         }
         DisplayInside::Table => {
-            push_children_and_pseudos(layout_children, &dom.nodes[node_id]);
+            let (table_context, tlayout_children) = build_table_context(dom, node_id);
+            let data = SpecialElementData::TableRoot(Arc::new(table_context));
+            dom.nodes[node_id].flags.insert(DomNodeFlags::IS_TABLE_ROOT);
+            dom.nodes[node_id].data.element_mut().unwrap().special_data = data;
+            if let Some(before) = dom.nodes[node_id].before {
+                layout_children.push(before)
+            };
+            layout_children.extend_from_slice(&tlayout_children);
+            if let Some(after) = dom.nodes[node_id].after {
+                layout_children.push(after);
+            }
         }
         _ => {
-            push_children_and_pseudos(layout_children, &dom.nodes[node_id]);
+            push_non_whitespace_children_and_pseudos(
+                layout_children,
+                &dom.nodes[node_id]
+            );
         }
     }
 }

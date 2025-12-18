@@ -10,7 +10,7 @@ use crate::dom::{Dom, DomNode, ElementData, ImageData, NodeData};
 use crate::renderer::background::BackgroundImageCache;
 use crate::renderer::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
 use crate::renderer::layers::maybe_with_layer;
-use crate::renderer::text::{render_text_at_position, TextPainter, ToColorColor};
+use crate::renderer::text::{stroke_text, TextPainter, ToColorColor};
 use anyrender::PaintScene;
 use kurbo::{Affine, Insets, Point, Rect, Stroke, Vec2};
 use markup5ever::local_name;
@@ -22,7 +22,7 @@ use style::properties::ComputedValues;
 use style::servo_arc::Arc;
 use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, OutlineStyle, Overflow, ZIndex};
 use style::values::generics::color::GenericColor;
-use style::values::specified::TextDecorationLine;
+use style::values::specified::Display;
 use taffy::Layout;
 
 /// HTML renderer that draws layout boxes to a canvas
@@ -392,8 +392,8 @@ impl HtmlRenderer<'_> {
         let clip = &element.frame.padding_box_path();
         maybe_with_layer(painter, wants_layer, opacity, element.transform, clip, |painter| {
             element.draw_image(painter);
-            element.draw_inline_layout(painter);
 
+            element.draw_inline_layout(painter, position);
             element.draw_children(painter);
         });
     }
@@ -406,17 +406,7 @@ impl HtmlRenderer<'_> {
                 self.render_element(scene, node_id, location)
             }
             NodeData::Text { contents } => {
-                let style = node.style_arc();
-                let scroll_transform = Affine::translate((-self.dom.viewport_scroll.x, -self.dom.viewport_scroll.y));
-                text::render_text_node(
-                    scene,
-                    node,
-                    self.dom,
-                    contents,
-                    &style,
-                    self.scale_factor as f32,
-                    scroll_transform,
-                );
+                unreachable!()
             }
             NodeData::Document => {}
             // NodeData::Doctype => {}
@@ -536,167 +526,22 @@ impl Element<'_> {
         }
     }
 
-    fn draw_inline_layout(&self, painter: &mut TextPainter) {
-        let Some(inline_layout) = self.element.inline_layout_data.as_ref() else {
-            // No inline layout data - fall back to rendering text children directly
-            self.render_text_children_fallback(painter);
-            return;
-        };
-
-        let layout = &inline_layout.layout;
-
-        // Check if the layout is empty (no glyph runs were generated)
-        // This happens when inline layout construction hasn't populated the text
-        let has_content = layout.lines().next().is_some();
-        if !has_content {
-            // Fall back to rendering text children directly
-            self.render_text_children_fallback(painter);
-            return;
-        }
-
-        let transform = Affine::translate((self.position.x * self.scale_factor, self.position.y * self.scale_factor));
-
-        // Get padding and border to offset content
-        let node_layout = self.node.final_layout;
-        let padding_border = node_layout.padding + node_layout.border;
-        let content_offset = Affine::translate((
-            padding_border.left as f64 * self.scale_factor,
-            padding_border.top as f64 * self.scale_factor,
-        ));
-        let transform = transform * content_offset;
-
-        // Render each line
-        for line in layout.lines() {
-            for item in line.items() {
-                match item {
-                    PositionedLayoutItem::GlyphRun(glyph_run) => {
-                        let run = glyph_run.run();
-                        let font = run.font();
-                        let font_size = run.font_size();
-                        let metrics = run.metrics();
-                        let style = glyph_run.style();
-                        let synthesis = run.synthesis();
-                        let glyph_xform = synthesis
-                            .skew()
-                            .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
-
-                        // Get styles from the node associated with this text run
-                        let styles = self.context.dom
-                            .get_node(style.brush.id)
-                            .and_then(|n| n.primary_styles());
-
-                        let (text_color, text_decoration_color, text_decoration_line) = if let Some(styles) = styles {
-                            let itext_styles = styles.get_inherited_text();
-                            let text_styles = styles.get_text();
-                            let text_color = itext_styles.color.as_color_color();
-                            let text_decoration_color = text_styles
-                                .text_decoration_color
-                                .as_absolute()
-                                .map(ToColorColor::as_color_color)
-                                .unwrap_or(text_color);
-                            let text_decoration_line = text_styles.text_decoration_line;
-                            (text_color, text_decoration_color, text_decoration_line)
-                        } else {
-                            // Default to black text with no decoration
-                            let black = color::AlphaColor::new([0.0, 0.0, 0.0, 1.0]);
-                            (black, black, TextDecorationLine::empty())
-                        };
-
-                        let text_decoration_brush = anyrender::Paint::from(text_decoration_color);
-                        let has_underline = text_decoration_line.contains(TextDecorationLine::UNDERLINE);
-                        let has_strikethrough = text_decoration_line.contains(TextDecorationLine::LINE_THROUGH);
-
-                        painter.draw_glyphs(
-                            font,
-                            font_size,
-                            true, // hint
-                            run.normalized_coords(),
-                            Fill::NonZero,
-                            &anyrender::Paint::from(text_color),
-                            1.0, // alpha
-                            transform,
-                            glyph_xform,
-                            glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
-                                id: glyph.id as _,
-                                x: glyph.x,
-                                y: glyph.y,
-                            }),
-                        );
-
-                        // Draw underline
-                        if has_underline {
-                            let offset = metrics.underline_offset;
-                            let size = metrics.underline_size;
-                            let x = glyph_run.offset() as f64;
-                            let w = glyph_run.advance() as f64;
-                            let y = (glyph_run.baseline() - offset + size / 2.0) as f64;
-                            let line = kurbo::Line::new((x, y), (x + w, y));
-                            painter.stroke(&Stroke::new(size as f64), transform, &text_decoration_brush, None, &line);
-                        }
-
-                        // Draw strikethrough
-                        if has_strikethrough {
-                            let offset = metrics.strikethrough_offset;
-                            let size = metrics.strikethrough_size;
-                            let x = glyph_run.offset() as f64;
-                            let w = glyph_run.advance() as f64;
-                            let y = (glyph_run.baseline() - offset + size / 2.0) as f64;
-                            let line = kurbo::Line::new((x, y), (x + w, y));
-                            painter.stroke(&Stroke::new(size as f64), transform, &text_decoration_brush, None, &line);
-                        }
-                    }
-                    PositionedLayoutItem::InlineBox(inline_box) => {
-                        // Render inline box (embedded element like <img> or inline-block)
-                        let box_id = inline_box.id as usize;
-                        self.context.render_node(painter, box_id, self.position);
-                    }
-                }
+    fn draw_inline_layout(&self, painter: &mut TextPainter, pos: Point) {
+        if self.node.flags.is_inline_root() {
+            let text_layout = self.element.inline_layout_data.as_ref().unwrap_or_else(|| {
+                panic!("Tried to render node marked as inline root but has no inline layout data: {:?}", self.node)
+            });
+            if text_layout.text.contains("freestar") {
+                println!("YO WTF")
             }
-        }
-    }
 
-    /// Fallback method to render text children directly when inline layout is not populated
-    fn render_text_children_fallback(&self, painter: &mut TextPainter) {
-        self.render_text_children_recursive(painter, self.node, self.position);
-    }
-
-    fn render_text_children_recursive(&self, painter: &mut TextPainter, node: &DomNode, position: Point) {
-        for child_id in node.children.iter() {
-            let child = self.context.dom.get_node(*child_id);
-            if let Some(child) = child {
-                match &child.data {
-                    NodeData::Text { contents } => {
-                        // Render this text node
-                        let style = child.style_arc();
-                        let scroll_transform = Affine::translate((
-                            -self.context.dom.viewport_scroll.x,
-                            -self.context.dom.viewport_scroll.y,
-                        ));
-
-                        // Use parent's position since text nodes in inline contexts
-                        // don't have their own layout position set
-                        render_text_at_position(
-                            painter,
-                            child,
-                            self.context.dom,
-                            contents,
-                            &style,
-                            self.context.scale_factor as f32,
-                            scroll_transform,
-                            position,
-                        );
-                    }
-                    NodeData::Element(_) | NodeData::AnonymousBlock(_) => {
-                        // For nested elements (like <span>), recurse
-                        // Skip if it's a block element
-                        let display = child.taffy_style.display;
-                        if !matches!(display, taffy::Display::Block) {
-                            self.render_text_children_recursive(painter, child, position);
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            stroke_text(
+                self.scale_factor,
+                painter,
+                text_layout.layout.lines(),
+                self.context.dom,
+                pos
+            )
         }
     }
 

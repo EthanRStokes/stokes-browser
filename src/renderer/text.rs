@@ -1,181 +1,29 @@
-use crate::dom::{Dom, DomNode};
+use crate::dom::Dom;
 use crate::renderer::cache::{FontCacheKey, FontCacheKeyBorrowed, GenerationalCache, NormalizedTypefaceCacheKey, NormalizedTypefaceCacheKeyBorrowed};
+use crate::ui::TextBrush;
+use anyrender::PaintScene;
 use color::{AlphaColor, Srgb};
-use html5ever::tendril::StrTendril;
-use kurbo::{Affine, Shape, Stroke};
-use parley::{Alignment, AlignmentOptions, FontData, FontWeight, GenericFamily, LineHeight, PositionedLayoutItem, StyleProperty};
-use peniko::{BlendMode, Fill, ImageBrushRef, StyleRef};
+use kurbo::{Affine, Point, Shape, Stroke};
+use parley::{Line, PositionedLayoutItem};
+use peniko::{Fill, ImageBrushRef};
 use skia_safe::canvas::{GlyphPositions, SaveLayerRec};
 use skia_safe::font::Edging;
 use skia_safe::font_arguments::variation_position::Coordinate;
 use skia_safe::font_arguments::VariationPosition;
 // Text rendering functionality
-use skia_safe::{BlurStyle, Canvas, Color, ColorSpace, Font, FontArguments, FontHinting, FontMgr, GlyphId, ISize, MaskFilter, Paint, PaintCap, PaintJoin, PaintStyle, Point, RRect, Rect, Shader, Typeface};
-use std::cell::RefCell;
-use anyrender::{Glyph, NormalizedCoord, PaintRef, PaintScene};
+use skia_safe::{BlurStyle, Canvas, Color, ColorSpace, Font, FontArguments, FontHinting, FontMgr, GlyphId, MaskFilter, Paint, PaintCap, PaintJoin, PaintStyle, RRect, Rect, Shader, Typeface};
 use style::color::AbsoluteColor;
-use style::properties::ComputedValues;
-use style::servo_arc::Arc;
-use style::values::computed::font::{GenericFontFamily, SingleFontFamily};
-use style::values::specified::text::TextTransformCase;
-use style::values::specified::{TextAlignKeyword, TextDecorationLine};
+use style::values::specified::TextDecorationLine;
 
-/// Render text with CSS styles applied and DPI scale factor using Skia's textlayout
-pub fn render_text_node(
+pub fn stroke_text<'a>(
+    scale: f64,
     painter: &mut TextPainter,
-    node: &DomNode,
+    lines: impl Iterator<Item = Line<'a, TextBrush>>,
     dom: &Dom,
-    contents: &RefCell<StrTendril>,
-    style: &Arc<ComputedValues>,
-    scale_factor: f32,
-    scroll_transform: kurbo::Affine,
+    pos: Point,
 ) {
-    let text = contents.borrow();
-    let layout = node.final_layout;
-    let content_rect = Rect::from_xywh(layout.location.x, layout.location.y, layout.size.width, layout.size.height);
-
-    let mut font_ctx = dom.font_ctx.lock().unwrap();
-    let mut layout_ctx = dom.layout_ctx.lock().unwrap();
-
-    // Apply text transformation to the content
-    let inherited_text = style.get_inherited_text();
-    let text_transform = inherited_text.text_transform.case();
-    let transformed_text: String = match text_transform {
-        TextTransformCase::None => {
-            text.to_string()
-        }
-        TextTransformCase::Uppercase => {
-            text.chars().flat_map(|c| c.to_uppercase()).collect()
-        }
-        TextTransformCase::Lowercase => {
-            text.chars().flat_map(|c| c.to_lowercase()).collect()
-        }
-        TextTransformCase::Capitalize => {
-            let mut capitalize_next = true;
-            text.chars()
-                .map(|c| {
-                    if c.is_whitespace() {
-                        capitalize_next = true;
-                        c
-                    } else if capitalize_next {
-                        capitalize_next = false;
-                        c.to_uppercase().next().unwrap_or(c)
-                    } else {
-                        c
-                    }
-                })
-                .collect()
-        }
-    };
-
-    let mut builder = layout_ctx.ranged_builder(
-        &mut font_ctx,
-        &transformed_text,
-        scale_factor,
-        true,
-    );
-
-    // Extract CSS properties
-    let font = style.get_font();
-    let font_size = font.font_size;
-    let font_size = font_size.computed_size.px();
-    let text_align = &inherited_text.text_align;
-    let font_weight = &font.font_weight.value();
-    let line_height_value = &font.line_height;
-
-    // Set default font family - parse comma-separated list
-    let families = font.font_family.families.iter().map(|family| {
-        match family {
-            SingleFontFamily::FamilyName(a) => {
-                let name = a.name.as_ref();
-                name
-            }
-            SingleFontFamily::Generic(b) => {
-                match b {
-                    GenericFontFamily::Serif => "serif",
-                    GenericFontFamily::SansSerif => "sans-serif",
-                    GenericFontFamily::Monospace => "monospace",
-                    GenericFontFamily::Cursive => "cursive",
-                    GenericFontFamily::Fantasy => "fantasy",
-                    GenericFontFamily::SystemUi => "system-ui",
-                    GenericFontFamily::None => "sans-serif"
-                }
-            }
-        }
-    }).collect::<Vec<&str>>();
-    let font_families: Vec<&str> = families
-        .iter().map(|s| s.trim().trim_matches(|c| c == '"' || c == '\''))
-        .collect();
-    
-    // Use first font family or default to system UI
-    if let Some(first_family) = font_families.first() {
-        let generic_family = match first_family.to_lowercase().as_str() {
-            "serif" => GenericFamily::Serif,
-            "sans-serif" => GenericFamily::SansSerif,
-            "monospace" => GenericFamily::Monospace,
-            "cursive" => GenericFamily::Cursive,
-            "fantasy" => GenericFamily::Fantasy,
-            "system-ui" | "-apple-system" | "blinkmacsystemfont" => GenericFamily::SystemUi,
-            _ => GenericFamily::SystemUi,
-        };
-        builder.push_default(generic_family);
-    } else {
-        builder.push_default(GenericFamily::SystemUi);
-    }
-
-    // Set font size
-    builder.push_default(StyleProperty::FontSize(font_size));
-
-    // Set font weight
-    let font_weight = FontWeight::new(*font_weight);
-    builder.push_default(StyleProperty::FontWeight(font_weight));
-
-    // Set line height
-    let line_height_ratio = match line_height_value {
-        style::values::computed::font::LineHeight::Normal => {
-            1.2 // Typical default line height ratio
-        }
-        style::values::computed::font::LineHeight::Number(num) => {
-            num.0
-        }
-        style::values::computed::font::LineHeight::Length(len) => {
-            len.px()
-        }
-    };
-    builder.push_default(LineHeight::FontSizeRelative(line_height_ratio));
-
-    // Build the layout
-    let mut layout = builder.build(&transformed_text);
-
-    // Break lines based on content width
-    let max_width = if content_rect.width() > 0.0 {
-        Some(content_rect.width())
-    } else {
-        None
-    };
-    layout.break_all_lines(max_width);
-
-    // Set text alignment
-    let alignment = match text_align {
-        TextAlignKeyword::Left => Alignment::Left,
-        TextAlignKeyword::Right => Alignment::Right,
-        TextAlignKeyword::Center => Alignment::Center,
-        TextAlignKeyword::Justify => Alignment::Justify,
-        TextAlignKeyword::Start => Alignment::Start,
-        TextAlignKeyword::End => Alignment::End,
-        TextAlignKeyword::MozCenter => Alignment::Center,
-        TextAlignKeyword::MozLeft => Alignment::Left,
-        TextAlignKeyword::MozRight => Alignment::Right,
-    };
-    layout.align(alignment, AlignmentOptions::default());
-
-    // Get text color
-    let text_color: AlphaColor<Srgb> = style.clone_color().as_color_color();
-    // Create transform for text position, combined with scroll transform
-    let transform = Affine::translate((content_rect.left as f64, content_rect.top as f64));
-
-    // Render each line
-    for line in layout.lines() {
+    let transform = Affine::translate((pos.x * scale, pos.y * scale));
+    for line in lines {
         for item in line.items() {
             if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
                 let run = glyph_run.run();
@@ -233,160 +81,16 @@ pub fn render_text_node(
                         let line = kurbo::Line::new((x, y), (x + w, y));
                         painter.stroke(&Stroke::new(size as f64), transform, brush, None, &line)
                     };
-
                 if has_underline {
                     let offset = metrics.underline_offset;
                     let size = metrics.underline_size;
-
-                    // TODO: intercept line when crossing an descending character like "gqy"
                     draw_decoration_line(offset, size, &text_decoration_brush);
                 }
                 if has_strikethrough {
                     let offset = metrics.strikethrough_offset;
                     let size = metrics.strikethrough_size;
-
                     draw_decoration_line(offset, size, &text_decoration_brush);
                 }
-            }
-        }
-    }
-}
-
-/// Render text at a specified position (for fallback when inline layout is not populated)
-pub fn render_text_at_position(
-    painter: &mut TextPainter,
-    node: &DomNode,
-    dom: &Dom,
-    contents: &RefCell<StrTendril>,
-    style: &Arc<ComputedValues>,
-    scale_factor: f32,
-    _scroll_transform: kurbo::Affine,
-    position: kurbo::Point,
-) {
-    let text = contents.borrow();
-    if text.trim().is_empty() {
-        return; // Skip empty or whitespace-only text
-    }
-
-    // Get parent's layout for dimensions
-    let layout = node.final_layout;
-    let parent_width = if layout.size.width > 0.0 {
-        layout.size.width
-    } else {
-        // Fallback to a reasonable width
-        1000.0
-    };
-
-    let mut font_ctx = dom.font_ctx.lock().unwrap();
-    let mut layout_ctx = dom.layout_ctx.lock().unwrap();
-
-    // Apply text transformation to the content
-    let inherited_text = style.get_inherited_text();
-    let text_transform = inherited_text.text_transform.case();
-    let transformed_text: String = match text_transform {
-        TextTransformCase::None => {
-            text.to_string()
-        }
-        TextTransformCase::Uppercase => {
-            text.chars().flat_map(|c| c.to_uppercase()).collect()
-        }
-        TextTransformCase::Lowercase => {
-            text.chars().flat_map(|c| c.to_lowercase()).collect()
-        }
-        TextTransformCase::Capitalize => {
-            let mut capitalize_next = true;
-            text.chars()
-                .map(|c| {
-                    if c.is_whitespace() {
-                        capitalize_next = true;
-                        c
-                    } else if capitalize_next {
-                        capitalize_next = false;
-                        c.to_uppercase().next().unwrap_or(c)
-                    } else {
-                        c
-                    }
-                })
-                .collect()
-        }
-    };
-
-    let mut builder = layout_ctx.ranged_builder(
-        &mut font_ctx,
-        &transformed_text,
-        scale_factor,
-        true,
-    );
-
-    // Extract CSS properties
-    let font = style.get_font();
-    let font_size = font.font_size.computed_size().px();
-    let font_weight = &font.font_weight.value();
-
-    // Set default font family
-    builder.push_default(GenericFamily::SystemUi);
-
-    // Set font size
-    builder.push_default(StyleProperty::FontSize(font_size));
-
-    // Set font weight
-    let font_weight = FontWeight::new(*font_weight);
-    builder.push_default(StyleProperty::FontWeight(font_weight));
-
-    // Set line height
-    let line_height_value = &font.line_height;
-    let line_height_ratio = match line_height_value {
-        style::values::computed::font::LineHeight::Normal => 1.2,
-        style::values::computed::font::LineHeight::Number(num) => num.0,
-        style::values::computed::font::LineHeight::Length(len) => len.px(),
-    };
-    builder.push_default(LineHeight::FontSizeRelative(line_height_ratio));
-
-    // Build the layout
-    let mut text_layout = builder.build(&transformed_text);
-
-    // Break lines based on available width
-    let max_width = Some(parent_width * scale_factor);
-    text_layout.break_all_lines(max_width);
-
-    // Get text color
-    let text_color: AlphaColor<Srgb> = style.clone_color().as_color_color();
-
-    // Calculate transform using position and adding padding/border offset
-    let padding_border = layout.padding + layout.border;
-    let transform = kurbo::Affine::translate((
-        (position.x + padding_border.left as f64) * scale_factor as f64,
-        (position.y + padding_border.top as f64) * scale_factor as f64,
-    ));
-
-    // Render each line
-    for line in text_layout.lines() {
-        for item in line.items() {
-            if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
-                let run = glyph_run.run();
-                let font = run.font();
-                let font_size = run.font_size();
-                let synthesis = run.synthesis();
-                let glyph_xform = synthesis
-                    .skew()
-                    .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
-
-                painter.draw_glyphs(
-                    font,
-                    font_size,
-                    true, // hint
-                    run.normalized_coords(),
-                    Fill::NonZero,
-                    &anyrender::Paint::from(text_color),
-                    1.0, // alpha
-                    transform,
-                    glyph_xform,
-                    glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
-                        id: glyph.id as _,
-                        x: glyph.x,
-                        y: glyph.y,
-                    }),
-                );
             }
         }
     }
@@ -404,7 +108,7 @@ pub(crate) struct SkiaCache {
     font: GenerationalCache<FontCacheKey, Font>,
     font_mgr: FontMgr,
     glyph_id_buf: Vec<GlyphId>,
-    glyph_pos_buf: Vec<Point>,
+    glyph_pos_buf: Vec<skia_safe::Point>,
 }
 
 impl SkiaCache {
@@ -854,13 +558,13 @@ impl PaintScene for TextPainter<'_> {
 
         for glyph in glyphs {
             self.cache.glyph_id_buf.push(GlyphId::from(glyph.id as u16));
-            self.cache.glyph_pos_buf.push(Point::new(glyph.x, glyph.y));
+            self.cache.glyph_pos_buf.push(skia_safe::Point::new(glyph.x, glyph.y));
         }
 
         self.inner.draw_glyphs_at(
             &self.cache.glyph_id_buf[..],
             GlyphPositions::Points(&self.cache.glyph_pos_buf[..]),
-            Point::new(0.0, 0.0),
+            skia_safe::Point::new(0.0, 0.0),
             &font,
             &self.cache.paint,
         );

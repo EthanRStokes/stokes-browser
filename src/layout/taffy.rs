@@ -150,7 +150,7 @@ impl LayoutPartialTree for Dom {
 
                     if *data.name.local == *"img"
                         || *data.name.local == *"canvas"
-                        || (cfg!(feature = "svg") && *data.name.local == *"svg")
+                        || *data.name.local == *"svg"
                     {
                         // Get width and height attributes on image element
                         //
@@ -200,7 +200,7 @@ impl LayoutPartialTree for Dom {
                             false,
                         );
 
-                        return taffy::LayoutOutput {
+                        return LayoutOutput {
                             size: computed,
                             content_size: computed,
                             first_baselines: taffy::Point::NONE,

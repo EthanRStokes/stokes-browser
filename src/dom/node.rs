@@ -778,7 +778,7 @@ impl DomNode {
             .borrow()
             .as_ref()
             .map(|element_data| element_data.styles.primary().clone())
-            .unwrap_or(StyloComputedValues::initial_values_with_font_override(Font::initial_values())).to_arc()
+            .unwrap()
     }
 
     /// Get text content of this node and its descendants
