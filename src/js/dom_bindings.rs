@@ -1,20 +1,19 @@
+use super::element_bindings;
 // DOM bindings for JavaScript using mozjs
 use super::runtime::JsRuntime;
-use super::element_bindings;
 use crate::dom::Dom;
-use mozjs::jsval::{JSVal, UndefinedValue, ObjectValue, Int32Value, BooleanValue, StringValue};
-use mozjs::rooted;
 use mozjs::gc::Handle;
-use std::cell::RefCell;
-use std::os::raw::c_uint;
-use std::ptr;
-use std::rc::Rc;
 use mozjs::jsapi::{
-    CallArgs, CurrentGlobalOrNull, HandleValueArray, JSContext, JSNative, JSObject, NewArrayObject,
-    JS_DefineFunction, JS_DefineProperty, JS_GetTwoByteStringCharsAndLength, JS_NewPlainObject, JS_NewUCStringCopyN,
+    CallArgs, CurrentGlobalOrNull, HandleValueArray, JSContext, JSNative, JSObject, JS_DefineFunction,
+    JS_DefineProperty, JS_NewPlainObject, JS_NewUCStringCopyN, NewArrayObject,
     JSPROP_ENUMERATE,
 };
+use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
+use mozjs::rooted;
 use mozjs::rust::wrappers::JS_ValueToSource;
+use std::cell::RefCell;
+use std::os::raw::c_uint;
+use std::ptr::NonNull;
 
 // Thread-local storage for DOM reference
 thread_local! {
@@ -554,13 +553,7 @@ unsafe fn js_value_to_string(raw_cx: *mut JSContext, val: JSVal) -> String {
         if str_val.get().is_null() {
             return String::new();
         }
-        let mut length = 0;
-        let chars = JS_GetTwoByteStringCharsAndLength(raw_cx, ptr::null(), *str_val.handle(), &mut length);
-        if chars.is_null() {
-            return String::new();
-        }
-        let slice = std::slice::from_raw_parts(chars, length);
-        return String::from_utf16_lossy(slice);
+        return unsafe { mozjs::conversions::jsstr_to_string(raw_cx, NonNull::new(str_val.get()).unwrap()) };
     }
 
     // For objects, try to convert to source
@@ -568,13 +561,7 @@ unsafe fn js_value_to_string(raw_cx: *mut JSContext, val: JSVal) -> String {
     if str_val.get().is_null() {
         return "[object]".to_string();
     }
-    let mut length = 0;
-    let chars = JS_GetTwoByteStringCharsAndLength(raw_cx, ptr::null(), *str_val.handle(), &mut length);
-    if chars.is_null() {
-        return "[string conversion failed]".to_string();
-    }
-    let slice = std::slice::from_raw_parts(chars, length);
-    String::from_utf16_lossy(slice)
+    unsafe { mozjs::conversions::jsstr_to_string(raw_cx, NonNull::new(str_val.get()).unwrap()) }
 }
 
 /// Create a JS string from a Rust string

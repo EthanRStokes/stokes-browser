@@ -8,9 +8,10 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::Duration;
 use mozjs::context::JSContext;
+use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::{JSObject, JS_ClearPendingException, JS_GetPendingException, JS_GetStringLength, JS_IsExceptionPending, MutableHandleValue, OnNewGlobalHookOption, Heap, SetScriptPrivate, JSScript, JSContext as RawJSContext, Compile1, JS_ExecuteScript, Handle};
 use mozjs::panic::maybe_resume_unwind;
-use mozjs::rust::wrappers2::{JS_GetTwoByteStringCharsAndLength, JS_NewGlobalObject, JS_ValueToSource, JS_GetScriptPrivate};
+use mozjs::rust::wrappers2::{JS_NewGlobalObject, JS_ValueToSource, JS_GetScriptPrivate};
 use url::Url;
 use crate::dom::Dom;
 
@@ -143,13 +144,8 @@ impl JsRuntime {
                         JS_ClearPendingException(raw_cx);
                         rooted!(in(raw_cx) let exc_str = JS_ValueToSource(cx, exception.handle()));
                         if !exc_str.get().is_null() {
-                            let chars = JS_GetTwoByteStringCharsAndLength(cx, *exc_str.handle(), &mut JS_GetStringLength(exc_str.get()));
-                            if !chars.is_null() {
-                                let len = JS_GetStringLength(exc_str.get());
-                                let slice = std::slice::from_raw_parts(chars, len as usize);
-                                let msg = String::from_utf16_lossy(slice);
-                                return Err(format!("JavaScript compilation error: {}", msg));
-                            }
+                            let msg = jsstr_to_string(raw_cx, NonNull::new(exc_str.handle().get()).unwrap());
+                            return Err(format!("JavaScript compilation error: {}", msg));
                         }
                     }
                 }

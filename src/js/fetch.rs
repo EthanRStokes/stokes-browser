@@ -1,12 +1,12 @@
 // Fetch API implementation for JavaScript using mozjs
 use super::runtime::JsRuntime;
 use crate::networking::HttpClient;
-use mozjs::jsval::{JSVal, UndefinedValue, Int32Value, BooleanValue, StringValue, ObjectValue};
+use mozjs::conversions::jsstr_to_string;
+use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, Handle, JSContext, JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JS_ParseJSON, JS_ValueToSource, MutableHandleValue, JSPROP_ENUMERATE};
+use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use std::os::raw::c_uint;
-use std::ptr;
-use std::sync::{Arc, Mutex};
-use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, Handle, JSContext, JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_GetTwoByteStringCharsAndLength, JS_NewPlainObject, JS_NewUCStringCopyN, JS_ParseJSON, JS_ValueToSource, MutableHandleValue, JSPROP_ENUMERATE};
+use std::ptr::NonNull;
 
 /// Response data stored between calls
 struct FetchResponseData {
@@ -117,28 +117,14 @@ unsafe fn js_value_to_string(cx: *mut JSContext, val: JSVal) -> String {
             return String::new();
         }
 
-        let mut length = 0;
-        let chars = JS_GetTwoByteStringCharsAndLength(cx, ptr::null(), *str_val.handle(), &mut length);
-        if chars.is_null() {
-            return String::new();
-        }
-
-        let slice = std::slice::from_raw_parts(chars, length);
-        String::from_utf16_lossy(slice)
+        jsstr_to_string(cx, NonNull::new(str_val.handle().get()).unwrap())
     } else {
         rooted!(in(cx) let str_val = JS_ValueToSource(cx, Handle::from_marked_location(&val)));
         if str_val.get().is_null() {
             return String::new();
         }
 
-        let mut length = 0;
-        let chars = JS_GetTwoByteStringCharsAndLength(cx, ptr::null(), *str_val.handle(), &mut length);
-        if chars.is_null() {
-            return String::new();
-        }
-
-        let slice = std::slice::from_raw_parts(chars, length);
-        String::from_utf16_lossy(slice)
+        jsstr_to_string(cx, NonNull::new(str_val.handle().get()).unwrap())
     }
 }
 

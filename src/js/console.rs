@@ -1,13 +1,12 @@
 // Console API implementation for JavaScript using mozjs
 use super::runtime::JsRuntime;
+use mozjs::gc::Handle;
+use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, JSContext, JSNative, JSObject, JS_DefineFunction, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE};
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
-use mozjs::rust::HandleValue;
-use std::os::raw::c_uint;
-use std::ptr;
-use mozjs::gc::Handle;
-use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, JSContext, JSNative, JSObject, JS_DefineFunction, JS_DefineProperty, JS_GetTwoByteStringCharsAndLength, JS_NewPlainObject, JSPROP_ENUMERATE};
 use mozjs::rust::wrappers::JS_ValueToSource;
+use std::os::raw::c_uint;
+use std::ptr::NonNull;
 
 /// Set up the console object in the JavaScript context
 pub fn setup_console(runtime: &mut JsRuntime) -> Result<(), String> {
@@ -117,14 +116,7 @@ unsafe fn js_value_to_string(raw_cx: *mut JSContext, val: JSVal) -> String {
         return "[object]".to_string();
     }
 
-    let mut length = 0;
-    let chars = unsafe { JS_GetTwoByteStringCharsAndLength(raw_cx, ptr::null(), *str_val.handle(), &mut length) };
-    if chars.is_null() {
-        return "[string conversion failed]".to_string();
-    }
-
-    let slice = unsafe { std::slice::from_raw_parts(chars, length) };
-    String::from_utf16_lossy(slice)
+    unsafe { mozjs::conversions::jsstr_to_string(raw_cx, NonNull::new(str_val.get()).unwrap()) }
 }
 
 /// console.log implementation

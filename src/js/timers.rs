@@ -1,17 +1,17 @@
 // Timer implementation for setTimeout and setInterval using mozjs
 use super::runtime::JsRuntime;
-use mozjs::jsval::{JSVal, UndefinedValue, Int32Value};
+use mozjs::context::RawJSContext;
+use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, JS_DefineFunction, JSPROP_ENUMERATE};
+use mozjs::jsval::{Int32Value, JSVal, UndefinedValue};
 use mozjs::{jsapi, rooted};
-use mozjs::rust::HandleObject;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::os::raw::c_uint;
 use std::ptr;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-use mozjs::context::{JSContext, RawJSContext};
-use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, JS_DefineFunction, JSPROP_ENUMERATE};
-use mozjs::rust::wrappers2::JS_GetTwoByteStringCharsAndLength;
+use mozjs::conversions::jsstr_to_string;
 
 /// A pending timer that will execute a callback after a delay
 #[derive(Debug)]
@@ -238,14 +238,7 @@ unsafe fn js_value_to_string(cx: *mut RawJSContext, val: JSVal) -> String {
             return String::new();
         }
 
-        let mut length = 0;
-        let chars = jsapi::JS_GetTwoByteStringCharsAndLength(cx, ptr::null(), *str_val, &mut length);
-        if chars.is_null() {
-            return String::new();
-        }
-
-        let slice = std::slice::from_raw_parts(chars, length);
-        String::from_utf16_lossy(slice)
+        jsstr_to_string(cx, NonNull::new(str_val.get()).unwrap())
     } else if val.is_object() && !val.is_null() {
         // For function objects, we'll just return a placeholder
         // In a real implementation, we'd store the function object
