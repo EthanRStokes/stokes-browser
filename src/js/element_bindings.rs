@@ -13,63 +13,63 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::os::raw::c_uint;
 use std::ptr::NonNull;
+use crate::dom::{AttributeMap, Dom, NodeData};
+use markup5ever::QualName;
 
-// Thread-local storage for element attributes (keyed by node pointer)
+// Thread-local storage for DOM reference (shared with dom_bindings)
 thread_local! {
-    static ELEMENT_ATTRIBUTES: RefCell<HashMap<i64, HashMap<String, String>>> = RefCell::new(HashMap::new());
-    static ELEMENT_CHILDREN: RefCell<HashMap<i64, Vec<i64>>> = RefCell::new(HashMap::new());
-    static NEXT_NODE_PTR: RefCell<i64> = RefCell::new(1);
+    pub(crate) static ELEMENT_DOM_REF: RefCell<Option<*mut Dom>> = RefCell::new(None);
+    static ELEMENT_CHILDREN: RefCell<HashMap<usize, Vec<usize>>> = RefCell::new(HashMap::new());
 }
 
-/// Generate a unique node pointer
-fn generate_node_ptr() -> i64 {
-    NEXT_NODE_PTR.with(|ptr| {
-        let mut ptr = ptr.borrow_mut();
-        let val = *ptr;
-        *ptr += 1;
-        val
-    })
+/// Set the DOM reference for element bindings
+pub fn set_element_dom_ref(dom: *mut Dom) {
+    ELEMENT_DOM_REF.with(|dom_ref| {
+        *dom_ref.borrow_mut() = Some(dom);
+    });
 }
 
-/// Create a JS element wrapper for a DOM node by its ID
-pub unsafe fn create_js_element_by_id(raw_cx: *mut JSContext, node_id: usize) -> Result<JSVal, String> {
-    // For now, create a stub element
-    // In the future, this should look up the actual DOM node and create a proper wrapper
-    create_stub_element(raw_cx, "div")
-}
-
-/// Create a stub element (for document.createElement and similar)
-pub unsafe fn create_stub_element(raw_cx: *mut JSContext, tag_name: &str) -> Result<JSVal, String> {
+/// Create a JS element wrapper for a DOM node with its real tag name and attributes
+pub unsafe fn create_js_element_by_id(
+    raw_cx: *mut JSContext,
+    node_id: usize,
+    tag_name: &str,
+    attributes: AttributeMap,
+) -> Result<JSVal, String> {
     rooted!(in(raw_cx) let element = JS_NewPlainObject(raw_cx));
     if element.get().is_null() {
         return Err("Failed to create element object".to_string());
     }
 
-    // Generate a unique pointer for this element
-    let node_ptr = generate_node_ptr();
-
-    // Initialize attributes storage for this element
-    ELEMENT_ATTRIBUTES.with(|attrs| {
-        attrs.borrow_mut().insert(node_ptr, HashMap::new());
-    });
+    // Initialize children storage for this element
     ELEMENT_CHILDREN.with(|children| {
-        children.borrow_mut().insert(node_ptr, Vec::new());
+        children.borrow_mut().insert(node_id, Vec::new());
     });
+
+    // Get id and className from attributes
+    let id_attr = attributes.iter()
+        .find(|attr| attr.name.local.as_ref() == "id")
+        .map(|attr| attr.value.as_ref())
+        .unwrap_or("");
+    let class_attr = attributes.iter()
+        .find(|attr| attr.name.local.as_ref() == "class")
+        .map(|attr| attr.value.as_ref())
+        .unwrap_or("");
 
     // Set basic properties
     set_string_property(raw_cx, element.get(), "tagName", &tag_name.to_uppercase())?;
     set_string_property(raw_cx, element.get(), "nodeName", &tag_name.to_uppercase())?;
     set_int_property(raw_cx, element.get(), "nodeType", 1)?; // ELEMENT_NODE
-    set_string_property(raw_cx, element.get(), "id", "")?;
-    set_string_property(raw_cx, element.get(), "className", "")?;
+    set_string_property(raw_cx, element.get(), "id", id_attr)?;
+    set_string_property(raw_cx, element.get(), "className", class_attr)?;
     set_string_property(raw_cx, element.get(), "innerHTML", "")?;
     set_string_property(raw_cx, element.get(), "outerHTML", &format!("<{0}></{0}>", tag_name.to_lowercase()))?;
     set_string_property(raw_cx, element.get(), "textContent", "")?;
 
-    // Store the node pointer for reference
-    rooted!(in(raw_cx) let ptr_val = mozjs::jsval::DoubleValue(node_ptr as f64));
+    // Store the node_id for reference to the actual DOM node
+    rooted!(in(raw_cx) let ptr_val = mozjs::jsval::DoubleValue(node_id as f64));
     rooted!(in(raw_cx) let element_rooted = element.get());
-    let cname = std::ffi::CString::new("__nodePtr").unwrap();
+    let cname = std::ffi::CString::new("__nodeId").unwrap();
     JS_DefineProperty(
         raw_cx,
         element_rooted.handle().into(),
@@ -205,6 +205,12 @@ pub unsafe fn create_stub_element(raw_cx: *mut JSContext, tag_name: &str) -> Res
     Ok(ObjectValue(element.get()))
 }
 
+/// Create a stub element (for document.createElement and similar)
+pub unsafe fn create_stub_element(raw_cx: *mut JSContext, tag_name: &str) -> Result<JSVal, String> {
+    // Create element with no attributes
+    create_js_element_by_id(raw_cx, 0, tag_name, AttributeMap::empty())
+}
+
 // ============================================================================
 // Helper functions
 // ============================================================================
@@ -323,8 +329,8 @@ unsafe fn create_js_string(raw_cx: *mut JSContext, s: &str) -> JSVal {
     StringValue(&*str_val.get())
 }
 
-/// Get the node pointer from a JS element object
-unsafe fn get_node_ptr_from_this(raw_cx: *mut JSContext, args: &CallArgs) -> Option<i64> {
+/// Get the node ID from a JS element object
+unsafe fn get_node_id_from_this(raw_cx: *mut JSContext, args: &CallArgs) -> Option<usize> {
     let this_val = args.thisv();
     if !this_val.get().is_object() || this_val.get().is_null() {
         return None;
@@ -333,15 +339,15 @@ unsafe fn get_node_ptr_from_this(raw_cx: *mut JSContext, args: &CallArgs) -> Opt
     rooted!(in(raw_cx) let this_obj = this_val.get().to_object());
     rooted!(in(raw_cx) let mut ptr_val = UndefinedValue());
 
-    let cname = std::ffi::CString::new("__nodePtr").unwrap();
+    let cname = std::ffi::CString::new("__nodeId").unwrap();
     if !mozjs::jsapi::JS_GetProperty(raw_cx, this_obj.handle().into(), cname.as_ptr(), ptr_val.handle_mut().into()) {
         return None;
     }
 
     if ptr_val.get().is_double() {
-        Some(ptr_val.get().to_double() as i64)
+        Some(ptr_val.get().to_double() as usize)
     } else if ptr_val.get().is_int32() {
-        Some(ptr_val.get().to_int32() as i64)
+        Some(ptr_val.get().to_int32() as usize)
     } else {
         None
     }
@@ -363,10 +369,19 @@ unsafe extern "C" fn element_get_attribute(raw_cx: *mut JSContext, argc: c_uint,
 
     println!("[JS] element.getAttribute('{}') called", attr_name);
 
-    if let Some(node_ptr) = get_node_ptr_from_this(raw_cx, &args) {
-        let value = ELEMENT_ATTRIBUTES.with(|attrs| {
-            attrs.borrow().get(&node_ptr)
-                .and_then(|a| a.get(&attr_name).cloned())
+    if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
+        let value = ELEMENT_DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &*dom_ptr;
+                if let Some(node) = dom.get_node(node_id) {
+                    if let NodeData::Element(ref elem_data) = node.data {
+                        return elem_data.attributes.iter()
+                            .find(|attr| attr.name.local.as_ref() == attr_name)
+                            .map(|attr| attr.value.to_string());
+                    }
+                }
+            }
+            None
         });
 
         if let Some(val) = value {
@@ -398,11 +413,21 @@ unsafe extern "C" fn element_set_attribute(raw_cx: *mut JSContext, argc: c_uint,
 
     println!("[JS] element.setAttribute('{}', '{}') called", attr_name, attr_value);
 
-    if let Some(node_ptr) = get_node_ptr_from_this(raw_cx, &args) {
-        ELEMENT_ATTRIBUTES.with(|attrs| {
-            let mut attrs = attrs.borrow_mut();
-            if let Some(attr_map) = attrs.get_mut(&node_ptr) {
-                attr_map.insert(attr_name, attr_value);
+    if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
+        ELEMENT_DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &mut *dom_ptr;
+                if let Some(node) = dom.get_node_mut(node_id) {
+                    if let NodeData::Element(ref mut elem_data) = node.data {
+                        // Create QualName for the attribute
+                        let qname = QualName::new(
+                            None,
+                            markup5ever::ns!(),
+                            markup5ever::LocalName::from(attr_name.as_str()),
+                        );
+                        elem_data.attributes.set(qname, &attr_value);
+                    }
+                }
             }
         });
     }
@@ -423,11 +448,21 @@ unsafe extern "C" fn element_remove_attribute(raw_cx: *mut JSContext, argc: c_ui
 
     println!("[JS] element.removeAttribute('{}') called", attr_name);
 
-    if let Some(node_ptr) = get_node_ptr_from_this(raw_cx, &args) {
-        ELEMENT_ATTRIBUTES.with(|attrs| {
-            let mut attrs = attrs.borrow_mut();
-            if let Some(attr_map) = attrs.get_mut(&node_ptr) {
-                attr_map.remove(&attr_name);
+    if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
+        ELEMENT_DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &mut *dom_ptr;
+                if let Some(node) = dom.get_node_mut(node_id) {
+                    if let NodeData::Element(ref mut elem_data) = node.data {
+                        // Create QualName for the attribute to remove
+                        let qname = QualName::new(
+                            None,
+                            markup5ever::ns!(),
+                            markup5ever::LocalName::from(attr_name.as_str()),
+                        );
+                        elem_data.attributes.remove(&qname);
+                    }
+                }
             }
         });
     }
@@ -448,11 +483,18 @@ unsafe extern "C" fn element_has_attribute(raw_cx: *mut JSContext, argc: c_uint,
 
     println!("[JS] element.hasAttribute('{}') called", attr_name);
 
-    let has_attr = if let Some(node_ptr) = get_node_ptr_from_this(raw_cx, &args) {
-        ELEMENT_ATTRIBUTES.with(|attrs| {
-            attrs.borrow().get(&node_ptr)
-                .map(|a| a.contains_key(&attr_name))
-                .unwrap_or(false)
+    let has_attr = if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
+        ELEMENT_DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &*dom_ptr;
+                if let Some(node) = dom.get_node(node_id) {
+                    if let NodeData::Element(ref elem_data) = node.data {
+                        return elem_data.attributes.iter()
+                            .any(|attr| attr.name.local.as_ref() == attr_name);
+                    }
+                }
+            }
+            false
         })
     } else {
         false

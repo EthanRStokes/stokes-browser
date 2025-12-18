@@ -95,6 +95,14 @@ impl HtmlParser {
 
                 let id = dom.create_node(node_kind);
 
+                // Register element id attribute in nodes_to_id map for getElementById lookups
+                if let Some(id_attr) = attrs.borrow().iter().find(|a| a.name.local.as_ref() == "id") {
+                    let id_value = id_attr.value.to_string();
+                    if !id_value.is_empty() {
+                        dom.nodes_to_id.insert(id_value, id);
+                    }
+                }
+
                 // Attach to parent
                 if let Some(pid) = parent_id {
                     dom.nodes[id].parent = Some(pid);

@@ -1,7 +1,7 @@
 use super::element_bindings;
 // DOM bindings for JavaScript using mozjs
 use super::runtime::JsRuntime;
-use crate::dom::Dom;
+use crate::dom::{AttributeMap, Dom};
 use mozjs::gc::Handle;
 use mozjs::jsapi::{
     CallArgs, CurrentGlobalOrNull, HandleValueArray, JSContext, JSNative, JSObject, JS_DefineFunction,
@@ -32,6 +32,9 @@ pub fn setup_dom_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, user
     USER_AGENT.with(|ua| {
         *ua.borrow_mut() = user_agent.clone();
     });
+
+    // Also set the DOM reference for element bindings
+    element_bindings::set_element_dom_ref(document_root);
 
     unsafe {
         rooted!(in(raw_cx) let global = CurrentGlobalOrNull(raw_cx));
@@ -94,24 +97,18 @@ unsafe fn setup_document(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
     define_function(raw_cx, document.get(), "createTextNode", Some(document_create_text_node), 1)?;
     define_function(raw_cx, document.get(), "createDocumentFragment", Some(document_create_document_fragment), 0)?;
 
-    // Create documentElement (represents <html>)
-    rooted!(in(raw_cx) let document_element = JS_NewPlainObject(raw_cx));
-    if !document_element.get().is_null() {
-        set_string_property(raw_cx, document_element.get(), "tagName", "HTML")?;
-        set_string_property(raw_cx, document_element.get(), "nodeName", "HTML")?;
-        set_int_property(raw_cx, document_element.get(), "nodeType", 1)?;
-
-        rooted!(in(raw_cx) let doc_elem_val = ObjectValue(document_element.get()));
-        let name = std::ffi::CString::new("documentElement").unwrap();
-        rooted!(in(raw_cx) let document_rooted = document.get());
-        JS_DefineProperty(
-            raw_cx,
-            document_rooted.handle().into(),
-            name.as_ptr(),
-            doc_elem_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-    }
+    // Create documentElement (represents <html>) using a proper element with methods
+    let doc_elem_val = element_bindings::create_stub_element(raw_cx, "html")?;
+    rooted!(in(raw_cx) let doc_elem_val_rooted = doc_elem_val);
+    let name = std::ffi::CString::new("documentElement").unwrap();
+    rooted!(in(raw_cx) let document_rooted = document.get());
+    JS_DefineProperty(
+        raw_cx,
+        document_rooted.handle().into(),
+        name.as_ptr(),
+        doc_elem_val_rooted.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     // Set document on global
     rooted!(in(raw_cx) let document_val = ObjectValue(document.get()));
@@ -592,24 +589,28 @@ unsafe extern "C" fn document_get_element_by_id(raw_cx: *mut JSContext, argc: c_
 
     println!("[JS] document.getElementById('{}') called", id);
 
-    // Try to find the element in the DOM
-    let element = DOM_REF.with(|dom_ref| {
+    // Try to find the element in the DOM and extract its data
+    let element_data = DOM_REF.with(|dom_ref| {
         if let Some(ref dom) = *dom_ref.borrow() {
             let dom = &**dom;
             // Search for element with matching id
             if let Some(&node_id) = dom.nodes_to_id.get(&id) {
-                Some(node_id)
-            } else {
-                None
+                // Get the node and extract tag name and attributes
+                if let Some(node) = dom.get_node(node_id) {
+                    if let crate::dom::NodeData::Element(ref elem_data) = node.data {
+                        let tag_name = elem_data.name.local.to_string();
+                        let attributes = elem_data.attributes.clone();
+                        return Some((node_id, tag_name, attributes));
+                    }
+                }
             }
-        } else {
-            None
         }
+        None
     });
 
-    if let Some(node_id) = element {
-        // Create a JS element wrapper
-        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, node_id) {
+    if let Some((node_id, tag_name, attributes)) = element_data {
+        // Create a JS element wrapper with real DOM data
+        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, node_id, &tag_name, attributes) {
             args.rval().set(js_elem);
         } else {
             args.rval().set(mozjs::jsval::NullValue());
