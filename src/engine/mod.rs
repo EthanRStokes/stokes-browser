@@ -476,13 +476,18 @@ impl Engine {
         self.dom_mut().add_stylesheet(css_content);
     }
 
+    /// Add an author CSS stylesheet (from <style> or <link> tags) to the engine
+    pub fn add_author_stylesheet(&mut self, css_content: &str) {
+        self.dom_mut().add_author_stylesheet(css_content);
+    }
+
     /// Add a CSS stylesheet from a URL
     #[inline]
     pub async fn load_external_stylesheet(&mut self, css_url: &str) -> Result<(), NetworkError> {
         let absolute_url = self.resolve_url(css_url)?;
         let css_content = self.http_client.fetch_resource(&absolute_url).await?;
         let css_content = String::from_utf8(css_content).expect("Failed to decode CSS content as UTF-8");
-        self.add_stylesheet(&css_content);
+        self.add_author_stylesheet(&css_content);
         Ok(())
     }
 
@@ -517,7 +522,7 @@ impl Engine {
 
         // Add all inline stylesheets from <style> tags
         for css_content in style_contents {
-            self.add_stylesheet(&css_content);
+            self.add_author_stylesheet(&css_content);
         }
 
         // Load and add external stylesheets from <link> tags
@@ -542,7 +547,7 @@ impl Engine {
             match result {
                 Ok(css_bytes) => {
                     if let Ok(css_content) = String::from_utf8(css_bytes) {
-                        self.add_stylesheet(&css_content);
+                        self.add_author_stylesheet(&css_content);
                     } else {
                         println!("Failed to decode fetched stylesheet as UTF-8");
                     }

@@ -7,6 +7,7 @@ pub(crate) mod damage;
 mod url;
 mod layout;
 mod traverse;
+pub mod stylo_to_parley;
 
 pub use self::events::{EventDispatcher, EventType};
 pub use self::node::{AttributeMap, DomNode, ElementData, ImageData, ImageLoadingState, NodeData};
@@ -21,7 +22,7 @@ use crate::ui::TextBrush;
 use blitz_traits::net::{DummyNetProvider, NetProvider};
 use blitz_traits::shell::{DummyShellProvider, ShellProvider, Viewport};
 use euclid::Size2D;
-use parley::fontique::Blob;
+use parley::fontique::{Attributes, Blob, Query, QueryFont, QueryStatus};
 use parley::{FontContext, LayoutContext};
 use selectors::matching::QuirksMode;
 use selectors::Element;
@@ -32,6 +33,11 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use parley::swash::Setting;
+use skrifa::instance::{LocationRef, Size};
+use skrifa::{MetadataProvider, Tag};
+use skrifa::charmap::Charmap;
+use skrifa::metrics::{GlyphMetrics, Metrics};
 use style::animation::DocumentAnimationSet;
 use style::data::ElementStyles;
 use style::dom::{TDocument, TNode};
@@ -120,8 +126,95 @@ impl Debug for StokesFontMetricsProvider {
 }
 
 impl FontMetricsProvider for StokesFontMetricsProvider {
-    fn query_font_metrics(&self, vertical: bool, font: &Font, base_size: CSSPixelLength, flags: QueryFontMetricsFlags) -> FontMetrics {
-        todo!()
+    fn query_font_metrics(&self, vertical: bool, font: &Font, font_size: CSSPixelLength, flags: QueryFontMetricsFlags) -> FontMetrics {
+        let mut font_ctx = self.font_ctx.lock().unwrap();
+        let font_ctx = &mut *font_ctx;
+
+        let mut query = font_ctx.collection.query(&mut font_ctx.source_cache);
+        let families = font.font_family.families.iter().map(stylo_to_parley::query_font_family);
+        query.set_families(families);
+        query.set_attributes(Attributes {
+            width: stylo_to_parley::font_width(font.font_stretch),
+            weight: stylo_to_parley::font_weight(font.font_weight),
+            style: stylo_to_parley::font_style(font.font_style),
+        });
+
+        let variations = stylo_to_parley::font_variations(&font.font_variation_settings);
+
+        fn find_font_for(query: &mut Query, ch: char) -> Option<QueryFont> {
+            let mut font = None;
+            query.matches_with(|q_font: &QueryFont| {
+                use skrifa::MetadataProvider;
+
+                let Ok(font_ref) = skrifa::FontRef::from_index(q_font.blob.as_ref(), q_font.index)
+                else {
+                    return QueryStatus::Continue;
+                };
+
+                let charmap = font_ref.charmap();
+                if charmap.map(ch).is_some() {
+                    font = Some(q_font.clone());
+                    QueryStatus::Stop
+                } else {
+                    QueryStatus::Continue
+                }
+            });
+            font
+        }
+
+        fn advance_of(
+            query: &mut Query,
+            ch: char,
+            font_size: Size,
+            variations: &[Setting<f32>],
+        ) -> Option<f32> {
+            let font = find_font_for(query, ch)?;
+            let font_ref = skrifa::FontRef::from_index(font.blob.as_ref(), font.index).ok()?;
+            let location = font_ref.axes().location(
+                variations
+                    .iter()
+                    .map(|v| (Tag::new(&v.tag.to_le_bytes()), v.value)),
+            );
+            let location_ref = LocationRef::from(&location);
+            let glyph_metrics = GlyphMetrics::new(&font_ref, font_size, location_ref);
+            let char_map = Charmap::new(&font_ref);
+            let glyph_id = char_map.map(ch)?;
+            glyph_metrics.advance_width(glyph_id)
+        }
+
+        fn metrics_of(
+            query: &mut Query,
+            ch: char,
+            font_size: Size,
+            variations: &[Setting<f32>],
+        ) -> Option<(f32, Option<f32>, Option<f32>)> {
+            let font = find_font_for(query, ch)?;
+            let font_ref = skrifa::FontRef::from_index(font.blob.as_ref(), font.index).ok()?;
+            let location = font_ref.axes().location(
+                variations
+                    .iter()
+                    .map(|v| (Tag::new(&v.tag.to_le_bytes()), v.value)),
+            );
+            let location_ref = LocationRef::from(&location);
+            let metrics = Metrics::new(&font_ref, font_size, location_ref);
+            Some((metrics.ascent, metrics.x_height, metrics.cap_height))
+        }
+
+        let font_size = Size::new(font_size.px());
+        let zero_advance = advance_of(&mut query, '0', font_size, &variations);
+        let ic_advance = advance_of(&mut query, '\u{6C34}', font_size, &variations);
+        let (ascent, x_height, cap_height) =
+            metrics_of(&mut query, ' ', font_size, &variations).unwrap_or((0.0, None, None));
+
+        FontMetrics {
+            ascent: CSSPixelLength::new(ascent),
+            x_height: x_height.filter(|xh| *xh != 0.0).map(CSSPixelLength::new),
+            cap_height: cap_height.map(CSSPixelLength::new),
+            zero_advance_measure: zero_advance.map(CSSPixelLength::new),
+            ic_width: ic_advance.map(CSSPixelLength::new),
+            script_percent_scale_down: None,
+            script_script_percent_scale_down: None,
+        }
     }
 
     fn base_size_for_generic(&self, generic: GenericFontFamily) -> Length {
@@ -252,7 +345,15 @@ impl Dom {
     }
 
     pub fn add_stylesheet(&mut self, css: &str) {
-        let sheet = self.make_stylesheet(css, Origin::UserAgent);
+        self.add_stylesheet_with_origin(css, Origin::UserAgent);
+    }
+
+    pub fn add_author_stylesheet(&mut self, css: &str) {
+        self.add_stylesheet_with_origin(css, Origin::Author);
+    }
+
+    fn add_stylesheet_with_origin(&mut self, css: &str, origin: Origin) {
+        let sheet = self.make_stylesheet(css, origin);
         self.stylesheets.insert(css.to_string(), sheet.clone());
         self.stylist.append_stylesheet(sheet, &self.lock.read());
     }
