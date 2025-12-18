@@ -610,7 +610,7 @@ unsafe extern "C" fn document_get_element_by_id(raw_cx: *mut JSContext, argc: c_
 
     if let Some((node_id, tag_name, attributes)) = element_data {
         // Create a JS element wrapper with real DOM data
-        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, node_id, &tag_name, attributes) {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, node_id, &tag_name, &attributes) {
             args.rval().set(js_elem);
         } else {
             args.rval().set(mozjs::jsval::NullValue());
@@ -635,8 +635,38 @@ unsafe extern "C" fn document_get_elements_by_tag_name(raw_cx: *mut JSContext, a
 
     println!("[JS] document.getElementsByTagName('{}') called", tag_name);
 
-    // Return an empty array for now
+    // Collect matching elements from the DOM
+    let matching_elements: Vec<(usize, String, AttributeMap)> = DOM_REF.with(|dom_ref| {
+        let mut results = Vec::new();
+        if let Some(ref dom) = *dom_ref.borrow() {
+            let dom = &**dom;
+            let tag_name_lower = tag_name.to_lowercase();
+
+            // Traverse all nodes in the DOM
+            for (node_id, node) in dom.nodes.iter() {
+                if let crate::dom::NodeData::Element(ref elem_data) = node.data {
+                    let node_tag = elem_data.name.local.to_string().to_lowercase();
+                    // Match if tag names match or if searching for "*" (all elements)
+                    if tag_name_lower == "*" || node_tag == tag_name_lower {
+                        results.push((node_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
+                    }
+                }
+            }
+        }
+        results
+    });
+
+    // Create JS array with the matching elements
     rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
+
+    for (index, (node_id, tag, attrs)) in matching_elements.iter().enumerate() {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, *node_id, tag, &attrs) {
+            rooted!(in(raw_cx) let elem_val = js_elem);
+            rooted!(in(raw_cx) let array_obj = array.get());
+            mozjs::rust::wrappers::JS_SetElement(raw_cx, array_obj.handle().into(), index as u32, elem_val.handle().into());
+        }
+    }
+
     args.rval().set(ObjectValue(array.get()));
     true
 }

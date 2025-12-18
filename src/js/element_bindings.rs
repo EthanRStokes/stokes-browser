@@ -34,7 +34,7 @@ pub unsafe fn create_js_element_by_id(
     raw_cx: *mut JSContext,
     node_id: usize,
     tag_name: &str,
-    attributes: AttributeMap,
+    attributes: &AttributeMap,
 ) -> Result<JSVal, String> {
     rooted!(in(raw_cx) let element = JS_NewPlainObject(raw_cx));
     if element.get().is_null() {
@@ -155,9 +155,87 @@ pub unsafe fn create_js_element_by_id(
         );
     }
 
-    // Set parentNode, parentElement, children, childNodes to null/empty initially
+    // Look up the parent from the DOM
+    let parent_info: Option<(usize, String, AttributeMap)> = if node_id != 0 {
+        ELEMENT_DOM_REF.with(|dom_ref| {
+            if let Some(ref dom) = *dom_ref.borrow() {
+                let dom = &**dom;
+                if let Some(node) = dom.get_node(node_id) {
+                    if let Some(parent_id) = node.parent {
+                        if let Some(parent_node) = dom.get_node(parent_id) {
+                            if let NodeData::Element(ref elem_data) = parent_node.data {
+                                return Some((parent_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        })
+    } else {
+        None
+    };
+
+    if let Some((parent_id, parent_tag, _parent_attrs)) = parent_info {
+        // Create a parent element wrapper with insertBefore method
+        rooted!(in(raw_cx) let parent_elem = JS_NewPlainObject(raw_cx));
+        if !parent_elem.get().is_null() {
+            set_string_property(raw_cx, parent_elem.get(), "tagName", &parent_tag.to_uppercase())?;
+            set_string_property(raw_cx, parent_elem.get(), "nodeName", &parent_tag.to_uppercase())?;
+            set_int_property(raw_cx, parent_elem.get(), "nodeType", 1)?;
+
+            // Store the parent node_id
+            rooted!(in(raw_cx) let parent_ptr_val = mozjs::jsval::DoubleValue(parent_id as f64));
+            rooted!(in(raw_cx) let parent_elem_rooted = parent_elem.get());
+            let parent_id_name = std::ffi::CString::new("__nodeId").unwrap();
+            JS_DefineProperty(
+                raw_cx,
+                parent_elem_rooted.handle().into(),
+                parent_id_name.as_ptr(),
+                parent_ptr_val.handle().into(),
+                0,
+            );
+
+            // Add insertBefore method to parent
+            define_function(raw_cx, parent_elem.get(), "insertBefore", Some(element_insert_before), 2)?;
+            define_function(raw_cx, parent_elem.get(), "appendChild", Some(element_append_child), 1)?;
+            define_function(raw_cx, parent_elem.get(), "removeChild", Some(element_remove_child), 1)?;
+
+            rooted!(in(raw_cx) let parent_val = ObjectValue(parent_elem.get()));
+            let cname = std::ffi::CString::new("parentNode").unwrap();
+            JS_DefineProperty(
+                raw_cx,
+                element_rooted.handle().into(),
+                cname.as_ptr(),
+                parent_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            let cname = std::ffi::CString::new("parentElement").unwrap();
+            JS_DefineProperty(
+                raw_cx,
+                element_rooted.handle().into(),
+                cname.as_ptr(),
+                parent_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+    } else {
+        rooted!(in(raw_cx) let null_val = NullValue());
+        for name in &["parentNode", "parentElement"] {
+            let cname = std::ffi::CString::new(*name).unwrap();
+            JS_DefineProperty(
+                raw_cx,
+                element_rooted.handle().into(),
+                cname.as_ptr(),
+                null_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+    }
+
+    // Set sibling properties to null initially
     rooted!(in(raw_cx) let null_val = NullValue());
-    for name in &["parentNode", "parentElement", "firstChild", "lastChild", "previousSibling", "nextSibling"] {
+    for name in &["firstChild", "lastChild", "previousSibling", "nextSibling"] {
         let cname = std::ffi::CString::new(*name).unwrap();
         JS_DefineProperty(
             raw_cx,
@@ -208,7 +286,7 @@ pub unsafe fn create_js_element_by_id(
 /// Create a stub element (for document.createElement and similar)
 pub unsafe fn create_stub_element(raw_cx: *mut JSContext, tag_name: &str) -> Result<JSVal, String> {
     // Create element with no attributes
-    create_js_element_by_id(raw_cx, 0, tag_name, AttributeMap::empty())
+    create_js_element_by_id(raw_cx, 0, tag_name, &AttributeMap::empty())
 }
 
 // ============================================================================
