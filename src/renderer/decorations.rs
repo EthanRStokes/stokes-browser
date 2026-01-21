@@ -102,13 +102,13 @@ pub fn render_outline(
     scroll_transform: kurbo::Affine,
 ) {
     let outline = style.get_outline();
-    let width = outline.outline_width;
+    let width = &outline.outline_width;
 
-    if outline.outline_width.0 == 0 {
+    if outline.outline_width.0.0 == 0 {
         return;
     }
 
-    let outline_width_px = width.to_f64_px();
+    let outline_width_px = width.0.to_f64_px();
     if outline_width_px <= 0.0 {
         return;
     }

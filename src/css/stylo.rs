@@ -23,7 +23,7 @@ use style::bloom::each_relevant_element_hash;
 use style::color::AbsoluteColor;
 use style::context::{QuirksMode, SharedStyleContext, StyleContext};
 use style::data::ElementData;
-use style::dom::{LayoutIterator, NodeInfo, OpaqueNode, TDocument, TElement, TNode, TShadowRoot};
+use style::dom::{AttributeProvider, LayoutIterator, NodeInfo, OpaqueNode, TDocument, TElement, TNode, TShadowRoot};
 use style::properties::{Importance, PropertyDeclaration, PropertyDeclarationBlock};
 use style::rule_tree::CascadeLevel;
 use style::selector_parser::{AttrValue, Lang, NonTSPseudoClass, PseudoElement, SelectorImpl};
@@ -151,6 +151,12 @@ impl<'a> TNode for Node<'a> {
 
     fn as_shadow_root(&self) -> Option<Self::ConcreteShadowRoot> {
         None
+    }
+}
+
+impl AttributeProvider for Node<'_> {
+    fn get_attr(&self, attr: &style::LocalName) -> Option<String> {
+        self.attr(LocalName::from(attr.0.to_string())).map(|attr| attr.to_string())
     }
 }
 

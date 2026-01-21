@@ -47,12 +47,7 @@ pub(crate) fn maybe_push_layer(
     if !layers_available {
         return false;
     }
-    let blend_mode = if opacity == 1.0 {
-        #[allow(deprecated)]
-        Mix::Clip
-    } else {
-        Mix::Normal
-    };
+    let blend_mode = Mix::Normal;
 
     // Actually push the clip layer
     scene.push_layer(blend_mode, opacity, transform, shape);
