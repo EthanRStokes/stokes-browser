@@ -58,7 +58,7 @@ blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "01ecf46" }
 blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "01ecf46" }
 stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "01ecf46", features = ["floats"] }
 log = "0.4.28"
-woff = "0.6.2"
+wuff = "0.2.3"
 dirs = "6.0"
 
 [dependencies.winit]

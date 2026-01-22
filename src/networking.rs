@@ -337,9 +337,9 @@ impl FontFaceHandler {
                 tracing::info!("Decompressing woff1 font");
 
                 // Use woff crate to decompress font
-                let decompressed = woff::version1::decompress(&bytes);
+                let decompressed = wuff::decompress_woff1(&bytes);
 
-                if let Some(decompressed) = decompressed {
+                if let Some(decompressed) = decompressed.ok() {
                     bytes = Bytes::from(decompressed);
                 } else {
                     tracing::warn!("Failed to decompress woff1 font");
@@ -349,9 +349,9 @@ impl FontFaceHandler {
                 tracing::info!("Decompressing woff2 font");
 
                 // Use woff crate to decompress font
-                let decompressed = woff::version2::decompress(&bytes);
+                let decompressed = wuff::decompress_woff2(&bytes);
 
-                if let Some(decompressed) = decompressed {
+                if let Some(decompressed) = decompressed.ok() {
                     bytes = Bytes::from(decompressed);
                 } else {
                     tracing::warn!("Failed to decompress woff2 font");
