@@ -15,9 +15,7 @@ pub fn set_alert_callback<F>(callback: F)
 where
     F: Fn(String) + 'static,
 {
-    ALERT_CALLBACK.with(|cb| {
-        *cb.borrow_mut() = Some(Rc::new(Box::new(callback)));
-    });
+    ALERT_CALLBACK.set(Some(Rc::new(Box::new(callback))));
 }
 
 /// Trigger the alert callback with a message
@@ -34,8 +32,6 @@ pub fn trigger_alert(message: String) {
 
 /// Clear the alert callback
 pub fn clear_alert_callback() {
-    ALERT_CALLBACK.with(|cb| {
-        *cb.borrow_mut() = None;
-    });
+    ALERT_CALLBACK.set(None);
 }
 
