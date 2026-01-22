@@ -101,6 +101,7 @@ impl Engine {
 
             // Store the DOM
             self.dom = Some(dom);
+            self.js_runtime = None;
 
             // Reset scroll position
             self.scroll_x = 0.0;
