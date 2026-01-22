@@ -9,21 +9,15 @@ use mozjs::rooted;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::os::raw::c_uint;
+use crate::js::bindings::dom_bindings::DOM_REF;
 use crate::js::helpers::{create_empty_array, create_js_string, define_function, get_node_id_from_this, js_value_to_string, set_int_property, set_string_property, to_css_property_name};
 use crate::js::selectors::matches_selector;
 
 // Thread-local storage for DOM reference (shared with dom_bindings)
 thread_local! {
-    pub(crate) static ELEMENT_DOM_REF: RefCell<Option<*mut Dom>> = RefCell::new(None);
     static ELEMENT_CHILDREN: RefCell<HashMap<usize, Vec<usize>>> = RefCell::new(HashMap::new());
 }
 
-/// Set the DOM reference for element bindings
-pub fn set_element_dom_ref(dom: *mut Dom) {
-    ELEMENT_DOM_REF.with(|dom_ref| {
-        *dom_ref.borrow_mut() = Some(dom);
-    });
-}
 
 /// Create a JS element wrapper for a DOM node with its real tag name and attributes
 pub unsafe fn create_js_element_by_id(
@@ -179,7 +173,7 @@ pub unsafe fn create_js_element_by_id(
 
     // Look up the parent from the DOM
     let parent_info: Option<(usize, String, AttributeMap)> = if node_id != 0 {
-        ELEMENT_DOM_REF.with(|dom_ref| {
+        DOM_REF.with(|dom_ref| {
             if let Some(ref dom) = *dom_ref.borrow() {
                 let dom = &**dom;
                 if let Some(node) = dom.get_node(node_id) {
@@ -342,7 +336,7 @@ unsafe extern "C" fn element_get_attribute(raw_cx: *mut JSContext, argc: c_uint,
     println!("[JS] element.getAttribute('{}') called", attr_name);
 
     if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
-        let value = ELEMENT_DOM_REF.with(|dom_ref| {
+        let value = DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &*dom_ptr;
                 if let Some(node) = dom.get_node(node_id) {
@@ -386,7 +380,7 @@ unsafe extern "C" fn element_set_attribute(raw_cx: *mut JSContext, argc: c_uint,
     println!("[JS] element.setAttribute('{}', '{}') called", attr_name, attr_value);
 
     if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
-        ELEMENT_DOM_REF.with(|dom_ref| {
+        DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &mut *dom_ptr;
                 if let Some(node) = dom.get_node_mut(node_id) {
@@ -421,7 +415,7 @@ unsafe extern "C" fn element_remove_attribute(raw_cx: *mut JSContext, argc: c_ui
     println!("[JS] element.removeAttribute('{}') called", attr_name);
 
     if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
-        ELEMENT_DOM_REF.with(|dom_ref| {
+        DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &mut *dom_ptr;
                 if let Some(node) = dom.get_node_mut(node_id) {
@@ -456,7 +450,7 @@ unsafe extern "C" fn element_has_attribute(raw_cx: *mut JSContext, argc: c_uint,
     println!("[JS] element.hasAttribute('{}') called", attr_name);
 
     let has_attr = if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
-        ELEMENT_DOM_REF.with(|dom_ref| {
+        DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &*dom_ptr;
                 if let Some(node) = dom.get_node(node_id) {
@@ -483,6 +477,9 @@ unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, argc: c_uint, 
 
     println!("[JS] element.appendChild() called");
 
+    DOM_REF.with(|dom| {
+        println!("SKIBIDI TOILET")
+    });
     if argc > 0 {
         // Return the child that was appended
         args.rval().set(*args.get(0));
@@ -551,7 +548,7 @@ unsafe extern "C" fn element_clone_node(raw_cx: *mut JSContext, argc: c_uint, vp
 
     // Get the tag name and attributes from the current element
     if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
-        let element_data = ELEMENT_DOM_REF.with(|dom_ref| {
+        let element_data = DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &*dom_ptr;
                 if let Some(node) = dom.get_node(node_id) {
@@ -623,7 +620,7 @@ unsafe extern "C" fn element_query_selector(raw_cx: *mut JSContext, argc: c_uint
 
     if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
         // Search descendants of this element
-        let matching_element = ELEMENT_DOM_REF.with(|dom_ref| {
+        let matching_element = DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &*dom_ptr;
                 // Traverse the subtree looking for a match
@@ -682,7 +679,7 @@ unsafe extern "C" fn element_query_selector_all(raw_cx: *mut JSContext, argc: c_
 
     if !selector.is_empty() {
         if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
-            let matching_elements: Vec<(usize, String, crate::dom::AttributeMap)> = ELEMENT_DOM_REF.with(|dom_ref| {
+            let matching_elements: Vec<(usize, String, crate::dom::AttributeMap)> = DOM_REF.with(|dom_ref| {
                 let mut results = Vec::new();
                 if let Some(dom_ptr) = *dom_ref.borrow() {
                     let dom = &*dom_ptr;
@@ -835,7 +832,7 @@ unsafe extern "C" fn element_closest(raw_cx: *mut JSContext, argc: c_uint, vp: *
 
     if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
         // Traverse up the parent chain looking for a match
-        let matching_element = ELEMENT_DOM_REF.with(|dom_ref| {
+        let matching_element = DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &*dom_ptr;
                 let mut current_id = Some(node_id);
@@ -888,7 +885,7 @@ unsafe extern "C" fn element_matches(raw_cx: *mut JSContext, argc: c_uint, vp: *
 
     if !selector.is_empty() {
         if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
-            ELEMENT_DOM_REF.with(|dom_ref| {
+            DOM_REF.with(|dom_ref| {
                 if let Some(dom_ptr) = *dom_ref.borrow() {
                     let dom = &*dom_ptr;
                     if let Some(node) = dom.get_node(node_id) {
@@ -945,7 +942,7 @@ unsafe extern "C" fn element_contains(raw_cx: *mut JSContext, argc: c_uint, vp: 
                 true
             } else {
                 // Check if other_id is a descendant of this_id by traversing up from other_id
-                ELEMENT_DOM_REF.with(|dom_ref| {
+                DOM_REF.with(|dom_ref| {
                     if let Some(dom_ptr) = *dom_ref.borrow() {
                         let dom = &*dom_ptr;
                         let mut current_id = Some(other_id);
@@ -992,7 +989,7 @@ unsafe extern "C" fn style_get_property_value(raw_cx: *mut JSContext, argc: c_ui
     let mut result = String::new();
 
     if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
-        ELEMENT_DOM_REF.with(|dom_ref| {
+        DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &*dom_ptr;
                 if let Some(node) = dom.get_node(node_id) {
@@ -1041,7 +1038,7 @@ unsafe extern "C" fn style_set_property(raw_cx: *mut JSContext, argc: c_uint, vp
 
     // Get the node ID from the style object's __nodeId property
     if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
-        ELEMENT_DOM_REF.with(|dom_ref| {
+        DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &mut *dom_ptr;
                 if let Some(node) = dom.get_node_mut(node_id) {
@@ -1114,7 +1111,7 @@ unsafe extern "C" fn style_remove_property(raw_cx: *mut JSContext, argc: c_uint,
     let mut old_value = String::new();
 
     if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
-        ELEMENT_DOM_REF.with(|dom_ref| {
+        DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &mut *dom_ptr;
                 if let Some(node) = dom.get_node_mut(node_id) {
@@ -1182,7 +1179,7 @@ unsafe extern "C" fn class_list_add(raw_cx: *mut JSContext, argc: c_uint, vp: *m
 
     // Get the parent element's node ID from classList's parent
     if let Some(node_id) = get_classlist_parent_node_id(raw_cx, &args) {
-        ELEMENT_DOM_REF.with(|dom_ref| {
+        DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &mut *dom_ptr;
                 if let Some(node) = dom.get_node_mut(node_id) {
@@ -1239,7 +1236,7 @@ unsafe extern "C" fn class_list_remove(raw_cx: *mut JSContext, argc: c_uint, vp:
     println!("[JS] classList.remove({:?}) called", classes_to_remove);
 
     if let Some(node_id) = get_classlist_parent_node_id(raw_cx, &args) {
-        ELEMENT_DOM_REF.with(|dom_ref| {
+        DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &mut *dom_ptr;
                 if let Some(node) = dom.get_node_mut(node_id) {
@@ -1300,7 +1297,7 @@ unsafe extern "C" fn class_list_toggle(raw_cx: *mut JSContext, argc: c_uint, vp:
 
     if !class_name.is_empty() {
         if let Some(node_id) = get_classlist_parent_node_id(raw_cx, &args) {
-            ELEMENT_DOM_REF.with(|dom_ref| {
+            DOM_REF.with(|dom_ref| {
                 if let Some(dom_ptr) = *dom_ref.borrow() {
                     let dom = &mut *dom_ptr;
                     if let Some(node) = dom.get_node_mut(node_id) {
@@ -1368,7 +1365,7 @@ unsafe extern "C" fn class_list_contains(raw_cx: *mut JSContext, argc: c_uint, v
 
     if !class_name.is_empty() {
         if let Some(node_id) = get_classlist_parent_node_id(raw_cx, &args) {
-            ELEMENT_DOM_REF.with(|dom_ref| {
+            DOM_REF.with(|dom_ref| {
                 if let Some(dom_ptr) = *dom_ref.borrow() {
                     let dom = &*dom_ptr;
                     if let Some(node) = dom.get_node(node_id) {
@@ -1413,7 +1410,7 @@ unsafe extern "C" fn class_list_replace(raw_cx: *mut JSContext, argc: c_uint, vp
 
     if !old_class.is_empty() && !new_class.is_empty() {
         if let Some(node_id) = get_classlist_parent_node_id(raw_cx, &args) {
-            ELEMENT_DOM_REF.with(|dom_ref| {
+            DOM_REF.with(|dom_ref| {
                 if let Some(dom_ptr) = *dom_ref.borrow() {
                     let dom = &mut *dom_ptr;
                     if let Some(node) = dom.get_node_mut(node_id) {

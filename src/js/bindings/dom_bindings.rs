@@ -19,10 +19,10 @@ use crate::js::selectors::matches_selector;
 
 // Thread-local storage for DOM reference
 thread_local! {
-    static DOM_REF: RefCell<Option<*mut Dom>> = RefCell::new(None);
-    static USER_AGENT: RefCell<String> = RefCell::new(String::new());
-    static LOCAL_STORAGE: RefCell<std::collections::HashMap<String, String>> = RefCell::new(std::collections::HashMap::new());
-    static SESSION_STORAGE: RefCell<std::collections::HashMap<String, String>> = RefCell::new(std::collections::HashMap::new());
+    pub(crate) static DOM_REF: RefCell<Option<*mut Dom>> = RefCell::new(None);
+    pub(crate) static USER_AGENT: RefCell<String> = RefCell::new(String::new());
+    pub(crate) static LOCAL_STORAGE: RefCell<std::collections::HashMap<String, String>> = RefCell::new(std::collections::HashMap::new());
+    pub(crate) static SESSION_STORAGE: RefCell<std::collections::HashMap<String, String>> = RefCell::new(std::collections::HashMap::new());
 }
 
 // ============================================================================
@@ -38,12 +38,8 @@ pub fn setup_dom_bindings(
     let raw_cx = unsafe { runtime.cx().raw_cx() };
 
     // Store DOM reference in thread-local storage
-    DOM_REF.with(|dom| {
-        *dom.borrow_mut() = Some(document_root);
-    });
-    USER_AGENT.with(|ua| {
-        *ua.borrow_mut() = user_agent.clone();
-    });
+    DOM_REF.set(Some(document_root));
+    USER_AGENT.set(user_agent.clone());
 
     // Store the document URL for cookie handling
     unsafe {
@@ -51,9 +47,6 @@ pub fn setup_dom_bindings(
         let url: url::Url = (&dom.url).into();
         set_document_url(url);
     }
-
-    // Also set the DOM reference for element bindings
-    element_bindings::set_element_dom_ref(document_root);
 
     unsafe {
         rooted!(in(raw_cx) let global = CurrentGlobalOrNull(raw_cx));
