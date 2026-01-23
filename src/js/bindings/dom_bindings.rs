@@ -14,6 +14,9 @@ use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, UndefinedValue}
 use mozjs::rooted;
 use std::cell::RefCell;
 use std::os::raw::c_uint;
+use html5ever::Namespace;
+use markup5ever::QualName;
+use crate::js::bindings::element_bindings::element_append_child;
 use crate::js::JsRuntime;
 use crate::js::selectors::matches_selector;
 
@@ -831,10 +834,17 @@ unsafe extern "C" fn document_create_element(raw_cx: *mut JSContext, argc: c_uin
 
     println!("[JS] document.createElement('{}') called", tag_name);
 
-    match element_bindings::create_stub_element(raw_cx, &tag_name) {
-        Ok(elem) => args.rval().set(elem),
-        Err(_) => args.rval().set(mozjs::jsval::NullValue()),
-    }
+    DOM_REF.with(|dom| {
+        if let Some(dom_ptr) = *dom.borrow() {
+            let dom = unsafe { &mut *dom_ptr };
+            let node_id = dom.create_element(QualName::new(None, Namespace::from(""), tag_name.clone().into()), AttributeMap::empty());
+            if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, node_id, &tag_name, dom.nodes[node_id].attrs().unwrap()) {
+                args.rval().set(js_elem);
+                println!("Successfully created element '{}'", tag_name);
+                return;
+            }
+        }
+    });
     true
 }
 
@@ -1306,20 +1316,6 @@ unsafe extern "C" fn session_storage_key(raw_cx: *mut JSContext, argc: c_uint, v
 // ============================================================================
 // Element methods (shared)
 // ============================================================================
-
-/// element.appendChild implementation
-unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-
-    println!("[JS] element.appendChild() called");
-
-    if argc > 0 {
-        args.rval().set(*args.get(0));
-    } else {
-        args.rval().set(UndefinedValue());
-    }
-    true
-}
 
 /// style.getPropertyValue implementation
 unsafe extern "C" fn style_get_property_value(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {

@@ -1,5 +1,5 @@
 // Tab process module - runs the browser engine in a separate process
-use crate::engine::{Engine, EngineConfig};
+use crate::engine::{Engine, EngineConfig, ENGINE_REF};
 use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage};
 use crate::js;
 use shared_memory::{Shmem, ShmemConf};
@@ -13,7 +13,7 @@ use crate::renderer::text::TextPainter;
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
-    engine: Engine,
+    pub(crate) engine: Engine,
     channel: Rc<RefCell<IpcChannel>>,
     tab_id: String,
     shared_surface: Option<SharedSurface>,
@@ -33,7 +33,8 @@ impl TabProcess {
     /// Create a new tab process and connect to the parent
     pub fn new(tab_id: String, socket_path: PathBuf, config: EngineConfig) -> io::Result<Self> {
         let channel = connect(&socket_path)?;
-        let engine = Engine::new(config, Viewport::default()); // Default viewport, will be resized later
+        let mut engine = Engine::new(config, Viewport::default()); // Default viewport, will be resized later
+        ENGINE_REF.set(Some(&mut engine as *mut Engine));
 
         Ok(Self {
             engine,

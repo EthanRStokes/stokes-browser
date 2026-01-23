@@ -22,10 +22,16 @@ use crate::ui::TextBrush;
 use blitz_traits::net::{DummyNetProvider, NetProvider};
 use blitz_traits::shell::{DummyShellProvider, ShellProvider, Viewport};
 use euclid::Size2D;
+use markup5ever::QualName;
 use parley::fontique::{Attributes, Blob, Query, QueryFont, QueryStatus};
+use parley::swash::Setting;
 use parley::{FontContext, LayoutContext};
 use selectors::matching::QuirksMode;
 use selectors::Element;
+use skrifa::charmap::Charmap;
+use skrifa::instance::{LocationRef, Size};
+use skrifa::metrics::{GlyphMetrics, Metrics};
+use skrifa::{MetadataProvider, Tag};
 use slab::Slab;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Debug, Formatter};
@@ -33,11 +39,6 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use parley::swash::Setting;
-use skrifa::instance::{LocationRef, Size};
-use skrifa::{MetadataProvider, Tag};
-use skrifa::charmap::Charmap;
-use skrifa::metrics::{GlyphMetrics, Metrics};
 use style::animation::DocumentAnimationSet;
 use style::data::ElementStyles;
 use style::dom::{TDocument, TNode};
@@ -316,6 +317,15 @@ impl Dom {
         entry.insert(DomNode::new(slab_ptr, id, self.lock.clone(), data));
 
         id
+    }
+
+    pub(crate) fn create_element(
+        &mut self,
+        tag_name: QualName,
+        attributes: AttributeMap,
+    ) -> usize {
+        let data = NodeData::Element(ElementData::new(tag_name, attributes));
+        self.create_node(data)
     }
 
     pub fn tree(&self) -> &Slab<DomNode> {

@@ -690,7 +690,7 @@ impl DomNode {
         self.element_state.contains(ElementState::HOVER)
     }
 
-    pub fn attrs(&self) -> Option<&[Attribute]> {
+    pub fn attrs(&self) -> Option<&AttributeMap> {
         Some(&self.element_data()?.attributes)
     }
 

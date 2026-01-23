@@ -38,7 +38,8 @@
             const span2 = document.createElement('span');
             span2.setAttribute('id', 'span2');
 
-            container.appendChild(span1);
+            let child = container.appendChild(span1);
+            child.textContent = "This is span 1";
             console.log("Appended span1");
             container.appendChild(span2);
             console.log("Appended span2");
@@ -64,6 +65,18 @@
             console.log("ERROR: Could not find container element");
         }
     </script>
+    <style>
+        #container {
+            border: 1px solid black;
+            padding: 10px;
+            margin: 10px;
+        }
+        .test-class {
+            background-color: lightblue;
+            padding: 5px;
+            margin: 5px 0;
+        }
+    </style>
 </body>
 </html>
 

@@ -31,6 +31,10 @@ use crate::dom::node::{RasterImageData, SpecialElementData};
 use crate::renderer::background::BackgroundImageCache;
 use crate::renderer::text::TextPainter;
 
+thread_local! {
+    pub(crate) static ENGINE_REF: RefCell<Option<*mut Engine>> = RefCell::new(None);
+}
+
 /// The core browser engine that coordinates all browser activities
 pub struct Engine {
     pub config: EngineConfig,
@@ -110,6 +114,7 @@ impl Engine {
             // Parse and apply CSS styles from the document
             style::thread_state::enter(ThreadState::LAYOUT);
             self.parse_document_styles().await;
+            self.flush_styles();
 
             // Calculate layout with CSS styles applied
             self.recalculate_layout();
@@ -558,8 +563,9 @@ impl Engine {
                 }
             }
         }
+    }
 
-        // Now that all stylesheets are loaded, flush the stylist and perform style traversal
+    pub fn flush_styles(&mut self) {
         let dom = self.dom.as_mut().unwrap();
         let lock = &dom.lock;
         let author = lock.read();
@@ -1419,6 +1425,7 @@ impl Engine {
 
             style::thread_state::enter(ThreadState::LAYOUT);
             self.parse_document_styles().await;
+            self.flush_styles();
             self.recalculate_layout();
             style::thread_state::exit(ThreadState::LAYOUT);
             self.start_image_loading().await;

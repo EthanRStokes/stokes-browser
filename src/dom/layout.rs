@@ -38,7 +38,7 @@ macro_rules! qual_name {
     };
 }
 
-const DUMMY_NAME: QualName = qual_name!("div", html);
+pub(crate) const DUMMY_NAME: QualName = qual_name!("div", html);
 
 fn push_children_and_pseudos(layout_children: &mut Vec<usize>, node: &DomNode) {
     if let Some(before) = node.before {

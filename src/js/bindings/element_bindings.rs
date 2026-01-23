@@ -299,7 +299,7 @@ pub unsafe fn create_js_element_by_id(
     Ok(ObjectValue(element.get()))
 }
 
-/// Create a stub element (for document.createElement and similar)
+/// Create a stub element
 pub unsafe fn create_stub_element(raw_cx: *mut JSContext, tag_name: &str) -> Result<JSVal, String> {
     // Create element with no attributes
     create_js_element_by_id(raw_cx, 0, tag_name, &AttributeMap::empty())
@@ -472,13 +472,38 @@ unsafe extern "C" fn element_has_attribute(raw_cx: *mut JSContext, argc: c_uint,
 
 /// element.appendChild implementation
 // FIXME: Just returns child - doesn't actually add child to DOM tree or update parent/child relationships
-unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     println!("[JS] element.appendChild() called");
 
+    let child_id = if argc > 0 {
+        if let Some(id) = get_node_id_from_this(raw_cx, &CallArgs::from_vp(vp, argc)) {
+            id
+        } else {
+            // Invalid child node
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    } else {
+        // No child provided
+        args.rval().set(UndefinedValue());
+        return true;
+    };
     DOM_REF.with(|dom| {
-        println!("SKIBIDI TOILET")
+        if let Some(dom_ptr) = *dom.borrow() {
+            let dom = &mut *dom_ptr;
+            // Update parent reference in child node
+            if let Some(parent_id) = get_node_id_from_this(raw_cx, &args) {
+                dom.nodes[child_id].parent = Some(parent_id);
+                dom.nodes[parent_id].add_child(child_id);
+
+                ELEMENT_CHILDREN.with(|children_map| {
+                    let mut map = children_map.borrow_mut();
+                    map.entry(parent_id).or_insert_with(Vec::new).push(child_id);
+                });
+            }
+        }
     });
     if argc > 0 {
         // Return the child that was appended
