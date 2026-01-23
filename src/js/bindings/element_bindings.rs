@@ -1,23 +1,15 @@
 // Element bindings for JavaScript using mozjs
-use crate::dom::{AttributeMap, Dom, NodeData};
-use markup5ever::QualName;
-use mozjs::jsapi::{
-    CallArgs, JSContext, JSObject, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE,
-};
-use mozjs::jsval::{BooleanValue, JSVal, NullValue, ObjectValue, UndefinedValue};
-use mozjs::rooted;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::os::raw::c_uint;
+use crate::dom::{AttributeMap, NodeData};
 use crate::js::bindings::dom_bindings::DOM_REF;
 use crate::js::helpers::{create_empty_array, create_js_string, define_function, get_node_id_from_this, js_value_to_string, set_int_property, set_string_property, to_css_property_name};
 use crate::js::selectors::matches_selector;
-
-// Thread-local storage for DOM reference (shared with dom_bindings)
-thread_local! {
-    static ELEMENT_CHILDREN: RefCell<HashMap<usize, Vec<usize>>> = RefCell::new(HashMap::new());
-}
-
+use markup5ever::QualName;
+use mozjs::jsapi::{
+    CallArgs, JSContext, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE,
+};
+use mozjs::jsval::{BooleanValue, JSVal, NullValue, ObjectValue, UndefinedValue};
+use mozjs::rooted;
+use std::os::raw::c_uint;
 
 /// Create a JS element wrapper for a DOM node with its real tag name and attributes
 pub unsafe fn create_js_element_by_id(
@@ -30,11 +22,6 @@ pub unsafe fn create_js_element_by_id(
     if element.get().is_null() {
         return Err("Failed to create element object".to_string());
     }
-
-    // Initialize children storage for this element
-    ELEMENT_CHILDREN.with(|children| {
-        children.borrow_mut().insert(node_id, Vec::new());
-    });
 
     // Get id and className from attributes
     let id_attr = attributes.iter()
@@ -497,11 +484,6 @@ pub(crate) unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, arg
             if let Some(parent_id) = get_node_id_from_this(raw_cx, &args) {
                 dom.nodes[child_id].parent = Some(parent_id);
                 dom.nodes[parent_id].add_child(child_id);
-
-                ELEMENT_CHILDREN.with(|children_map| {
-                    let mut map = children_map.borrow_mut();
-                    map.entry(parent_id).or_insert_with(Vec::new).push(child_id);
-                });
             }
         }
     });
