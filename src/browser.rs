@@ -1,4 +1,3 @@
-use glutin::display::GetGlDisplay;
 use glutin::surface::GlSurface;
 use std::num::NonZeroU32;
 use std::sync::{Arc, RwLock};
@@ -17,7 +16,6 @@ use crate::tab_manager::TabManager;
 use crate::ui::{BrowserUI, TextBrush};
 use crate::window::{create_surface, Env};
 use crate::{input, ipc};
-use skia_safe::Color;
 use crate::renderer::text::TextPainter;
 
 /// Result of closing a tab
@@ -37,6 +35,7 @@ pub(crate) struct BrowserApp {
     active_tab_index: usize,
     ui: BrowserUI,
     viewport: Arc<RwLock<Viewport>>,
+    page_viewport: Arc<RwLock<Viewport>>,
     cursor_position: (f64, f64),
     loading_spinner_angle: f32,
     last_spinner_update: Instant,
@@ -57,6 +56,18 @@ impl BrowserApp {
             hidpi_scale: env.window.scale_factor() as f32,
             zoom: 0.0,
         }));
+        let page_viewport = Arc::new(RwLock::new(Viewport {
+            color_scheme: Default::default(),
+            window_size: (
+                env.window.inner_size().width,
+                // Subtract the chrome height converted into physical pixels (logical chrome * scale)
+                (env.window.inner_size().height as f32 - (BrowserUI::CHROME_HEIGHT as f32 * env.window.scale_factor() as f32))
+                    .max(0.0)
+                    .round() as u32,
+            ),
+            hidpi_scale: env.window.scale_factor() as f32,
+            zoom: 0.0,
+        }));
 
         // Initialize UI
         let mut ui = BrowserUI::new(&env.gr_context, &viewport.read().unwrap());
@@ -74,12 +85,36 @@ impl BrowserApp {
             ui,
             cursor_position: (0.0, 0.0),
             viewport,
+            page_viewport,
             loading_spinner_angle: 0.0,
             last_spinner_update: Instant::now(),
             tab_order: vec![],
             font_ctx: FontContext::new(),
             layout_ctx: LayoutContext::new(),
         }
+    }
+
+    fn set_viewport(&mut self, size: (u32, u32)) {
+        let mut vp = self.viewport.write().unwrap();
+
+        vp.window_size = size;
+        drop(vp);
+
+        self.update_page_viewport();
+    }
+
+    fn update_page_viewport(&mut self) {
+        let vp = self.viewport.read().unwrap();
+        // Calculate the page viewport height in physical pixels by subtracting the chrome height
+        // converted to physical pixels using the current hidpi scale.
+        let chrome_physical = (BrowserUI::CHROME_HEIGHT as f32 * vp.hidpi_scale).round() as u32;
+
+        let mut pvp = self.page_viewport.write().unwrap();
+
+        pvp.window_size = (vp.window_size.0, vp.window_size.1.saturating_sub(chrome_physical));
+        pvp.hidpi_scale = vp.hidpi_scale;
+        pvp.zoom = vp.zoom;
+        pvp.color_scheme = vp.color_scheme;
     }
 
     #[inline]
@@ -107,10 +142,10 @@ impl BrowserApp {
             self.ui.update_address_bar("");
 
             // Send initial configuration
-            let size = self.env.window.inner_size();
+            let (width, height) = self.page_viewport.read().unwrap().window_size;
             let _ = self.tab_manager.send_to_tab(&new_tab_id, ParentToTabMessage::Resize {
-                width: size.width as f32,
-                height: size.height as f32
+                width: width as f32,
+                height: height as f32
             });
             let _ = self.tab_manager.send_to_tab(&new_tab_id, ParentToTabMessage::SetScaleFactor(self.viewport.read().unwrap().hidpi_scale));
 
@@ -181,6 +216,10 @@ impl BrowserApp {
         // Only forward click to active tab process if UI didn't handle it
         if action == input::InputAction::None {
             if let Some(tab_id) = self.active_tab_id().cloned() {
+                // Apply chrome offset to forwarded coordinates so tab sees coordinates relative to its page canvas
+                let chrome_offset = BrowserUI::CHROME_HEIGHT * self.viewport.read().unwrap().hidpi_scale;
+                let forwarded_y = (y - chrome_offset).max(0.0);
+
                 let key_modifiers = ipc::KeyModifiers {
                     ctrl: self.modifiers.state().control_key(),
                     alt: self.modifiers.state().alt_key(),
@@ -189,7 +228,7 @@ impl BrowserApp {
                 };
                 let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Click {
                     x,
-                    y,
+                    y: forwarded_y,
                     modifiers: key_modifiers,
                 });
             }
@@ -215,6 +254,10 @@ impl BrowserApp {
         // This will make links open in new tab
         if action == input::InputAction::None {
             if let Some(tab_id) = self.active_tab_id().cloned() {
+                // Apply chrome offset to forwarded coordinates so tab sees coordinates relative to its page canvas
+                let chrome_offset = BrowserUI::CHROME_HEIGHT as f32 * self.viewport.read().unwrap().hidpi_scale;
+                let forwarded_y = (y - chrome_offset).max(0.0);
+
                 let key_modifiers = ipc::KeyModifiers {
                     ctrl: true,  // Middle-click should behave like Ctrl+click
                     alt: self.modifiers.state().alt_key(),
@@ -223,7 +266,7 @@ impl BrowserApp {
                 };
                 let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Click {
                     x,
-                    y,
+                    y: forwarded_y,
                     modifiers: key_modifiers,
                 });
             }
@@ -390,9 +433,11 @@ impl BrowserApp {
 
         // Render the active tab's frame from shared memory
         if let Some(image) = frame_to_render {
+            // Offset the page content so it renders below the chrome
+            let chrome_offset = BrowserUI::CHROME_HEIGHT as f32 * self.viewport.read().unwrap().hidpi_scale;
             painter.set_matrix(Affine::translate((0.0, 0.0)));
 
-            canvas.draw_image(image, (0.0, 0.0), None);
+            canvas.draw_image(image, (0.0, chrome_offset), None);
         }
 
         // Render UI on top
@@ -427,7 +472,7 @@ impl ApplicationHandler for BrowserApp {
         self.env.window.request_redraw();
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         self.env.window.request_redraw();
     }
 
@@ -452,7 +497,8 @@ impl ApplicationHandler for BrowserApp {
                     NonZeroU32::new(height.max(1)).unwrap()
                 );
                 // Update viewport size
-                self.viewport.write().unwrap().window_size = new_size.into();
+                self.set_viewport(new_size.into());
+                let (width, height) = self.page_viewport.read().unwrap().window_size;
 
                 self.ui.update_layout(&*self.viewport.read().unwrap());
 
@@ -470,6 +516,9 @@ impl ApplicationHandler for BrowserApp {
                 let old_scale = viewport.hidpi_scale;
                 viewport.hidpi_scale = scale_factor;
                 self.ui.update_scale(viewport.hidpi_scale, old_scale);
+
+                drop(viewport);
+                self.update_page_viewport();
 
                 // Notify all tabs of scale factor change
                 for tab_id in &self.tab_order {
@@ -568,9 +617,12 @@ impl ApplicationHandler for BrowserApp {
                     self.ui.update_mouse_hover(position.x as f32, position.y as f32, Instant::now());
 
                     if let Some(tab_id) = self.active_tab_id().cloned() {
+                        // Forward mouse move to tab with chrome offset applied
+                        let chrome_offset = BrowserUI::CHROME_HEIGHT as f32 * self.viewport.read().unwrap().hidpi_scale;
+                        let forwarded_y = (position.y as f32 - chrome_offset).max(0.0);
                         let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::MouseMove {
                             x: position.x as f32,
-                            y: position.y as f32
+                            y: forwarded_y
                         });
                     }
                 }
