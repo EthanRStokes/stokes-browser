@@ -18,7 +18,7 @@ html5ever = "0.37.1"
 markup5ever_rcdom = { git = "https://github.com/EthanRStokes/html5ever", rev = "f06da2b" }
 usvg = "0.46.0"
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
-mozjs = "0.14.5"
+mozjs = "0.15.0"
 #mozjs = { git = "https://github.com/servo/mozjs.git", rev = "125b5ab" }
 base64 = "0.22"
 stacker = "0.1"

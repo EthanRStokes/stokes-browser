@@ -20,7 +20,7 @@ unsafe fn eval_js(cx: *mut JSContext, code: &str, rval: MutableHandleValue) -> b
     // Create a safe JSContext wrapper for the compile options
     // SAFETY: We're within a valid JSContext scope, and the raw pointer is valid
     let safe_cx: &SafeJSContext = std::mem::transmute(&cx);
-    let options = CompileOptionsWrapper::new(safe_cx, "fetch_eval", 1);
+    let options = CompileOptionsWrapper::new(safe_cx, "fetch_eval".parse().unwrap(), 1);
 
     // Compile the script
     let script = Compile1(cx, options.ptr, &mut transform_str_to_source_text(code));

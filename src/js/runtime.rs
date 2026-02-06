@@ -178,7 +178,7 @@ impl JsRuntime {
         filename: &str,
         line_number: u32,
     ) -> *mut JSScript {
-        let options = unsafe { CompileOptionsWrapper::new(&context, filename, line_number) };
+        let options = unsafe { CompileOptionsWrapper::new(&context, filename.parse().unwrap(), line_number) };
 
         // First try to compile the script as-is
         let result = unsafe { Compile1(context.raw_cx(), options.ptr, &mut transform_str_to_source_text(text)) };
@@ -197,7 +197,7 @@ impl JsRuntime {
                 // Wrap as an assignment to window.__INLINE_DATA__ so other scripts can access it
                 // This mimics how browsers handle inline JSON configuration scripts
                 let wrapped = format!("(window.__INLINE_DATA__ = window.__INLINE_DATA__ || []).push({})", text);
-                let options = unsafe { CompileOptionsWrapper::new(&context, filename, line_number) };
+                let options = unsafe { CompileOptionsWrapper::new(&context, filename.parse().unwrap(), line_number) };
                 return unsafe { Compile1(context.raw_cx(), options.ptr, &mut transform_str_to_source_text(&wrapped)) };
             }
         }
