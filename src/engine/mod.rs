@@ -114,7 +114,7 @@ impl Engine {
             // Parse and apply CSS styles from the document
             style::thread_state::enter(ThreadState::LAYOUT);
             self.parse_document_styles().await;
-            self.flush_styles();
+            self.dom.as_mut().unwrap().flush_styles();
 
             // Calculate layout with CSS styles applied
             self.recalculate_layout();
@@ -128,6 +128,10 @@ impl Engine {
                 style::thread_state::enter(ThreadState::SCRIPT);
                 self.execute_document_scripts().await;
                 style::thread_state::exit(ThreadState::SCRIPT);
+                style::thread_state::enter(ThreadState::LAYOUT);
+                self.dom.as_mut().unwrap().flush_styles();
+                self.recalculate_layout();
+                style::thread_state::exit(ThreadState::LAYOUT);
             }
 
             Ok(())
@@ -565,71 +569,7 @@ impl Engine {
         }
     }
 
-    pub fn flush_styles(&mut self) {
-        let dom = self.dom.as_mut().unwrap();
-        let lock = &dom.lock;
-        let author = lock.read();
-        let ua_or_user = lock.read();
-        let guards = StylesheetGuards {
-            author: &author,
-            ua_or_user: &ua_or_user,
-        };
 
-        // Flush the stylist with all loaded stylesheets
-        {
-            let root = TDocument::as_node(&&dom.nodes[0])
-                .first_element_child()
-                .unwrap()
-                .as_element()
-                .unwrap();
-
-            dom.stylist.flush(&guards, Some(root), Some(&dom.snapshots));
-        }
-
-        struct Painters;
-        impl RegisteredSpeculativePainters for Painters {
-            fn get(&self, name: &Atom) -> Option<&dyn RegisteredSpeculativePainter> {
-                None
-            }
-        }
-
-        // Perform style traversal to compute styles for all elements
-        {
-            let context = SharedStyleContext {
-                stylist: &dom.stylist,
-                visited_styles_enabled: false,
-                options: GLOBAL_STYLE_DATA.options.clone(),
-                guards: guards,
-                current_time_for_animations: 0.0, // TODO animations
-                traversal_flags: TraversalFlags::empty(),
-                snapshot_map: &dom.snapshots,
-                animations: Default::default(),
-                registered_speculative_painters: &Painters,
-            };
-
-            let root = dom.root_element();
-            let token = RecalcStyle::pre_traverse(root, &context);
-
-            if token.should_traverse() {
-                let traverser = RecalcStyle::new(context);
-                style::driver::traverse_dom(&traverser, token, None);
-            }
-
-            for opaque in dom.snapshots.keys() {
-                let id = opaque.id();
-                if let Some(node) = dom.nodes.get_mut(id) {
-                    node.has_snapshot = false;
-                }
-            }
-            dom.snapshots.clear();
-        }
-        drop(author);
-        drop(ua_or_user);
-
-        dom.get_layout_children();
-
-        dom.flush_layout_style(dom.root_element().id);
-    }
 
     /// Get the current page title
     pub fn page_title(&self) -> &str {
@@ -1425,7 +1365,7 @@ impl Engine {
 
             style::thread_state::enter(ThreadState::LAYOUT);
             self.parse_document_styles().await;
-            self.flush_styles();
+            self.dom.as_mut().unwrap().flush_styles();
             self.recalculate_layout();
             style::thread_state::exit(ThreadState::LAYOUT);
             self.start_image_loading().await;

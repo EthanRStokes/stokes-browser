@@ -370,17 +370,13 @@ unsafe extern "C" fn element_set_attribute(raw_cx: *mut JSContext, argc: c_uint,
         DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &mut *dom_ptr;
-                if let Some(node) = dom.get_node_mut(node_id) {
-                    if let NodeData::Element(ref mut elem_data) = node.data {
-                        // Create QualName for the attribute
-                        let qname = QualName::new(
-                            None,
-                            markup5ever::ns!(),
-                            markup5ever::LocalName::from(attr_name.as_str()),
-                        );
-                        elem_data.attributes.set(qname, &attr_value);
-                    }
-                }
+                // Create QualName for the attribute
+                let qname = QualName::new(
+                    None,
+                    markup5ever::ns!(),
+                    markup5ever::LocalName::from(attr_name.as_str()),
+                );
+                dom.set_attribute(node_id, qname, &attr_value);
             }
         });
     }
@@ -482,6 +478,7 @@ pub(crate) unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, arg
             let dom = &mut *dom_ptr;
             // Update parent reference in child node
             if let Some(parent_id) = get_node_id_from_this(raw_cx, &args) {
+                dom.snapshot(parent_id);
                 dom.nodes[child_id].parent = Some(parent_id);
                 dom.nodes[parent_id].add_child(child_id);
             }

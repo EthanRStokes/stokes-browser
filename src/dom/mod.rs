@@ -8,6 +8,8 @@ mod url;
 mod layout;
 mod traverse;
 pub mod stylo_to_parley;
+mod attr;
+mod snapshot;
 
 pub use self::events::{EventDispatcher, EventType};
 pub use self::node::{AttributeMap, DomNode, ElementData, ImageData, ImageLoadingState, NodeData};
@@ -40,21 +42,27 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use style::animation::DocumentAnimationSet;
+use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters, SharedStyleContext};
 use style::data::ElementStyles;
 use style::dom::{TDocument, TNode};
 use style::font_metrics::FontMetrics;
+use style::global_style_data::GLOBAL_STYLE_DATA;
 use style::media_queries::{Device, MediaList, MediaType};
 use style::properties::style_structs::Font;
 use style::properties::ComputedValues;
 use style::queries::values::PrefersColorScheme;
 use style::selector_parser::SnapshotMap;
 use style::servo::media_queries::FontMetricsProvider;
-use style::shared_lock::SharedRwLock;
+use style::shared_lock::{SharedRwLock, StylesheetGuards};
 use style::stylesheets::{AllowImportRules, DocumentStyleSheet, Origin, Stylesheet};
 use style::stylist::Stylist;
+use style::traversal::DomTraversal;
+use style::traversal_flags::TraversalFlags;
 use style::values::computed::font::{GenericFontFamily, QueryFontMetricsFlags};
 use style::values::computed::{Au, CSSPixelLength, Length};
+use stylo_atoms::Atom;
 use taffy::Point;
+use crate::css::stylo::RecalcStyle;
 
 const ZERO: Point<f64> = Point { x: 0.0, y: 0.0 };
 
@@ -393,6 +401,71 @@ impl Dom {
         );
 
         DocumentStyleSheet(style::servo_arc::Arc::new(data))
+    }
+
+    pub fn flush_styles(&mut self) {
+        let lock = &self.lock;
+        let author = lock.read();
+        let ua_or_user = lock.read();
+        let guards = StylesheetGuards {
+            author: &author,
+            ua_or_user: &ua_or_user,
+        };
+
+        // Flush the stylist with all loaded stylesheets
+        {
+            let root = TDocument::as_node(&&self.nodes[0])
+                .first_element_child()
+                .unwrap()
+                .as_element()
+                .unwrap();
+
+            self.stylist.flush(&guards, Some(root), Some(&self.snapshots));
+        }
+
+        struct Painters;
+        impl RegisteredSpeculativePainters for Painters {
+            fn get(&self, name: &Atom) -> Option<&dyn RegisteredSpeculativePainter> {
+                None
+            }
+        }
+
+        // Perform style traversal to compute styles for all elements
+        {
+            let context = SharedStyleContext {
+                stylist: &self.stylist,
+                visited_styles_enabled: false,
+                options: GLOBAL_STYLE_DATA.options.clone(),
+                guards: guards,
+                current_time_for_animations: 0.0, // TODO animations
+                traversal_flags: TraversalFlags::empty(),
+                snapshot_map: &self.snapshots,
+                animations: Default::default(),
+                registered_speculative_painters: &Painters,
+            };
+
+            let root = self.root_element();
+            let token = RecalcStyle::pre_traverse(root, &context);
+
+            if token.should_traverse() {
+                let traverser = RecalcStyle::new(context);
+                style::driver::traverse_dom(&traverser, token, None);
+            }
+
+            for opaque in self.snapshots.keys() {
+                let id = opaque.id();
+                if let Some(node) = self.nodes.get_mut(id) {
+                    node.has_snapshot = false;
+                }
+            }
+            self.snapshots.clear();
+        }
+        drop(author);
+        drop(ua_or_user);
+
+        self.get_layout_children();
+
+        self.flush_layout_style(self.root_element().id);
     }
 
     pub fn get_layout_children(&mut self) {
