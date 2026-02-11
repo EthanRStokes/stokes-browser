@@ -37,6 +37,7 @@ use style::values::computed::{Display, PositionProperty};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use style_traits::ToCss;
 use taffy::{Cache, Layout, Style};
+use crate::dom::damage::ALL_DAMAGE;
 use crate::layout::table::TableContext;
 use crate::ui::TextBrush;
 
@@ -617,8 +618,10 @@ impl DomNode {
 
     /// Add a child node
     pub fn add_child(&mut self, child: usize) -> &DomNode {
+        println!("Adding child {child} to {}", self.id);
         self.children.push(child);
 
+        self.insert_damage(ALL_DAMAGE);
         if let Some(data) = &mut *self.stylo_data.borrow_mut() {
             data.hint |= RestyleHint::restyle_subtree()
         }

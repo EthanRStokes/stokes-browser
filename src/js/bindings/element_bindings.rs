@@ -1,7 +1,7 @@
 // Element bindings for JavaScript using mozjs
 use crate::dom::{AttributeMap, NodeData};
 use crate::js::bindings::dom_bindings::DOM_REF;
-use crate::js::helpers::{create_empty_array, create_js_string, define_function, get_node_id_from_this, js_value_to_string, set_int_property, set_string_property, to_css_property_name};
+use crate::js::helpers::{create_empty_array, create_js_string, define_function, get_node_id_from_this, get_node_id_from_value, js_value_to_string, set_int_property, set_string_property, to_css_property_name};
 use crate::js::selectors::matches_selector;
 use markup5ever::QualName;
 use mozjs::jsapi::{
@@ -460,13 +460,14 @@ pub(crate) unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, arg
 
     println!("[JS] element.appendChild() called");
 
+    // Extract the child node id from the first argument using helper
     let child_id = if argc > 0 {
-        if let Some(id) = get_node_id_from_this(raw_cx, &CallArgs::from_vp(vp, argc)) {
-            id
-        } else {
-            // Invalid child node
-            args.rval().set(UndefinedValue());
-            return true;
+        match get_node_id_from_value(raw_cx, *args.get(0)) {
+            Some(id) => id,
+            None => {
+                args.rval().set(UndefinedValue());
+                return true;
+            }
         }
     } else {
         // No child provided
@@ -1454,7 +1455,5 @@ unsafe extern "C" fn class_list_replace(raw_cx: *mut JSContext, argc: c_uint, vp
     args.rval().set(BooleanValue(result));
     true
 }
-
-
 
 

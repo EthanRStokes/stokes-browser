@@ -181,6 +181,29 @@ pub unsafe fn get_node_id_from_this(raw_cx: *mut JSContext, args: &CallArgs) -> 
     }
 }
 
+/// Get the node ID from an arbitrary JS value (e.g. an argument object) by reading its `__nodeId` property.
+pub unsafe fn get_node_id_from_value(raw_cx: *mut JSContext, val: JSVal) -> Option<usize> {
+    if !val.is_object() || val.is_null() {
+        return None;
+    }
+
+    rooted!(in(raw_cx) let obj = val.to_object());
+    rooted!(in(raw_cx) let mut ptr_val = UndefinedValue());
+
+    let cname = std::ffi::CString::new("__nodeId").unwrap();
+    if !mozjs::jsapi::JS_GetProperty(raw_cx, obj.handle().into(), cname.as_ptr(), ptr_val.handle_mut().into()) {
+        return None;
+    }
+
+    if ptr_val.get().is_double() {
+        Some(ptr_val.get().to_double() as usize)
+    } else if ptr_val.get().is_int32() {
+        Some(ptr_val.get().to_int32() as usize)
+    } else {
+        None
+    }
+}
+
 /// Convert JavaScript camelCase property name to CSS kebab-case
 pub fn to_css_property_name(js_name: &str) -> String {
     let mut result = String::with_capacity(js_name.len() + 5);
