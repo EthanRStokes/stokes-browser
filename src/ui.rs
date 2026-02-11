@@ -988,22 +988,12 @@ impl BrowserUI {
 
         // Draw BROWSING WITH STOKES text in the top-right corner
         {
-            let text_x = canvas_width - 300.0 - (20.0 * self.viewport.hidpi_scale);
-            let text_y = 22.0 * self.viewport.hidpi_scale;
-            let pos = kurbo::Point {
-                x: text_x as f64,
-                y: text_y as f64,
-            };
-            let transform = Affine::translate((pos.x * self.viewport.hidpi_scale as f64, pos.y * self.viewport.hidpi_scale as f64));
-            let text = "BROWSING WITH STOKESFSHDPOIFHSDPIFHSDUIFIOSDHFUIOSHDFOIHSDOUIFHOSDIUHFOISDHIFOSHDOUISODUIHFUIOSFUIOSD";
+            let text = "BROWSING WITH STOKES";
             let mut builder = layout_ctx.ranged_builder(font_ctx, &text, self.viewport.hidpi_scale, true);
 
             builder.push_default(GenericFamily::SystemUi);
             builder.push_default(LineHeight::FontSizeRelative(1.3));
             builder.push_default(StyleProperty::FontSize(base_font_size));
-
-            let bold = FontWeight::new(600.0);
-            builder.push(StyleProperty::FontWeight(bold), 0..4);
 
             let mut layout = builder.build(&text);
 
@@ -1013,6 +1003,14 @@ impl BrowserUI {
             let height = layout.height().ceil() as u32;
             let padded_width = width + 40;
             let padded_height = height + 40;
+
+            let text_x = canvas_width - width as f32 - (20.0 * self.viewport.hidpi_scale);
+            let text_y = height as f32;
+            let pos = kurbo::Point {
+                x: text_x as f64,
+                y: text_y as f64,
+            };
+            let transform = Affine::translate((pos.x, pos.y));
 
             for line in layout.lines() {
                 for item in line.items() {
