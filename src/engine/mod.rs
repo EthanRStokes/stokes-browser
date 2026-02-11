@@ -95,7 +95,7 @@ impl Engine {
 
         // Fetch the page content
         let result = async {
-            let html = self.http_client.fetch(url).await?;
+            let html = self.http_client.fetch(url, &self.config.user_agent).await?;
 
             // Parse the HTML into our DOM
             let mut dom = Dom::parse_html(&html, self.viewport.clone());
@@ -195,8 +195,9 @@ impl Engine {
             };
 
             let http_client = &self.http_client;
+            let user_agent = &self.config.user_agent;
             fetch_futures.push(async move {
-                let result = http_client.fetch_resource(&absolute_url).await;
+                let result = http_client.fetch_resource(&absolute_url, user_agent).await;
                 (src, result)
             });
         }
@@ -288,7 +289,7 @@ impl Engine {
         println!("Fetching image: {}", absolute_url);
 
         // Use the HTTP client to fetch the image data
-        let image_bytes = self.http_client.fetch_resource(&absolute_url).await?;
+        let image_bytes = self.http_client.fetch_resource(&absolute_url, &self.config.user_agent).await?;
 
         // Validate that we got some data
         if image_bytes.is_empty() {
@@ -496,7 +497,7 @@ impl Engine {
     #[inline]
     pub async fn load_external_stylesheet(&mut self, css_url: &str) -> Result<(), NetworkError> {
         let absolute_url = self.resolve_url(css_url)?;
-        let css_content = self.http_client.fetch_resource(&absolute_url).await?;
+        let css_content = self.http_client.fetch_resource(&absolute_url, &self.config.user_agent).await?;
         let css_content = String::from_utf8(css_content).expect("Failed to decode CSS content as UTF-8");
         self.add_author_stylesheet(&css_content);
         Ok(())
@@ -547,8 +548,9 @@ impl Engine {
                 }
             };
             let http_client = &self.http_client;
+            let user_agent = &self.config.user_agent;
             fetch_futures.push(async move {
-                http_client.fetch_resource(&absolute_url).await
+                http_client.fetch_resource(&absolute_url, user_agent).await
             });
         }
 
@@ -965,7 +967,7 @@ impl Engine {
     /// Load an external JavaScript file from a URL
     async fn load_external_script(&self, script_url: &str) -> Result<String, NetworkError> {
         let absolute_url = self.resolve_url(script_url)?;
-        let script_bytes = self.http_client.fetch_resource(&absolute_url).await?;
+        let script_bytes = self.http_client.fetch_resource(&absolute_url, &self.config.user_agent).await?;
         let script_content = String::from_utf8(script_bytes)
             .map_err(|_| NetworkError::Utf8("Failed to decode script as UTF-8".to_string()))?;
 

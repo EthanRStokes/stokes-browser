@@ -27,6 +27,7 @@ use crate::dom::DomEvent;
 pub enum NetworkError {
     Curl(String),
     Utf8(String),
+    Engine(String),
     Http(u32),
     Empty,
     FileNotFound(String),
@@ -38,6 +39,7 @@ impl std::fmt::Display for NetworkError {
         match self {
             NetworkError::Curl(msg) => write!(f, "Curl error: {}", msg),
             NetworkError::Utf8(msg) => write!(f, "UTF-8 error: {}", msg),
+            NetworkError::Engine(msg) => write!(f, "Engine error: {}", msg),
             NetworkError::Http(code) => write!(f, "HTTP error: {}", code),
             NetworkError::Empty => write!(f, "Empty response body"),
             NetworkError::FileNotFound(path) => write!(f, "File not found: {}", path),
@@ -559,7 +561,7 @@ impl HttpClient {
     }
 
     /// Fetch HTML content from a URL or local file
-    pub async fn fetch(&self, url: &str) -> Result<String, NetworkError> {
+    pub async fn fetch(&self, url: &str, user_agent: &str) -> Result<String, NetworkError> {
         println!("Fetching: {}", url);
 
         let url = match Url::parse(url) {
@@ -578,6 +580,7 @@ impl HttpClient {
         // Normalize the URL: if it lacks a scheme, default to https://
 
         // Run curl operation in a blocking task since curl is synchronous
+        let user_agent = user_agent.to_string();
         let result = tokio::task::spawn_blocking(move || {
             let mut easy = Easy::new();
             let mut data = Vec::new();
@@ -585,7 +588,7 @@ impl HttpClient {
 
             // Configure curl
             easy.url(&url.as_str()).map_err(|e| NetworkError::Curl(e.to_string()))?;
-            easy.useragent("Stokes-Browser/1.0").map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.useragent(&user_agent).map_err(|e| NetworkError::Curl(e.to_string()))?;
             easy.timeout(Duration::from_secs(30)).map_err(|e| NetworkError::Curl(e.to_string()))?;
             easy.follow_location(true).map_err(|e| NetworkError::Curl(e.to_string()))?;
             easy.max_redirections(5).map_err(|e| NetworkError::Curl(e.to_string()))?;
@@ -634,7 +637,7 @@ impl HttpClient {
     }
 
     /// Fetch an image or other resource
-    pub async fn fetch_resource(&self, url: &str) -> Result<Vec<u8>, NetworkError> {
+    pub async fn fetch_resource(&self, url: &str, user_agent: &str) -> Result<Vec<u8>, NetworkError> {
         println!("Fetching resource: {}", url);
 
         let url = match Url::parse(url) {
@@ -651,6 +654,7 @@ impl HttpClient {
         }
 
         // Run curl operation in a blocking task
+        let user_agent = user_agent.to_string();
         let result = tokio::task::spawn_blocking(move || {
             let mut easy = Easy::new();
             let mut data = Vec::new();
@@ -658,7 +662,7 @@ impl HttpClient {
 
             // Configure curl
             easy.url(&url.as_str()).map_err(|e| NetworkError::Curl(e.to_string()))?;
-            easy.useragent("Stokes-Browser/1.0").map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.useragent(&user_agent).map_err(|e| NetworkError::Curl(e.to_string()))?;
             easy.timeout(Duration::from_secs(30)).map_err(|e| NetworkError::Curl(e.to_string()))?;
             easy.follow_location(true).map_err(|e| NetworkError::Curl(e.to_string()))?;
             easy.max_redirections(5).map_err(|e| NetworkError::Curl(e.to_string()))?;
@@ -716,18 +720,19 @@ impl HttpClient {
     }
 
     /// Check if a URL is valid and reachable (for validation)
-    pub async fn head(&self, url: &str) -> Result<bool, NetworkError> {
+    pub async fn head(&self, url: &str, user_agent: &str) -> Result<bool, NetworkError> {
         let url = match Url::parse(url) {
             Ok(u) => u,
             Err(e) => return Err(NetworkError::Curl(e.to_string())),
         };
 
+        let user_agent = user_agent.to_string();
         let result = tokio::task::spawn_blocking(move || {
             let mut easy = Easy::new();
 
             // Configure curl for HEAD request
             easy.url(&url.as_str()).map_err(|e| NetworkError::Curl(e.to_string()))?;
-            easy.useragent("Stokes-Browser/1.0").map_err(|e| NetworkError::Curl(e.to_string()))?;
+            easy.useragent(&user_agent).map_err(|e| NetworkError::Curl(e.to_string()))?;
             easy.timeout(Duration::from_secs(10)).map_err(|e| NetworkError::Curl(e.to_string()))?;
             easy.nobody(true).map_err(|e| NetworkError::Curl(e.to_string()))?; // This makes it a HEAD request
             easy.follow_location(true).map_err(|e| NetworkError::Curl(e.to_string()))?;

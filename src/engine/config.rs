@@ -20,9 +20,9 @@ pub struct EngineConfig {
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
-            user_agent: format!("Stokes-Browser/1.0"),
+            user_agent: format!("Mozilla/5.0 (Linux; x86_64) Stokes/1.0 Chrome/145.0.0.0 AppleWebKit/537.36 Safari/537.36"),
             homepage: "https://example.com".to_string(),
-            enable_javascript: true,
+            enable_javascript: false,
             block_ads: false,         // Not implemented yet
             cache_size_mb: 50,
             debug_hitboxes: false, // Enable for debugging click issues

@@ -1,5 +1,5 @@
 // Fetch API implementation for JavaScript using mozjs
-use crate::networking::HttpClient;
+use crate::networking::{HttpClient, NetworkError};
 use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, Handle, JSContext, JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JS_ParseJSON, JS_ValueToSource, MutableHandleValue, JSPROP_ENUMERATE, Compile1, JS_ExecuteScript};
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
@@ -9,6 +9,7 @@ use std::os::raw::c_uint;
 use std::ptr::NonNull;
 use crate::js::JsRuntime;
 use mozjs::context::JSContext as SafeJSContext;
+use crate::engine::ENGINE_REF;
 
 /// Helper function to evaluate JavaScript code and return the result
 unsafe fn eval_js(cx: *mut JSContext, code: &str, rval: MutableHandleValue) -> bool {
@@ -113,9 +114,16 @@ unsafe extern "C" fn fetch_impl(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal
     let url_clone = url.clone();
     let fetch_result = std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let client = HttpClient::new();
-            client.fetch(&url_clone).await
+        ENGINE_REF.with(|engine_ref| {
+            if let Some(engine) = engine_ref.borrow().as_ref() {
+                let engine = &mut **engine;
+                rt.block_on(async {
+                    let client = HttpClient::new();
+                    client.fetch(&url_clone, &(engine.config.user_agent)).await
+                })
+            } else {
+                Err(NetworkError::Engine("Engine reference not available".to_string()))
+            }
         })
     }).join();
 
