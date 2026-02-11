@@ -988,7 +988,7 @@ impl BrowserUI {
 
         // Draw BROWSING WITH STOKES text in the top-right corner
         {
-            let text = "BROWSING WITH STOKES";
+            let text = "STOKES BROWSER";
             let mut builder = layout_ctx.ranged_builder(font_ctx, &text, self.viewport.hidpi_scale, true);
 
             builder.push_default(GenericFamily::SystemUi);
