@@ -502,7 +502,7 @@ impl EventDispatcher {
 
             // Check for circular reference
             if visited.contains(parent) {
-                eprintln!("Warning: Circular reference detected in DOM tree parent chain");
+                //eprintln!("Warning: Circular reference detected in DOM tree parent chain");
                 break;
             }
 

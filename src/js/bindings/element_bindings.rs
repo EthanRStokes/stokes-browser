@@ -1,7 +1,7 @@
 // Element bindings for JavaScript using mozjs
 use crate::dom::{AttributeMap, NodeData};
 use crate::js::bindings::dom_bindings::DOM_REF;
-use crate::js::helpers::{create_empty_array, create_js_string, define_function, get_node_id_from_this, get_node_id_from_value, js_value_to_string, set_int_property, set_string_property, to_css_property_name};
+use crate::js::helpers::{create_empty_array, create_js_string, define_function, define_property_accessor, get_node_id_from_this, get_node_id_from_value, js_value_to_string, set_int_property, set_string_property, to_css_property_name};
 use crate::js::selectors::matches_selector;
 use markup5ever::QualName;
 use mozjs::jsapi::{
@@ -39,10 +39,10 @@ pub unsafe fn create_js_element_by_id(
     set_int_property(raw_cx, element.get(), "nodeType", 1)?; // ELEMENT_NODE
     set_string_property(raw_cx, element.get(), "id", id_attr)?;
     set_string_property(raw_cx, element.get(), "className", class_attr)?;
-    // TODO: innerHTML, outerHTML, textContent are stub values - should serialize/deserialize actual DOM content
+    // TODO: innerHTML, outerHTML are stub values - should serialize/deserialize actual DOM content
     set_string_property(raw_cx, element.get(), "innerHTML", "")?;
     set_string_property(raw_cx, element.get(), "outerHTML", &format!("<{0}></{0}>", tag_name.to_lowercase()))?;
-    set_string_property(raw_cx, element.get(), "textContent", "")?;
+    // Note: textContent will be defined as a property accessor below
 
     // Store the node_id for reference to the actual DOM node
     rooted!(in(raw_cx) let ptr_val = mozjs::jsval::DoubleValue(node_id as f64));
@@ -79,6 +79,13 @@ pub unsafe fn create_js_element_by_id(
     define_function(raw_cx, element.get(), "closest", Some(element_closest), 1)?;
     define_function(raw_cx, element.get(), "matches", Some(element_matches), 1)?;
     define_function(raw_cx, element.get(), "contains", Some(element_contains), 1)?;
+
+    // Define internal getter/setter functions for textContent property
+    define_function(raw_cx, element.get(), "__getTextContent", Some(element_get_text_content), 0)?;
+    define_function(raw_cx, element.get(), "__setTextContent", Some(element_set_text_content), 1)?;
+
+    // Define textContent as a property with getter/setter
+    define_property_accessor(raw_cx, element.get(), "textContent", "__getTextContent", "__setTextContent")?;
 
     // Create style object
     rooted!(in(raw_cx) let style = JS_NewPlainObject(raw_cx));
@@ -1453,6 +1460,54 @@ unsafe extern "C" fn class_list_replace(raw_cx: *mut JSContext, argc: c_uint, vp
     }
 
     args.rval().set(BooleanValue(result));
+    true
+}
+
+/// element.__getTextContent implementation (internal getter for textContent property)
+unsafe extern "C" fn element_get_text_content(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    println!("[JS] element.__getTextContent() called");
+
+    if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
+        DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &*dom_ptr;
+                if let Some(node) = dom.get_node(node_id) {
+                    let text_content = node.text_content();
+                    args.rval().set(create_js_string(raw_cx, &text_content));
+                    return;
+                }
+            }
+        });
+    }
+
+    args.rval().set(create_js_string(raw_cx, ""));
+    true
+}
+
+/// element.__setTextContent implementation (internal setter for textContent property)
+unsafe extern "C" fn element_set_text_content(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let text = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    println!("[JS] element.__setTextContent('{}') called", text);
+
+    if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
+        DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &mut *dom_ptr;
+                dom.set_text_content(node_id, text);
+            }
+        });
+    }
+
+    args.rval().set(UndefinedValue());
     true
 }
 

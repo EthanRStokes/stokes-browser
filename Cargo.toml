@@ -47,17 +47,17 @@ color = "0.3.2"
 html-escape = "0.2.13"
 
 # Stylo
-stylo = "0.11.0"
-stylo_traits = "0.11.0"
-stylo_atoms = "0.11.0"
-stylo_config = "0.11.0"
-stylo_dom = "0.11.0"
+stylo = "0.12.0"
+stylo_traits = "0.12.0"
+stylo_atoms = "0.12.0"
+stylo_config = "0.12.0"
+stylo_dom = "0.12.0"
 selectors = "0.35.0"
 
 # Blitz
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "21e77517" }
-blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "21e77517" }
-stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "21e77517", features = ["floats"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "81b8748" }
+blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "81b8748" }
+stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "81b8748", features = ["floats"] }
 log = "0.4.28"
 wuff = "0.2.3"
 dirs = "6.0"

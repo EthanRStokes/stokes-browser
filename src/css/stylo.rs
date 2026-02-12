@@ -292,6 +292,7 @@ impl selectors::Element for Node<'_> {
                 (element.name.local == local_name!("a") || element.name.local == local_name!("area")) && element.has_attr(local_name!("href"))
             }).unwrap_or(false),
             NonTSPseudoClass::Modal => false,
+            NonTSPseudoClass::Open => false,
             NonTSPseudoClass::MozMeterOptimum => false,
             NonTSPseudoClass::MozMeterSubOptimum => false,
             NonTSPseudoClass::MozMeterSubSubOptimum => false,

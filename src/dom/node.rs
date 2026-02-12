@@ -34,6 +34,7 @@ use style::properties::style_structs::Font;
 use style::selector_parser::RestyleDamage;
 use style::stylesheets::{CssRuleType, DocumentStyleSheet, UrlExtraData};
 use style::values::computed::{Display, PositionProperty};
+use style::values::generics::counters::Content;
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use style_traits::ToCss;
 use taffy::{Cache, Layout, Style};
@@ -108,7 +109,7 @@ pub enum NodeKind {
 pub enum NodeData {
     /// The `Document` itself - the root node.
     Document,
-    Text { contents: RefCell<StrTendril> },
+    Text(TextData),
     Comment { contents: StrTendril },
     Element(ElementData),
     // TODO better pseudo element support
@@ -157,6 +158,17 @@ impl NodeData {
             NodeData::Text { .. } => NodeKind::Text,
             NodeData::Comment { .. } => NodeKind::Comment,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TextData {
+    pub content: String,
+}
+
+impl TextData {
+    pub fn new(content: String) -> Self {
+        Self { content }
     }
 }
 
@@ -757,7 +769,7 @@ impl DomNode {
 
     pub fn is_whitespace_node(&self) -> bool {
         match &self.data {
-            NodeData::Text { contents } => contents.borrow().chars().all(|c| c.is_ascii_whitespace()),
+            NodeData::Text(text) => text.content.chars().all(|c| c.is_ascii_whitespace()),
             _ => false,
         }
     }
@@ -786,8 +798,8 @@ impl DomNode {
 
     /// Get text content of this node and its descendants
     pub fn text_content(&self) -> String {
-        match &self.data {
-            NodeData::Text { contents } => contents.borrow().to_string(),
+        match self.data {
+            NodeData::Text(ref text) => text.content.clone(),
             _ => {
                 // Concatenate text from all children
                 let mut result = String::new();
@@ -796,34 +808,6 @@ impl DomNode {
                     result.push_str(&child.text_content());
                 }
                 result
-            }
-        }
-    }
-
-    /// Set the text content of this node
-    /// For text nodes, replaces the text content
-    /// For element nodes, removes all children and creates a single text node child
-    pub fn set_text_content(&mut self, text: &str) {
-        match &mut self.data {
-            NodeData::Text { contents } => {
-                let contents = contents.get_mut();
-                *contents = StrTendril::from(text);
-                // Invalidate layout since content changed
-                self.invalidate_layout();
-            }
-            _ => {
-                // Remove all children
-                self.children.clear();
-                
-                // If text is not empty, add a single text node as child
-                /*if !text.is_empty() {
-                    let text_node = DomNode::new(NodeData::Text { contents: RefCell::new(StrTendril::from(text.to_string())) }, None);
-                    self.add_child(text_node);
-                }*/
-                // Note: invalidate_layout is called in add_child, or here if text is empty
-                if text.is_empty() {
-                    self.invalidate_layout();
-                }
             }
         }
     }
@@ -1002,8 +986,8 @@ impl DomNode {
             NodeData::Comment { contents: _ } => {}
             NodeData::AnonymousBlock(_) => {}
             // NodeData::Doctype { name, .. } => write!(s, "DOCTYPE {name}"),
-            NodeData::Text { contents }  => {
-                writer.push_str(&**contents.borrow());
+            NodeData::Text(text) => {
+                writer.push_str(&text.content);
             }
             NodeData::Element(data) => {
                 writer.push('<');
@@ -1072,12 +1056,11 @@ impl fmt::Debug for DomNode {
             NodeData::AnonymousBlock(data) => {
                 write!(f, "<#anonymous-block {}>", data.name.local)
             },
-            NodeData::Text { contents } => {
-                let contents = contents.borrow();
-                let content = if contents.len() > 50 {
-                    format!("{}...", &contents[..50])
+            NodeData::Text(text) => {
+                let content = if text.content.len() > 50 {
+                    format!("{}...", &text.content[..50])
                 } else {
-                    contents.to_string()
+                    text.content.to_string()
                 };
                 write!(f, "{}", content)
             },

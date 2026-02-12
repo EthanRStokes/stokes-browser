@@ -7,7 +7,7 @@ use markup5ever_rcdom::{Handle, NodeData as EverNodeData};
 use std::cell::RefCell;
 use markup5ever::local_name;
 use crate::dom::config::DomConfig;
-use crate::dom::node::SpecialElementData;
+use crate::dom::node::{SpecialElementData, TextData};
 
 /// HTML Parser for converting HTML strings into DOM structures
 pub struct HtmlParser;
@@ -57,7 +57,7 @@ impl HtmlParser {
                 if processed.is_empty() {
                     return;
                 }
-                let data = NodeData::Text { contents: RefCell::new(StrTendril::from(processed)) };
+                let data = NodeData::Text(TextData::new(processed));
                 let id = dom.create_node(data);
                 if let Some(pid) = parent_id {
                     dom.nodes[id].parent = Some(pid);

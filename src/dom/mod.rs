@@ -17,7 +17,7 @@ pub use self::parser::HtmlParser;
 use crate::dom::config::DomConfig;
 use crate::dom::damage::{ALL_DAMAGE, CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC};
 use crate::dom::layout::collect_layout_children;
-use crate::dom::node::DomNodeFlags;
+use crate::dom::node::{DomNodeFlags, TextData};
 use crate::dom::url::DocUrl;
 use crate::networking::{ResourceLoadResponse, StylesheetLoader};
 use crate::ui::TextBrush;
@@ -40,6 +40,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use style::animation::DocumentAnimationSet;
 use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters, SharedStyleContext};
 use style::data::ElementStyles;
@@ -90,6 +91,18 @@ pub struct Dom {
 
     pub(crate) font_ctx: Arc<Mutex<FontContext>>,
     pub(crate) layout_ctx: Arc<Mutex<LayoutContext<TextBrush>>>,
+
+    // mouse hover
+    pub(crate) hover_node_id: Option<usize>,
+    pub(crate) hover_node_is_text: bool,
+    // currently focused node
+    pub(crate) focus_node_id: Option<usize>,
+    // currently active node
+    pub(crate) active_node_id: Option<usize>,
+    pub(crate) mousedown_node_id: Option<usize>,
+    pub(crate) last_mousedown_time: Option<Instant>,
+
+    // todo text selection
 
     pub(crate) has_active_animations: bool,
     pub(crate) has_canvas: bool,
@@ -280,6 +293,12 @@ impl Dom {
             snapshots: SnapshotMap::new(),
             font_ctx,
             layout_ctx: Arc::new(Mutex::new(LayoutContext::new())),
+            hover_node_id: None,
+            hover_node_is_text: false,
+            focus_node_id: None,
+            active_node_id: None,
+            mousedown_node_id: None,
+            last_mousedown_time: None,
             has_active_animations: false,
             has_canvas: false,
             nodes_to_id: Default::default(),
@@ -419,7 +438,7 @@ impl Dom {
                 .as_element()
                 .unwrap();
 
-            self.stylist.flush(&guards, Some(root), Some(&self.snapshots));
+            self.stylist.flush(&guards).process_style(root, Some(&self.snapshots));
         }
 
         struct Painters;
@@ -599,6 +618,57 @@ impl Dom {
             } else {
                 break;
             }
+        }
+    }
+
+    /// Set the text content of a node
+    /// For text nodes, replaces the text content
+    /// For element nodes, removes all children and creates a single text node child
+    pub fn set_text_content(&mut self, node_id: usize, value: String) {
+        println!("Setting text content of node {} to '{}'", self.id, value);
+
+        let text = match self.nodes[node_id].data {
+            NodeData::Text(ref mut text) => text,
+            NodeData::Element(ref element) => {
+                // find child text node
+                if let Some(child_id) = self.nodes[node_id].children.clone().iter().find(|child_id| {
+                    matches!(self.tree()[**child_id].data, NodeData::Text { .. })
+                }) {
+                    self.nodes[*child_id].data.element_mut().unwrap().inline_layout_data = None;
+                    if let NodeData::Text(ref mut text) = self.nodes[*child_id].data {
+                        text
+                    } else {
+                        unreachable!()
+                    }
+                } else {
+                    // no existing text node, create one
+                    let text_data = TextData::new(value.to_string());
+                    let text_node = self.create_node(NodeData::Text(text_data));
+                    self.nodes[node_id].add_child(text_node);
+                    if let NodeData::Text(ref mut text) = self.nodes[text_node].data {
+                        text
+                    } else {
+                        unreachable!()
+                    }
+                }
+            }
+            _ => return,
+        };
+
+        let changed = text.content != value;
+        if changed {
+            println!("changing text content to {value}");
+            text.content.clear();
+            text.content.push_str(&value);
+            self.nodes[node_id].insert_damage(ALL_DAMAGE);
+            // todo mark ancestors dirty
+
+            let parent_id = self.nodes[node_id].parent;
+            if let Some(parent_id) = parent_id {
+                self.nodes[parent_id].insert_damage(ALL_DAMAGE);
+            }
+
+            // todo record ig
         }
     }
 

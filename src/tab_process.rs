@@ -138,7 +138,7 @@ impl TabProcess {
                 self.channel.borrow_mut().send(&TabToParentMessage::NavigationStarted(url.clone()))?;
                 self.engine.set_loading_state(true);
 
-                match self.engine.navigate(&url).await {
+                match self.engine.navigate(&url, true, true).await {
                     Ok(_) => {
                         let title = self.engine.page_title().to_string();
                         let mut channel = self.channel.borrow_mut();
@@ -164,7 +164,7 @@ impl TabProcess {
                     self.channel.borrow_mut().send(&TabToParentMessage::NavigationStarted(url.clone()))?;
                     self.engine.set_loading_state(true);
 
-                    match self.engine.navigate(&url).await {
+                    match self.engine.navigate(&url, true, true).await {
                         Ok(_) => {
                             let title = self.engine.page_title().to_string();
                             let mut channel = self.channel.borrow_mut();
@@ -280,8 +280,9 @@ impl TabProcess {
                 }
                 self.render_frame()?;
             }
-            ParentToTabMessage::MouseMove { x: _, y: _ } => {
+            ParentToTabMessage::MouseMove { x, y } => {
                 // Update cursor if hovering over interactive elements
+                self.engine.handle_mouse_move(x, y);
                 // TODO: Implement cursor detection and send CursorChanged message
             }
             ParentToTabMessage::KeyboardInput { key_type, modifiers } => {

@@ -88,7 +88,7 @@ impl Engine {
     }
 
     /// Navigate to a new URL
-    pub async fn navigate(&mut self, url: &str) -> Result<(), NetworkError> {
+    pub async fn navigate(&mut self, url: &str, invalidate_js: bool, history: bool) -> Result<(), NetworkError> {
         println!("Navigating to: {}", url);
         self.is_loading = true;
         self.current_url = url.to_string();
@@ -105,7 +105,11 @@ impl Engine {
 
             // Store the DOM
             self.dom = Some(dom);
-            self.js_runtime = None;
+            if invalidate_js {
+                let js = self.js_runtime.take();
+                drop(js);
+                self.js_runtime = None;
+            }
 
             // Reset scroll position
             self.scroll_x = 0.0;
@@ -114,6 +118,14 @@ impl Engine {
             // Parse and apply CSS styles from the document
             style::thread_state::enter(ThreadState::LAYOUT);
             self.parse_document_styles().await;
+
+            // TODO Execute JavaScript in the page after everything is loaded
+            if self.config.enable_javascript {
+                style::thread_state::enter(ThreadState::SCRIPT);
+                self.execute_document_scripts().await;
+                style::thread_state::exit(ThreadState::SCRIPT);
+            }
+
             self.dom.as_mut().unwrap().flush_styles();
 
             // Calculate layout with CSS styles applied
@@ -123,28 +135,17 @@ impl Engine {
             self.start_image_loading().await;
             style::thread_state::exit(ThreadState::LAYOUT);
 
-            // Execute JavaScript in the page after everything is loaded
-            if self.config.enable_javascript {
-                style::thread_state::enter(ThreadState::SCRIPT);
-                self.execute_document_scripts().await;
-                style::thread_state::exit(ThreadState::SCRIPT);
-                style::thread_state::enter(ThreadState::LAYOUT);
-                self.dom.as_mut().unwrap().flush_styles();
-                self.recalculate_layout();
-                style::thread_state::exit(ThreadState::LAYOUT);
-            }
-
             Ok(())
         }.await;
 
         // Always reset loading state
         self.is_loading = false;
-        
+
         // Add to history if navigation was successful
-        if result.is_ok() {
+        if history && result.is_ok() {
             self.add_to_history(url.to_string());
         }
-        
+
         result
     }
 
@@ -1053,7 +1054,8 @@ impl Engine {
 
     /// Fire a mouse move event on a DOM node
     fn fire_mouse_move_event(&mut self, node_id: usize, x: f64, y: f64) {
-        let dom = self.dom.as_ref().unwrap();
+        let dom = self.dom.as_mut().unwrap();
+        dom.hover_node_id = Some(node_id);
         let root = dom.root_node().get_node(node_id);
 
         let node = root.get_node(node_id);
@@ -1327,7 +1329,7 @@ impl Engine {
         if let Some(index) = self.history_index {
             self.history_index = Some(index - 1);
             let url = self.history[index - 1].clone();
-            self.navigate_without_history(&url).await
+            self.navigate(&url, true, false).await
         } else {
             Err(NetworkError::Curl("Invalid history state".to_string()))
         }
@@ -1342,38 +1344,9 @@ impl Engine {
         if let Some(index) = self.history_index {
             self.history_index = Some(index + 1);
             let url = self.history[index + 1].clone();
-            self.navigate_without_history(&url).await
+            self.navigate(&url, true, false).await
         } else {
             Err(NetworkError::Curl("Invalid history state".to_string()))
         }
-    }
-
-    /// Navigate to a URL without adding to history (used for back/forward)
-    async fn navigate_without_history(&mut self, url: &str) -> Result<(), NetworkError> {
-        println!("Navigating to: {} (from history)", url);
-        self.is_loading = true;
-        self.current_url = url.to_string();
-
-        let result = async {
-            let html = self.http_client.fetch(url).await?;
-            let dom = Dom::parse_html(&html, self.viewport.clone());
-            self.page_title = dom.get_title();
-
-            self.dom = Some(dom);
-            self.scroll_x = 0.0;
-            self.scroll_y = 0.0;
-
-            style::thread_state::enter(ThreadState::LAYOUT);
-            self.parse_document_styles().await;
-            self.dom.as_mut().unwrap().flush_styles();
-            self.recalculate_layout();
-            style::thread_state::exit(ThreadState::LAYOUT);
-            self.start_image_loading().await;
-
-            Ok(())
-        }.await;
-
-        self.is_loading = false;
-        result
     }
 }

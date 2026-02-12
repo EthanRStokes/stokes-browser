@@ -181,6 +181,100 @@ pub unsafe fn get_node_id_from_this(raw_cx: *mut JSContext, args: &CallArgs) -> 
     }
 }
 
+/// Define a property with getter/setter on a JavaScript object using Object.defineProperty
+pub unsafe fn define_property_accessor(
+    raw_cx: *mut JSContext,
+    obj: *mut JSObject,
+    prop_name: &str,
+    getter_name: &str,
+    setter_name: &str,
+) -> Result<(), String> {
+    use mozjs::jsapi::{CurrentGlobalOrNull, Compile1, JS_ExecuteScript, Handle, MutableHandleValue};
+    use mozjs::context::JSContext as SafeJSContext;
+    use mozjs::rust::{CompileOptionsWrapper, transform_str_to_source_text};
+
+    // We'll use a well-known temporary variable name
+    let temp_var_name = "__definePropertyTarget__";
+
+    rooted!(in(raw_cx) let obj_val = mozjs::jsval::ObjectValue(obj));
+
+    // Get the global object
+    rooted!(in(raw_cx) let global = CurrentGlobalOrNull(raw_cx));
+    if global.is_null() {
+        return Err("No global object".to_string());
+    }
+
+    // Set temporary global variable
+    let temp_cname = std::ffi::CString::new(temp_var_name).unwrap();
+    if !mozjs::jsapi::JS_SetProperty(
+        raw_cx,
+        global.handle().into(),
+        temp_cname.as_ptr(),
+        obj_val.handle().into(),
+    ) {
+        return Err("Failed to set temporary variable".to_string());
+    }
+
+    // Execute script to define the property
+    let script = format!(
+        r#"(function() {{
+            Object.defineProperty(__definePropertyTarget__, '{prop}', {{
+                get: function() {{
+                    return this.{getter}();
+                }},
+                set: function(value) {{
+                    this.{setter}(value);
+                }},
+                configurable: true,
+                enumerable: true
+            }});
+        }})();"#,
+        prop = prop_name,
+        getter = getter_name,
+        setter = setter_name
+    );
+
+    // Create a safe JSContext wrapper for the compile options
+    // SAFETY: We're within a valid JSContext scope, and the raw pointer is valid
+    let safe_cx: &SafeJSContext = std::mem::transmute(&raw_cx);
+    let options = CompileOptionsWrapper::new(safe_cx, "define_property_accessor".parse().unwrap(), 1);
+
+    // Compile the script
+    let compiled = Compile1(raw_cx, options.ptr, &mut transform_str_to_source_text(&script));
+    if compiled.is_null() {
+        // Clean up the temporary variable
+        rooted!(in(raw_cx) let undefined = UndefinedValue());
+        mozjs::jsapi::JS_SetProperty(
+            raw_cx,
+            global.handle().into(),
+            temp_cname.as_ptr(),
+            undefined.handle().into(),
+        );
+        return Err("Failed to compile property definition script".to_string());
+    }
+
+    rooted!(in(raw_cx) let script_root = compiled);
+    rooted!(in(raw_cx) let mut rval = UndefinedValue());
+
+    // Execute the script
+    let success = JS_ExecuteScript(raw_cx, Handle::from(script_root.handle()), MutableHandleValue::from(rval.handle_mut()));
+
+    // Clean up the temporary variable
+    rooted!(in(raw_cx) let undefined = UndefinedValue());
+    mozjs::jsapi::JS_SetProperty(
+        raw_cx,
+        global.handle().into(),
+        temp_cname.as_ptr(),
+        undefined.handle().into(),
+    );
+
+    if !success {
+        Err("Failed to execute property definition script".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 /// Get the node ID from an arbitrary JS value (e.g. an argument object) by reading its `__nodeId` property.
 pub unsafe fn get_node_id_from_value(raw_cx: *mut JSContext, val: JSVal) -> Option<usize> {
     if !val.is_object() || val.is_null() {

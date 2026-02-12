@@ -405,7 +405,7 @@ impl HtmlRenderer<'_> {
             NodeData::Element(_) | NodeData::AnonymousBlock(_) => {
                 self.render_element(scene, node_id, location)
             }
-            NodeData::Text { contents } => {
+            NodeData::Text(text) => {
                 unreachable!()
             }
             NodeData::Document => {}

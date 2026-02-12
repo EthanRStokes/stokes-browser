@@ -910,10 +910,10 @@ pub(crate) fn build_inline_layout(
                     }
                 };
             }
-            NodeData::Text { contents } => {
+            NodeData::Text(text) => {
                 // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
                 // dbg!(&data.content);
-                builder.push_text(&contents.borrow().to_string());
+                builder.push_text(&text.content);
             }
             NodeData::Comment { contents: _ } => {
                 // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
