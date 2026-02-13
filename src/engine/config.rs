@@ -22,7 +22,7 @@ impl Default for EngineConfig {
         Self {
             user_agent: format!("Mozilla/5.0 (Linux; x86_64) Stokes/1.0 Chrome/145.0.0.0 AppleWebKit/537.36 Safari/537.36"),
             homepage: "https://example.com".to_string(),
-            enable_javascript: false,
+            enable_javascript: true,
             block_ads: false,         // Not implemented yet
             cache_size_mb: 50,
             debug_hitboxes: false, // Enable for debugging click issues
