@@ -33,6 +33,7 @@ use crate::renderer::text::TextPainter;
 
 thread_local! {
     pub(crate) static ENGINE_REF: RefCell<Option<*mut Engine>> = RefCell::new(None);
+    pub(crate) static USER_AGENT_REF: RefCell<Option<String>> = RefCell::new(None);
 }
 
 /// The core browser engine that coordinates all browser activities
@@ -95,7 +96,7 @@ impl Engine {
 
         // Fetch the page content
         let result = async {
-            let html = self.http_client.fetch(url, &self.config.user_agent).await?;
+            let html = self.http_client.fetch(url, &self.config.user_agent)?;
 
             // Parse the HTML into our DOM
             let mut dom = Dom::parse_html(&html, self.viewport.clone());
@@ -998,14 +999,10 @@ impl Engine {
     /// Handle a click at the given position (viewport coordinates)
     /// Returns the href of the clicked link, if any
     pub fn handle_click(&mut self, x: f32, y: f32) -> Option<String> {
-        // Adjust position for scroll offset
-        let adjusted_x = x + self.scroll_x;
-        let adjusted_y = y + self.scroll_y;
-
         // Find the element at this position starting from root
         if let Some(dom) = &self.dom {
             let root_id = dom.root_element().id;
-            if let Some(node_id) = self.find_element_at_position(root_id, adjusted_x, adjusted_y, 0.0, 0.0) {
+            if let Some(node_id) = dom.hover_node_id {
                 // Fire click event on the element
                 self.fire_click_event(node_id, x as f64, y as f64);
 

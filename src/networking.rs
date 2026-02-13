@@ -521,23 +521,20 @@ impl HttpClient {
     }
 
     /// Read a local HTML file
-    async fn read_local_file(path: &str) -> Result<String, NetworkError> {
+    fn read_local_file(path: &str) -> Result<String, NetworkError> {
         println!("Reading local file: {}", path);
 
         let path = path.to_string();
-        tokio::task::spawn_blocking(move || {
-            // Check if file exists
-            let file_path = Path::new(&path);
-            if !file_path.exists() {
-                return Err(NetworkError::FileNotFound(path.clone()));
-            }
+        // Check if file exists
+        let file_path = Path::new(&path);
+        if !file_path.exists() {
+            return Err(NetworkError::FileNotFound(path.clone()));
+        }
 
-            // Read the file
-            std::fs::read_to_string(file_path)
-                .map_err(|e| NetworkError::FileRead(e.to_string()))
-        })
-        .await
-        .map_err(|e| NetworkError::FileRead(e.to_string()))?
+        // Read the file
+        std::fs::read_to_string(file_path)
+            .map_err(|e| NetworkError::FileRead(e.to_string()))
+        .map_err(|e| NetworkError::FileRead(e.to_string()))
     }
 
     /// Read a local resource file (for images, etc.)
@@ -561,7 +558,7 @@ impl HttpClient {
     }
 
     /// Fetch HTML content from a URL or local file
-    pub async fn fetch(&self, url: &str, user_agent: &str) -> Result<String, NetworkError> {
+    pub fn fetch(&self, url: &str, user_agent: &str) -> Result<String, NetworkError> {
         println!("Fetching: {}", url);
 
         let url = match Url::parse(url) {
@@ -574,66 +571,63 @@ impl HttpClient {
         // Check if it's a local file
         if url.scheme() == "file" {
             let file_path = Self::url_to_file_path(url.as_str());
-            return Self::read_local_file(&file_path).await;
+            return Self::read_local_file(&file_path);
         }
 
         // Normalize the URL: if it lacks a scheme, default to https://
 
         // Run curl operation in a blocking task since curl is synchronous
         let user_agent = user_agent.to_string();
-        let result = tokio::task::spawn_blocking(move || {
-            let mut easy = Easy::new();
-            let mut data = Vec::new();
-            let mut headers = Vec::new();
 
-            // Configure curl
-            easy.url(&url.as_str()).map_err(|e| NetworkError::Curl(e.to_string()))?;
-            easy.useragent(&user_agent).map_err(|e| NetworkError::Curl(e.to_string()))?;
-            easy.timeout(Duration::from_secs(30)).map_err(|e| NetworkError::Curl(e.to_string()))?;
-            easy.follow_location(true).map_err(|e| NetworkError::Curl(e.to_string()))?;
-            easy.max_redirections(5).map_err(|e| NetworkError::Curl(e.to_string()))?;
+        let mut easy = Easy::new();
+        let mut data = Vec::new();
+        let mut headers = Vec::new();
 
-            // Set up data collection
-            {
-                let mut transfer = easy.transfer();
-                transfer.write_function(|new_data| {
-                    data.extend_from_slice(new_data);
-                    Ok(new_data.len())
-                }).map_err(|e| NetworkError::Curl(e.to_string()))?;
+        // Configure curl
+        easy.url(&url.as_str()).map_err(|e| NetworkError::Curl(e.to_string()))?;
+        easy.useragent(&user_agent).map_err(|e| NetworkError::Curl(e.to_string()))?;
+        easy.timeout(Duration::from_secs(30)).map_err(|e| NetworkError::Curl(e.to_string()))?;
+        easy.follow_location(true).map_err(|e| NetworkError::Curl(e.to_string()))?;
+        easy.max_redirections(5).map_err(|e| NetworkError::Curl(e.to_string()))?;
+
+        // Set up data collection
+        {
+            let mut transfer = easy.transfer();
+            transfer.write_function(|new_data| {
+                data.extend_from_slice(new_data);
+                Ok(new_data.len())
+            }).map_err(|e| NetworkError::Curl(e.to_string()))?;
                 
-                transfer.header_function(|header| {
-                    headers.push(String::from_utf8_lossy(header).to_string());
-                    true
-                }).map_err(|e| NetworkError::Curl(e.to_string()))?;
+            transfer.header_function(|header| {
+                headers.push(String::from_utf8_lossy(header).to_string());
+                true
+            }).map_err(|e| NetworkError::Curl(e.to_string()))?;
                 
-                transfer.perform().map_err(|e| NetworkError::Curl(e.to_string()))?;
-            }
+            transfer.perform().map_err(|e| NetworkError::Curl(e.to_string()))?;
+        }
 
-            // Check response code
-            let response_code = easy.response_code().map_err(|e| NetworkError::Curl(e.to_string()))?;
-            if response_code >= 400 {
-                return Err(NetworkError::Http(response_code));
-            }
+        // Check response code
+        let response_code = easy.response_code().map_err(|e| NetworkError::Curl(e.to_string()))?;
+        if response_code >= 400 {
+            return Err(NetworkError::Http(response_code));
+        }
 
-            // Check content type
-            let content_type = headers.iter()
-                .find(|h| h.to_lowercase().starts_with("content-type:"))
-                .and_then(|h| h.split(':').nth(1))
-                .map(|s| s.trim())
-                .unwrap_or("text/html");
+        // Check content type
+        let content_type = headers.iter()
+            .find(|h| h.to_lowercase().starts_with("content-type:"))
+            .and_then(|h| h.split(':').nth(1))
+            .map(|s| s.trim())
+            .unwrap_or("text/html");
 
-            if !content_type.contains("text/html") {
-                println!("Warning: Content type is {}, not HTML", content_type);
-            }
+        if !content_type.contains("text/html") {
+            println!("Warning: Content type is {}, not HTML", content_type);
+        }
 
-            // Convert to string
-            let html = String::from_utf8(data)
-                .map_err(|_| NetworkError::Utf8("Response contains invalid UTF-8".to_string()))?;
+        // Convert to string
+        let html = String::from_utf8(data)
+            .map_err(|_| NetworkError::Utf8("Response contains invalid UTF-8".to_string()))?;
 
-            Ok::<String, NetworkError>(html)
-        }).await.map_err(|e| NetworkError::Curl(e.to_string()))?;
-
-        result
+        Ok::<String, NetworkError>(html).map_err(|e| NetworkError::Curl(e.to_string()))
     }
 
     /// Fetch an image or other resource

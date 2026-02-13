@@ -9,7 +9,7 @@ use std::os::raw::c_uint;
 use std::ptr::NonNull;
 use crate::js::JsRuntime;
 use mozjs::context::JSContext as SafeJSContext;
-use crate::engine::ENGINE_REF;
+use crate::engine::{ENGINE_REF, USER_AGENT_REF};
 
 /// Helper function to evaluate JavaScript code and return the result
 unsafe fn eval_js(cx: *mut JSContext, code: &str, rval: MutableHandleValue) -> bool {
@@ -88,6 +88,8 @@ unsafe extern "C" fn fetch_impl(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal
         String::new()
     };
 
+    // TODO resolve relative URL
+
     if url.is_empty() {
         println!("[JS] fetch() called with empty URL");
         // Return a rejected promise
@@ -111,34 +113,23 @@ unsafe extern "C" fn fetch_impl(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal
     println!("[JS] fetch method: {}", method);
 
     // Perform the fetch synchronously (blocking)
-    let url_clone = url.clone();
-    let fetch_result = std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        ENGINE_REF.with(|engine_ref| {
-            if let Some(engine) = engine_ref.borrow().as_ref() {
-                let engine = &mut **engine;
-                rt.block_on(async {
-                    let client = HttpClient::new();
-                    client.fetch(&url_clone, &(engine.config.user_agent)).await
-                })
-            } else {
-                Err(NetworkError::Engine("Engine reference not available".to_string()))
-            }
-        })
-    }).join();
+    let fetch_result = USER_AGENT_REF.with(|user_agent_ref| {
+        if let Some(user_agent) = user_agent_ref.borrow().as_ref() {
+            let client = HttpClient::new();
+            client.fetch(&url, user_agent)
+        } else {
+            Err(NetworkError::Engine("Engine reference not available".to_string()))
+        }
+    });
 
     match fetch_result {
-        Ok(Ok(body)) => {
+        Ok(body) => {
             println!("[JS] fetch successful, body length: {}", body.len());
             create_response_promise(cx, args.rval(), body, 200, url)
         }
-        Ok(Err(e)) => {
+        Err(e) => {
             println!("[JS] fetch failed: {}", e);
             create_rejected_promise(cx, args.rval(), &format!("Fetch failed: {}", e))
-        }
-        Err(_) => {
-            println!("[JS] fetch thread panicked");
-            create_rejected_promise(cx, args.rval(), "Fetch failed")
         }
     }
 }
