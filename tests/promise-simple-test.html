@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Simple Promise Test</title>
+</head>
+<body>
+    <h1>Simple Promise Test</h1>
+    <div id="output">Waiting...</div>
+
+    <script>
+        console.log('Start of script');
+
+        Promise.resolve('Success!').then(function(value) {
+            console.log('Promise resolved:', value);
+            document.getElementById('output').textContent = 'Promise worked: ' + value;
+        });
+
+        console.log('End of script');
+    </script>
+</body>
+</html>
+

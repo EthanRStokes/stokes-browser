@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::os::raw::c_void;
 use super::{initialize_bindings, JsResult};
 // JavaScript runtime management using Mozilla's SpiderMonkey (mozjs)
 use mozjs::jsval::{PrivateValue, UndefinedValue};
@@ -7,14 +10,49 @@ use std::ptr;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::Duration;
+use hirofa_utils::eventloop::EventLoop;
+use log::trace;
 use mozjs::context::JSContext;
+use mozjs::jsapi::{CallArgs, JSContext as ApiJSContext};
 use mozjs::conversions::jsstr_to_string;
-use mozjs::jsapi::{JSObject, JS_ClearPendingException, JS_GetPendingException, JS_IsExceptionPending, MutableHandleValue, OnNewGlobalHookOption, Heap, SetScriptPrivate, JSScript, JSContext as RawJSContext, Compile1, JS_ExecuteScript, Handle};
-use mozjs::panic::maybe_resume_unwind;
+use mozjs::jsapi::{JSObject, JS_ClearPendingException, JS_GetPendingException, JS_IsExceptionPending, MutableHandleValue, OnNewGlobalHookOption, Heap, SetScriptPrivate, JSScript, JSContext as RawJSContext, Compile1, JS_ExecuteScript, Handle, JSAutoRealm};
+use mozjs::panic::{maybe_resume_unwind, wrap_panic};
 use mozjs::rust::wrappers2::{JS_NewGlobalObject, JS_ValueToSource, JS_GetScriptPrivate};
 use url::Url;
+use lazy_static::lazy_static;
+use mozjs::gc::HandleObject;
+use mozjs::glue::JobQueueTraps;
+use skia_safe::wrapper::NativeTransmutableWrapper;
 use crate::dom::Dom;
 use crate::js::bindings::timers::TimerManager;
+use crate::js::jsapi::define_native_function::define_native_function;
+use crate::js::jsapi::objects::get_obj_prop_val_as_string;
+use crate::js::jsapi::promise::enqueue_promise_job;
+
+lazy_static! {
+    static ref ENGINE_HANDLER_PRODUCER: EventLoop = EventLoop::new();
+}
+
+thread_local! {
+    static ENGINE: RefCell<JSEngine> = RefCell::new(JSEngine::init().unwrap());
+}
+
+pub type GlobalOp = dyn Fn(*mut ApiJSContext, CallArgs) -> bool + Send + 'static;
+
+thread_local! {
+    pub(crate) static RUNTIME: RefCell<Option<*mut JsRuntime>> = RefCell::new(None);
+    static GLOBAL_OPS: RefCell<HashMap<&'static str, Box<GlobalOp>>> = RefCell::new(HashMap::new());
+}
+
+pub(crate) static JOB_QUEUE_TRAPS: JobQueueTraps = JobQueueTraps {
+    getHostDefinedData: None,
+    enqueuePromiseJob: Some(enqueue_promise_job),
+    runJobs: None,
+    empty: Some(empty),
+    pushNewInterruptQueue: None,
+    popInterruptQueue: None,
+    dropInterruptQueues: None,
+};
 
 // Stack size for growing when needed (16MB to handle very large scripts)
 const STACK_SIZE: usize = 16 * 1024 * 1024;
@@ -30,16 +68,14 @@ pub struct JsRuntime {
     user_agent: String,
     global: Box<Heap<*mut JSObject>>,
     runtime: Runtime,
-    engine: JSEngine,
 }
 
 impl JsRuntime {
     /// Create a new JavaScript runtime
     pub fn new(dom: *mut Dom, user_agent: String) -> JsResult<Self> {
-        // Initialize the JS engine
-        let engine = JSEngine::init().map_err(|_| "Failed to initialize JS engine".to_string())?;
-
-        let mut runtime = Runtime::new(engine.handle());
+        let mut runtime = Runtime::new(
+            ENGINE_HANDLER_PRODUCER.exe(|| ENGINE.with(|engine| engine.borrow().handle()))
+        );
 
         // Create and set up timer manager
         let timer_manager = Rc::new(TimerManager::new());
@@ -73,8 +109,8 @@ impl JsRuntime {
             user_agent,
             global,
             runtime,
-            engine,
         };
+        RUNTIME.set(Some(&mut js_runtime as *mut _));
         let user_agent = js_runtime.user_agent.clone();
 
         // Enter the realm for the global object before setting up bindings
@@ -285,6 +321,70 @@ impl JsRuntime {
     pub fn runtime(&self) -> &Runtime {
         &self.runtime
     }
+
+
+    pub fn do_with_jsapi<C, R>(&mut self, consumer: C) -> R
+    where
+        C: FnOnce(&Runtime, *mut ApiJSContext, HandleObject) -> R,
+    {
+        let rt = &mut self.runtime;
+        let cx = unsafe { rt.cx().raw_cx() };
+        let global = &self.global;
+
+        rooted!(in (cx) let global_root = global.get());
+
+        let ret;
+        {
+            let _ac = JSAutoRealm::new(cx, global.get());
+            ret = consumer(rt, cx, global_root.handle().into());
+        }
+        ret
+    }
+
+    pub fn add_global_function<F>(&mut self, name: &'static str, func: F)
+    where
+        F: Fn(*mut RawJSContext, CallArgs) -> bool + Send + 'static,
+    {
+        GLOBAL_OPS.with(move |global_ops_rc| {
+            let global_ops = &mut *global_ops_rc.borrow_mut();
+            global_ops.insert(name, Box::new(func));
+        });
+
+        self.do_with_jsapi(|_rt, cx, global| {
+            define_native_function(
+                cx,
+                global,
+                name,
+                Some(global_op_native_method),
+            )
+        });
+    }
+}
+
+unsafe extern "C" fn empty(_extra: *const c_void) -> bool {
+    false
+}
+
+unsafe extern "C" fn global_op_native_method(
+    cx: *mut ApiJSContext,
+    argc: u32,
+    vp: *mut mozjs::jsapi::Value
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let callee = args.callee();
+    let prop_name = get_obj_prop_val_as_string(
+        cx,
+        HandleObject::from_marked_location(&callee),
+        "name",
+    );
+    if let Ok(prop_name) = prop_name {
+        return GLOBAL_OPS.with(|global_ops_ref| {
+            let global_ops = &*global_ops_ref.borrow();
+            let boxed_op = global_ops.get(prop_name.as_str()).expect("could not find op");
+            boxed_op(cx, args)
+        });
+    }
+    false
 }
 
 /// Helper to convert a Rust string to a SourceText for SpiderMonkey
