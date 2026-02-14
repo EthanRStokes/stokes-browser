@@ -10,6 +10,7 @@ use std::ptr::NonNull;
 use crate::js::JsRuntime;
 use mozjs::context::JSContext as SafeJSContext;
 use crate::engine::{ENGINE_REF, USER_AGENT_REF};
+use crate::js::bindings::dom_bindings::DOM_REF;
 
 /// Helper function to evaluate JavaScript code and return the result
 unsafe fn eval_js(cx: *mut JSContext, code: &str, rval: MutableHandleValue) -> bool {
@@ -88,9 +89,24 @@ unsafe extern "C" fn fetch_impl(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal
         String::new()
     };
 
-    // TODO resolve relative URL
+    let url = DOM_REF.with(|dom_ref| {
+        if let Some(dom) = dom_ref.borrow().as_ref() {
+            let dom = &**dom;
+            match dom.url.join(&url) {
+                Ok(resolved_url) => {
+                    println!("[JS] Resolved URL: {}", resolved_url);
+                    resolved_url
+                }
+                Err(e) => {
+                    panic!("[JS] URL resolution error: {} for url {url} on dom url {}", e, dom.url.as_str());
+                }
+            }
+        } else {
+            panic!("[JS] DOM ref not available for URL resolution");
+        }
+    });
 
-    if url.is_empty() {
+    if url.as_str().is_empty() {
         println!("[JS] fetch() called with empty URL");
         // Return a rejected promise
         return create_rejected_promise(cx, args.rval().into(), "URL is required");
@@ -116,16 +132,16 @@ unsafe extern "C" fn fetch_impl(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal
     let fetch_result = USER_AGENT_REF.with(|user_agent_ref| {
         if let Some(user_agent) = user_agent_ref.borrow().as_ref() {
             let client = HttpClient::new();
-            client.fetch(&url, user_agent)
+            client.fetch(&url.as_str(), user_agent)
         } else {
-            Err(NetworkError::Engine("Engine reference not available".to_string()))
+            Err(NetworkError::Engine("User agent ref not available".to_string()))
         }
     });
 
     match fetch_result {
         Ok(body) => {
             println!("[JS] fetch successful, body length: {}", body.len());
-            create_response_promise(cx, args.rval(), body, 200, url)
+            create_response_promise(cx, args.rval(), body, 200, url.to_string())
         }
         Err(e) => {
             println!("[JS] fetch failed: {}", e);

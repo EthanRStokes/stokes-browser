@@ -480,6 +480,88 @@ impl ImageHandler {
     }
 }
 
+/// Resolve a potentially relative URL against the current page URL
+pub fn resolve_url(current_url: &str, url: &str) -> Result<String, NetworkError> {
+    // If the URL is already absolute, return it as-is
+    if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://") {
+        return Ok(url.to_string());
+    }
+
+    // Handle protocol-relative URLs
+    if url.starts_with("//") {
+        // Use the same protocol as the current page
+        let protocol = if current_url.starts_with("https://") {
+            "https:"
+        } else {
+            "http:"
+        };
+        return Ok(format!("{}{}", protocol, url));
+    }
+
+    // For relative URLs, we need to resolve them against the current page URL
+    if current_url.is_empty() {
+        return Err(NetworkError::Curl("Cannot resolve relative URL: no current page URL".to_string()));
+    }
+
+    // Handle local file paths
+    if current_url.starts_with("file://") || current_url.starts_with('/') ||
+        (current_url.len() >= 3 && current_url.chars().nth(1) == Some(':')) {
+        // Current URL is a local file path
+        use std::path::Path;
+
+        let current_path = if current_url.starts_with("file://") {
+            &current_url[7..]
+        } else {
+            &current_url
+        };
+
+        // Get the directory of the current file
+        let base_path = Path::new(current_path);
+        let base_dir = base_path.parent().unwrap_or(Path::new("."));
+
+        // Resolve the relative path
+        let resolved_path = if url.starts_with('/') {
+            // Absolute path on the file system
+            Path::new(url).to_path_buf()
+        } else {
+            // Relative path
+            base_dir.join(url)
+        };
+
+        // Convert to string and normalize
+        return resolved_path.to_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| NetworkError::FileRead("Invalid path encoding".to_string()));
+    }
+
+    // Parse the current URL to get the base domain
+    // Find the domain part by looking for the third slash (after protocol://)
+    let base_url = if current_url.starts_with("http://") || current_url.starts_with("https://") {
+        // Find the end of the domain part
+        let protocol_end = if current_url.starts_with("https://") { 8 } else { 7 }; // Length of "https://" or "http://"
+
+        if let Some(path_start) = current_url[protocol_end..].find('/') {
+            // Domain ends at the first slash after the protocol
+            &current_url[..protocol_end + path_start]
+        } else {
+            // No path, use the entire URL as the domain
+            &current_url
+        }
+    } else {
+        &current_url
+    };
+
+    // Handle different types of relative URLs
+    if url.starts_with('/') {
+        // Absolute path relative to domain root
+        Ok(format!("{}{}", base_url, url))
+    } else {
+        // Relative path - for simplicity, treat as relative to domain root
+        // In a real browser, this would be relative to the current page's path
+        Ok(format!("{}/{}", base_url, url))
+    }
+}
+
 
 /// A client for making HTTP requests and fetching web resources
 pub struct HttpClient {

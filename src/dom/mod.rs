@@ -371,10 +371,11 @@ impl Dom {
     }
 
     /// Parse HTML into a DOM
-    pub fn parse_html(html: &str, viewport: Viewport) -> Self {
+    pub fn parse_html(url: &str, html: &str, viewport: Viewport) -> Self {
         let parser = HtmlParser::new();
         parser.parse(html, DomConfig {
             viewport: Some(viewport),
+            base_url: Some(url.to_string()),
             net_provider: Some(Arc::new(DummyNetProvider)),
             ..Default::default()
         })
