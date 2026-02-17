@@ -67,6 +67,7 @@ pub struct JsRuntime {
     timer_manager: Rc<TimerManager>,
     user_agent: String,
     global: Box<Heap<*mut JSObject>>,
+    event_loop: EventLoop,
     runtime: Runtime,
 }
 
@@ -108,6 +109,7 @@ impl JsRuntime {
             timer_manager: timer_manager.clone(),
             user_agent,
             global,
+            event_loop: EventLoop::new(),
             runtime,
         };
         RUNTIME.set(Some(&mut js_runtime as *mut _));
@@ -358,6 +360,42 @@ impl JsRuntime {
                 Some(global_op_native_method),
             )
         });
+    }
+
+    pub fn do_in_es_event_queue<J>(&self, job: J)
+    where
+        J: FnOnce(&JsRuntime) + Send + 'static,
+    {
+        trace!("do_in_spidermonkey_runtime_thread");
+        // this is executed in the single thread in the Threadpool, therefore Runtime and global are stored in a thread_local
+
+        let async_job = || {
+            RUNTIME.with(|engine| unsafe {
+                let mut engine = engine.borrow_mut();
+                let engine = engine.as_mut().unwrap();;
+                job(&mut &**engine)
+            });
+        };
+
+        self.event_loop.add_void(async_job);
+    }
+
+    pub fn do_in_es_event_queue_sync<R: Send + 'static, J>(&self, job: J) -> R
+    where
+        J: FnOnce(&JsRuntime) -> R + Send + 'static,
+    {
+        trace!("do_in_spidermonkey_runtime_thread_sync");
+        // this is executed in the single thread in the Threadpool, therefore Runtime and global are stored in a thread_local
+
+        let job = || {
+            RUNTIME.with(|engine| unsafe {
+                let mut engine = engine.borrow_mut();
+                let engine = engine.as_mut().unwrap();
+                job(&mut &**engine)
+            })
+        };
+
+        self.event_loop.exe(job)
     }
 }
 

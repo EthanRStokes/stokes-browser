@@ -4,6 +4,7 @@ use mozjs::rooted;
 use tracing::debug;
 use crate::js::jsapi::objects::{get_obj_prop_val_as_i32, get_obj_prop_val_as_string};
 
+#[derive(Debug)]
 pub struct JsError {
     pub message: String,
     pub filename: String,

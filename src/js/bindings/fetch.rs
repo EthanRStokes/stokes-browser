@@ -11,6 +11,7 @@ use crate::js::JsRuntime;
 use mozjs::context::JSContext as SafeJSContext;
 use crate::engine::USER_AGENT_REF;
 use crate::js::bindings::dom_bindings::DOM_REF;
+use crate::js::jsapi::promise::resolve_promise;
 
 /// Helper function to evaluate JavaScript code and return the result
 unsafe fn eval_js(cx: *mut JSContext, code: &str, rval: MutableHandleValue) -> bool {
@@ -238,12 +239,20 @@ unsafe fn create_response_promise(cx: *mut JSContext, mut rval: MutableHandleVal
 
     if promise.get().is_null() {
         // Fallback: return the raw response object if Promise creation failed
+        println!("ERROR: Promise creation failed");
         rval.set(ObjectValue(response.get()));
         return true;
     }
 
     rooted!(in(cx) let response_val = ObjectValue(response.get()));
-    ResolvePromise(cx, promise.handle().into(), response_val.handle().into());
+    match resolve_promise(cx, promise.handle().into(), response_val.handle().into()) {
+        Ok(_) => (),
+        Err(e) => {
+            println!("ERROR: Failed to resolve promise: {:?}", e);
+            rval.set(ObjectValue(response.get()));
+            return true;
+        }
+    }
 
     rval.set(ObjectValue(promise.get()));
     true
