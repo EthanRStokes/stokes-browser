@@ -10,13 +10,13 @@ gl = "0.14.0"
 skia-safe = { version = "0.93.0", features = ["gpu", "gl"] }
 #winit = { version = "0.30.12", features = ["wayland"] }
 image = "0.25.8"
-tokio = { version = "1.48.0", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1.49.0", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"
 curl = "0.4"
-html5ever = "0.37.1"
+html5ever = "0.38.0"
 #markup5ever_rcdom = "0.36.0+unofficial"
-markup5ever_rcdom = { git = "https://github.com/EthanRStokes/html5ever", rev = "f06da2b" }
-usvg = "0.46.0"
+markup5ever_rcdom = { git = "https://github.com/EthanRStokes/html5ever", rev = "239a5d7" }
+usvg = "0.47.0"
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 mozjs = "0.15.0"
 #mozjs = { git = "https://github.com/servo/mozjs.git", rev = "125b5ab" }
@@ -31,7 +31,7 @@ rfd = "0.17.2"
 url = "2"
 taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "25759dad44d8350743a4e866fee54962f996895a" }
 slab = "0.4.11"
-markup5ever = "0.37.1"
+markup5ever = "0.38.0"
 parley = { git = "https://github.com/linebender/parley", rev = "37aa8ab7103e9da89eea22899902016ce20739f2" }
 euclid = "0.22.13"
 bitflags = "2.10.0"
