@@ -949,8 +949,8 @@ impl Engine {
     /// Handle a mouse move at the given position (viewport coordinates)
     pub fn handle_mouse_move(&mut self, x: f32, y: f32) {
         // Adjust position for scroll offset
-        let adjusted_x = x;
-        let adjusted_y = y;
+        let adjusted_x = x + self.scroll_x;
+        let adjusted_y = y + self.scroll_y;
 
         // Find the element at this position starting from root
         if let Some(dom) = &mut self.dom {
