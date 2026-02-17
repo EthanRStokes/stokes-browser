@@ -510,7 +510,7 @@ impl<'a> TElement for Node<'a> {
     }
 
     fn has_dirty_descendants(&self) -> bool {
-        true
+        DomNode::has_dirty_descendants(self)
     }
 
     fn has_snapshot(&self) -> bool {
@@ -525,9 +525,13 @@ impl<'a> TElement for Node<'a> {
         self.snapshot_handled.store(true, Ordering::SeqCst)
     }
 
-    unsafe fn set_dirty_descendants(&self) {}
+    unsafe fn set_dirty_descendants(&self) {
+        DomNode::set_dirty_descendants(self);
+        DomNode::mark_ancestors_dirty(self);
+    }
 
     unsafe fn unset_dirty_descendants(&self) {
+        DomNode::unset_dirty_descendants(self);
     }
 
     fn store_children_to_process(&self, n: isize) {
@@ -778,15 +782,12 @@ where
     where
         F: FnMut(E::ConcreteNode)
     {
-        if node.is_text_node() {
-            return;
+        if let Some(el) = node.as_element() {
+            let mut data = unsafe { el.ensure_data() };
+            recalc_style_at(self, traversal_data, context, el, &mut data, node_child);
+
+            unsafe { el.unset_dirty_descendants() };
         }
-
-        let el = node.as_element().unwrap();
-        let mut data = unsafe { el.ensure_data() };
-        recalc_style_at(self, traversal_data, context, el, &mut data, node_child);
-
-        unsafe { el.unset_dirty_descendants() };
     }
 
     #[inline]
