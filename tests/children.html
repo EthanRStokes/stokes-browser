@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>children test</title>
+</head>
+<body>
+    <div id="container">
+        <p id="existing-child">Existing paragraph</p>
+    </div>
+    <script>
+        // Get the container element
+        const container = document.getElementById('container');
+        if (container) {
+            console.log("Found container:", container.tagName);
+            console.log("Container has", container.children ? container.children.length : 0, "children");
+
+            const newDiv = document.createElement('div');
+            container.appendChild(newDiv);
+            const span1 = document.createElement('span');
+
+            let child = container.appendChild(span1);
+            child.textContent = "This is span 1";
+        } else {
+            console.log("ERROR: Could not find container element");
+        }
+    </script>
+    <style>
+        * {
+            background: #232323;
+            color: white;
+        }
+        #container {
+            border: 1px solid silver;
+            padding: 10px;
+            margin: 10px;
+        }
+    </style>
+</body>
+</html>
+
