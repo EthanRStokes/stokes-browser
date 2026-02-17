@@ -8,7 +8,7 @@ use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::str::FromStr;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut};
 use bitflags::bitflags;
 use html5ever::{LocalName, QualName};
@@ -37,8 +37,9 @@ use style::values::computed::{Display, PositionProperty};
 use style::values::generics::counters::Content;
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use style_traits::ToCss;
-use taffy::{Cache, Layout, Style};
+use taffy::{Cache, Layout, Point, Style};
 use crate::dom::damage::ALL_DAMAGE;
+use crate::dom::ZERO;
 use crate::layout::table::TableContext;
 use crate::ui::TextBrush;
 
@@ -493,9 +494,12 @@ pub struct DomNode {
     pub cache: Cache,
     pub unrounded_layout: Layout,
     pub final_layout: Layout,
+    // todo proper node scroll impl
+    pub scroll_offset: Point<f64>,
 
     pub has_snapshot: bool,
     pub snapshot_handled: AtomicBool,
+    pub dirty_descendants: AtomicBool,
     pub display_constructed_as: Display,
 
     /// Event listener registry
@@ -544,8 +548,10 @@ impl DomNode {
             cache: Cache::new(),
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),
+            scroll_offset: ZERO,
             has_snapshot: false,
             snapshot_handled: AtomicBool::new(false),
+            dirty_descendants: AtomicBool::new(true),
             display_constructed_as: Display::Block,
             event_listeners: EventListenerRegistry::new(),
             layout_invalidation_callback: None,
@@ -649,6 +655,30 @@ impl DomNode {
     pub fn set_restyle_hint(&self, hint: RestyleHint) {
         if let Some(element) = self.stylo_data.borrow_mut().as_mut() {
             element.hint.insert(hint);
+        }
+        self.mark_ancestors_dirty();
+    }
+
+    pub fn has_dirty_descendants(&self) -> bool {
+        self.dirty_descendants.load(Ordering::Relaxed)
+    }
+
+    pub fn set_dirty_descendants(&self) {
+        self.dirty_descendants.store(true, Ordering::Relaxed);
+    }
+
+    pub fn unset_dirty_descendants(&self) {
+        self.dirty_descendants.store(false, Ordering::Relaxed);
+    }
+
+    pub fn mark_ancestors_dirty(&self) {
+        let mut current = self.parent;
+        while let Some(parent_id) = current {
+            let parent = &self.tree()[parent_id];
+            if parent.dirty_descendants.swap(true, Ordering::Relaxed) {
+                break;
+            }
+            current = parent.parent;
         }
     }
 

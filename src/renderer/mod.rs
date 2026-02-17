@@ -5,6 +5,7 @@ mod decorations;
 mod cache;
 mod kurbo_css;
 mod layers;
+mod shadow;
 
 use crate::dom::{Dom, DomNode, ElementData, ImageData, NodeData};
 use crate::renderer::background::BackgroundImageCache;
@@ -12,10 +13,12 @@ use crate::renderer::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
 use crate::renderer::layers::maybe_with_layer;
 use crate::renderer::text::{stroke_text, TextPainter, ToColorColor};
 use anyrender::PaintScene;
+use color::AlphaColor;
 use kurbo::{Affine, Insets, Point, Rect, Stroke, Vec2};
 use markup5ever::local_name;
 use parley::PositionedLayoutItem;
 use peniko::Fill;
+use style::properties::generated::longhands::border_collapse::computed_value::T as BorderCollapse;
 use style::properties::generated::longhands::visibility::computed_value::T as Visibility;
 use style::properties::style_structs::Font;
 use style::properties::ComputedValues;
@@ -24,6 +27,7 @@ use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, O
 use style::values::generics::color::GenericColor;
 use style::values::specified::Display;
 use taffy::Layout;
+use crate::dom::node::SpecialElementData;
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer<'dom> {
@@ -375,6 +379,10 @@ impl HtmlRenderer<'_> {
             x: position.x + scaled_padding_border.left,
             y: position.y + scaled_padding_border.top,
         };
+        let content_box_size = kurbo::Size {
+            width: (size.width as f64 - scaled_padding_border.left - scaled_padding_border.right) * self.scale_factor,
+            height: (size.height as f64 - scaled_padding_border.top - scaled_padding_border.bottom) * self.scale_factor,
+        };
 
         let scaled_y = position.y * self.scale_factor;
         let scaled_content_height = content_size.height.max(size.height) as f64 * self.scale_factor;
@@ -382,20 +390,40 @@ impl HtmlRenderer<'_> {
             return; // Skip rendering boxes outside viewport
         }
 
+        let clip_area = content_box_size.width * content_box_size.height;
+        if should_clip && clip_area < 0.01 {
+            return;
+        }
+
         let mut element = self.element(node, layout, position);
 
         element.draw_outline(painter);
-        element.draw_background(painter);
-        element.draw_border(painter);
+        element.draw_outset_box_shadow(painter);
 
-        let wants_layer = should_clip | has_opacity;
-        let clip = &element.frame.padding_box_path();
-        maybe_with_layer(painter, wants_layer, opacity, element.transform, clip, |painter| {
-            element.draw_image(painter);
+        maybe_with_layer(
+            painter,
+            has_opacity,
+            opacity,
+            element.transform,
+            &element.frame.border_box_path(),
+            |painter| {
+                element.draw_background(painter);
+                element.draw_inset_box_shadow(painter);
+                element.draw_table_borders(painter);
+                element.draw_border(painter);
 
-            element.draw_inline_layout(painter, position);
-            element.draw_children(painter);
-        });
+                //let wants_layer = should_clip | has_opacity;
+                let clip = &element.frame.padding_box_path(); // todo content_box_path for text input
+                maybe_with_layer(painter, should_clip, 1.0, element.transform, clip, |painter| {
+                    // TODO scroll node
+
+                    element.draw_image(painter);
+
+                    element.draw_inline_layout(painter, position);
+                    element.draw_children(painter);
+                });
+            }
+        );
     }
 
     fn render_node(&self, scene: &mut TextPainter, node_id: usize, location: Point) {
@@ -604,6 +632,95 @@ impl Element<'_> {
         };
 
         painter.fill(Fill::NonZero, self.transform, color, None, &path)
+    }
+
+    fn draw_table_borders(&self, scene: &mut impl PaintScene) {
+        let SpecialElementData::TableRoot(table) = &self.element.special_data else {
+            return;
+        };
+        // Borders are only handled at the table level when BorderCollapse::Collapse
+        if table.border_collapse != BorderCollapse::Collapse {
+            return;
+        }
+
+        let Some(grid_info) = &mut *table.computed_grid_info.borrow_mut() else {
+            return;
+        };
+        let Some(border_style) = table.border_style.as_deref() else {
+            return;
+        };
+
+        let outer_border_style = self.style.get_border();
+
+        let cols = &grid_info.columns;
+        let rows = &grid_info.rows;
+
+        let inner_width =
+            (cols.sizes.iter().sum::<f32>() + cols.gutters.iter().sum::<f32>()) as f64;
+        let inner_height =
+            (rows.sizes.iter().sum::<f32>() + rows.gutters.iter().sum::<f32>()) as f64;
+
+        // TODO: support different colors for different borders
+        let current_color = self.style.clone_color();
+        let border_color = border_style
+            .border_top_color
+            .resolve_to_absolute(&current_color)
+            .as_color_color();
+
+        // No need to draw transparent borders (as they won't be visible anyway)
+        if border_color == AlphaColor::TRANSPARENT {
+            return;
+        }
+
+        let border_width = border_style.border_top_width.0.to_f64_px();
+
+        // Draw horizontal inner borders
+        let mut y = 0.0;
+        for (&height, &gutter) in rows.sizes.iter().zip(rows.gutters.iter()) {
+            let shape =
+                Rect::new(0.0, y, inner_width, y + gutter as f64).scale_from_origin(self.scale_factor);
+            scene.fill(Fill::NonZero, self.transform, border_color, None, &shape);
+
+            y += (height + gutter) as f64;
+        }
+
+        // Draw horizontal outer borders
+        // Top border
+        if outer_border_style.border_top_style != BorderStyle::Hidden {
+            let shape =
+                Rect::new(0.0, 0.0, inner_width, border_width).scale_from_origin(self.scale_factor);
+            scene.fill(Fill::NonZero, self.transform, border_color, None, &shape);
+        }
+        // Bottom border
+        if outer_border_style.border_bottom_style != BorderStyle::Hidden {
+            let shape = Rect::new(0.0, inner_height, inner_width, inner_height + border_width)
+                .scale_from_origin(self.scale_factor);
+            scene.fill(Fill::NonZero, self.transform, border_color, None, &shape);
+        }
+
+        // Draw vertical inner borders
+        let mut x = 0.0;
+        for (&width, &gutter) in cols.sizes.iter().zip(cols.gutters.iter()) {
+            let shape =
+                Rect::new(x, 0.0, x + gutter as f64, inner_height).scale_from_origin(self.scale_factor);
+            scene.fill(Fill::NonZero, self.transform, border_color, None, &shape);
+
+            x += (width + gutter) as f64;
+        }
+
+        // Draw vertical outer borders
+        // Left border
+        if outer_border_style.border_left_style != BorderStyle::Hidden {
+            let shape =
+                Rect::new(0.0, 0.0, border_width, inner_height).scale_from_origin(self.scale_factor);
+            scene.fill(Fill::NonZero, self.transform, border_color, None, &shape);
+        }
+        // Right border
+        if outer_border_style.border_right_style != BorderStyle::Hidden {
+            let shape = Rect::new(inner_width, 0.0, inner_width + border_width, inner_height)
+                .scale_from_origin(self.scale_factor);
+            scene.fill(Fill::NonZero, self.transform, border_color, None, &shape);
+        }
     }
 
     fn draw_image(&self, painter: &mut TextPainter) {

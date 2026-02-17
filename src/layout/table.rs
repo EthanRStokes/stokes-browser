@@ -1,14 +1,14 @@
 use std::{ops::Range, sync::Arc};
-
+use atomic_refcell::AtomicRefCell;
 use markup5ever::local_name;
 use style::dom::NodeInfo;
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use style::{computed_values::table_layout::T as TableLayout, Atom};
-use taffy::{
-    compute_leaf_layout, style_helpers, Dimension, LayoutPartialTree as _, ResolveOrZero,
-    TrackSizingFunction,
-};
-
+use style::computed_values::border_collapse::T as BorderCollapse;
+use style::properties::style_structs::Border;
+use style::servo_arc::Arc as ServoArc;
+use taffy::{compute_leaf_layout, style_helpers, DetailedGridInfo, Dimension, LayoutPartialTree as _, NodeId, Rect, ResolveOrZero, Size, TrackSizingFunction};
+use taffy::style_helpers::{auto, length, percent};
 use crate::dom::damage::{CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC};
 use crate::dom::Dom;
 use crate::layout::taffy::resolve_calc_value;
@@ -20,8 +20,11 @@ pub struct TableTreeWrapper<'doc> {
 
 #[derive(Debug, Clone)]
 pub struct TableContext {
-    style: taffy::Style<Atom>,
-    items: Vec<TableItem>,
+    pub style: taffy::Style<Atom>,
+    pub items: Vec<TableItem>,
+    pub computed_grid_info: AtomicRefCell<Option<DetailedGridInfo>>,
+    pub border_style: Option<ServoArc<Border>>,
+    pub border_collapse: BorderCollapse
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -55,6 +58,7 @@ pub(crate) fn build_table_context(
     };
 
     let mut style = stylo_taffy::to_taffy_style(&stylo_styles);
+    style.item_is_table = true;
     style.grid_auto_columns = Vec::new();
     style.grid_auto_rows = Vec::new();
 
@@ -63,18 +67,24 @@ pub(crate) fn build_table_context(
         TableLayout::Auto => false,
     };
 
+    let border_collapse = stylo_styles.clone_border_collapse();
+    let border_spacing = stylo_styles.clone_border_spacing();
+
     drop(stylo_styles);
 
     let mut column_sizes: Vec<taffy::Dimension> = Vec::new();
+    let mut first_cell_border: Option<ServoArc<Border>> = None;
     for child_id in children.iter().copied() {
         collect_table_cells(
             dom,
             child_id,
             is_fixed,
+            border_collapse,
             &mut row,
             &mut col,
             &mut items,
             &mut column_sizes,
+            &mut first_cell_border,
         );
     }
     column_sizes.resize(col as usize, style_helpers::auto());
@@ -85,6 +95,32 @@ pub(crate) fn build_table_context(
         .collect();
     style.grid_template_rows = vec![style_helpers::auto(); row as usize];
 
+    style.gap = match border_collapse {
+        BorderCollapse::Separate => Size {
+            width: length(border_spacing.0.width.px()),
+            height: length(border_spacing.0.height.px()),
+        },
+        BorderCollapse::Collapse => first_cell_border
+            .as_ref()
+            .map(|border| {
+                let x = border.border_left_width.0.max(border.border_right_width.0).to_f32_px();
+                let y = border.border_top_width.0.max(border.border_bottom_width.0).to_f32_px();
+                Size {
+                    width: length(x),
+                    height: length(y),
+                }
+            }).unwrap_or(Size::ZERO.map(length))
+    };
+
+    if border_collapse == BorderCollapse::Collapse {
+        style.border = Rect {
+            left: style.gap.width,
+            right: style.gap.width,
+            top: style.gap.height,
+            bottom: style.gap.height,
+        }
+    }
+
     let layout_children = items
         .iter()
         .filter(|item| item.kind == TableItemKind::Cell)
@@ -93,17 +129,19 @@ pub(crate) fn build_table_context(
     let root_node = &mut dom.nodes[table_root_node_id];
     root_node.children = children;
 
-    (TableContext { style, items }, layout_children)
+    (TableContext { style, items, computed_grid_info: AtomicRefCell::new(None), border_collapse, border_style: first_cell_border }, layout_children)
 }
 
 pub(crate) fn collect_table_cells(
     dom: &mut Dom,
     node_id: usize,
     is_fixed: bool,
+    border_collapse: BorderCollapse,
     row: &mut u16,
     col: &mut u16,
     cells: &mut Vec<TableItem>,
     columns: &mut Vec<Dimension>,
+    first_cell_border: &mut Option<ServoArc<Border>>,
 ) {
     let node = &dom.nodes[node_id];
 
@@ -130,7 +168,7 @@ pub(crate) fn collect_table_cells(
             for child_id in children.iter().copied() {
                 dom.nodes[child_id]
                     .remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-                collect_table_cells(dom, child_id, is_fixed, row, col, cells, columns);
+                collect_table_cells(dom, child_id, is_fixed, border_collapse, row, col, cells, columns, first_cell_border);
             }
             dom.nodes[node_id].children = children;
         }
@@ -159,7 +197,7 @@ pub(crate) fn collect_table_cells(
 
             let children = std::mem::take(&mut dom.nodes[node_id].children);
             for child_id in children.iter().copied() {
-                collect_table_cells(dom, child_id, is_fixed, row, col, cells, columns);
+                collect_table_cells(dom, child_id, is_fixed, border_collapse, row, col, cells, columns, first_cell_border);
             }
             dom.nodes[node_id].children = children;
         }
@@ -172,18 +210,26 @@ pub(crate) fn collect_table_cells(
                 .unwrap_or(1);
             let mut style = stylo_taffy::to_taffy_style(stylo_style);
 
+            if first_cell_border.is_none() {
+                *first_cell_border = Some(stylo_style.clone_border());
+            }
+
             // TODO: account for padding/border/margin
             if *row == 1 {
                 let column = match style.size.width.tag() {
                     taffy::CompactLength::LENGTH_TAG => {
                         let len = style.size.width.value();
                         let padding = style.padding.resolve_or_zero(None, resolve_calc_value);
-                        style_helpers::length(len + padding.left + padding.right)
+                        length(len + padding.left + padding.right)
                     }
                     taffy::CompactLength::PERCENT_TAG => {
-                        style_helpers::percent(style.size.width.value())
+                        if is_fixed {
+                            percent(style.size.width.value())
+                        } else {
+                            auto()
+                        }
                     }
-                    taffy::CompactLength::AUTO_TAG => style_helpers::auto(),
+                    taffy::CompactLength::AUTO_TAG => auto(),
                     _ => unreachable!(),
                 };
                 columns.push(column);
@@ -195,11 +241,15 @@ pub(crate) fn collect_table_cells(
                 let tag = columns[*col as usize].tag();
                 let value = columns[*col as usize].value();
                 columns[*col as usize] = match tag {
-                    taffy::CompactLength::LENGTH_TAG => style_helpers::length(value.max(new_len)),
-                    taffy::CompactLength::AUTO_TAG => style_helpers::length(new_len),
-                    taffy::CompactLength::PERCENT_TAG => style_helpers::percent(value),
+                    taffy::CompactLength::LENGTH_TAG => length(value.max(new_len)),
+                    taffy::CompactLength::AUTO_TAG => length(new_len),
+                    taffy::CompactLength::PERCENT_TAG => percent(value),
                     _ => unreachable!(),
                 }
+            }
+
+            if border_collapse == BorderCollapse::Collapse {
+                style.border = Rect::ZERO.map(length);
             }
 
             style.grid_column = taffy::Line {
@@ -332,5 +382,9 @@ impl taffy::LayoutGridContainer for TableTreeWrapper<'_> {
 
     fn get_grid_child_style(&self, child_node_id: taffy::NodeId) -> Self::GridItemStyle<'_> {
         &self.ctx.items[usize::from(child_node_id)].style
+    }
+
+    fn set_detailed_grid_info(&mut self, _node_id: NodeId, _detailed_grid_info: DetailedGridInfo) {
+        *self.ctx.computed_grid_info.borrow_mut() = Some(_detailed_grid_info);
     }
 }
