@@ -73,6 +73,9 @@ pub fn setup_dom_bindings(
         // Set up Element and HTMLElement constructors
         setup_element_constructors(cx, global_ptr)?;
 
+        // Set up HTMLIFrameElement constructor
+        setup_html_iframe_element_constructor(cx, global_ptr)?;
+
         // Set up Event and CustomEvent constructors
         setup_event_constructors(cx, global_ptr)?;
 
@@ -504,6 +507,70 @@ unsafe fn setup_element_constructors(raw_cx: *mut JSContext, global: *mut JSObje
         global_rooted.handle().into(),
         name.as_ptr(),
         element_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    Ok(())
+}
+
+/// Set up HTMLIFrameElement constructor with prototype
+unsafe fn setup_html_iframe_element_constructor(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+    use crate::js::helpers::define_property_accessor;
+
+    // Create HTMLIFrameElement constructor
+    rooted!(in(raw_cx) let html_iframe_element = JS_NewPlainObject(raw_cx));
+    if html_iframe_element.get().is_null() {
+        return Err("Failed to create HTMLIFrameElement constructor".to_string());
+    }
+
+    // Create prototype object
+    rooted!(in(raw_cx) let prototype = JS_NewPlainObject(raw_cx));
+    if prototype.get().is_null() {
+        return Err("Failed to create HTMLIFrameElement prototype".to_string());
+    }
+
+    // Define getter/setter functions for contentWindow property
+    define_function(raw_cx, prototype.get(), "__getContentWindow", Some(html_iframe_element_get_content_window), 0)?;
+    define_function(raw_cx, prototype.get(), "__setContentWindow", Some(html_iframe_element_set_content_window), 1)?;
+
+    // Define getter/setter functions for contentDocument property
+    define_function(raw_cx, prototype.get(), "__getContentDocument", Some(html_iframe_element_get_content_document), 0)?;
+    define_function(raw_cx, prototype.get(), "__setContentDocument", Some(html_iframe_element_set_content_document), 1)?;
+
+    // Define getter/setter functions for src property
+    define_function(raw_cx, prototype.get(), "__getSrc", Some(html_iframe_element_get_src), 0)?;
+    define_function(raw_cx, prototype.get(), "__setSrc", Some(html_iframe_element_set_src), 1)?;
+
+    // Define contentWindow as property with getter/setter on prototype
+    define_property_accessor(raw_cx, prototype.get(), "contentWindow", "__getContentWindow", "__setContentWindow")?;
+
+    // Define contentDocument as property with getter/setter on prototype
+    define_property_accessor(raw_cx, prototype.get(), "contentDocument", "__getContentDocument", "__setContentDocument")?;
+
+    // Define src as property with getter/setter on prototype
+    define_property_accessor(raw_cx, prototype.get(), "src", "__getSrc", "__setSrc")?;
+
+    // Set prototype on constructor
+    rooted!(in(raw_cx) let prototype_val = ObjectValue(prototype.get()));
+    rooted!(in(raw_cx) let html_iframe_element_rooted = html_iframe_element.get());
+    let prototype_name = std::ffi::CString::new("prototype").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        html_iframe_element_rooted.handle().into(),
+        prototype_name.as_ptr(),
+        prototype_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    // Add constructor to global
+    rooted!(in(raw_cx) let html_iframe_element_val = ObjectValue(html_iframe_element.get()));
+    rooted!(in(raw_cx) let global_rooted = global);
+    let name = std::ffi::CString::new("HTMLIFrameElement").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        global_rooted.handle().into(),
+        name.as_ptr(),
+        html_iframe_element_val.handle().into(),
         JSPROP_ENUMERATE as u32,
     );
 
@@ -1416,6 +1483,87 @@ unsafe extern "C" fn style_get_property_value(raw_cx: *mut JSContext, argc: c_ui
 
     println!("[JS] style.getPropertyValue('{}') called", property);
     args.rval().set(create_js_string(raw_cx, ""));
+    true
+}
+
+/// HTMLIFrameElement contentWindow getter
+// TODO
+unsafe extern "C" fn html_iframe_element_get_content_window(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    println!("[JS] HTMLIFrameElement.contentWindow getter called");
+
+    // For now, return null as iframe content window is not implemented
+    // In a full implementation, this would return the Window object of the iframe's document
+    args.rval().set(mozjs::jsval::NullValue());
+    true
+}
+
+/// HTMLIFrameElement contentWindow setter
+// TODO
+unsafe extern "C" fn html_iframe_element_set_content_window(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    println!("[JS] HTMLIFrameElement.contentWindow setter called");
+
+    // contentWindow is read-only in the spec, but we provide a setter to avoid errors
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// HTMLIFrameElement contentDocument getter
+// TODO
+unsafe extern "C" fn html_iframe_element_get_content_document(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    println!("[JS] HTMLIFrameElement.contentDocument getter called");
+
+    // For now, return null as iframe content document is not implemented
+    // In a full implementation, this would return the Document object of the iframe
+    args.rval().set(mozjs::jsval::NullValue());
+    true
+}
+
+/// HTMLIFrameElement contentDocument setter
+// TODO
+unsafe extern "C" fn html_iframe_element_set_content_document(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    println!("[JS] HTMLIFrameElement.contentDocument setter called");
+
+    // contentDocument is read-only in the spec, but we provide a setter to avoid errors
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// HTMLIFrameElement src getter
+// TODO
+unsafe extern "C" fn html_iframe_element_get_src(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    println!("[JS] HTMLIFrameElement.src getter called");
+
+    // For now, return empty string
+    // In a full implementation, this would get the src attribute from the element
+    args.rval().set(create_js_string(raw_cx, ""));
+    true
+}
+
+/// HTMLIFrameElement src setter
+// TODO
+unsafe extern "C" fn html_iframe_element_set_src(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let src = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    println!("[JS] HTMLIFrameElement.src setter called with value: {}", src);
+
+    // In a full implementation, this would set the src attribute and potentially load the iframe
+    args.rval().set(UndefinedValue());
     true
 }
 
