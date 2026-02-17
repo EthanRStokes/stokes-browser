@@ -585,27 +585,6 @@ impl Engine {
         }
     }
 
-    /*TODO /// Get the cursor style for the element at the given position
-    pub fn get_cursor_at_position(&self, x: f32, y: f32) -> crate::css::Cursor {
-        // Adjust position for scroll offset
-        let adjusted_x = x + self.scroll_x;
-        let adjusted_y = y + self.scroll_y;
-
-        // Find the topmost element at this position starting from root
-        if let Some(dom) = &self.dom {
-            let root_id = dom.root_element().id;
-            if let Some(node_id) = self.find_element_at_position(root_id, adjusted_x, adjusted_y, 0.0, 0.0) {
-                // Get the computed styles for this element
-                if let Some(styles) = self.cached_style_map.get(&node_id) {
-                    return styles.cursor.clone();
-                }
-            }
-        }
-
-        // Default cursor
-        crate::css::Cursor::Auto
-    }*/
-
     /// Recursively find the element at the given position (returns the deepest/topmost element)
     fn find_element_at_position(&self, node_id: usize, x: f32, y: f32, parent_x: f32, parent_y: f32) -> Option<usize> {
         let dom = self.dom.as_ref()?;
