@@ -1,8 +1,7 @@
-use std::sync::Arc;
 use blitz_traits::net::NetProvider;
 use blitz_traits::shell::{ShellProvider, Viewport};
 use parley::FontContext;
-use crate::networking::Resource;
+use std::sync::Arc;
 
 #[derive(Default)]
 pub struct DomConfig {

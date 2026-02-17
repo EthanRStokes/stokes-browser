@@ -13,7 +13,6 @@ mod tab_manager;
 mod browser;
 mod window;
 
-use skia_safe::{scalar, Font, FontMgr};
 use crate::browser::BrowserApp;
 use winit::event_loop::EventLoop;
 

@@ -1,10 +1,10 @@
+use crate::dom::{Dom, DomNode};
 use html5ever::local_name;
 use style::attr::{AttrIdentifier, AttrValue};
 use style::dom::TNode;
 use style::selector_parser::ServoElementSnapshot;
 use style::values::GenericAtomIdent;
 use stylo_atoms::Atom;
-use crate::dom::Dom;
 
 impl Dom {
 
@@ -64,5 +64,10 @@ impl Dom {
                 },
             );
         }
+    }
+
+    pub fn snapshot_and(&mut self, node_id: usize, cb: impl FnOnce(&mut DomNode)) {
+        self.snapshot(node_id);
+        cb(&mut self.nodes[node_id]);
     }
 }

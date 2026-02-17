@@ -2,33 +2,25 @@
 mod config;
 
 pub use self::config::EngineConfig;
-use crate::dom::{Dom, DomNode, ImageData, ImageLoadingState, NodeData};
+use crate::dom::node::{RasterImageData, SpecialElementData};
+use crate::dom::{Dom, ImageData, NodeData};
 use crate::dom::{EventDispatcher, EventType};
 use crate::js::JsRuntime;
 use crate::networking::{resolve_url, HttpClient, NetworkError};
+use crate::renderer::background::BackgroundImageCache;
+use crate::renderer::text::TextPainter;
 use crate::renderer::HtmlRenderer;
 use blitz_traits::shell::Viewport;
-use skia_safe::Canvas;
+use markup5ever::local_name;
+use selectors::Element;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::io::Cursor;
 use std::rc::Rc;
 use std::sync::Arc;
-use futures::executor::block_on;
-use markup5ever::local_name;
-use selectors::Element;
-use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters, SharedStyleContext};
+use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters};
 use style::dom::{TDocument, TNode};
-use style::global_style_data::GLOBAL_STYLE_DATA;
-use style::shared_lock::StylesheetGuards;
 use style::thread_state::ThreadState;
 use style::traversal::DomTraversal;
-use style::traversal_flags::TraversalFlags;
-use stylo_atoms::Atom;
-use crate::css::stylo::RecalcStyle;
-use crate::dom::node::{RasterImageData, SpecialElementData};
-use crate::renderer::background::BackgroundImageCache;
-use crate::renderer::text::TextPainter;
 
 thread_local! {
     pub(crate) static ENGINE_REF: RefCell<Option<*mut Engine>> = RefCell::new(None);
@@ -169,7 +161,7 @@ impl Engine {
                         // Get src from element's attributes
                         if let Some(src) = elem_data.attr(local_name!("src")) {
                             if !src.is_empty() {
-                                println!("Found image to load: node_id={}, src={}", image_node.id, src);
+                                //println!("Found image to load: node_id={}, src={}", image_node.id, src);
                                 image_requests.push((image_node.id, Rc::new(src.to_string())));
                             }
                         }
@@ -214,30 +206,30 @@ impl Engine {
                     match result {
                         Ok(image_bytes) => {
                             let image_bytes = bytes::Bytes::from(image_bytes);
-                            println!("Image bytes length: {} for {}", image_bytes.len(), src);
+                            //println!("Image bytes length: {} for {}", image_bytes.len(), src);
 
                             // Debug: check first few bytes to identify format
                             if image_bytes.len() >= 8 {
-                                println!("Image header bytes: {:02x?}", &image_bytes[..8.min(image_bytes.len())]);
+                            //    println!("Image header bytes: {:02x?}", &image_bytes[..8.min(image_bytes.len())]);
                             }
 
                             match image::ImageReader::new(Cursor::new(&image_bytes))
                                 .with_guessed_format()
                             {
                                 Ok(reader) => {
-                                    println!("Detected image format: {:?}", reader.format());
+                                    //println!("Detected image format: {:?}", reader.format());
                                     match reader.decode() {
                                         Ok(image) => {
                                             let (w, h) = (image.width(), image.height());
-                                            println!("Image color type: {:?}, dimensions: {}x{}", image.color(), w, h);
+                                            //println!("Image color type: {:?}, dimensions: {}x{}", image.color(), w, h);
                                             let rgba_image = image.to_rgba8();
                                             let (width, height) = rgba_image.dimensions();
                                             let rgba_data = rgba_image.into_raw();
 
                                             // Debug: check if data is all zeros
                                             let non_zero_count = rgba_data.iter().filter(|&&b| b != 0).count();
-                                            println!("Image decoded: {}x{}, rgba_data len={}, non-zero bytes={}",
-                                                width, height, rgba_data.len(), non_zero_count);
+                                            //println!("Image decoded: {}x{}, rgba_data len={}, non-zero bytes={}",
+                                            //    width, height, rgba_data.len(), non_zero_count);
 
                                             let raster = RasterImageData::new(
                                                 width,
@@ -247,7 +239,7 @@ impl Engine {
                                             *data = Box::new(ImageData::Raster(raster.clone()));
                                             // Track this node for cache clearing
                                             loaded_image_node_ids.push(*node_id);
-                                            println!("Successfully loaded and decoded image: {}", src);
+                                            //println!("Successfully loaded and decoded image: {}", src);
                                         }
                                         Err(e) => {
                                             println!("Failed to decode image {}: {}", src, e);
@@ -957,26 +949,30 @@ impl Engine {
     /// Handle a mouse move at the given position (viewport coordinates)
     pub fn handle_mouse_move(&mut self, x: f32, y: f32) {
         // Adjust position for scroll offset
-        let adjusted_x = x + self.scroll_x;
-        let adjusted_y = y + self.scroll_y;
+        let adjusted_x = x;
+        let adjusted_y = y;
 
         // Find the element at this position starting from root
-        if let Some(dom) = &self.dom {
-            let root_id = dom.root_element().id;
-            if let Some(node_id) = self.find_element_at_position(root_id, adjusted_x, adjusted_y, 0.0, 0.0) {
-                // Fire mouse move event on the element
-                self.fire_mouse_move_event(node_id, x as f64, y as f64);
-            }
+        if let Some(dom) = &mut self.dom {
+            dom.set_hover(adjusted_x, adjusted_y);
+
+            // Fire mouse move event on the element
+            self.fire_mouse_move_event(x as f64, y as f64);
         }
     }
 
     /// Fire a mouse move event on a DOM node
-    fn fire_mouse_move_event(&mut self, node_id: usize, x: f64, y: f64) {
-        let dom = self.dom.as_mut().unwrap();
-        dom.hover_node_id = Some(node_id);
-        let root = dom.root_node().get_node(node_id);
+    fn fire_mouse_move_event(&mut self, x: f64, y: f64) {
+        let dom = self.dom.as_ref().unwrap();
+        let hover_node_id = match dom.hover_node_id {
+            Some(hover_node_id) => hover_node_id,
+            None => return,
+        };
 
-        let node = root.get_node(node_id);
+        let dom = self.dom.as_mut().unwrap();
+        let root = dom.root_node().get_node(hover_node_id);
+
+        let node = root.get_node(hover_node_id);
         if let Some(runtime) = &mut self.js_runtime {
             let context = runtime.cx();
 

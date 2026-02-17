@@ -1,5 +1,5 @@
-use anyrender::PaintScene;
 use crate::renderer::text::{TextPainter, ToColorColor};
+use anyrender::PaintScene;
 use kurbo::Rect;
 // Text decorations, borders, shadows, and outlines
 use style::computed_values::box_shadow::ComputedList;

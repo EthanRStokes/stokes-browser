@@ -1,47 +1,43 @@
+use crate::dom::damage::ALL_DAMAGE;
 use crate::dom::events::EventListenerRegistry;
-use std::cell::{Cell, RefCell};
-// DOM node implementation for representing HTML elements
-use std::collections::HashMap;
-use std::{fmt, ptr};
-use std::io::Cursor;
-use std::ops::{Deref, DerefMut};
-use std::path::PathBuf;
-use std::rc::{Rc, Weak};
-use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::dom::ZERO;
+use crate::layout::table::TableContext;
+use crate::ui::TextBrush;
 use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut};
 use bitflags::bitflags;
-use html5ever::{LocalName, QualName};
+use blitz_traits::events::HitResult;
 use html5ever::tendril::StrTendril;
+use html5ever::{LocalName, QualName};
 use html_escape::encode_quoted_attribute_to_string;
 use markup5ever::local_name;
-use parley::ContentWidths;
+use parley::{Cluster, ContentWidths};
 use peniko::Blob;
 use selectors::matching::{ElementSelectorFlags, QuirksMode};
-use skia_safe::FontMgr;
 use skia_safe::wrapper::PointerWrapper;
 use slab::Slab;
+use std::cell::{Cell, RefCell};
+use std::ops::{Deref, DerefMut};
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::{fmt, ptr};
 use style::data::ElementData as StyleElementData;
-use style::properties::{parse_style_attribute, PropertyDeclarationBlock};
-use style::servo_arc::{Arc as ServoArc, Arc};
-use style::shared_lock::{Locked, SharedRwLock};
-use stylo_atoms::Atom;
-use stylo_dom::ElementState;
 use style::data::ElementData as StyloElementData;
 use style::invalidation::element::restyle_hints::RestyleHint;
 use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::properties::style_structs::Font;
+use style::properties::{parse_style_attribute, PropertyDeclarationBlock};
 use style::selector_parser::RestyleDamage;
+use style::servo_arc::{Arc as ServoArc, Arc};
+use style::shared_lock::{Locked, SharedRwLock};
 use style::stylesheets::{CssRuleType, DocumentStyleSheet, UrlExtraData};
 use style::values::computed::{Display, PositionProperty};
-use style::values::generics::counters::Content;
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use style_traits::ToCss;
+use stylo_atoms::Atom;
+use stylo_dom::ElementState;
 use taffy::{Cache, Layout, Point, Style};
-use crate::dom::damage::ALL_DAMAGE;
-use crate::dom::ZERO;
-use crate::layout::table::TableContext;
-use crate::ui::TextBrush;
 
 /// Callback type for layout invalidation
 pub type LayoutInvalidationCallback = Box<dyn Fn()>;
@@ -996,6 +992,91 @@ impl DomNode {
         }
 
         result
+    }
+
+    pub fn hit(&self, x: f32, y: f32) -> Option<HitResult> {
+        use style::computed_values::visibility::T as Visibility;
+
+        // Don't hit on visbility:hidden elements
+        if let Some(style) = self.primary_styles() {
+            if matches!(
+                style.clone_visibility(),
+                Visibility::Hidden | Visibility::Collapse
+            ) {
+                return None;
+            }
+        }
+
+        let mut x = x - self.final_layout.location.x + self.scroll_offset.x as f32;
+        let mut y = y - self.final_layout.location.y + self.scroll_offset.y as f32;
+
+        let size = self.final_layout.size;
+        let matches_self = !(x < 0.0
+            || x > size.width + self.scroll_offset.x as f32
+            || y < 0.0
+            || y > size.height + self.scroll_offset.y as f32);
+
+        let content_size = self.final_layout.content_size;
+        let matches_content = !(x < 0.0
+            || x > content_size.width + self.scroll_offset.x as f32
+            || y < 0.0
+            || y > content_size.height + self.scroll_offset.y as f32);
+
+        // todo stacking context
+
+        if !matches_self && !matches_content {
+            return None;
+        }
+
+        if self.flags.is_inline_root() {
+            let content_box_offset = taffy::Point {
+                x: self.final_layout.padding.left + self.final_layout.border.left,
+                y: self.final_layout.padding.top + self.final_layout.border.top,
+            };
+            x -= content_box_offset.x;
+            y -= content_box_offset.y;
+        }
+
+        // Call `.hit()` on each child in turn. If any return `Some` then return that value. Else return `Some(self.id).
+        for child_id in self.layout_children.borrow().iter().flatten().rev() {
+            if let Some(hit) = self.get_node(*child_id).hit(x, y) {
+                return Some(hit);
+            }
+        }
+
+        // Inline children
+        if self.flags.is_inline_root() {
+            let element_data = &self.element_data().unwrap();
+            if let Some(ild) = element_data.inline_layout_data.as_ref() {
+                let layout = &ild.layout;
+                let scale = layout.scale();
+
+                if let Some((cluster, _side)) =
+                    Cluster::from_point_exact(layout, x * scale, y * scale)
+                {
+                    let style_index = cluster.glyphs().next()?.style_index();
+                    let node_id = layout.styles()[style_index].brush.id;
+                    return Some(HitResult {
+                        node_id,
+                        x,
+                        y,
+                        is_text: true,
+                    });
+                }
+            }
+        }
+
+        // Self (this node)
+        if matches_self {
+            return Some(HitResult {
+                node_id: self.id,
+                x,
+                y,
+                is_text: false,
+            });
+        }
+
+        None
     }
 
     pub fn outer_html(&self) -> String {

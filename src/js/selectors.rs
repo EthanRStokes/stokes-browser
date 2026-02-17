@@ -164,7 +164,6 @@ fn matches_attribute_selector(selector: &str, attributes: &AttributeMap) -> bool
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     // Add tests here if needed
 }

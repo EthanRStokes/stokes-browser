@@ -7,6 +7,7 @@ mod kurbo_css;
 mod layers;
 mod shadow;
 
+use crate::dom::node::SpecialElementData;
 use crate::dom::{Dom, DomNode, ElementData, ImageData, NodeData};
 use crate::renderer::background::BackgroundImageCache;
 use crate::renderer::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
@@ -25,9 +26,7 @@ use style::properties::ComputedValues;
 use style::servo_arc::Arc;
 use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, OutlineStyle, Overflow, ZIndex};
 use style::values::generics::color::GenericColor;
-use style::values::specified::Display;
 use taffy::Layout;
-use crate::dom::node::SpecialElementData;
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer<'dom> {

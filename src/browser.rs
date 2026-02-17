@@ -1,22 +1,22 @@
+use anyrender::PaintScene;
+use blitz_traits::shell::Viewport;
 use glutin::surface::GlSurface;
+use kurbo::Affine;
+use parley::{FontContext, LayoutContext};
 use std::num::NonZeroU32;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use anyrender::PaintScene;
-use blitz_traits::shell::Viewport;
-use kurbo::Affine;
-use parley::{FontContext, LayoutContext};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
 
 use crate::ipc::{ParentToTabMessage, TabToParentMessage};
+use crate::renderer::text::TextPainter;
 use crate::tab_manager::TabManager;
 use crate::ui::{BrowserUI, TextBrush};
 use crate::window::{create_surface, Env};
 use crate::{input, ipc};
-use crate::renderer::text::TextPainter;
 
 /// Result of closing a tab
 #[derive(Debug, PartialEq)]

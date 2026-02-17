@@ -5,18 +5,18 @@ mod selectors;
 mod bindings;
 mod jsapi;
 
-use std::ptr;
-use std::rc::Rc;
-use mozjs::glue::CreateJobQueue;
-use mozjs::jsapi::SetJobQueue;
 use crate::dom::Dom;
-use crate::js::bindings::{dom_bindings, timers, fetch};
-pub use bindings::alert_callback::set_alert_callback;
-use bindings::console;
-pub use runtime::JsRuntime;
 use crate::js::bindings::timers::TimerManager;
+use crate::js::bindings::{dom_bindings, fetch, timers};
 use crate::js::jsapi::promise::init_rejection_tracker;
 use crate::js::runtime::JOB_QUEUE_TRAPS;
+pub use bindings::alert_callback::set_alert_callback;
+use bindings::console;
+use mozjs::glue::CreateJobQueue;
+use mozjs::jsapi::SetJobQueue;
+pub use runtime::JsRuntime;
+use std::ptr;
+use std::rc::Rc;
 
 /// JavaScript execution result
 pub type JsResult<T> = Result<T, String>;

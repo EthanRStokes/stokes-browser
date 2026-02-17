@@ -1,15 +1,15 @@
+use crate::js::jsapi::error::{get_pending_exception, JsError};
+use mozjs::jsapi::{AddRawValueRoot, HandleObject, HandleValue, HandleValueArray, Heap, JSContext, JSObject, JS_CallFunctionValue, PromiseRejectionHandlingState, RemoveRawValueRoot, ResolvePromise, SetPromiseRejectionTrackerCallback, StackFormat};
+use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
+use mozjs::panic::wrap_panic;
+use mozjs::rust::Runtime;
+use mozjs::{capture_stack, rooted};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::CString;
 use std::os::raw::c_void;
 use std::ptr;
 use std::rc::Rc;
-use mozjs::jsapi::{AddRawValueRoot, HandleObject, HandleValue, HandleValueArray, Heap, JSContext, JSObject, JS_CallFunctionValue, PromiseRejectionHandlingState, RemoveRawValueRoot, ResolvePromise, SetPromiseRejectionTrackerCallback, StackFormat};
-use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
-use mozjs::panic::wrap_panic;
-use mozjs::{capture_stack, rooted};
-use mozjs::rust::Runtime;
-use crate::js::jsapi::error::{get_pending_exception, JsError};
 
 // Thread-local queue for promise jobs
 thread_local! {

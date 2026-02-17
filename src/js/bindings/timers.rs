@@ -1,14 +1,14 @@
+use crate::js::JsRuntime;
 // Timer implementation for setTimeout and setInterval using mozjs
 use mozjs::context::RawJSContext;
+use mozjs::conversions::jsstr_to_string;
 use mozjs::jsval::{Int32Value, JSVal, UndefinedValue};
+use mozjs::rooted;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-use mozjs::conversions::jsstr_to_string;
-use mozjs::rooted;
-use crate::js::JsRuntime;
 
 /// A pending timer that will execute a callback after a delay
 #[derive(Debug)]

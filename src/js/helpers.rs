@@ -189,9 +189,9 @@ pub unsafe fn define_property_accessor(
     getter_name: &str,
     setter_name: &str,
 ) -> Result<(), String> {
-    use mozjs::jsapi::{CurrentGlobalOrNull, Compile1, JS_ExecuteScript, Handle, MutableHandleValue};
+    use mozjs::jsapi::{Compile1, CurrentGlobalOrNull, Handle, JS_ExecuteScript, MutableHandleValue};
     use mozjs::context::JSContext as SafeJSContext;
-    use mozjs::rust::{CompileOptionsWrapper, transform_str_to_source_text};
+    use mozjs::rust::{transform_str_to_source_text, CompileOptionsWrapper};
 
     // We'll use a well-known temporary variable name
     let temp_var_name = "__definePropertyTarget__";

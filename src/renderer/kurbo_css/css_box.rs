@@ -2,7 +2,7 @@ use kurbo::{Arc, BezPath, Ellipse, Insets, PathEl, Point, Rect, Shape as _, Vec2
 use std::{f64::consts::FRAC_PI_2, f64::consts::PI};
 
 use super::non_uniform_radii::NonUniformRoundedRectRadii;
-use super::{Corner, CssBoxKind, Direction, Edge, add_insets, get_corner_insets};
+use super::{add_insets, get_corner_insets, Corner, CssBoxKind, Direction, Edge};
 
 // Copyright DioxusLabs
 // Licensed under the Apache License, Version 2.0 or the MIT license.

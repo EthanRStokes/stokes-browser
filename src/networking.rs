@@ -1,27 +1,27 @@
-use std::io::Cursor;
-// Networking module for handling HTTP requests
-use curl::easy::{Easy, List};
-use std::path::Path;
-use std::sync::{Arc, LazyLock};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::Sender;
-use std::time::Duration;
+use crate::dom::DomEvent;
 use blitz_traits::net::{NetHandler, NetProvider, Request};
 use blitz_traits::shell::ShellProvider;
 use bytes::Bytes;
+// Networking module for handling HTTP requests
+use curl::easy::{Easy, List};
 use selectors::context::QuirksMode;
+use std::io::Cursor;
+use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 use style::font_face::{FontFaceSourceFormat, FontFaceSourceFormatKeyword, Source};
 use style::media_queries::MediaList;
-use style::shared_lock::{Locked, SharedRwLock, SharedRwLockReadGuard};
-use style::stylesheets::{AllowImportRules, CssRule, DocumentStyleSheet, Origin, Stylesheet, StylesheetInDocument, UrlExtraData};
-use url::Url;
-use style::servo_arc::Arc as ServoArc;
-use usvg::fontdb;
 use style::parser::ParserContext;
+use style::servo_arc::Arc as ServoArc;
+use style::shared_lock::{Locked, SharedRwLock, SharedRwLockReadGuard};
 use style::stylesheets::import_rule::{ImportLayer, ImportSheet, ImportSupportsCondition};
+use style::stylesheets::{AllowImportRules, CssRule, DocumentStyleSheet, Origin, Stylesheet, StylesheetInDocument, UrlExtraData};
 use style::stylesheets::{ImportRule, StylesheetLoader as StyloStylesheetLoader};
 use style::values::{CssUrl, SourceLocation};
-use crate::dom::DomEvent;
+use url::Url;
+use usvg::fontdb;
 
 #[derive(Debug)]
 pub enum NetworkError {
@@ -775,7 +775,7 @@ impl HttpClient {
                 .find(|h| h.to_lowercase().starts_with("content-type:")) {
                 if let Some(content_type) = content_type_header.split(':').nth(1) {
                     let content_type = content_type.trim();
-                    println!("Resource content type: {}", content_type);
+                    //println!("Resource content type: {}", content_type);
 
                     if !content_type.starts_with("image/") && !content_type.contains("svg") {
                         println!("Warning: Expected image content type, got: {}", content_type);
@@ -788,7 +788,7 @@ impl HttpClient {
                 return Err(NetworkError::Empty);
             }
 
-            println!("Successfully fetched resource: {} bytes", data.len());
+            //println!("Successfully fetched resource: {} bytes", data.len());
             Ok::<Vec<u8>, NetworkError>(data)
         }).await.map_err(|e| NetworkError::Curl(e.to_string()))?;
 

@@ -1,11 +1,11 @@
-use std::ptr::NonNull;
+use crate::js::jsapi::error::{get_pending_exception, JsError};
 use mozjs::conversions::jsstr_to_string;
 use mozjs::glue::{RUST_JSID_IS_STRING, RUST_JSID_TO_STRING};
 use mozjs::jsapi::{HandleObject as RawHandleObject, JSContext, JS_GetProperty, MutableHandleValue};
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::HandleObject;
-use crate::js::jsapi::error::{get_pending_exception, JsError};
+use std::ptr::NonNull;
 
 /// get a single member of a JSObject
 #[allow(dead_code)]

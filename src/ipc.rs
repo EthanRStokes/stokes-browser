@@ -1,5 +1,5 @@
 // Inter-Process Communication module for browser processes
-use bincode::{Encode, Decode};
+use bincode::{Decode, Encode};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 

@@ -1,33 +1,33 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::os::raw::c_void;
 use super::{initialize_bindings, JsResult};
-// JavaScript runtime management using Mozilla's SpiderMonkey (mozjs)
-use mozjs::jsval::{PrivateValue, UndefinedValue};
-use mozjs::rooted;
-use mozjs::rust::{JSEngine, Runtime, RealmOptions, SIMPLE_GLOBAL_CLASS, CompileOptionsWrapper, transform_str_to_source_text};
-use std::ptr;
-use std::ptr::NonNull;
-use std::rc::Rc;
-use std::time::Duration;
-use hirofa_utils::eventloop::EventLoop;
-use log::trace;
-use mozjs::context::JSContext;
-use mozjs::jsapi::{CallArgs, JSContext as ApiJSContext};
-use mozjs::conversions::jsstr_to_string;
-use mozjs::jsapi::{JSObject, JS_ClearPendingException, JS_GetPendingException, JS_IsExceptionPending, MutableHandleValue, OnNewGlobalHookOption, Heap, SetScriptPrivate, JSScript, JSContext as RawJSContext, Compile1, JS_ExecuteScript, Handle, JSAutoRealm};
-use mozjs::panic::{maybe_resume_unwind, wrap_panic};
-use mozjs::rust::wrappers2::{JS_NewGlobalObject, JS_ValueToSource, JS_GetScriptPrivate};
-use url::Url;
-use lazy_static::lazy_static;
-use mozjs::gc::HandleObject;
-use mozjs::glue::JobQueueTraps;
-use skia_safe::wrapper::NativeTransmutableWrapper;
 use crate::dom::Dom;
 use crate::js::bindings::timers::TimerManager;
 use crate::js::jsapi::define_native_function::define_native_function;
 use crate::js::jsapi::objects::get_obj_prop_val_as_string;
 use crate::js::jsapi::promise::enqueue_promise_job;
+use hirofa_utils::eventloop::EventLoop;
+use lazy_static::lazy_static;
+use log::trace;
+use mozjs::context::JSContext;
+use mozjs::conversions::jsstr_to_string;
+use mozjs::gc::HandleObject;
+use mozjs::glue::JobQueueTraps;
+use mozjs::jsapi::{CallArgs, JSContext as ApiJSContext};
+use mozjs::jsapi::{Compile1, Handle, Heap, JSAutoRealm, JSContext as RawJSContext, JSObject, JSScript, JS_ClearPendingException, JS_ExecuteScript, JS_GetPendingException, JS_IsExceptionPending, MutableHandleValue, OnNewGlobalHookOption, SetScriptPrivate};
+// JavaScript runtime management using Mozilla's SpiderMonkey (mozjs)
+use mozjs::jsval::{PrivateValue, UndefinedValue};
+use mozjs::panic::{maybe_resume_unwind, wrap_panic};
+use mozjs::rooted;
+use mozjs::rust::wrappers2::{JS_GetScriptPrivate, JS_NewGlobalObject, JS_ValueToSource};
+use mozjs::rust::{transform_str_to_source_text, CompileOptionsWrapper, JSEngine, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS};
+use skia_safe::wrapper::NativeTransmutableWrapper;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::os::raw::c_void;
+use std::ptr;
+use std::ptr::NonNull;
+use std::rc::Rc;
+use std::time::Duration;
+use url::Url;
 
 lazy_static! {
     static ref ENGINE_HANDLER_PRODUCER: EventLoop = EventLoop::new();

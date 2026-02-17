@@ -1,14 +1,14 @@
+use crate::dom::node::SpecialElementData;
+use crate::dom::{Dom, ImageData, NodeData};
+use crate::layout::replaced::{replaced_measure_function, ReplacedContext};
+use crate::layout::table::{TableContext, TableTreeWrapper};
+use markup5ever::local_name;
 use std::cell::Ref;
 use std::sync::Arc;
-use markup5ever::local_name;
 use style::values::computed::length_percentage::CalcLengthPercentage;
 use style::values::computed::{CSSPixelLength, LineHeight};
 use stylo_atoms::Atom;
 pub(crate) use taffy::{compute_block_layout, compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout, AvailableSpace, CacheTree, CollapsibleMarginSet, Display, Layout, LayoutBlockContainer, LayoutFlexboxContainer, LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, PrintTree, ResolveOrZero, RoundTree, RunMode, Size, Style, TraversePartialTree, TraverseTree};
-use crate::dom::{Dom, ImageData, NodeData};
-use crate::dom::node::{SpecialElementData};
-use crate::layout::replaced::{replaced_measure_function, ReplacedContext};
-use crate::layout::table::{TableContext, TableTreeWrapper};
 
 impl TraversePartialTree for Dom {
     type ChildIter<'a> = RefCellChildIter<'a>;

@@ -1,13 +1,12 @@
 use super::{AttributeMap, Dom, ElementData, ImageData, NodeData};
-// HTML parser using html5ever
-use html5ever::parse_document;
-use html5ever::tendril::{StrTendril, TendrilSink};
-use markup5ever_rcdom as rcdom;
-use markup5ever_rcdom::{Handle, NodeData as EverNodeData};
-use std::cell::RefCell;
-use markup5ever::local_name;
 use crate::dom::config::DomConfig;
 use crate::dom::node::{SpecialElementData, TextData};
+// HTML parser using html5ever
+use html5ever::parse_document;
+use html5ever::tendril::TendrilSink;
+use markup5ever::local_name;
+use markup5ever_rcdom as rcdom;
+use markup5ever_rcdom::{Handle, NodeData as EverNodeData};
 
 /// HTML Parser for converting HTML strings into DOM structures
 pub struct HtmlParser;

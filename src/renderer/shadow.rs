@@ -1,9 +1,9 @@
+use crate::renderer::layers::maybe_with_layer;
+use crate::renderer::text::ToColorColor;
+use crate::renderer::Element;
 use anyrender::PaintScene;
 use kurbo::{Rect, Vec2};
 use peniko::{Color, Compose, Fill, Mix};
-use crate::renderer::Element;
-use crate::renderer::layers::maybe_with_layer;
-use crate::renderer::text::ToColorColor;
 
 impl Element<'_> {
     pub(super) fn draw_outset_box_shadow(&self, painter: &mut impl PaintScene) {

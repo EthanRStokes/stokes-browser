@@ -1,15 +1,14 @@
-use blitz_traits::shell::Viewport;
-use skia_safe::{Canvas, Color, ColorSpace, Font, FontStyle, ImageInfo, Paint, Path, Pixmap, Point, Rect, TextBlob};
-use std::f32::consts::PI;
-use std::time::{Duration, Instant};
+use crate::renderer::text::TextPainter;
 use anyrender::PaintScene;
+use blitz_traits::shell::Viewport;
 use color::AlphaColor;
 use kurbo::Affine;
-use parley::{Alignment, AlignmentOptions, FontContext, FontWeight, GenericFamily, LayoutContext, LineHeight, PositionedLayoutItem, StyleProperty};
+use parley::{Alignment, AlignmentOptions, FontContext, GenericFamily, LayoutContext, LineHeight, PositionedLayoutItem, StyleProperty};
 use peniko::Fill;
-use skrifa::{FontRef, GlyphId, MetadataProvider};
-use skrifa::instance::NormalizedCoord;
-use crate::renderer::text::TextPainter;
+use skia_safe::{Canvas, Color, Font, FontStyle, Paint, Rect, TextBlob};
+use skrifa::MetadataProvider;
+use std::f32::consts::PI;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TextBrush {

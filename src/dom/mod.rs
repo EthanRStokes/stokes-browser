@@ -14,6 +14,7 @@ mod snapshot;
 pub use self::events::{EventDispatcher, EventType};
 pub use self::node::{AttributeMap, DomNode, ElementData, ImageData, ImageLoadingState, NodeData};
 pub use self::parser::HtmlParser;
+use crate::css::stylo::RecalcStyle;
 use crate::dom::config::DomConfig;
 use crate::dom::damage::{ALL_DAMAGE, CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC};
 use crate::dom::layout::collect_layout_children;
@@ -21,6 +22,7 @@ use crate::dom::node::{DomNodeFlags, TextData};
 use crate::dom::url::DocUrl;
 use crate::networking::{ResourceLoadResponse, StylesheetLoader};
 use crate::ui::TextBrush;
+use blitz_traits::events::HitResult;
 use blitz_traits::net::{DummyNetProvider, NetProvider};
 use blitz_traits::shell::{DummyShellProvider, ShellProvider, Viewport};
 use euclid::Size2D;
@@ -62,7 +64,6 @@ use style::values::computed::font::{GenericFontFamily, QueryFontMetricsFlags};
 use style::values::computed::{Au, CSSPixelLength, Length};
 use stylo_atoms::Atom;
 use taffy::Point;
-use crate::css::stylo::RecalcStyle;
 
 const ZERO: Point<f64> = Point { x: 0.0, y: 0.0 };
 
@@ -671,6 +672,55 @@ impl Dom {
 
             // todo record ig
         }
+    }
+
+    pub fn set_hover(&mut self, x: f32, y: f32) -> bool {
+        let hit = self.hit(x, y);
+        let hover_node_id = hit.map(|hit| hit.node_id);
+        let new_is_text = hit.map(|hit| hit.is_text).unwrap_or(false);
+
+        // Return early if the new node is the same as the already-hovered node
+        if hover_node_id == self.hover_node_id {
+            return false;
+        }
+
+        let old_node_path = self.maybe_node_layout_ancestors(self.hover_node_id);
+        let new_node_path = self.maybe_node_layout_ancestors(hover_node_id);
+        let same_count = old_node_path
+            .iter()
+            .zip(&new_node_path)
+            .take_while(|(o, n)| o == n)
+            .count();
+        for &id in old_node_path.iter().skip(same_count) {
+            self.snapshot_and(id, |node| node.unhover());
+        }
+        for &id in new_node_path.iter().skip(same_count) {
+            self.snapshot_and(id, |node| node.hover());
+        }
+
+        self.hover_node_id = hover_node_id;
+        self.hover_node_is_text = new_is_text;
+
+        // TODO Update the cursor
+        //let cursor = self.get_cursor().unwrap_or_default();
+        //self.shell_provider.set_cursor(cursor);
+
+        // Request redraw
+        self.shell_provider.request_redraw();
+
+        true
+    }
+
+    pub fn hit(&self, x: f32, y: f32) -> Option<HitResult> {
+        if TDocument::as_node(&&self.nodes[0])
+            .first_element_child()
+            .is_none()
+        {
+            println!("Hit - NO DOM");
+            return None;
+        }
+
+        self.root_element().hit(x, y)
     }
 
     pub(crate) fn root_node(&self) -> &DomNode {

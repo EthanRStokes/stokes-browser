@@ -1,17 +1,17 @@
-use std::{ops::Range, sync::Arc};
-use atomic_refcell::AtomicRefCell;
-use markup5ever::local_name;
-use style::dom::NodeInfo;
-use style::values::specified::box_::{DisplayInside, DisplayOutside};
-use style::{computed_values::table_layout::T as TableLayout, Atom};
-use style::computed_values::border_collapse::T as BorderCollapse;
-use style::properties::style_structs::Border;
-use style::servo_arc::Arc as ServoArc;
-use taffy::{compute_leaf_layout, style_helpers, DetailedGridInfo, Dimension, LayoutPartialTree as _, NodeId, Rect, ResolveOrZero, Size, TrackSizingFunction};
-use taffy::style_helpers::{auto, length, percent};
 use crate::dom::damage::{CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC};
 use crate::dom::Dom;
 use crate::layout::taffy::resolve_calc_value;
+use atomic_refcell::AtomicRefCell;
+use markup5ever::local_name;
+use std::{ops::Range, sync::Arc};
+use style::computed_values::border_collapse::T as BorderCollapse;
+use style::dom::NodeInfo;
+use style::properties::style_structs::Border;
+use style::servo_arc::Arc as ServoArc;
+use style::values::specified::box_::{DisplayInside, DisplayOutside};
+use style::{computed_values::table_layout::T as TableLayout, Atom};
+use taffy::style_helpers::{auto, length, percent};
+use taffy::{compute_leaf_layout, style_helpers, DetailedGridInfo, Dimension, LayoutPartialTree as _, NodeId, Rect, ResolveOrZero, Size, TrackSizingFunction};
 
 pub struct TableTreeWrapper<'doc> {
     pub(crate) dom: &'doc mut Dom,

@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0 or the MIT license.
 
 //! Conversion functions from Stylo types to Parley types
-use std::borrow::Cow;
 use ::parley::setting::Tag;
+use std::borrow::Cow;
 use style::values::computed::Length;
 
 use crate::ui::TextBrush;
@@ -13,8 +13,6 @@ pub(crate) mod stylo {
     pub(crate) use style::computed_values::text_wrap_mode::T as TextWrapMode;
     pub(crate) use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
     pub(crate) use style::properties::ComputedValues;
-    pub(crate) use style::values::computed::OverflowWrap;
-    pub(crate) use style::values::computed::WordBreak;
     pub(crate) use style::values::computed::font::FontStretch;
     pub(crate) use style::values::computed::font::FontStyle;
     pub(crate) use style::values::computed::font::FontVariationSettings;
@@ -22,12 +20,14 @@ pub(crate) mod stylo {
     pub(crate) use style::values::computed::font::GenericFontFamily;
     pub(crate) use style::values::computed::font::LineHeight;
     pub(crate) use style::values::computed::font::SingleFontFamily;
+    pub(crate) use style::values::computed::OverflowWrap;
+    pub(crate) use style::values::computed::WordBreak;
 }
 
 pub(crate) mod parley {
-    pub(crate) use parley::FontVariation;
     pub(crate) use parley::fontique::QueryFamily;
     pub(crate) use parley::style::*;
+    pub(crate) use parley::FontVariation;
 }
 
 pub(crate) fn generic_font_family(input: stylo::GenericFontFamily) -> parley::GenericFamily {

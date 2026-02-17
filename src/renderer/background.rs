@@ -1,17 +1,17 @@
 use crate::dom::node::RasterImageData;
 use crate::renderer::text::TextPainter;
+use anyrender::PaintScene;
 use kurbo::{Affine, Rect};
 use peniko::{ImageAlphaType, ImageData, ImageFormat, ImageSampler};
 use skia_safe::Color;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Cursor;
-use anyrender::PaintScene;
 use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::servo::url::ComputedUrl;
 use style::servo_arc::Arc;
-use style::values::computed::{Gradient, Image};
-use style::values::generics::image::{GenericCrossFadeImage, GenericImage, GenericImageSetItem};
+use style::values::computed::Image;
+use style::values::generics::image::{GenericCrossFadeImage, GenericImage};
 use style::values::specified::ImageRendering;
 
 /// Background image cache manager

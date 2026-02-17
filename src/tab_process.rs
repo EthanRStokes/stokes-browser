@@ -2,14 +2,14 @@
 use crate::engine::{Engine, EngineConfig, ENGINE_REF, USER_AGENT_REF};
 use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage};
 use crate::js;
+use crate::renderer::text::TextPainter;
+use blitz_traits::shell::Viewport;
 use shared_memory::{Shmem, ShmemConf};
 use skia_safe::{AlphaType, ColorType, ImageInfo, Surface};
 use std::cell::RefCell;
 use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
-use blitz_traits::shell::Viewport;
-use crate::renderer::text::TextPainter;
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {

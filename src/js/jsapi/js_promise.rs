@@ -1,16 +1,16 @@
 // Rust native representation of JavaScript Promise values
 // Provides type-safe Promise operations with proper event loop integration
 
+use crate::js::jsapi::error::{get_pending_exception, JsError};
+use crate::js::runtime::{JsRuntime, RUNTIME};
+use mozjs::jsapi::{AddRawValueRoot, GetPromiseState, HandleObject, HandleValue, Heap, JSContext, JSObject, JS_NewUCStringCopyN, NewPromiseObject, PromiseState, RejectPromise, RemoveRawValueRoot, ResolvePromise};
+use mozjs::jsval::{JSVal, ObjectValue, StringValue, UndefinedValue};
+use mozjs::rooted;
+use mozjs::rust::wrappers::JS_GetPromiseResult;
+use mozjs::rust::Runtime;
 use std::ffi::CString;
 use std::ptr;
 use std::sync::{Arc, Mutex};
-use mozjs::jsapi::{AddRawValueRoot, HandleObject, HandleValue, Heap, JSContext, JSObject, NewPromiseObject, PromiseState, RejectPromise, RemoveRawValueRoot, ResolvePromise, JS_NewUCStringCopyN, GetPromiseState};
-use mozjs::jsval::{JSVal, ObjectValue, StringValue, UndefinedValue};
-use mozjs::rooted;
-use mozjs::rust::Runtime;
-use mozjs::rust::wrappers::JS_GetPromiseResult;
-use crate::js::jsapi::error::{get_pending_exception, JsError};
-use crate::js::runtime::{JsRuntime, RUNTIME};
 
 /// Represents the state of a JavaScript Promise
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

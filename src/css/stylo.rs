@@ -673,7 +673,7 @@ impl<'a> TElement for Node<'a> {
             {
                 let is_table = *tag == local_name!("table");
                 if let Some(width) = parse_size(value, |v| !is_table || *v != 0.0) {
-                    use style::values::generics::{NonNegative, length::Size};
+                    use style::values::generics::{length::Size, NonNegative};
 
                     push_style(PropertyDeclaration::Width(Size::LengthPercentage(
                         NonNegative(width),
@@ -688,7 +688,7 @@ impl<'a> TElement for Node<'a> {
                 || *tag == local_name!("tfoot"))
             {
                 if let Some(height) = parse_size(value, |_| true) {
-                    use style::values::generics::{NonNegative, length::Size};
+                    use style::values::generics::{length::Size, NonNegative};
                     push_style(PropertyDeclaration::Height(Size::LengthPercentage(
                         NonNegative(height),
                     )));

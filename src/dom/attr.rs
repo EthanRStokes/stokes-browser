@@ -1,9 +1,9 @@
+use crate::dom::damage::ALL_DAMAGE;
+use crate::dom::{Dom, NodeData};
 use html5ever::local_name;
 use markup5ever::QualName;
 use style::invalidation::element::restyle_hints::RestyleHint;
 use stylo_atoms::Atom;
-use crate::dom::damage::ALL_DAMAGE;
-use crate::dom::{Dom, NodeData};
 
 macro_rules! tag_attr {
     ($tag:tt, $attr:tt) => {

@@ -1,13 +1,10 @@
 // Event system for DOM nodes using mozjs
 use crate::dom::DomNode;
-use crate::js::JsRuntime;
-use mozjs::jsval::{JSVal, UndefinedValue, ObjectValue, Int32Value, BooleanValue, DoubleValue, StringValue};
-use mozjs::rooted;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
 use mozjs::context::JSContext;
 use mozjs::jsapi::{JSObject, JS_DefineProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JSPROP_ENUMERATE};
+use mozjs::jsval::{BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, StringValue};
+use mozjs::rooted;
+use std::collections::HashMap;
 
 /// Event types supported by the browser
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

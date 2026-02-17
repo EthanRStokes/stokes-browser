@@ -1,8 +1,8 @@
+use crate::js::jsapi::objects::{get_obj_prop_val_as_i32, get_obj_prop_val_as_string};
 use mozjs::jsapi::{JSContext, JS_ClearPendingException, JS_GetPendingException, JS_IsExceptionPending};
 use mozjs::jsval::UndefinedValue;
 use mozjs::rooted;
 use tracing::debug;
-use crate::js::jsapi::objects::{get_obj_prop_val_as_i32, get_obj_prop_val_as_string};
 
 #[derive(Debug)]
 pub struct JsError {
