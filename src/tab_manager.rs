@@ -7,6 +7,7 @@ use std::io;
 use std::process::{Child, Command};
 use std::sync::Arc;
 use std::thread;
+use crate::shell_provider::ShellProviderMessage;
 
 /// Represents a managed tab process
 pub struct ManagedTab {
@@ -104,6 +105,19 @@ impl TabManager {
         for (tab_id, tab) in self.tabs.iter_mut() {
             // Try to receive messages without blocking
             while let Ok(Some(msg)) = tab.channel.try_receive::<TabToParentMessage>() {
+                messages.push((tab_id.clone(), msg));
+            }
+        }
+
+        messages
+    }
+
+    pub fn poll_shell_messages(&mut self) -> Vec<(String, ShellProviderMessage)> {
+        let mut messages = Vec::new();
+
+        for (tab_id, tab) in self.tabs.iter_mut() {
+            // Try to receive messages without blocking
+            while let Ok(Some(msg)) = tab.channel.try_receive::<ShellProviderMessage>() {
                 messages.push((tab_id.clone(), msg));
             }
         }

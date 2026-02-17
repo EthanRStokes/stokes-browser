@@ -10,6 +10,7 @@ mod traverse;
 pub mod stylo_to_parley;
 mod attr;
 mod snapshot;
+mod stylo_to_cursor;
 
 pub use self::events::{EventDispatcher, EventType};
 pub use self::node::{AttributeMap, DomNode, ElementData, ImageData, ImageLoadingState, NodeData};
@@ -43,6 +44,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use cursor_icon::CursorIcon;
 use style::animation::DocumentAnimationSet;
 use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters, SharedStyleContext};
 use style::data::ElementStyles;
@@ -64,6 +66,7 @@ use style::values::computed::font::{GenericFontFamily, QueryFontMetricsFlags};
 use style::values::computed::{Au, CSSPixelLength, Length};
 use stylo_atoms::Atom;
 use taffy::Point;
+use crate::dom::stylo_to_cursor::stylo_to_cursor_icon;
 
 const ZERO: Point<f64> = Point { x: 0.0, y: 0.0 };
 
@@ -372,12 +375,13 @@ impl Dom {
     }
 
     /// Parse HTML into a DOM
-    pub fn parse_html(url: &str, html: &str, viewport: Viewport) -> Self {
+    pub fn parse_html(url: &str, html: &str, viewport: Viewport, shell_provider: Arc<dyn ShellProvider>) -> Self {
         let parser = HtmlParser::new();
         parser.parse(html, DomConfig {
             viewport: Some(viewport),
             base_url: Some(url.to_string()),
             net_provider: Some(Arc::new(DummyNetProvider)),
+            shell_provider: Some(shell_provider),
             ..Default::default()
         })
     }
@@ -701,14 +705,51 @@ impl Dom {
         self.hover_node_id = hover_node_id;
         self.hover_node_is_text = new_is_text;
 
-        // TODO Update the cursor
-        //let cursor = self.get_cursor().unwrap_or_default();
-        //self.shell_provider.set_cursor(cursor);
+        let cursor = self.get_cursor().unwrap_or_default();
+        self.shell_provider.set_cursor(cursor);
 
         // Request redraw
         self.shell_provider.request_redraw();
 
         true
+    }
+
+    pub fn get_hover_node_id(&self) -> Option<usize> {
+        self.hover_node_id
+    }
+
+    pub fn get_cursor(&self) -> Option<CursorIcon> {
+        let node = &self.nodes[self.get_hover_node_id()?];
+
+        // TODO subdoc
+
+        let style = node.primary_styles()?;
+        let keyword = stylo_to_cursor_icon(style.clone_cursor().keyword);
+
+        // Return cursor from style if it is non-auto
+        if keyword != CursorIcon::Default {
+            return Some(keyword);
+        }
+
+        // todo text cursor for text inputs
+
+        // Use "pointer" cursor if any ancestor is a link
+        let mut maybe_node = Some(node);
+        while let Some(node) = maybe_node {
+            if node.is_link() {
+                return Some(CursorIcon::Pointer);
+            }
+
+            maybe_node = node.layout_parent.get().map(|node_id| node.get_node(node_id));
+        }
+
+        // Return text cursor for text nodes
+        if self.hover_node_is_text {
+            return Some(CursorIcon::Text);
+        }
+
+        // Else fallback to default cursor
+        Some(CursorIcon::Default)
     }
 
     pub fn hit(&self, x: f32, y: f32) -> Option<HitResult> {

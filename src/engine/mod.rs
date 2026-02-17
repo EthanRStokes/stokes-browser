@@ -10,7 +10,7 @@ use crate::networking::{resolve_url, HttpClient, NetworkError};
 use crate::renderer::background::BackgroundImageCache;
 use crate::renderer::text::TextPainter;
 use crate::renderer::HtmlRenderer;
-use blitz_traits::shell::Viewport;
+use blitz_traits::shell::{ShellProvider, Viewport};
 use markup5ever::local_name;
 use selectors::Element;
 use std::cell::RefCell;
@@ -46,10 +46,11 @@ pub struct Engine {
     // Navigation history
     history: Vec<String>,
     history_index: Option<usize>,
+    shell_provider: Arc<dyn ShellProvider>,
 }
 
 impl Engine {
-    pub fn new(config: EngineConfig, viewport: Viewport) -> Self {
+    pub fn new(config: EngineConfig, viewport: Viewport, shell_provider: Arc<dyn ShellProvider>) -> Self {
         Self {
             config,
             http_client: HttpClient::new(),
@@ -66,6 +67,7 @@ impl Engine {
             js_runtime: None,
             history: Vec::new(),
             history_index: None,
+            shell_provider,
         }
     }
 
@@ -88,7 +90,7 @@ impl Engine {
             let html = self.http_client.fetch(url, &self.config.user_agent)?;
 
             // Parse the HTML into our DOM
-            let mut dom = Dom::parse_html(url, &html, self.viewport.clone());
+            let mut dom = Dom::parse_html(url, &html, self.viewport.clone(), self.shell_provider.clone());
 
             // Extract page title
             self.page_title = dom.get_title();

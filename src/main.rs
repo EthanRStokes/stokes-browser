@@ -12,6 +12,7 @@ mod tab_process;
 mod tab_manager;
 mod browser;
 mod window;
+mod shell_provider;
 
 use crate::browser::BrowserApp;
 use winit::event_loop::EventLoop;

@@ -4,8 +4,10 @@ use glutin::surface::GlSurface;
 use kurbo::Affine;
 use parley::{FontContext, LayoutContext};
 use std::num::NonZeroU32;
+use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+use cursor_icon::CursorIcon;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -17,6 +19,7 @@ use crate::tab_manager::TabManager;
 use crate::ui::{BrowserUI, TextBrush};
 use crate::window::{create_surface, Env};
 use crate::{input, ipc};
+use crate::shell_provider::ShellProviderMessage;
 
 /// Result of closing a tab
 #[derive(Debug, PartialEq)]
@@ -386,6 +389,33 @@ impl BrowserApp {
                     self.show_alert(&message);
                 }
                 _ => {}
+            }
+        }
+
+        self.process_shell_messages();
+    }
+
+    fn process_shell_messages(&mut self) {
+        let messages = self.tab_manager.poll_shell_messages();
+
+        for (tab_id, message) in messages {
+            match message {
+                ShellProviderMessage::RequestRedraw => {
+                    self.env.window.request_redraw();
+                }
+                ShellProviderMessage::SetCursor(cursor) => {
+                    println!("Setting cursor to {cursor} for tab {tab_id}");
+                    self.env.window.set_cursor(CursorIcon::from_str(&cursor).unwrap());
+                }
+                ShellProviderMessage::SetWindowTitle(title) => {
+                    self.env.window.set_title(&title);
+                }
+                ShellProviderMessage::SetImeEnabled(enabled) => {
+                    // todo port to winit beta
+                }
+                ShellProviderMessage::SetImeCursorArea { .. } => {
+                    // todo port to winit beta
+                }
             }
         }
     }

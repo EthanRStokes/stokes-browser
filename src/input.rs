@@ -463,36 +463,3 @@ pub fn handle_keyboard_input(
 
     InputAction::None
 }
-
-/// Updates cursor shape based on the current position
-pub fn update_cursor_for_position(
-    cursor_position: (f64, f64),
-    ui: &BrowserUI,
-    active_engine: &Engine,
-    window: &Window,
-) {
-    let (x, y) = cursor_position;
-
-    // Check if the mouse is over a text field first (UI takes priority)
-    if ui.is_mouse_over_text_field(x, y) {
-        // Change cursor to I-beam when over text fields
-        window.set_cursor(winit::window::CursorIcon::Text);
-    } else if ui.is_mouse_over_interactive_element(x, y) {
-        // Change cursor to pointer (hand) when over other interactive elements like buttons
-        window.set_cursor(winit::window::CursorIcon::Pointer);
-    } else {
-        // Check if the mouse is over page content
-        let chrome_height = ui.chrome_height() as f64;
-        if y > chrome_height {
-            // Mouse is over page content, check CSS cursor property
-            let content_y = (y - chrome_height) as f32;
-            /*let css_cursor = active_engine.get_cursor_at_position(x as f32, content_y);
-            let winit_cursor = css_cursor.to_winit_cursor();
-            window.set_cursor(winit_cursor); TODO
-             */
-        } else {
-            // Mouse is over chrome area but not an interactive element
-            window.set_cursor(winit::window::CursorIcon::Default);
-        }
-    }
-}

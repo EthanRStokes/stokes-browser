@@ -10,6 +10,9 @@ use std::cell::RefCell;
 use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
+use crate::shell_provider::{StokesShellProvider, ShellProviderMessage};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
@@ -18,6 +21,7 @@ pub struct TabProcess {
     tab_id: String,
     shared_surface: Option<SharedSurface>,
     surface_generation: u32,
+    shell_receiver: UnboundedReceiver<ShellProviderMessage>,
 }
 
 /// Shared memory surface for efficient rendering data transfer
@@ -31,9 +35,21 @@ struct SharedSurface {
 
 impl TabProcess {
     /// Create a new tab process and connect to the parent
-    pub fn new(tab_id: String, socket_path: PathBuf, config: EngineConfig) -> io::Result<Self> {
+    pub fn new(tab_id: String, socket_path: PathBuf) -> io::Result<Self> {
         let channel = connect(&socket_path)?;
-        let mut engine = Engine::new(config, Viewport::default()); // Default viewport, will be resized later
+
+        let channel = Rc::new(RefCell::new(channel));
+
+        // Create an unbounded channel for shell provider messages which can be sent from any thread
+        let (shell_tx, shell_rx) = unbounded_channel::<ShellProviderMessage>();
+
+        let shell_provider = StokesShellProvider::new(shell_tx);
+
+        let config = EngineConfig {
+            ..Default::default()
+        };
+
+        let mut engine = Engine::new(config, Viewport::default(), Arc::new(shell_provider)); // Default viewport, will be resized later
 
         // Set the engine reference in the thread-local storage
         ENGINE_REF.with(|engine_ref| {
@@ -45,10 +61,11 @@ impl TabProcess {
 
         Ok(Self {
             engine,
-            channel: Rc::new(RefCell::new(channel)),
+            channel,
             tab_id,
             shared_surface: None,
             surface_generation: 0,
+            shell_receiver: shell_rx,
         })
     }
 
@@ -110,6 +127,17 @@ impl TabProcess {
         self.channel.borrow_mut().send(&TabToParentMessage::Ready)?;
 
         loop {
+            match self.shell_receiver.try_recv() {
+                Ok(msg) => {
+                    // Convert ShellProviderMessage to appropriate TabToParentMessage(s)
+                    if let Ok(mut channel) = self.channel.try_borrow_mut() {
+                        let _ = channel.send(&msg);
+                    }
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {},
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {},
+            }
+
             // Process all pending messages from parent (non-blocking)
             let mut has_messages = true;
             while has_messages {
@@ -422,7 +450,6 @@ impl TabProcess {
 
 /// Entry point for tab process executable
 pub async fn tab_process_main(tab_id: String, socket_path: PathBuf) -> io::Result<()> {
-    let config = EngineConfig::default();
-    let mut process = TabProcess::new(tab_id, socket_path, config)?;
+    let mut process = TabProcess::new(tab_id, socket_path)?;
     process.run().await
 }
