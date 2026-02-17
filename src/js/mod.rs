@@ -1,6 +1,5 @@
 // JavaScript engine module (using Mozilla's SpiderMonkey via mozjs)
 mod runtime;
-mod console;
 mod helpers;
 mod selectors;
 mod bindings;
@@ -11,8 +10,9 @@ use std::rc::Rc;
 use mozjs::glue::CreateJobQueue;
 use mozjs::jsapi::SetJobQueue;
 use crate::dom::Dom;
-use crate::js::bindings::{dom_bindings, fetch, timers};
+use crate::js::bindings::{dom_bindings, timers, fetch};
 pub use bindings::alert_callback::set_alert_callback;
+use bindings::console;
 pub use runtime::JsRuntime;
 use crate::js::bindings::timers::TimerManager;
 use crate::js::jsapi::promise::init_rejection_tracker;
@@ -43,11 +43,11 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
     // Set up console object
     console::setup_console(runtime)?;
 
+    // Set up fetch API
+    fetch::setup_fetch(runtime, user_agent.clone())?;
+
     // Set up DOM bindings
     dom_bindings::setup_dom_bindings(runtime, document_root, user_agent)?;
-
-    // Set up fetch API
-    fetch::setup_fetch(runtime)?;
 
     // Set up document.cookie property (must be done after DOM bindings are set up)
     // This uses Object.defineProperty which requires the document object to exist

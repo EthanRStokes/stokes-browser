@@ -45,7 +45,7 @@ thread_local! {
 }
 
 pub(crate) static JOB_QUEUE_TRAPS: JobQueueTraps = JobQueueTraps {
-    getHostDefinedData: None,
+    getHostDefinedData: Some(get_host_defined_data),
     enqueuePromiseJob: Some(enqueue_promise_job),
     runJobs: None,
     empty: Some(empty),
@@ -280,18 +280,20 @@ impl JsRuntime {
 
     /// Run all pending jobs in the job queue (for Promises)
     /// This handles microtasks like Promise callbacks and needs proper error handling
-    ///
-    /// NOTE: Currently a no-op because UseInternalJobQueues causes SIGSEGV.
-    /// TODO: Implement custom job queue using SetEnqueuePromiseJobCallback
     pub fn run_pending_jobs(&mut self) {
-        // Without UseInternalJobQueues, RunJobs will crash or have no effect.
-        // For now, this is a no-op. Promise callbacks will not be executed until
-        // we implement a custom job queue.
-        //
-        // To properly support Promises, we need to:
-        // 1. Call SetEnqueuePromiseJobCallback to register a custom callback
-        // 2. Store pending jobs in our own queue
-        // 3. Process them here
+        use crate::js::jsapi::promise::run_promise_jobs;
+
+        self.do_with_jsapi(|_rt, cx, _global| {
+            let executed = run_promise_jobs(cx);
+            if executed > 0 {
+                log::trace!("Executed {} promise jobs", executed);
+            }
+        });
+    }
+
+    /// Check if there are pending promise jobs
+    pub fn has_pending_promise_jobs(&self) -> bool {
+        crate::js::jsapi::promise::has_pending_promise_jobs()
     }
 
     /// Check if there are any active timers
@@ -401,6 +403,18 @@ impl JsRuntime {
 
 unsafe extern "C" fn empty(_extra: *const c_void) -> bool {
     false
+}
+
+/// Callback for getting host-defined data associated with promises.
+/// Returns true with null data since we don't use host-defined data.
+unsafe extern "C" fn get_host_defined_data(
+    _extra: *const c_void,
+    _cx: *mut ApiJSContext,
+    data: mozjs::jsapi::MutableHandleObject,
+) -> bool {
+    // Set data to null - we don't have any host-defined data
+    data.set(std::ptr::null_mut());
+    true
 }
 
 unsafe extern "C" fn global_op_native_method(

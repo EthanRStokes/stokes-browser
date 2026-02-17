@@ -1,15 +1,20 @@
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::ffi::CString;
 use std::os::raw::c_void;
 use std::ptr;
 use std::rc::Rc;
-use hirofa_utils::eventloop::EventLoop;
 use mozjs::jsapi::{AddRawValueRoot, HandleObject, HandleValue, HandleValueArray, Heap, JSContext, JSObject, JS_CallFunctionValue, PromiseRejectionHandlingState, RemoveRawValueRoot, ResolvePromise, SetPromiseRejectionTrackerCallback, StackFormat};
 use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
 use mozjs::panic::wrap_panic;
 use mozjs::{capture_stack, rooted};
 use mozjs::rust::Runtime;
 use crate::js::jsapi::error::{get_pending_exception, JsError};
-use crate::js::runtime::RUNTIME;
+
+// Thread-local queue for promise jobs
+thread_local! {
+    static PROMISE_JOB_QUEUE: RefCell<VecDeque<Rc<PromiseJobCallback>>> = RefCell::new(VecDeque::new());
+}
 
 /// resolve a Promise with a given resolution value
 pub fn resolve_promise(
@@ -63,28 +68,54 @@ pub(crate) unsafe extern "C" fn enqueue_promise_job(
     wrap_panic(&mut || unsafe {
         let cb = PromiseJobCallback::new(cx, job.get());
 
-        let task = move || {
-            RUNTIME.with(move |rc| {
-                let sm_rt = &mut *rc.borrow().unwrap();
+        // Add the job to our promise job queue
+        PROMISE_JOB_QUEUE.with(|queue| {
+            queue.borrow_mut().push_back(cb);
+        });
 
-                sm_rt.do_with_jsapi(|_rt, cx, _global| {
+        result = true
+    });
+    result
+}
+
+/// Run all pending promise jobs in the queue
+/// This should be called after script execution to process microtasks
+/// Returns the number of jobs that were executed
+pub fn run_promise_jobs(cx: *mut JSContext) -> usize {
+    let mut executed = 0;
+
+    // Process jobs until the queue is empty
+    // Note: Jobs may enqueue more jobs, so we keep processing until empty
+    loop {
+        let job = PROMISE_JOB_QUEUE.with(|queue| {
+            queue.borrow_mut().pop_front()
+        });
+
+        match job {
+            Some(cb) => {
+                unsafe {
                     let call_res = cb.call(cx, HandleObject::null());
                     if call_res.is_err() {
                         if let Some(err) = get_pending_exception(cx) {
-                            panic!(
-                                "job failed {}:{}:{} -> {}",
+                            log::error!(
+                                "Promise job failed {}:{}:{} -> {}",
                                 err.filename, err.lineno, err.column, err.message
                             );
                         }
                     }
-                });
-            });
-        };
+                }
+                executed += 1;
+            }
+            None => break,
+        }
+    }
 
-        EventLoop::add_local_void(task);
-        result = true
-    });
-    result
+    executed
+}
+
+/// Check if there are pending promise jobs
+pub fn has_pending_promise_jobs() -> bool {
+    PROMISE_JOB_QUEUE.with(|queue| !queue.borrow().is_empty())
 }
 
 struct PromiseJobCallback {

@@ -1,5 +1,5 @@
 // Console API implementation for JavaScript using mozjs
-use super::runtime::JsRuntime;
+use crate::js::JsRuntime;
 use mozjs::gc::Handle;
 use mozjs::jsapi::{CallArgs, JSContext, JSNative, JSObject, JS_DefineFunction, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE};
 use mozjs::jsval::{JSVal, UndefinedValue};
