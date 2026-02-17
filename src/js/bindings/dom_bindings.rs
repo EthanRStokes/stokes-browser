@@ -7,7 +7,7 @@ use super::super::helpers::{
 // DOM bindings for JavaScript using mozjs
 use crate::dom::{AttributeMap, Dom};
 use mozjs::jsapi::{
-    CallArgs, CurrentGlobalOrNull, JSContext, JSObject, JS_DefineProperty, JS_NewPlainObject,
+    CallArgs, JSContext, JSObject, JS_DefineProperty, JS_NewPlainObject,
     JSPROP_ENUMERATE,
 };
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, UndefinedValue};
@@ -38,8 +38,6 @@ pub fn setup_dom_bindings(
     document_root: *mut Dom,
     user_agent: String,
 ) -> Result<(), String> {
-    let raw_cx = unsafe { runtime.cx().raw_cx() };
-
     // Store DOM reference in thread-local storage
     DOM_REF.set(Some(document_root));
     USER_AGENT.set(user_agent.clone());
@@ -51,48 +49,45 @@ pub fn setup_dom_bindings(
         set_document_url(url);
     }
 
-    unsafe {
-        rooted!(in(raw_cx) let global = CurrentGlobalOrNull(raw_cx));
-        if global.get().is_null() {
-            return Err("No global object for DOM setup".to_string());
-        }
+    runtime.do_with_jsapi(|_rt, cx, global| unsafe {
+        let global_ptr = global.get();
 
         // Create and set up document object
-        setup_document(raw_cx, global.handle().get())?;
+        setup_document(cx, global_ptr)?;
 
         // Set up window object (as alias to global)
-        setup_window(raw_cx, global.handle().get(), &user_agent)?;
+        setup_window(cx, global_ptr, &user_agent)?;
 
         // Set up navigator object
-        setup_navigator(raw_cx, global.handle().get(), &user_agent)?;
+        setup_navigator(cx, global_ptr, &user_agent)?;
 
         // Set up location object
-        setup_location(raw_cx, global.handle().get())?;
+        setup_location(cx, global_ptr)?;
 
         // Set up localStorage and sessionStorage
-        setup_storage(raw_cx, global.handle().get())?;
+        setup_storage(cx, global_ptr)?;
 
         // Set up Node constructor with constants
-        setup_node_constructor(raw_cx, global.handle().get())?;
+        setup_node_constructor(cx, global_ptr)?;
 
         // Set up Element and HTMLElement constructors
-        setup_element_constructors(raw_cx, global.handle().get())?;
+        setup_element_constructors(cx, global_ptr)?;
 
         // Set up Event and CustomEvent constructors
-        setup_event_constructors(raw_cx, global.handle().get())?;
+        setup_event_constructors(cx, global_ptr)?;
 
         // Set up XMLHttpRequest constructor
-        setup_xhr_constructor(raw_cx, global.handle().get())?;
+        setup_xhr_constructor(cx, global_ptr)?;
 
         // Set up atob/btoa functions
-        setup_base64_functions(raw_cx, global.handle().get())?;
+        setup_base64_functions(cx, global_ptr)?;
 
         // Set up dataLayer for Google Analytics compatibility
-        setup_data_layer(raw_cx, global.handle().get())?;
-    }
+        setup_data_layer(cx, global_ptr)?;
 
-    println!("[JS] DOM bindings initialized");
-    Ok(())
+        println!("[JS] DOM bindings initialized");
+        Ok(())
+    })
 }
 
 /// Set up the document.cookie property with getter/setter

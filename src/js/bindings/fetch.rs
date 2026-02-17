@@ -1,7 +1,7 @@
 // Fetch API implementation for JavaScript using mozjs
 use crate::networking::{HttpClient, NetworkError};
 use mozjs::conversions::jsstr_to_string;
-use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, Handle, JSContext, JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JS_ParseJSON, JS_ValueToSource, MutableHandleValue, JSPROP_ENUMERATE, Compile1, JS_ExecuteScript, JSObject, NewPromiseObject, ResolvePromise, RejectPromise, HandleObject};
+use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, Handle, JSContext, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JS_ParseJSON, JS_ValueToSource, MutableHandleValue, JSPROP_ENUMERATE, Compile1, JS_ExecuteScript, JSObject, NewPromiseObject, ResolvePromise, RejectPromise, HandleObject, JS_DefineFunction};
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::{CompileOptionsWrapper, transform_str_to_source_text};
@@ -9,7 +9,7 @@ use std::os::raw::c_uint;
 use std::ptr::NonNull;
 use crate::js::JsRuntime;
 use mozjs::context::JSContext as SafeJSContext;
-use crate::engine::{ENGINE_REF, USER_AGENT_REF};
+use crate::engine::USER_AGENT_REF;
 use crate::js::bindings::dom_bindings::DOM_REF;
 
 /// Helper function to evaluate JavaScript code and return the result
@@ -49,105 +49,84 @@ thread_local! {
 
 /// Setup the fetch API in the JavaScript context
 pub fn setup_fetch(runtime: &mut JsRuntime) -> Result<(), String> {
-    let cx = unsafe { runtime.cx().raw_cx() };
-
     println!("[JS] Setting up fetch API");
 
-    unsafe {
-        rooted!(in(cx) let global = CurrentGlobalOrNull(cx));
-        if global.get().is_null() {
-            return Err("No global object for fetch setup".to_string());
-        }
+    runtime.add_global_function("fetch", |cx, args| {
+        unsafe {
+            let argc = args.argc_;
 
-        // Define fetch function on global
-        let cname = std::ffi::CString::new("fetch").unwrap();
-        if JS_DefineFunction(
-            cx,
-            global.handle().into(),
-            cname.as_ptr(),
-            Some(fetch_impl),
-            1,
-            JSPROP_ENUMERATE as u32,
-        ).is_null() {
-            return Err("Failed to define fetch function".to_string());
+            // Get the URL argument
+            let url = if argc > 0 {
+                let url_val = *args.get(0);
+                js_value_to_string(cx, url_val)
+            } else {
+                String::new()
+            };
+
+            let url = DOM_REF.with(|dom_ref| {
+                if let Some(dom) = dom_ref.borrow().as_ref() {
+                    let dom = &**dom;
+                    match dom.url.join(&url) {
+                        Ok(resolved_url) => {
+                            println!("[JS] Resolved URL: {}", resolved_url);
+                            resolved_url
+                        }
+                        Err(e) => {
+                            panic!("[JS] URL resolution error: {} for url {url} on dom url {}", e, dom.url.as_str());
+                        }
+                    }
+                } else {
+                    panic!("[JS] DOM ref not available for URL resolution");
+                }
+            });
+
+            if url.as_str().is_empty() {
+                println!("[JS] fetch() called with empty URL");
+                // Return a rejected promise
+                return create_rejected_promise(cx, args.rval().into(), "URL is required");
+            }
+
+            println!("[JS] fetch('{}') called", url);
+
+            // Get method from options if provided
+            let method = if argc > 1 {
+                let opts = *args.get(1);
+                if opts.is_object() && !opts.is_null() {
+                    get_object_property_string(cx, opts, "method").unwrap_or_else(|| "GET".to_string())
+                } else {
+                    "GET".to_string()
+                }
+            } else {
+                "GET".to_string()
+            };
+
+            println!("[JS] fetch method: {}", method);
+
+            // Perform the fetch synchronously (blocking)
+            let fetch_result = USER_AGENT_REF.with(|user_agent_ref| {
+                if let Some(user_agent) = user_agent_ref.borrow().as_ref() {
+                    let client = HttpClient::new();
+                    client.fetch(&url.as_str(), user_agent)
+                } else {
+                    Err(NetworkError::Engine("User agent ref not available".to_string()))
+                }
+            });
+
+            match fetch_result {
+                Ok(body) => {
+                    println!("[JS] fetch successful, body length: {}", body.len());
+                    create_response_promise(cx, args.rval(), body, 200, url.to_string())
+                }
+                Err(e) => {
+                    println!("[JS] fetch failed: {}", e);
+                    create_rejected_promise(cx, args.rval(), &format!("Fetch failed: {}", e))
+                }
+            }
         }
-    }
+    });
 
     println!("[JS] fetch API initialized");
     Ok(())
-}
-
-/// Fetch implementation
-unsafe extern "C" fn fetch_impl(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-
-    // Get the URL argument
-    let url = if argc > 0 {
-        let url_val = *args.get(0);
-        js_value_to_string(cx, url_val)
-    } else {
-        String::new()
-    };
-
-    let url = DOM_REF.with(|dom_ref| {
-        if let Some(dom) = dom_ref.borrow().as_ref() {
-            let dom = &**dom;
-            match dom.url.join(&url) {
-                Ok(resolved_url) => {
-                    println!("[JS] Resolved URL: {}", resolved_url);
-                    resolved_url
-                }
-                Err(e) => {
-                    panic!("[JS] URL resolution error: {} for url {url} on dom url {}", e, dom.url.as_str());
-                }
-            }
-        } else {
-            panic!("[JS] DOM ref not available for URL resolution");
-        }
-    });
-
-    if url.as_str().is_empty() {
-        println!("[JS] fetch() called with empty URL");
-        // Return a rejected promise
-        return create_rejected_promise(cx, args.rval().into(), "URL is required");
-    }
-
-    println!("[JS] fetch('{}') called", url);
-
-    // Get method from options if provided
-    let method = if argc > 1 {
-        let opts = *args.get(1);
-        if opts.is_object() && !opts.is_null() {
-            get_object_property_string(cx, opts, "method").unwrap_or_else(|| "GET".to_string())
-        } else {
-            "GET".to_string()
-        }
-    } else {
-        "GET".to_string()
-    };
-
-    println!("[JS] fetch method: {}", method);
-
-    // Perform the fetch synchronously (blocking)
-    let fetch_result = USER_AGENT_REF.with(|user_agent_ref| {
-        if let Some(user_agent) = user_agent_ref.borrow().as_ref() {
-            let client = HttpClient::new();
-            client.fetch(&url.as_str(), user_agent)
-        } else {
-            Err(NetworkError::Engine("User agent ref not available".to_string()))
-        }
-    });
-
-    match fetch_result {
-        Ok(body) => {
-            println!("[JS] fetch successful, body length: {}", body.len());
-            create_response_promise(cx, args.rval(), body, 200, url.to_string())
-        }
-        Err(e) => {
-            println!("[JS] fetch failed: {}", e);
-            create_rejected_promise(cx, args.rval(), &format!("Fetch failed: {}", e))
-        }
-    }
 }
 
 /// Convert a JS value to a Rust string

@@ -1,16 +1,13 @@
 // Timer implementation for setTimeout and setInterval using mozjs
 use mozjs::context::RawJSContext;
-use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, JS_DefineFunction, JSPROP_ENUMERATE};
 use mozjs::jsval::{Int32Value, JSVal, UndefinedValue};
-use mozjs::{jsapi, rooted};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::os::raw::c_uint;
-use std::ptr;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use mozjs::conversions::jsstr_to_string;
+use mozjs::rooted;
 use crate::js::JsRuntime;
 
 /// A pending timer that will execute a callback after a delay
@@ -160,72 +157,144 @@ thread_local! {
 
 /// Set up timer functions in the JavaScript context
 pub fn setup_timers(runtime: &mut JsRuntime, timer_manager: Rc<TimerManager>) -> Result<(), String> {
-    let mut cx = runtime.cx();
-    let raw_cx = unsafe { cx.raw_cx() };
-
     // Store timer manager in thread-local storage
     TIMER_MANAGER.with(|tm| {
         *tm.borrow_mut() = Some(timer_manager);
     });
 
-    unsafe {
-        rooted!(in(raw_cx) let global = CurrentGlobalOrNull(raw_cx));
-        if global.get().is_null() {
-            return Err("No global object for timer setup".to_string());
+    // setTimeout
+    runtime.add_global_function("setTimeout", |cx, args| {
+        unsafe {
+            let argc = args.argc_;
+            // Get callback (first argument)
+            let callback_code = if argc > 0 {
+                let callback_val = *args.get(0);
+                if callback_val.is_string() {
+                    js_value_to_string(cx, callback_val)
+                } else {
+                    "".to_string()
+                }
+            } else {
+                "".to_string()
+            };
+
+            // Get delay (second argument)
+            let delay = if argc > 1 {
+                let delay_val = *args.get(1);
+                if delay_val.is_int32() {
+                    delay_val.to_int32().max(0) as u32
+                } else if delay_val.is_double() {
+                    delay_val.to_double().max(0.0) as u32
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
+            let id = TIMER_MANAGER.with(|tm| {
+                if let Some(ref manager) = *tm.borrow() {
+                    manager.set_timeout(callback_code, delay)
+                } else {
+                    0
+                }
+            });
+
+            args.rval().set(Int32Value(id as i32));
+            true
+        }
+    });
+
+    // clearTimeout
+    runtime.add_global_function("clearTimeout", |_cx, args| {
+        let argc = args.argc_;
+        if argc > 0 {
+            let id_val = *args.get(0);
+            let id = if id_val.is_int32() {
+                id_val.to_int32() as u32
+            } else if id_val.is_double() {
+                id_val.to_double() as u32
+            } else {
+                0
+            };
+
+            TIMER_MANAGER.with(|tm| {
+                if let Some(ref manager) = *tm.borrow() {
+                    manager.clear_timer(id);
+                }
+            });
         }
 
-        // setTimeout
-        let set_timeout_name = std::ffi::CString::new("setTimeout").unwrap();
-        if JS_DefineFunction(
-            raw_cx,
-            global.handle().into(),
-            set_timeout_name.as_ptr(),
-            Some(set_timeout_impl),
-            2,
-            JSPROP_ENUMERATE as u32,
-        ).is_null() {
-            return Err("Failed to define setTimeout".to_string());
+        args.rval().set(UndefinedValue());
+        true
+    });
+
+    // setInterval
+    runtime.add_global_function("setInterval", |cx, args| {
+        unsafe {
+            let argc = args.argc_;
+            // Get callback (first argument)
+            let callback_code = if argc > 0 {
+                let callback_val = *args.get(0);
+                if callback_val.is_string() {
+                    js_value_to_string(cx, callback_val)
+                } else {
+                    "".to_string()
+                }
+            } else {
+                "".to_string()
+            };
+
+            // Get delay (second argument)
+            let delay = if argc > 1 {
+                let delay_val = *args.get(1);
+                if delay_val.is_int32() {
+                    delay_val.to_int32().max(0) as u32
+                } else if delay_val.is_double() {
+                    delay_val.to_double().max(0.0) as u32
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
+            let id = TIMER_MANAGER.with(|tm| {
+                if let Some(ref manager) = *tm.borrow() {
+                    manager.set_interval(callback_code, delay)
+                } else {
+                    0
+                }
+            });
+
+            args.rval().set(Int32Value(id as i32));
+            true
+        }
+    });
+
+    // clearInterval
+    runtime.add_global_function("clearInterval", |_cx, args| {
+        let argc = args.argc_;
+        if argc > 0 {
+            let id_val = *args.get(0);
+            let id = if id_val.is_int32() {
+                id_val.to_int32() as u32
+            } else if id_val.is_double() {
+                id_val.to_double() as u32
+            } else {
+                0
+            };
+
+            TIMER_MANAGER.with(|tm| {
+                if let Some(ref manager) = *tm.borrow() {
+                    manager.clear_timer(id);
+                }
+            });
         }
 
-        // clearTimeout
-        let clear_timeout_name = std::ffi::CString::new("clearTimeout").unwrap();
-        if JS_DefineFunction(
-            raw_cx,
-            global.handle().into(),
-            clear_timeout_name.as_ptr(),
-            Some(clear_timeout_impl),
-            1,
-            JSPROP_ENUMERATE as u32,
-        ).is_null() {
-            return Err("Failed to define clearTimeout".to_string());
-        }
-
-        // setInterval
-        let set_interval_name = std::ffi::CString::new("setInterval").unwrap();
-        if JS_DefineFunction(
-            raw_cx,
-            global.handle().into(),
-            set_interval_name.as_ptr(),
-            Some(set_interval_impl),
-            2,
-            JSPROP_ENUMERATE as u32,
-        ).is_null() {
-            return Err("Failed to define setInterval".to_string());
-        }
-
-        // clearInterval
-        let clear_interval_name = std::ffi::CString::new("clearInterval").unwrap();
-        if JS_DefineFunction(
-            raw_cx,
-            global.handle().into(),
-            clear_interval_name.as_ptr(),
-            Some(clear_interval_impl),
-            1,
-            JSPROP_ENUMERATE as u32,
-        ).is_null() {
-            return Err("Failed to define clearInterval".to_string());
-        }
-    }
+        args.rval().set(UndefinedValue());
+        true
+    });
 
     Ok(())
 }
@@ -246,140 +315,4 @@ unsafe fn js_value_to_string(cx: *mut RawJSContext, val: JSVal) -> String {
     } else {
         String::new()
     }
-}
-
-/// setTimeout implementation
-unsafe extern "C" fn set_timeout_impl(cx: *mut RawJSContext, argc: c_uint, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-
-    // Get callback (first argument)
-    let callback_code = if argc > 0 {
-        let callback_val = *args.get(0);
-        if callback_val.is_string() {
-            js_value_to_string(cx, callback_val)
-        } else {
-            // For function objects, we need to convert to string or store somehow
-            // This is a simplified implementation
-            "".to_string()
-        }
-    } else {
-        "".to_string()
-    };
-
-    // Get delay (second argument)
-    let delay = if argc > 1 {
-        let delay_val = *args.get(1);
-        if delay_val.is_int32() {
-            delay_val.to_int32().max(0) as u32
-        } else if delay_val.is_double() {
-            delay_val.to_double().max(0.0) as u32
-        } else {
-            0
-        }
-    } else {
-        0
-    };
-
-    let id = TIMER_MANAGER.with(|tm| {
-        if let Some(ref manager) = *tm.borrow() {
-            manager.set_timeout(callback_code, delay)
-        } else {
-            0
-        }
-    });
-
-    args.rval().set(Int32Value(id as i32));
-    true
-}
-
-/// clearTimeout implementation
-unsafe extern "C" fn clear_timeout_impl(cx: *mut RawJSContext, argc: c_uint, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-
-    if argc > 0 {
-        let id_val = *args.get(0);
-        let id = if id_val.is_int32() {
-            id_val.to_int32() as u32
-        } else if id_val.is_double() {
-            id_val.to_double() as u32
-        } else {
-            0
-        };
-
-        TIMER_MANAGER.with(|tm| {
-            if let Some(ref manager) = *tm.borrow() {
-                manager.clear_timer(id);
-            }
-        });
-    }
-
-    args.rval().set(UndefinedValue());
-    true
-}
-
-/// setInterval implementation
-unsafe extern "C" fn set_interval_impl(cx: *mut RawJSContext, argc: c_uint, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-
-    // Get callback (first argument)
-    let callback_code = if argc > 0 {
-        let callback_val = *args.get(0);
-        if callback_val.is_string() {
-            js_value_to_string(cx, callback_val)
-        } else {
-            "".to_string()
-        }
-    } else {
-        "".to_string()
-    };
-
-    // Get delay (second argument)
-    let delay = if argc > 1 {
-        let delay_val = *args.get(1);
-        if delay_val.is_int32() {
-            delay_val.to_int32().max(0) as u32
-        } else if delay_val.is_double() {
-            delay_val.to_double().max(0.0) as u32
-        } else {
-            0
-        }
-    } else {
-        0
-    };
-
-    let id = TIMER_MANAGER.with(|tm| {
-        if let Some(ref manager) = *tm.borrow() {
-            manager.set_interval(callback_code, delay)
-        } else {
-            0
-        }
-    });
-
-    args.rval().set(Int32Value(id as i32));
-    true
-}
-
-/// clearInterval implementation
-extern "C" fn clear_interval_impl(cx: *mut RawJSContext, argc: c_uint, vp: *mut JSVal) -> bool {
-    let args = unsafe { CallArgs::from_vp(vp, argc) };
-
-    if argc > 0 {
-        let id_val = *args.get(0);
-        let id = if id_val.is_int32() {
-            id_val.to_int32() as u32
-        } else if id_val.is_double() {
-            id_val.to_double() as u32
-        } else {
-            0
-        };
-
-        TIMER_MANAGER.with(|tm| {
-            if let Some(ref manager) = *tm.borrow() {
-                manager.clear_timer(id);
-            }
-        });
-    }
-
-    args.rval().set(UndefinedValue());
-    true
 }

@@ -1,7 +1,7 @@
 // Console API implementation for JavaScript using mozjs
 use super::runtime::JsRuntime;
 use mozjs::gc::Handle;
-use mozjs::jsapi::{CallArgs, CurrentGlobalOrNull, JSContext, JSNative, JSObject, JS_DefineFunction, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE};
+use mozjs::jsapi::{CallArgs, JSContext, JSNative, JSObject, JS_DefineFunction, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE};
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers::JS_ValueToSource;
@@ -10,50 +10,43 @@ use std::ptr::NonNull;
 
 /// Set up the console object in the JavaScript context
 pub fn setup_console(runtime: &mut JsRuntime) -> Result<(), String> {
-    let raw_cx = unsafe { runtime.cx().raw_cx() };
-
-    unsafe {
-        rooted!(in(raw_cx) let global = CurrentGlobalOrNull(raw_cx));
-        if global.get().is_null() {
-            return Err("No global object for console setup".to_string());
-        }
-
+    runtime.do_with_jsapi(|_rt, cx, global| unsafe {
         // Create console object
-        rooted!(in(raw_cx) let console = JS_NewPlainObject(raw_cx));
+        rooted!(in(cx) let console = JS_NewPlainObject(cx));
         if console.get().is_null() {
             return Err("Failed to create console object".to_string());
         }
 
         // Define console.log
-        define_console_method(raw_cx, console.handle().get(), "log", Some(console_log))?;
+        define_console_method(cx, console.handle().get(), "log", Some(console_log))?;
 
         // Define console.error
-        define_console_method(raw_cx, console.handle().get(), "error", Some(console_error))?;
+        define_console_method(cx, console.handle().get(), "error", Some(console_error))?;
 
         // Define console.warn
-        define_console_method(raw_cx, console.handle().get(), "warn", Some(console_warn))?;
+        define_console_method(cx, console.handle().get(), "warn", Some(console_warn))?;
 
         // Define console.info
-        define_console_method(raw_cx, console.handle().get(), "info", Some(console_info))?;
+        define_console_method(cx, console.handle().get(), "info", Some(console_info))?;
 
         // Define console.debug
-        define_console_method(raw_cx, console.handle().get(), "debug", Some(console_debug))?;
+        define_console_method(cx, console.handle().get(), "debug", Some(console_debug))?;
 
         // Set console on global object
-        rooted!(in(raw_cx) let console_val = mozjs::jsval::ObjectValue(console.get()));
+        rooted!(in(cx) let console_val = mozjs::jsval::ObjectValue(console.get()));
         let name = std::ffi::CString::new("console").unwrap();
         if !JS_DefineProperty(
-            raw_cx,
-            global.handle().into(),
+            cx,
+            global.into(),
             name.as_ptr(),
             console_val.handle().into(),
             JSPROP_ENUMERATE as u32,
         ) {
             return Err("Failed to define console property".to_string());
         }
-    }
 
-    Ok(())
+        Ok(())
+    })
 }
 
 unsafe fn define_console_method(
