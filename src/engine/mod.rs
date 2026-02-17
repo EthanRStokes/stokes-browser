@@ -529,7 +529,7 @@ impl Engine {
         self.scroll_y = (self.scroll_y + delta).max(0.0);
 
         // Don't scroll past the bottom of the content
-        let max_scroll = (self.content_height - self.viewport_height()).max(0.0);
+        let max_scroll = (self.content_height - (self.viewport_height() / self.viewport.hidpi_scale)).max(0.0);
         self.scroll_y = self.scroll_y.min(max_scroll);
 
         self.update_dom_scroll();
@@ -544,7 +544,7 @@ impl Engine {
         self.scroll_x = (self.scroll_x + delta).max(0.0);
 
         // Don't scroll past the right edge of the content
-        let max_scroll = (self.content_width - self.viewport_width()).max(0.0);
+        let max_scroll = (self.content_width - (self.viewport_width() / self.viewport.hidpi_scale)).max(0.0);
         self.scroll_x = self.scroll_x.min(max_scroll);
 
         self.update_dom_scroll();
