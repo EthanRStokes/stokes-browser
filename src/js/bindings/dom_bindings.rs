@@ -114,6 +114,28 @@ pub fn setup_cookie_property_deferred(runtime: &mut JsRuntime) -> Result<(), Str
     Ok(())
 }
 
+/// Set up the document.head property with getter
+/// This should be called from the runtime after initialization is complete
+pub fn setup_head_property_deferred(runtime: &mut JsRuntime) -> Result<(), String> {
+    let script = r#"
+        Object.defineProperty(document, 'head', {
+            get: function() {
+                return document.__getHead();
+            },
+            configurable: true,
+            enumerable: true
+        });
+    "#;
+
+    // Use the runtime's execute method which handles realm entry properly
+    runtime.execute(script).map_err(|e| {
+        println!("[JS] Warning: Failed to set up document.head property: {}", e);
+        e
+    })?;
+
+    Ok(())
+}
+
 // ============================================================================
 // Setup functions
 // ============================================================================
@@ -138,6 +160,9 @@ unsafe fn setup_document(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
     // Add cookie getter and setter helper functions
     define_function(raw_cx, document.get(), "__getCookie", Some(document_get_cookie), 0)?;
     define_function(raw_cx, document.get(), "__setCookie", Some(document_set_cookie), 1)?;
+
+    // Add document.head getter function
+    define_function(raw_cx, document.get(), "__getHead", Some(document_get_head), 0)?;
 
     // Create documentElement (represents <html>) using a proper element with methods
     let doc_elem_val = element_bindings::create_stub_element(raw_cx, "html")?;
@@ -591,6 +616,42 @@ unsafe extern "C" fn document_set_cookie(raw_cx: *mut JSContext, argc: c_uint, v
     });
 
     args.rval().set(UndefinedValue());
+    true
+}
+
+/// document.head getter implementation
+unsafe extern "C" fn document_get_head(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    println!("[JS] document.head called");
+
+    let head_element = DOM_REF.with(|dom_ref| {
+        if let Some(ref dom) = *dom_ref.borrow() {
+            let dom = &**dom;
+            // Search through all nodes to find the head element
+            for (node_id, node) in dom.nodes.iter() {
+                if let crate::dom::NodeData::Element(ref elem_data) = node.data {
+                    let tag_name = elem_data.name.local.to_string().to_lowercase();
+                    if tag_name == "head" {
+                        return Some((node_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
+                    }
+                }
+            }
+        }
+        None
+    });
+
+    if let Some((node_id, tag_name, attributes)) = head_element {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, node_id, &tag_name, &attributes) {
+            args.rval().set(js_elem);
+        } else {
+            args.rval().set(mozjs::jsval::NullValue());
+        }
+    } else {
+        println!("[JS] head element not found");
+        args.rval().set(mozjs::jsval::NullValue());
+    }
+
     true
 }
 
