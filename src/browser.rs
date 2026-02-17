@@ -582,9 +582,13 @@ impl ApplicationHandler for BrowserApp {
                         // Let handle_click process the close button
                         self.handle_click(x, y, event_loop);
                     } else {
-                        // Try to start dragging
-                        self.ui.start_tab_drag(x, y);
-                        self.env.window.request_redraw();
+                        // Try to start dragging - if it's not on a tab, handle as regular click
+                        if !self.ui.start_tab_drag(x, y) {
+                            // Not a tab, handle as regular click (e.g., new tab button)
+                            self.handle_click(x, y, event_loop);
+                        } else {
+                            self.env.window.request_redraw();
+                        }
                     }
                 } else {
                     self.handle_click(x, y, event_loop);
