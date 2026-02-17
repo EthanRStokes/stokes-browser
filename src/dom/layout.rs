@@ -14,6 +14,7 @@ use slab::Slab;
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use style::data::ElementData as StyloElementData;
 use style::shared_lock::StylesheetGuards;
+use taffy::{compute_root_layout, round_layout, AvailableSpace, NodeId};
 use crate::dom::damage::{ALL_DAMAGE, CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC};
 use crate::dom::{stylo_to_parley, AttributeMap, Dom, DomNode, ElementData, NodeData};
 use crate::dom::node::{DomNodeFlags, NodeKind, SpecialElementData, TextLayout};
@@ -923,3 +924,16 @@ pub(crate) fn build_inline_layout(
     }
 }
 
+impl Dom {
+    pub fn compute_layout(&mut self) {
+        let size = self.stylist.device().au_viewport_size();
+
+        let root_element_id = NodeId::from(self.root_element().id);
+
+        compute_root_layout(self, root_element_id, taffy::Size {
+            width: AvailableSpace::Definite(size.width.to_f32_px()),
+            height: AvailableSpace::Definite(size.height.to_f32_px()),
+        });
+        round_layout(self, root_element_id);
+    }
+}

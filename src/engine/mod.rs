@@ -5,7 +5,6 @@ pub use self::config::EngineConfig;
 use crate::dom::{Dom, DomNode, ImageData, ImageLoadingState, NodeData};
 use crate::dom::{EventDispatcher, EventType};
 use crate::js::JsRuntime;
-use crate::layout::LayoutEngine;
 use crate::networking::{resolve_url, HttpClient, NetworkError};
 use crate::renderer::HtmlRenderer;
 use blitz_traits::shell::Viewport;
@@ -44,7 +43,6 @@ pub struct Engine {
     page_title: String,
     is_loading: bool,
     pub(crate) dom: Option<Dom>,
-    layout_engine: LayoutEngine,
     style_map_dirty: bool,
     scroll_y: f32,
     scroll_x: f32,
@@ -67,7 +65,6 @@ impl Engine {
             page_title: "New Tab".to_string(),
             is_loading: false,
             dom: None,
-            layout_engine: LayoutEngine::new(800.0, 600.0), // Default viewport size
             style_map_dirty: false,
             scroll_y: 0.0,
             scroll_x: 0.0,
@@ -336,7 +333,7 @@ impl Engine {
 
         let dom = self.dom.as_mut().unwrap();
 
-        self.layout_engine.compute_layout(dom, self.viewport.hidpi_scale);
+        dom.compute_layout();
 
         self.style_map_dirty = true;
 
@@ -350,7 +347,6 @@ impl Engine {
         if let Some(dom) = &mut self.dom {
             dom.viewport.window_size = (width as u32, height as u32);
         }
-        self.layout_engine.set_viewport(width, height);
 
         // Recalculate layout with new viewport
         style::thread_state::enter(ThreadState::LAYOUT);
@@ -394,7 +390,7 @@ impl Engine {
 
         let mut renderer = HtmlRenderer {
             dom: &dom,
-            scale_factor: self.viewport.hidpi_scale as f64,
+            scale_factor: self.viewport.scale_f64(),
             width: self.viewport_width() as u32,
             height: self.viewport_height() as u32,
             background_image_cache: BackgroundImageCache::new(),
