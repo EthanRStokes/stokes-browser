@@ -94,30 +94,30 @@ unsafe extern "C" fn js_fetch(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) 
     }
 
     // Convert JS string to Rust string
-    let url_str = {
+    let url = {
         let js_str = url_arg.to_string();
         if js_str.is_null() {
             return create_rejected_promise(cx, args.rval(), "fetch: failed to read URL string");
         }
         jsstr_to_string(cx, NonNull::new(js_str).unwrap())
     };
-    let url_str = DOM_REF.with(|dom_ref| {
+    let url = DOM_REF.with(|dom_ref| {
         if let Some(dom) = dom_ref.borrow().as_ref() {
             let dom = &**dom;
-            match dom.url.join(&url_str) {
+            match dom.url.join(&url) {
                 Ok(resolved_url) => {
                     println!("[JS] Resolved URL: {}", resolved_url);
                     resolved_url
                 }
                 Err(e) => {
-                    panic!("[JS] URL resolution error: {} for url {url_str} on dom url {}", e, dom.url.as_str());
+                    panic!("[JS] URL resolution error: {} for url {url} on dom url {}", e, dom.url.as_str());
                 }
             }
         } else {
             panic!("[JS] DOM ref not available for URL resolution");
         }
     });
-    let url_str = url_str.as_str();
+    let url = url.as_str();
 
     // Parse request options (method, headers, body)
     let mut method = String::from("GET");
@@ -160,7 +160,6 @@ unsafe extern "C" fn js_fetch(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) 
     let user_agent = USER_AGENT.with(|ua| ua.borrow().clone());
 
     // Perform the fetch synchronously (for now - could be made async later)
-    let url = url_str.clone();
     let result = perform_fetch(&url, &method, &request_headers, request_body.as_deref(), &user_agent);
 
     // Resolve or reject the promise using the current context
