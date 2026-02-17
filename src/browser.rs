@@ -388,34 +388,26 @@ impl BrowserApp {
                     println!("Alert from tab {}: {}", tab_id, message);
                     self.show_alert(&message);
                 }
+                TabToParentMessage::ShellProvider(shell_msg) => {
+                    match shell_msg {
+                        ShellProviderMessage::RequestRedraw => {
+                            self.env.window.request_redraw();
+                        }
+                        ShellProviderMessage::SetCursor(cursor) => {
+                            self.env.window.set_cursor(CursorIcon::from_str(&cursor).unwrap());
+                        }
+                        ShellProviderMessage::SetWindowTitle(title) => {
+                            self.env.window.set_title(&title);
+                        }
+                        ShellProviderMessage::SetImeEnabled(_enabled) => {
+                            // todo port to winit beta
+                        }
+                        ShellProviderMessage::SetImeCursorArea { .. } => {
+                            // todo port to winit beta
+                        }
+                    }
+                }
                 _ => {}
-            }
-        }
-
-        self.process_shell_messages();
-    }
-
-    fn process_shell_messages(&mut self) {
-        let messages = self.tab_manager.poll_shell_messages();
-
-        for (tab_id, message) in messages {
-            match message {
-                ShellProviderMessage::RequestRedraw => {
-                    self.env.window.request_redraw();
-                }
-                ShellProviderMessage::SetCursor(cursor) => {
-                    println!("Setting cursor to {cursor} for tab {tab_id}");
-                    self.env.window.set_cursor(CursorIcon::from_str(&cursor).unwrap());
-                }
-                ShellProviderMessage::SetWindowTitle(title) => {
-                    self.env.window.set_title(&title);
-                }
-                ShellProviderMessage::SetImeEnabled(enabled) => {
-                    // todo port to winit beta
-                }
-                ShellProviderMessage::SetImeCursorArea { .. } => {
-                    // todo port to winit beta
-                }
             }
         }
     }

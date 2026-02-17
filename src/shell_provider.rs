@@ -33,7 +33,6 @@ impl ShellProvider for StokesShellProvider {
     fn set_cursor(&self, cursor: CursorIcon) {
         // Use CursorIcon name as a simple wire representation
         let name = cursor.name().to_string();
-        println!("Tab requested cursor change: {}", name);
         let _ = self.sender.send(ShellProviderMessage::SetCursor(name));
     }
 

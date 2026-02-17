@@ -90,6 +90,8 @@ pub enum TabToParentMessage {
     NavigateRequestInNewTab(String),
     /// Show an alert dialog
     Alert(String),
+    /// Shell provider message (for shell operations like cursor changes, redraws, etc.)
+    ShellProvider(crate::shell_provider::ShellProviderMessage),
 }
 
 #[derive(Debug, Clone, Encode, Decode)]

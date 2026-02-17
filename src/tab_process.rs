@@ -131,7 +131,7 @@ impl TabProcess {
                 Ok(msg) => {
                     // Convert ShellProviderMessage to appropriate TabToParentMessage(s)
                     if let Ok(mut channel) = self.channel.try_borrow_mut() {
-                        let _ = channel.send(&msg);
+                        let _ = channel.send(&TabToParentMessage::ShellProvider(msg));
                     }
                 }
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {},
