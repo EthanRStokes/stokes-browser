@@ -147,6 +147,23 @@ unsafe fn setup_document(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
         return Err("Failed to create document object".to_string());
     }
 
+    // Create Document constructor
+    rooted!(in(raw_cx) let document_constructor = JS_NewPlainObject(raw_cx));
+    if document_constructor.get().is_null() {
+        return Err("Failed to create Document constructor".to_string());
+    }
+
+    rooted!(in(raw_cx) let document_constructor_val = ObjectValue(document_constructor.get()));
+    rooted!(in(raw_cx) let global_rooted = global);
+    let name = std::ffi::CString::new("Document").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        global_rooted.handle().into(),
+        name.as_ptr(),
+        document_constructor_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
     // Define document methods
     define_function(raw_cx, document.get(), "getElementById", Some(document_get_element_by_id), 1)?;
     define_function(raw_cx, document.get(), "getElementsByTagName", Some(document_get_elements_by_tag_name), 1)?;
@@ -179,7 +196,6 @@ unsafe fn setup_document(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
 
     // Set document on global
     rooted!(in(raw_cx) let document_val = ObjectValue(document.get()));
-    rooted!(in(raw_cx) let global_rooted = global);
     let name = std::ffi::CString::new("document").unwrap();
     if !JS_DefineProperty(
         raw_cx,
@@ -203,6 +219,22 @@ unsafe fn setup_window(
 ) -> Result<(), String> {
     rooted!(in(raw_cx) let global_val = ObjectValue(global));
     rooted!(in(raw_cx) let global_rooted = global);
+
+    // Create Window constructor
+    rooted!(in(raw_cx) let window_constructor = JS_NewPlainObject(raw_cx));
+    if window_constructor.get().is_null() {
+        return Err("Failed to create Window constructor".to_string());
+    }
+
+    rooted!(in(raw_cx) let window_constructor_val = ObjectValue(window_constructor.get()));
+    let name = std::ffi::CString::new("Window").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        global_rooted.handle().into(),
+        name.as_ptr(),
+        window_constructor_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     // window, self, top, parent, globalThis, frames all point to global
     // FIXME: `frames` should be a proper WindowProxy collection that allows indexed access to child iframes
