@@ -70,8 +70,8 @@ pub fn handle_mouse_click_ui(
             println!("New tab button clicked");
             return InputAction::AddTab;
         } else if component_id == "address_bar" {
-            // Focus the address bar for typing
-            ui.set_focus("address_bar");
+            // Focus the address bar for typing with click position
+            ui.set_focus_at_click("address_bar", x);
             return InputAction::RequestRedraw;
         } else if component_id.starts_with("tab") {
             // Tab switching by clicking

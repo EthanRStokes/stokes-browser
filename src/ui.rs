@@ -675,16 +675,153 @@ impl BrowserUI {
     pub fn set_focus(&mut self, component_id: &str) {
         for comp in &mut self.components {
             match comp {
-                UiComponent::TextField { id, has_focus, cursor_position, text, .. } => {
+                UiComponent::TextField { id, has_focus, cursor_position, text, selection_start, selection_end, .. } => {
                     if id == component_id {
-                        *has_focus = true;
-                        *cursor_position = text.len(); // Move cursor to end
+                        // If already focused, just keep focus
+                        if !*has_focus {
+                            *has_focus = true;
+                            // First focus: select all text
+                            if !text.is_empty() {
+                                *selection_start = Some(0);
+                                *selection_end = Some(text.len());
+                                *cursor_position = text.len();
+                            } else {
+                                *cursor_position = 0;
+                            }
+                        }
                     } else {
                         *has_focus = false;
                     }
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// Set focus to a text field at a specific click position
+    /// First click: selects all text
+    /// Subsequent clicks: positions cursor at click location
+    pub fn set_focus_at_click(&mut self, component_id: &str, click_x: f32) {
+        // First check if the text field already has focus and collect data needed for cursor calculation
+        let mut already_focused = false;
+        let mut field_data: Option<(String, f32)> = None;
+
+        for comp in &self.components {
+            if let UiComponent::TextField { id, has_focus, text, x, .. } = comp {
+                if id == component_id {
+                    already_focused = *has_focus;
+                    if already_focused {
+                        field_data = Some((text.clone(), *x));
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Calculate cursor position if already focused (before mutable borrow)
+        let new_cursor_pos = if already_focused {
+            if let Some((text, field_x)) = field_data {
+                Some(self.calculate_cursor_position_from_click(&text, field_x, click_x))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Now apply the changes with mutable borrow
+        for comp in &mut self.components {
+            match comp {
+                UiComponent::TextField { id, has_focus, cursor_position, text, selection_start, selection_end, .. } => {
+                    if id == component_id {
+                        if already_focused {
+                            // Already focused: position cursor at click location
+                            if let Some(pos) = new_cursor_pos {
+                                *cursor_position = pos;
+                            }
+                            *selection_start = None;
+                            *selection_end = None;
+                        } else {
+                            // First focus: select all text
+                            *has_focus = true;
+                            if !text.is_empty() {
+                                *selection_start = Some(0);
+                                *selection_end = Some(text.len());
+                                *cursor_position = text.len();
+                            } else {
+                                *cursor_position = 0;
+                            }
+                        }
+                    } else {
+                        *has_focus = false;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Calculate the cursor position (character index) from a click x-coordinate
+    fn calculate_cursor_position_from_click(&self, text: &str, field_x: f32, click_x: f32) -> usize {
+        if text.is_empty() {
+            return 0;
+        }
+
+        let text_padding = 5.0 * self.viewport.hidpi_scale;
+        let text_start_x = field_x + text_padding;
+
+        // Click is before the text
+        if click_x <= text_start_x {
+            return 0;
+        }
+
+        // Create font for measuring (same as in render)
+        let font_mgr = skia_safe::FontMgr::new();
+        let typeface = font_mgr.match_family_style("DejaVu Sans", FontStyle::default())
+            .or_else(|| font_mgr.match_family_style("Noto Sans", FontStyle::default()))
+            .or_else(|| font_mgr.match_family_style("Arial Unicode MS", FontStyle::default()))
+            .or_else(|| font_mgr.match_family_style("Segoe UI Symbol", FontStyle::default()))
+            .or_else(|| font_mgr.legacy_make_typeface(None, FontStyle::default()))
+            .unwrap_or_else(|| font_mgr.legacy_make_typeface(None, FontStyle::default()).unwrap());
+
+        let base_font_size = 14.0;
+        let scaled_font_size = base_font_size * self.viewport.hidpi_scale;
+        let font = Font::new(typeface, scaled_font_size);
+
+        // Calculate relative click position from text start
+        let relative_click_x = click_x - text_start_x;
+
+        // Find the character position by measuring text width progressively
+        let mut best_pos = text.len();
+        let mut prev_width = 0.0;
+
+        for (i, _) in text.char_indices() {
+            let text_slice = &text[..i];
+            let (width, _) = font.measure_str(text_slice, None);
+
+            // Check if the click is between previous char and current char
+            let midpoint = (prev_width + width) / 2.0;
+            if relative_click_x < midpoint {
+                best_pos = if i > 0 {
+                    // Find the start of the previous character
+                    text[..i].char_indices().last().map(|(idx, _)| idx).unwrap_or(0)
+                } else {
+                    0
+                };
+                return best_pos;
+            }
+            prev_width = width;
+        }
+
+        // If we get here, click is at or after the last character
+        // Check if it's closer to the last character or the end
+        let (full_width, _) = font.measure_str(text, None);
+        let midpoint = (prev_width + full_width) / 2.0;
+        if relative_click_x < midpoint {
+            // Closer to the start of the last char
+            text.char_indices().last().map(|(idx, _)| idx).unwrap_or(0)
+        } else {
+            text.len()
         }
     }
 
