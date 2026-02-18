@@ -293,9 +293,7 @@ impl IcedBrowserApp {
             // Handle UI updates
             match &message {
                 TabToParentMessage::TitleChanged(title) => {
-                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
-                        tab.title = title.clone();
-                    }
+                    self.update_tab_title(&tab_id, &title);
                 }
                 TabToParentMessage::NavigationCompleted { url, title } => {
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
@@ -623,6 +621,13 @@ impl IcedBrowserApp {
         // Poll every 16ms (~60 FPS) for tab messages
         iced::time::every(Duration::from_millis(16))
             .map(Message::Tick)
+    }
+
+    fn title(&self) -> String {
+        if let Some(tab) = self.active_tab() {
+            return tab.title.clone();
+        }
+        "Stokes Browser".to_string()
     }
 
     /// Build the view for the browser
@@ -1007,6 +1012,7 @@ pub fn run_iced_browser() -> iced::Result {
         .theme(IcedBrowserApp::theme)
         .subscription(IcedBrowserApp::subscription)
         .window_size((1280.0, 720.0))
+        .title(IcedBrowserApp::title)
         .run()
 }
 
