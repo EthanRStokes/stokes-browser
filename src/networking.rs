@@ -562,6 +562,38 @@ pub fn resolve_url(current_url: &str, url: &str) -> Result<String, NetworkError>
     }
 }
 
+pub struct NewHttpClient {
+    pub(crate) tx: Sender<DomEvent>,
+    pub(crate) dom_id: usize,
+    pub(crate) net_provider: Arc<dyn NetProvider>,
+    pub(crate) shell_provider: Arc<dyn ShellProvider>,
+}
+
+impl NewHttpClient {
+    pub fn new(tx: Sender<DomEvent>, dom_id: usize, net_provider: Arc<dyn NetProvider>, shell_provider: Arc<dyn ShellProvider>) -> Self {
+        Self {
+            tx,
+            dom_id,
+            net_provider,
+            shell_provider,
+        }
+    }
+
+    pub fn fetch_image(&self, url: Url, user_agent: &str, node_id: usize) -> Result<Resource, NetworkError> {
+        self.net_provider.fetch(
+            self.dom_id,
+            Request::get(url),
+            ResourceHandler::boxed(
+                self.tx.clone(),
+                self.dom_id,
+                Some(node_id),
+                self.shell_provider.clone(),
+                ImageHandler::new(ImageType::Image),
+            )
+        )
+    }
+}
+
 
 /// A client for making HTTP requests and fetching web resources
 pub struct HttpClient {

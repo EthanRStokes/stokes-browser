@@ -1011,7 +1011,7 @@ pub fn run_iced_browser() -> iced::Result {
     iced::application(IcedBrowserApp::default, IcedBrowserApp::update, IcedBrowserApp::view)
         .theme(IcedBrowserApp::theme)
         .subscription(IcedBrowserApp::subscription)
-        .window_size((1280.0, 720.0))
+        //.scale_factor(IcedBrowserApp::scale_factor)
         .title(IcedBrowserApp::title)
         .run()
 }
