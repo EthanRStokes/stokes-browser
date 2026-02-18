@@ -88,7 +88,9 @@ impl Engine {
 
         // Fetch the page content
         let result = async {
-            let html = self.http_client.fetch(url, &self.config.user_agent)?;
+            let html = self.http_client.fetch(url, &self.config.user_agent).unwrap_or_else(|err| {
+                include_str!("../../assets/404.html").to_string()
+            });
 
             // Parse the HTML into our DOM
             let mut dom = Dom::parse_html(url, &html, self.viewport.clone(), self.shell_provider.clone());
