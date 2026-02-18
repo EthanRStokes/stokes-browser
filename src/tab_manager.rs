@@ -24,6 +24,8 @@ pub struct RenderedFrame {
     pub image: Image,
     pub width: u32,
     pub height: u32,
+    /// Raw RGBA pixel data for rendering in non-Skia contexts (e.g., iced)
+    pub raw_pixels: Vec<u8>,
 }
 
 /// Manages all tab processes
@@ -179,10 +181,12 @@ impl TabManager {
         let size = (width * height * 4) as usize;
 
         // Copy the data from shared memory
-        let data = unsafe {
+        let raw_pixels: Vec<u8> = unsafe {
             let slice = std::slice::from_raw_parts(shmem.as_ptr() as *const u8, size);
-            Data::new_copy(slice)
+            slice.to_vec()
         };
+
+        let data = Data::new_copy(&raw_pixels);
 
         // Create an image from the data
         let image_info = ImageInfo::new(
@@ -203,6 +207,7 @@ impl TabManager {
             image,
             width,
             height,
+            raw_pixels,
         })
     }
 

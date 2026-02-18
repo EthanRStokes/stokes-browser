@@ -3,9 +3,10 @@
 //! This module provides an iced-based implementation of the browser UI,
 //! designed to integrate with a Skia canvas for custom rendering.
 
-use iced::widget::{button, canvas, column, container, row, text, text_input, Column, Row};
+use iced::widget::{button, canvas, column, container, row, text, text_input, Column, Row, image};
 use iced::{Color, Element, Length, Padding, Size, Task, Theme, Subscription};
 use iced::widget::canvas::{Cache, Canvas, Geometry, Path, Stroke, Program as CanvasProgram};
+use iced::widget::image::Handle as ImageHandle;
 use std::time::{Duration, Instant};
 use iced::border::Radius;
 use iced::widget::text::Alignment;
@@ -770,25 +771,70 @@ impl IcedBrowserApp {
 
     /// Build the content area (placeholder for Skia canvas integration)
     fn build_content_area(&self) -> Element<Message> {
-        // This is where the Skia-rendered content will go
-        // For now, we use an iced Canvas as a placeholder that can be
-        // integrated with Skia later
-        let canvas_state = CanvasState {
-            tab_manager: &self.tab_manager,
-            active_tab_id: self.active_tab_id().cloned(),
-            loading: self.active_tab_id()
-                .and_then(|id| self.tabs.iter().find(|t| &t.id == id))
-                .map(|t| t.is_loading)
-                .unwrap_or(false),
-            loading_angle: self.loading_spinner_angle,
-            has_tabs: !self.tabs.is_empty(),
+        // Check if we have a rendered frame from the active tab
+        let frame_data = self.active_tab_id()
+            .and_then(|tab_id| {
+                self.tab_manager.as_ref().and_then(|tm| {
+                    tm.get_tab(tab_id).and_then(|tab| {
+                        tab.rendered_frame.as_ref().map(|frame| {
+                            (frame.raw_pixels.clone(), frame.width, frame.height)
+                        })
+                    })
+                })
+            });
+
+        let is_loading = self.active_tab_id()
+            .and_then(|id| self.tabs.iter().find(|t| &t.id == id))
+            .map(|t| t.is_loading)
+            .unwrap_or(false);
+
+        let content: Element<Message> = if let Some((pixels, width, height)) = frame_data {
+            // We have a rendered frame - display it as an image
+            let handle = ImageHandle::from_rgba(width, height, pixels);
+            image(handle)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .content_fit(iced::ContentFit::Fill)
+                .into()
+        } else if !self.tabs.is_empty() && is_loading {
+            // Loading state - show canvas with spinner
+            let canvas_state = CanvasState {
+                loading: true,
+                loading_angle: self.loading_spinner_angle,
+                has_tabs: true,
+                has_frame: false,
+            };
+            Canvas::new(canvas_state)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        } else if !self.tabs.is_empty() {
+            // Has tabs but no frame yet - show placeholder
+            let canvas_state = CanvasState {
+                loading: false,
+                loading_angle: 0.0,
+                has_tabs: true,
+                has_frame: false,
+            };
+            Canvas::new(canvas_state)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        } else {
+            // No tabs - show welcome
+            let canvas_state = CanvasState {
+                loading: false,
+                loading_angle: 0.0,
+                has_tabs: false,
+                has_frame: false,
+            };
+            Canvas::new(canvas_state)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
         };
 
-        let canvas = Canvas::new(canvas_state)
-            .width(Length::Fill)
-            .height(Length::Fill);
-
-        container(canvas)
+        container(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_theme| container::Style {
@@ -847,17 +893,16 @@ impl IcedBrowserApp {
     }
 }
 
-/// Canvas state for rendering - this is needed since we can't store references in the main struct
-struct CanvasState<'a> {
-    tab_manager: &'a Option<TabManager>,
-    active_tab_id: Option<String>,
+/// Canvas state for rendering - used for loading spinners and placeholders
+struct CanvasState {
     loading: bool,
     loading_angle: f32,
     has_tabs: bool,
+    has_frame: bool,
 }
 
 /// Implement the Canvas Program trait for rendering the content area
-impl<'a> CanvasProgram<Message> for CanvasState<'a> {
+impl CanvasProgram<Message> for CanvasState {
     type State = ();
 
     fn draw(
@@ -878,19 +923,6 @@ impl<'a> CanvasProgram<Message> for CanvasState<'a> {
             );
             frame.fill(&background, Color::WHITE);
 
-            // Check if we have a rendered frame to display
-            let has_frame = if let Some(tab_manager) = self.tab_manager {
-                if let Some(ref tab_id) = self.active_tab_id {
-                    tab_manager.get_tab(tab_id)
-                        .and_then(|t| t.rendered_frame.as_ref())
-                        .is_some()
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
             let center = iced::Point::new(
                 frame.size().width / 2.0,
                 frame.size().height / 2.0,
@@ -908,19 +940,6 @@ impl<'a> CanvasProgram<Message> for CanvasState<'a> {
                     ..Default::default()
                 };
                 frame.fill_text(welcome_text);
-            } else if has_frame {
-                // We have content - show "Skia integration point" message
-                // In a real implementation, we would render the Skia image here
-                let placeholder_text = canvas::Text {
-                    content: "Page content renders here (Skia integration)".to_string(),
-                    position: center,
-                    color: Color::from_rgb(0.6, 0.6, 0.6),
-                    size: iced::Pixels(16.0),
-                    align_x: Alignment::Center,
-                    align_y: iced::alignment::Vertical::Center,
-                    ..Default::default()
-                };
-                frame.fill_text(placeholder_text);
             } else if self.loading {
                 // Loading state - show spinner
                 let loading_text = canvas::Text {
@@ -948,7 +967,7 @@ impl<'a> CanvasProgram<Message> for CanvasState<'a> {
                     frame.fill(&dot, Color::from_rgba(0.3, 0.5, 0.8, alpha));
                 }
             } else {
-                // No content yet
+                // No content yet - show placeholder
                 let placeholder_text = canvas::Text {
                     content: "Enter a URL to browse".to_string(),
                     position: center,
