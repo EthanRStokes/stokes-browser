@@ -67,6 +67,7 @@ use style::values::computed::{Au, CSSPixelLength, Length};
 use stylo_atoms::Atom;
 use taffy::Point;
 use crate::dom::stylo_to_cursor::stylo_to_cursor_icon;
+use crate::engine::net_provider::StokesNetProvider;
 
 const ZERO: Point<f64> = Point { x: 0.0, y: 0.0 };
 
@@ -380,7 +381,7 @@ impl Dom {
         parser.parse(html, DomConfig {
             viewport: Some(viewport),
             base_url: Some(url.to_string()),
-            net_provider: Some(Arc::new(DummyNetProvider)),
+            net_provider: Some(Arc::new(StokesNetProvider::new())),
             shell_provider: Some(shell_provider),
             ..Default::default()
         })

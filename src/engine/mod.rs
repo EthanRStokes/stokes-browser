@@ -1,5 +1,6 @@
 // The core browser engine that coordinates between components
 mod config;
+pub mod net_provider;
 
 pub use self::config::EngineConfig;
 use crate::dom::node::{RasterImageData, SpecialElementData};
