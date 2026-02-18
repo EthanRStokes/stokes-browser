@@ -74,7 +74,7 @@ const ZERO: Point<f64> = Point { x: 0.0, y: 0.0 };
 /// Represents a DOM tree
 pub struct Dom {
     /// ID of the DOM
-    id: usize,
+    pub(crate) id: usize,
 
     pub(crate) url: DocUrl,
     // Viewport information (dimensions, HiDPI scale, zoom)

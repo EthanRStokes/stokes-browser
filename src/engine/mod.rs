@@ -7,7 +7,7 @@ use crate::dom::node::{RasterImageData, SpecialElementData};
 use crate::dom::{Dom, ImageData, NodeData};
 use crate::dom::{EventDispatcher, EventType};
 use crate::js::JsRuntime;
-use crate::networking::{resolve_url, HttpClient, NetworkError};
+use crate::networking::{resolve_url, HttpClient, NetworkError, NewHttpClient};
 use crate::renderer::background::BackgroundImageCache;
 use crate::renderer::text::TextPainter;
 use crate::renderer::HtmlRenderer;
@@ -32,6 +32,7 @@ thread_local! {
 pub struct Engine {
     pub config: EngineConfig,
     http_client: HttpClient,
+    new_http_client: Option<NewHttpClient>,
     current_url: String,
     page_title: String,
     is_loading: bool,
@@ -55,6 +56,7 @@ impl Engine {
         Self {
             config,
             http_client: HttpClient::new(),
+            new_http_client: None,
             current_url: String::new(),
             page_title: "New Tab".to_string(),
             is_loading: false,
@@ -97,6 +99,14 @@ impl Engine {
 
             // Extract page title
             self.page_title = dom.get_title();
+
+            // set http client
+            self.new_http_client = Some(NewHttpClient {
+                tx: dom.tx.clone(),
+                dom_id: dom.id,
+                net_provider: dom.net_provider.clone(),
+                shell_provider: dom.shell_provider.clone()
+            });
 
             // Store the DOM
             self.dom = Some(dom);
@@ -192,7 +202,7 @@ impl Engine {
             let http_client = &self.http_client;
             let user_agent = &self.config.user_agent;
             fetch_futures.push(async move {
-                let result = http_client.fetch_resource(&absolute_url, user_agent).await;
+                let result = self.new_http_client.unwrap().fetch_image(&absolute_url, user_agent).await;
                 (src, result)
             });
         }
