@@ -1,14 +1,14 @@
 use crate::renderer::text::TextPainter;
 use anyrender::PaintScene;
 use blitz_traits::shell::Viewport;
-use color::AlphaColor;
+use color::{AlphaColor, Srgb};
 use kurbo::Affine;
 use parley::{Alignment, AlignmentOptions, FontContext, GenericFamily, LayoutContext, LineHeight, PositionedLayoutItem, StyleProperty};
 use peniko::Fill;
 use skia_safe::{Canvas, Color, Font, FontStyle, Paint, Rect, TextBlob};
-use skrifa::MetadataProvider;
 use std::f32::consts::PI;
 use std::time::{Duration, Instant};
+use usvg::Tree;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TextBrush {
@@ -196,6 +196,12 @@ impl UiComponent {
     }
 }
 
+/// Load and parse an SVG file
+fn load_svg(svg_data: &str) -> Option<Tree> {
+    let options = usvg::Options::default();
+    Tree::from_str(svg_data, &options).ok()
+}
+
 /// State for tab dragging
 #[derive(Debug, Clone, Default)]
 pub struct TabDragState {
@@ -222,6 +228,12 @@ pub struct BrowserUI {
     tab_scroll_offset: f32,  // Horizontal scroll offset for tabs
     /// State for tab dragging
     pub tab_drag_state: TabDragState,
+    // Preloaded SVGs for icons
+    pub back_svg: Tree,
+    pub forward_svg: Tree,
+    pub reload_svg: Tree,
+    pub new_tab_svg: Tree,
+    pub close_tab_svg: Tree,
 }
 
 impl BrowserUI {
@@ -271,6 +283,11 @@ impl BrowserUI {
             viewport: viewport.clone(),
             tab_scroll_offset: 0.0,
             tab_drag_state: TabDragState::default(),
+            back_svg: load_svg(include_str!("../assets/left_arrow.svg")).unwrap(),
+            forward_svg: load_svg(include_str!("../assets/right_arrow.svg")).unwrap(),
+            reload_svg: load_svg(include_str!("../assets/reload.svg")).unwrap(),
+            new_tab_svg: load_svg(include_str!("../assets/plus.svg")).unwrap(),
+            close_tab_svg: load_svg(include_str!("../assets/close.svg")).unwrap(),
         }
     }
 
@@ -1264,7 +1281,7 @@ impl BrowserUI {
                     paint.set_stroke(false);
 
                     // Draw custom icon instead of text
-                    Self::draw_icon(painter, icon_type, rect, *is_hover, self.viewport.hidpi_scale);
+                    self.draw_icon(painter, icon_type, rect, *is_hover, self.viewport.hidpi_scale);
 
                     // Collect tooltip for later rendering (to render above everything)
                     if tooltip.is_visible {
@@ -1412,7 +1429,7 @@ impl BrowserUI {
                         canvas.draw_round_rect(close_button_rect, 2.0, 2.0, &paint);
 
                         // Draw X icon with different color when hovering
-                        Self::draw_icon(painter, &IconType::Close, close_button_rect, *close_button_hover, self.viewport.hidpi_scale);
+                        self.draw_icon(painter, &IconType::Close, close_button_rect, *close_button_hover, self.viewport.hidpi_scale);
                     }
 
                     // Collect tooltip for later rendering (to render above everything)
@@ -1598,7 +1615,7 @@ impl BrowserUI {
     }
 
     /// Draw a custom icon based on icon type
-    fn draw_icon(painter: &mut TextPainter, icon_type: &IconType, rect: Rect, is_hover: bool, hidpi_scale: f32) {
+    fn draw_icon(&self, painter: &mut TextPainter, icon_type: &IconType, rect: Rect, is_hover: bool, hidpi_scale: f32) {
         let center_x = rect.center_x() as f64;
         let center_y = rect.center_y() as f64;
         let icon_size = (rect.width().min(rect.height()) * 0.6) as f64;
@@ -1614,80 +1631,134 @@ impl BrowserUI {
         let icon_color = AlphaColor::from_rgba8(60, 60, 60, 255);
         let hover_color = AlphaColor::from_rgba8(200, 50, 50, 255); // Red for close icon when hovering
 
-        let transform = Affine::IDENTITY;
-
         match icon_type {
             IconType::Back => {
-                // Draw left-pointing arrow
-                let mut path = kurbo::BezPath::new();
-                path.move_to((center_x + half_size * 0.3, center_y - half_size * 0.6));
-                path.line_to((center_x - half_size * 0.3, center_y));
-                path.line_to((center_x + half_size * 0.3, center_y + half_size * 0.6));
-                painter.stroke(&stroke, transform, icon_color, None, &path);
+                Self::render_svg(painter, &self.back_svg, rect, icon_color, hidpi_scale);
             }
             IconType::Forward => {
-                // Draw right-pointing arrow
-                let mut path = kurbo::BezPath::new();
-                path.move_to((center_x - half_size * 0.3, center_y - half_size * 0.6));
-                path.line_to((center_x + half_size * 0.3, center_y));
-                path.line_to((center_x - half_size * 0.3, center_y + half_size * 0.6));
-                painter.stroke(&stroke, transform, icon_color, None, &path);
+                Self::render_svg(painter, &self.forward_svg, rect, icon_color, hidpi_scale);
             }
             IconType::Refresh => {
-                // Draw circular arrow
-                let radius = half_size * 0.7;
-                let arc = kurbo::Arc {
-                    center: kurbo::Point::new(center_x, center_y),
-                    radii: kurbo::Vec2::new(radius, radius),
-                    start_angle: 45.0_f64.to_radians(),
-                    sweep_angle: 270.0_f64.to_radians(),
-                    x_rotation: 0.0,
-                };
-                painter.stroke(&stroke, transform, icon_color, None, &arc);
-
-                // Draw arrow head
-                let arrow_x = center_x + radius * 0.7;
-                let arrow_y = center_y - radius * 0.7;
-                let mut arrow_path = kurbo::BezPath::new();
-                arrow_path.move_to((arrow_x - 4.0, arrow_y - 4.0));
-                arrow_path.line_to((arrow_x, arrow_y));
-                arrow_path.line_to((arrow_x + 4.0, arrow_y - 4.0));
-                painter.stroke(&stroke, transform, icon_color, None, &arrow_path);
+                Self::render_svg(painter, &self.reload_svg, rect, icon_color, hidpi_scale);
             }
             IconType::NewTab => {
-                // Draw plus sign (horizontal line)
-                let h_line = kurbo::Line::new(
-                    (center_x - half_size * 0.6, center_y),
-                    (center_x + half_size * 0.6, center_y)
-                );
-                painter.stroke(&stroke, transform, icon_color, None, &h_line);
-
-                // Vertical line
-                let v_line = kurbo::Line::new(
-                    (center_x, center_y - half_size * 0.6),
-                    (center_x, center_y + half_size * 0.6)
-                );
-                painter.stroke(&stroke, transform, icon_color, None, &v_line);
+                Self::render_svg(painter, &self.new_tab_svg, rect, icon_color, hidpi_scale);
             }
             IconType::Close => {
-                // Use red color when hovering, dark gray otherwise
                 let color = if is_hover { hover_color } else { icon_color };
-
-                // Draw X (first diagonal)
-                let line1 = kurbo::Line::new(
-                    (center_x - half_size * 0.5, center_y - half_size * 0.5),
-                    (center_x + half_size * 0.5, center_y + half_size * 0.5)
-                );
-                painter.stroke(&stroke, transform, color, None, &line1);
-
-                // Second diagonal
-                let line2 = kurbo::Line::new(
-                    (center_x + half_size * 0.5, center_y - half_size * 0.5),
-                    (center_x - half_size * 0.5, center_y + half_size * 0.5)
-                );
-                painter.stroke(&stroke, transform, color, None, &line2);
+                Self::render_svg(painter, &self.close_tab_svg, rect, color, hidpi_scale);
             }
         }
+    }
+
+    /// Render an SVG tree into a rect
+    fn render_svg(painter: &mut TextPainter, tree: &Tree, rect: Rect, color: AlphaColor<Srgb>, hidpi_scale: f32) {
+        // Save canvas state before SVG rendering
+        painter.inner.save();
+
+        let svg_size = tree.size();
+
+        // Calculate scale to fit the SVG into the rect
+        let scale_x = (rect.width() as f64 * 0.8) / svg_size.width() as f64;
+        let scale_y = (rect.height() as f64 * 0.8) / svg_size.height() as f64;
+        let scale = scale_x.min(scale_y);
+
+        // Center the SVG in the rect
+        let offset_x = rect.left() as f64 + (rect.width() as f64 - svg_size.width() as f64 * scale) / 2.0;
+        let offset_y = rect.top() as f64 + (rect.height() as f64 - svg_size.height() as f64 * scale) / 2.0;
+
+        let transform = Affine::translate((offset_x, offset_y)) * Affine::scale(scale);
+
+        // Render all paths in the SVG
+        for node in tree.root().children() {
+            Self::render_svg_node(painter, node, transform, color, hidpi_scale);
+        }
+
+        // Restore canvas state after SVG rendering
+        painter.inner.restore();
+    }
+
+    /// Recursively render SVG nodes
+    fn render_svg_node(painter: &mut TextPainter, node: &usvg::Node, transform: Affine, color: AlphaColor<Srgb>, hidpi_scale: f32) {
+        match node {
+            usvg::Node::Group(group) => {
+                let group_transform = Self::usvg_transform_to_affine(&group.transform());
+                let combined_transform = transform * group_transform;
+
+                for child in group.children() {
+                    Self::render_svg_node(painter, child, combined_transform, color, hidpi_scale);
+                }
+            }
+            usvg::Node::Path(path) => {
+                let path_transform = Self::usvg_transform_to_affine(&path.abs_transform());
+                let combined_transform = transform * path_transform;
+
+                // Convert usvg path to kurbo path
+                let kurbo_path = Self::usvg_path_to_kurbo(path.data());
+
+                // Render based on paint type
+                if let Some(ref stroke) = path.stroke() {
+                    let stroke_width = stroke.width().get() as f64 * hidpi_scale as f64;
+                    let kurbo_stroke = kurbo::Stroke::new(stroke_width)
+                        .with_caps(kurbo::Cap::Round)
+                        .with_join(kurbo::Join::Round);
+
+                    painter.stroke(&kurbo_stroke, combined_transform, color, None, &kurbo_path);
+                }
+
+                if path.fill().is_some() {
+                    painter.fill(Fill::NonZero, combined_transform, color, None, &kurbo_path);
+                }
+            }
+            usvg::Node::Image(_) | usvg::Node::Text(_) => {
+                // We don't need to handle images or text for simple icons
+            }
+        }
+    }
+
+    /// Convert usvg Transform to kurbo Affine
+    fn usvg_transform_to_affine(transform: &usvg::Transform) -> Affine {
+        Affine::new([
+            transform.sx as f64,
+            transform.ky as f64,
+            transform.kx as f64,
+            transform.sy as f64,
+            transform.tx as f64,
+            transform.ty as f64,
+        ])
+    }
+
+    /// Convert usvg path data to kurbo BezPath
+    fn usvg_path_to_kurbo(path_data: &usvg::tiny_skia_path::Path) -> kurbo::BezPath {
+        use usvg::tiny_skia_path::PathSegment;
+
+        let mut kurbo_path = kurbo::BezPath::new();
+
+        for segment in path_data.segments() {
+            match segment {
+                PathSegment::MoveTo(p) => {
+                    kurbo_path.move_to((p.x as f64, p.y as f64));
+                }
+                PathSegment::LineTo(p) => {
+                    kurbo_path.line_to((p.x as f64, p.y as f64));
+                }
+                PathSegment::QuadTo(p1, p2) => {
+                    kurbo_path.quad_to((p1.x as f64, p1.y as f64), (p2.x as f64, p2.y as f64));
+                }
+                PathSegment::CubicTo(p1, p2, p3) => {
+                    kurbo_path.curve_to(
+                        (p1.x as f64, p1.y as f64),
+                        (p2.x as f64, p2.y as f64),
+                        (p3.x as f64, p3.y as f64),
+                    );
+                }
+                PathSegment::Close => {
+                    kurbo_path.close_path();
+                }
+            }
+        }
+
+        kurbo_path
     }
 
 
