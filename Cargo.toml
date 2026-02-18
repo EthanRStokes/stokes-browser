@@ -48,6 +48,8 @@ html-escape = "0.2.13"
 lazy_static = "1.5.0"
 hirofa_utils = "0.7.4"
 cursor-icon = "1.2.0"
+iced = { version = "0.14.0", features = ["advanced", "image", "tokio", "canvas"] }
+iced_winit = "0.14.0"
 
 # Stylo
 stylo = "0.12.0"
