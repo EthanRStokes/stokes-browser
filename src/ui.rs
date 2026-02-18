@@ -1671,7 +1671,7 @@ impl BrowserUI {
 
         // Render all paths in the SVG
         for node in tree.root().children() {
-            Self::render_svg_node(painter, node, transform, color, hidpi_scale);
+            Self::render_svg_node(painter, node, transform, color);
         }
 
         // Restore canvas state after SVG rendering
@@ -1679,14 +1679,14 @@ impl BrowserUI {
     }
 
     /// Recursively render SVG nodes
-    fn render_svg_node(painter: &mut TextPainter, node: &usvg::Node, transform: Affine, color: AlphaColor<Srgb>, hidpi_scale: f32) {
+    fn render_svg_node(painter: &mut TextPainter, node: &usvg::Node, transform: Affine, color: AlphaColor<Srgb>) {
         match node {
             usvg::Node::Group(group) => {
                 let group_transform = Self::usvg_transform_to_affine(&group.transform());
                 let combined_transform = transform * group_transform;
 
                 for child in group.children() {
-                    Self::render_svg_node(painter, child, combined_transform, color, hidpi_scale);
+                    Self::render_svg_node(painter, child, combined_transform, color);
                 }
             }
             usvg::Node::Path(path) => {
@@ -1698,7 +1698,7 @@ impl BrowserUI {
 
                 // Render based on paint type
                 if let Some(ref stroke) = path.stroke() {
-                    let stroke_width = stroke.width().get() as f64 * hidpi_scale as f64;
+                    let stroke_width = stroke.width().get() as f64;
                     let kurbo_stroke = kurbo::Stroke::new(stroke_width)
                         .with_caps(kurbo::Cap::Round)
                         .with_join(kurbo::Join::Round);
