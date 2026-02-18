@@ -3,12 +3,16 @@
 //! This module provides an iced-based implementation of the browser UI,
 //! designed to integrate with a Skia canvas for custom rendering.
 
-use iced::widget::{button, canvas, column, container, row, text, text_input, Column, Container, Row};
-use iced::{Color, Element, Length, Padding, Program, Size, Task, Theme};
+use iced::widget::{button, canvas, column, container, row, text, text_input, Column, Row};
+use iced::{Color, Element, Length, Padding, Size, Task, Theme, Subscription};
 use iced::widget::canvas::{Cache, Canvas, Geometry, Path, Stroke, Program as CanvasProgram};
-use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 use iced::border::Radius;
 use iced::widget::text::Alignment;
+
+use crate::ipc::{ParentToTabMessage, TabToParentMessage, KeyModifiers, KeyInputType};
+use crate::tab_manager::TabManager;
+use crate::shell_provider::ShellProviderMessage;
 
 /// Messages that drive the browser UI
 #[derive(Debug, Clone)]
@@ -27,14 +31,35 @@ pub enum Message {
     CloseTab(usize),
     SwitchTab(usize),
 
-    // Tab process messages (to be expanded)
-    TabMessageReceived { tab_id: String, content: String },
+    // Tab process messages
+    TabMessageReceived { tab_id: String, message: TabToParentMessage },
 
     // Canvas/Skia integration events
     CanvasRedraw,
 
-    // Placeholder for external Skia frame updates
+    // Frame updates
     FrameReady,
+
+    // Polling tick for tab messages
+    Tick(Instant),
+
+    // Mouse events for content area
+    ContentClick { x: f32, y: f32 },
+    ContentMouseMove { x: f32, y: f32 },
+    ContentScroll { delta_x: f32, delta_y: f32 },
+
+    // Keyboard input
+    KeyPressed { key: String, modifiers: KeyModifiers },
+
+    // Window events
+    WindowResized { width: u32, height: u32 },
+    ScaleFactorChanged(f32),
+
+    // Focus management
+    FocusAddressBar,
+
+    // Error handling
+    Error(String),
 }
 
 /// Represents a browser tab
@@ -68,6 +93,12 @@ pub struct IcedBrowserApp {
     /// Index of the active tab
     active_tab: usize,
 
+    /// Tab order (tab IDs in display order)
+    tab_order: Vec<String>,
+
+    /// Tab manager for IPC with tab processes
+    tab_manager: Option<TabManager>,
+
     /// Cache for the canvas (used for Skia integration placeholder)
     canvas_cache: Cache,
 
@@ -76,6 +107,24 @@ pub struct IcedBrowserApp {
 
     /// Viewport size
     viewport_size: (u32, u32),
+
+    /// Page viewport size (excluding chrome)
+    page_viewport_size: (u32, u32),
+
+    /// Loading spinner angle
+    loading_spinner_angle: f32,
+
+    /// Last spinner update time
+    last_spinner_update: Instant,
+
+    /// Current cursor position
+    cursor_position: (f32, f32),
+
+    /// Current modifiers state
+    modifiers: KeyModifiers,
+
+    /// Error message to display
+    last_error: Option<String>,
 }
 
 impl Default for IcedBrowserApp {
@@ -89,99 +138,490 @@ impl IcedBrowserApp {
     pub const CHROME_HEIGHT: f32 = 80.0;
 
     pub fn new() -> Self {
-        let initial_tab = Tab::new("tab_0".to_string());
+        // Create tab manager
+        let tab_manager = TabManager::new().ok();
+
+        if tab_manager.is_none() {
+            eprintln!("Warning: Failed to create tab manager");
+        }
 
         Self {
             address_input: String::new(),
-            tabs: vec![initial_tab],
+            tabs: vec![],
             active_tab: 0,
+            tab_order: vec![],
+            tab_manager,
             canvas_cache: Cache::new(),
             scale_factor: 1.0,
             viewport_size: (1280, 720),
+            page_viewport_size: (1280, (720.0 - Self::CHROME_HEIGHT) as u32),
+            loading_spinner_angle: 0.0,
+            last_spinner_update: Instant::now(),
+            cursor_position: (0.0, 0.0),
+            modifiers: KeyModifiers {
+                ctrl: false,
+                alt: false,
+                shift: false,
+                meta: false,
+            },
+            last_error: None,
+        }
+    }
+
+    /// Get the active tab ID
+    fn active_tab_id(&self) -> Option<&String> {
+        self.tab_order.get(self.active_tab)
+    }
+
+    /// Update the page viewport size based on window size
+    fn update_page_viewport(&mut self) {
+        let chrome_physical = (Self::CHROME_HEIGHT * self.scale_factor).round() as u32;
+        self.page_viewport_size = (
+            self.viewport_size.0,
+            self.viewport_size.1.saturating_sub(chrome_physical),
+        );
+    }
+
+    /// Create a new tab
+    fn create_tab(&mut self) -> Task<Message> {
+        if let Some(ref mut tab_manager) = self.tab_manager {
+            match tab_manager.create_tab() {
+                Ok(tab_id) => {
+                    let tab = Tab::new(tab_id.clone());
+                    self.tabs.push(tab);
+                    self.tab_order.push(tab_id.clone());
+                    self.active_tab = self.tab_order.len() - 1;
+                    self.address_input.clear();
+
+                    // Send initial configuration to the tab
+                    let (width, height) = self.page_viewport_size;
+                    let _ = tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Resize {
+                        width: width as f32,
+                        height: height as f32,
+                    });
+                    let _ = tab_manager.send_to_tab(&tab_id, ParentToTabMessage::SetScaleFactor(self.scale_factor));
+                }
+                Err(e) => {
+                    self.last_error = Some(format!("Failed to create tab: {}", e));
+                }
+            }
+        }
+        Task::none()
+    }
+
+    /// Navigate the active tab to a URL
+    fn navigate_to_url(&mut self, url: &str) {
+        if let Some(tab_id) = self.active_tab_id().cloned() {
+            if let Some(ref mut tab_manager) = self.tab_manager {
+                let _ = tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Navigate(url.to_string()));
+            }
+
+            // Update tab state
+            if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                tab.url = url.to_string();
+                tab.is_loading = true;
+            }
+        }
+    }
+
+    /// Close a tab by index
+    fn close_tab(&mut self, index: usize) -> bool {
+        if self.tab_order.len() <= 1 {
+            return true; // Signal to quit app
+        }
+
+        if index < self.tab_order.len() {
+            let tab_id = self.tab_order.remove(index);
+
+            // Close the tab process
+            if let Some(ref mut tab_manager) = self.tab_manager {
+                let _ = tab_manager.close_tab(&tab_id);
+            }
+
+            // Remove from tabs list
+            self.tabs.retain(|t| t.id != tab_id);
+
+            // Adjust active tab index
+            if self.active_tab >= self.tab_order.len() {
+                self.active_tab = self.tab_order.len().saturating_sub(1);
+            } else if index < self.active_tab && self.active_tab > 0 {
+                self.active_tab -= 1;
+            }
+
+            // Update address bar
+            if let Some(tab_id) = self.active_tab_id() {
+                if let Some(tab) = self.tabs.iter().find(|t| &t.id == tab_id) {
+                    self.address_input = tab.url.clone();
+                }
+            }
+        }
+        false // Don't quit
+    }
+
+    /// Switch to a tab by index
+    fn switch_to_tab(&mut self, index: usize) {
+        if index < self.tab_order.len() {
+            self.active_tab = index;
+            if let Some(tab_id) = self.active_tab_id() {
+                if let Some(tab) = self.tabs.iter().find(|t| &t.id == tab_id) {
+                    self.address_input = tab.url.clone();
+                }
+            }
+            self.canvas_cache.clear();
+        }
+    }
+
+    /// Process messages from tab processes
+    fn process_tab_messages(&mut self) -> Vec<Task<Message>> {
+        let tasks = vec![];
+
+        // First, collect all the messages
+        let messages: Vec<(String, TabToParentMessage)> = if let Some(ref mut tab_manager) = self.tab_manager {
+            let msgs = tab_manager.poll_messages();
+            // Process each message in tab_manager first
+            for (tab_id, message) in &msgs {
+                tab_manager.process_tab_message(tab_id, message.clone());
+            }
+            msgs
+        } else {
+            vec![]
+        };
+
+        // Now process the UI updates separately
+        for (tab_id, message) in messages {
+            // Handle UI updates
+            match &message {
+                TabToParentMessage::TitleChanged(title) => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                        tab.title = title.clone();
+                    }
+                }
+                TabToParentMessage::NavigationCompleted { url, title } => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                        tab.title = title.clone();
+                        tab.url = url.clone();
+                        tab.is_loading = false;
+                    }
+                    let active_tab_id = self.tab_order.get(self.active_tab).cloned();
+                    if active_tab_id.as_ref() == Some(&tab_id) {
+                        self.address_input = url.clone();
+                    }
+                }
+                TabToParentMessage::NavigationStarted(url) => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                        tab.is_loading = true;
+                        tab.url = url.clone();
+                    }
+                }
+                TabToParentMessage::NavigationFailed(error) => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                        tab.is_loading = false;
+                    }
+                    self.last_error = Some(format!("Navigation failed: {}", error));
+                }
+                TabToParentMessage::LoadingStateChanged(is_loading) => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                        tab.is_loading = *is_loading;
+                    }
+                }
+                TabToParentMessage::FrameRendered { .. } => {
+                    self.canvas_cache.clear();
+                }
+                TabToParentMessage::NavigateRequest(url) => {
+                    // Handle navigation request from web content
+                    let tab_id_clone = tab_id.clone();
+                    let url_clone = url.clone();
+                    if let Some(ref mut tab_manager) = self.tab_manager {
+                        let _ = tab_manager.send_to_tab(&tab_id_clone, ParentToTabMessage::Navigate(url_clone.clone()));
+                    }
+                    let active_tab_id = self.tab_order.get(self.active_tab).cloned();
+                    if active_tab_id.as_ref() == Some(&tab_id) {
+                        self.address_input = url_clone;
+                    }
+                }
+                TabToParentMessage::NavigateRequestInNewTab(url) => {
+                    // Create new tab and navigate
+                    let url_clone = url.clone();
+                    let current_index = self.active_tab;
+                    self.create_new_tab_internal();
+                    self.navigate_to_url_internal(&url_clone);
+                    // Switch back to original tab
+                    self.switch_to_tab(current_index);
+                }
+                TabToParentMessage::Alert(msg) => {
+                    // Display alert (simple console for now, could use native dialog)
+                    println!("Alert from tab {}: {}", tab_id, msg);
+                    // Could use rfd for native dialogs
+                }
+                TabToParentMessage::ShellProvider(shell_msg) => {
+                    match shell_msg {
+                        ShellProviderMessage::RequestRedraw => {
+                            self.canvas_cache.clear();
+                        }
+                        ShellProviderMessage::SetCursor(_cursor) => {
+                            // TODO: Set cursor via iced
+                        }
+                        ShellProviderMessage::SetWindowTitle(_title) => {
+                            // TODO: Set window title
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        tasks
+    }
+
+    /// Internal helper to create a new tab without returning a Task
+    fn create_new_tab_internal(&mut self) {
+        if let Some(ref mut tab_manager) = self.tab_manager {
+            match tab_manager.create_tab() {
+                Ok(tab_id) => {
+                    let tab = Tab::new(tab_id.clone());
+                    self.tabs.push(tab);
+                    self.tab_order.push(tab_id.clone());
+                    self.active_tab = self.tab_order.len() - 1;
+                    self.address_input.clear();
+
+                    // Send initial configuration to the tab
+                    let (width, height) = self.page_viewport_size;
+                    let _ = tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Resize {
+                        width: width as f32,
+                        height: height as f32,
+                    });
+                    let _ = tab_manager.send_to_tab(&tab_id, ParentToTabMessage::SetScaleFactor(self.scale_factor));
+                }
+                Err(e) => {
+                    self.last_error = Some(format!("Failed to create tab: {}", e));
+                }
+            }
+        }
+    }
+
+    /// Internal helper to navigate without creating a Task
+    fn navigate_to_url_internal(&mut self, url: &str) {
+        let tab_id = self.tab_order.get(self.active_tab).cloned();
+        if let Some(tab_id) = tab_id {
+            if let Some(ref mut tab_manager) = self.tab_manager {
+                let _ = tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Navigate(url.to_string()));
+            }
+
+            // Update tab state
+            if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                tab.url = url.to_string();
+                tab.is_loading = true;
+            }
         }
     }
 
     /// Update the browser state based on a message
-    pub fn update(&mut self, message: Message) {
+    pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Navigate => {
-                if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                    tab.url = self.address_input.clone();
-                    tab.is_loading = true;
-                    // TODO: Send navigation message to tab process
-                    println!("Navigating to: {}", self.address_input);
+                let url = self.address_input.clone();
+                if !url.is_empty() {
+                    self.navigate_to_url(&url);
                 }
+                Task::none()
             }
 
             Message::GoBack => {
-                // TODO: Send GoBack to tab process
-                println!("Go back");
+                if let Some(tab_id) = self.active_tab_id().cloned() {
+                    if let Some(ref mut tab_manager) = self.tab_manager {
+                        let _ = tab_manager.send_to_tab(&tab_id, ParentToTabMessage::GoBack);
+                    }
+                }
+                Task::none()
             }
 
             Message::GoForward => {
-                // TODO: Send GoForward to tab process
-                println!("Go forward");
+                if let Some(tab_id) = self.active_tab_id().cloned() {
+                    if let Some(ref mut tab_manager) = self.tab_manager {
+                        let _ = tab_manager.send_to_tab(&tab_id, ParentToTabMessage::GoForward);
+                    }
+                }
+                Task::none()
             }
 
             Message::Reload => {
-                if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                    tab.is_loading = true;
-                    // TODO: Send Reload to tab process
-                    println!("Reload");
+                if let Some(tab_id) = self.active_tab_id().cloned() {
+                    if let Some(ref mut tab_manager) = self.tab_manager {
+                        let _ = tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Reload);
+                    }
+                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                        tab.is_loading = true;
+                    }
                 }
+                Task::none()
             }
 
             Message::AddressChanged(new_address) => {
                 self.address_input = new_address;
+                Task::none()
             }
 
             Message::NewTab => {
-                let new_id = format!("tab_{}", self.tabs.len());
-                let new_tab = Tab::new(new_id);
-                self.tabs.push(new_tab);
-                self.active_tab = self.tabs.len() - 1;
-                self.address_input.clear();
+                self.create_tab()
             }
 
             Message::CloseTab(index) => {
-                if self.tabs.len() > 1 && index < self.tabs.len() {
-                    self.tabs.remove(index);
-                    if self.active_tab >= self.tabs.len() {
-                        self.active_tab = self.tabs.len() - 1;
-                    } else if index < self.active_tab {
-                        self.active_tab -= 1;
-                    }
-
-                    // Update address bar to show current tab's URL
-                    if let Some(tab) = self.tabs.get(self.active_tab) {
-                        self.address_input = tab.url.clone();
-                    }
+                if self.close_tab(index) {
+                    // Return a task that will exit the app
+                    iced::exit()
+                } else {
+                    Task::none()
                 }
             }
 
             Message::SwitchTab(index) => {
-                if index < self.tabs.len() {
-                    self.active_tab = index;
-                    if let Some(tab) = self.tabs.get(self.active_tab) {
-                        self.address_input = tab.url.clone();
-                    }
-                }
+                self.switch_to_tab(index);
+                Task::none()
             }
 
-            Message::TabMessageReceived { tab_id, content } => {
-                // TODO: Handle messages from tab processes
-                println!("Tab {} message: {}", tab_id, content);
+            Message::TabMessageReceived { tab_id, message } => {
+                if let Some(ref mut tab_manager) = self.tab_manager {
+                    tab_manager.process_tab_message(&tab_id, message);
+                }
+                self.canvas_cache.clear();
+                Task::none()
             }
 
             Message::CanvasRedraw => {
                 self.canvas_cache.clear();
+                Task::none()
             }
 
             Message::FrameReady => {
-                // Signal that a new frame from Skia is ready
                 self.canvas_cache.clear();
+                Task::none()
+            }
+
+            Message::Tick(_now) => {
+                // Process tab messages
+                let _tasks = self.process_tab_messages();
+
+                // Update loading spinner
+                let is_loading = self.active_tab_id()
+                    .and_then(|id| self.tabs.iter().find(|t| &t.id == id))
+                    .map(|t| t.is_loading)
+                    .unwrap_or(false);
+
+                if is_loading {
+                    let now = Instant::now();
+                    let elapsed = now.duration_since(self.last_spinner_update).as_secs_f32();
+                    self.loading_spinner_angle += elapsed * 4.0 * std::f32::consts::PI;
+                    if self.loading_spinner_angle >= 2.0 * std::f32::consts::PI {
+                        self.loading_spinner_angle -= 2.0 * std::f32::consts::PI;
+                    }
+                    self.last_spinner_update = now;
+                }
+
+                Task::none()
+            }
+
+            Message::ContentClick { x, y } => {
+                if let Some(tab_id) = self.active_tab_id().cloned() {
+                    if let Some(ref mut tab_manager) = self.tab_manager {
+                        let _ = tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Click {
+                            x,
+                            y,
+                            modifiers: self.modifiers.clone(),
+                        });
+                    }
+                }
+                Task::none()
+            }
+
+            Message::ContentMouseMove { x, y } => {
+                self.cursor_position = (x, y);
+                if let Some(tab_id) = self.active_tab_id().cloned() {
+                    if let Some(ref mut tab_manager) = self.tab_manager {
+                        let _ = tab_manager.send_to_tab(&tab_id, ParentToTabMessage::MouseMove { x, y });
+                    }
+                }
+                Task::none()
+            }
+
+            Message::ContentScroll { delta_x, delta_y } => {
+                if let Some(tab_id) = self.active_tab_id().cloned() {
+                    if let Some(ref mut tab_manager) = self.tab_manager {
+                        let _ = tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Scroll {
+                            delta_x,
+                            delta_y,
+                        });
+                    }
+                }
+                self.canvas_cache.clear();
+                Task::none()
+            }
+
+            Message::KeyPressed { key, modifiers } => {
+                self.modifiers = modifiers.clone();
+
+                // Forward keyboard input to tab
+                if let Some(tab_id) = self.active_tab_id().cloned() {
+                    if let Some(ref mut tab_manager) = self.tab_manager {
+                        let key_type = KeyInputType::Character(key);
+                        let _ = tab_manager.send_to_tab(&tab_id, ParentToTabMessage::KeyboardInput {
+                            key_type,
+                            modifiers,
+                        });
+                    }
+                }
+                Task::none()
+            }
+
+            Message::WindowResized { width, height } => {
+                self.viewport_size = (width, height);
+                self.update_page_viewport();
+
+                // Notify all tabs of resize
+                if let Some(ref mut tab_manager) = self.tab_manager {
+                    let (w, h) = self.page_viewport_size;
+                    for tab_id in &self.tab_order {
+                        let _ = tab_manager.send_to_tab(tab_id, ParentToTabMessage::Resize {
+                            width: w as f32,
+                            height: h as f32,
+                        });
+                    }
+                }
+                self.canvas_cache.clear();
+                Task::none()
+            }
+
+            Message::ScaleFactorChanged(scale) => {
+                self.scale_factor = scale;
+                self.update_page_viewport();
+
+                // Notify all tabs
+                if let Some(ref mut tab_manager) = self.tab_manager {
+                    for tab_id in &self.tab_order {
+                        let _ = tab_manager.send_to_tab(tab_id, ParentToTabMessage::SetScaleFactor(scale));
+                    }
+                }
+                self.canvas_cache.clear();
+                Task::none()
+            }
+
+            Message::FocusAddressBar => {
+                // TODO: Focus management in iced
+                Task::none()
+            }
+
+            Message::Error(error) => {
+                self.last_error = Some(error);
+                Task::none()
             }
         }
+    }
+
+    /// Subscription for polling tab messages
+    pub fn subscription(&self) -> Subscription<Message> {
+        // Poll every 16ms (~60 FPS) for tab messages
+        iced::time::every(Duration::from_millis(16))
+            .map(Message::Tick)
     }
 
     /// Build the view for the browser
@@ -215,8 +655,15 @@ impl IcedBrowserApp {
                     tab.title.clone()
                 };
 
+                // Add loading indicator to title if loading
+                let display_title = if tab.is_loading {
+                    format!("⏳ {}", title)
+                } else {
+                    title
+                };
+
                 let tab_content = row![
-                    button(text(title.clone()).size(12))
+                    button(text(display_title.clone()).size(12))
                         .on_press(Message::SwitchTab(index))
                         .style(if is_active {
                             button::primary
@@ -231,15 +678,16 @@ impl IcedBrowserApp {
                 ]
                 .spacing(2);
 
+                let tab_bg = if is_active {
+                    Color::from_rgb(0.95, 0.95, 0.95)
+                } else {
+                    Color::from_rgb(0.85, 0.85, 0.85)
+                };
+
                 container(tab_content)
-                    .style(|theme| {
+                    .style(move |_theme| {
                         container::Style {
-                            background: Some(Color::from_rgb(0.95, 0.95, 0.95).into()),
-                            //background: Some(if is_active {
-                            //    Color::from_rgb(0.95, 0.95, 0.95).into()
-                            //} else {
-                            //    Color::from_rgb(0.85, 0.85, 0.85).into()
-                            //}),
+                            background: Some(tab_bg.into()),
                             border: iced::Border {
                                 radius: Radius {
                                     top_left: 4.0,
@@ -325,8 +773,18 @@ impl IcedBrowserApp {
         // This is where the Skia-rendered content will go
         // For now, we use an iced Canvas as a placeholder that can be
         // integrated with Skia later
+        let canvas_state = CanvasState {
+            tab_manager: &self.tab_manager,
+            active_tab_id: self.active_tab_id().cloned(),
+            loading: self.active_tab_id()
+                .and_then(|id| self.tabs.iter().find(|t| &t.id == id))
+                .map(|t| t.is_loading)
+                .unwrap_or(false),
+            loading_angle: self.loading_spinner_angle,
+            has_tabs: !self.tabs.is_empty(),
+        };
 
-        let canvas = Canvas::new(self)
+        let canvas = Canvas::new(canvas_state)
             .width(Length::Fill)
             .height(Length::Fill);
 
@@ -348,22 +806,19 @@ impl IcedBrowserApp {
     /// Set the scale factor
     pub fn set_scale_factor(&mut self, scale: f32) {
         self.scale_factor = scale;
+        self.update_page_viewport();
     }
 
     /// Set viewport size
     pub fn set_viewport_size(&mut self, width: u32, height: u32) {
         self.viewport_size = (width, height);
+        self.update_page_viewport();
         self.canvas_cache.clear();
     }
 
     /// Get the active tab
     pub fn active_tab(&self) -> Option<&Tab> {
         self.tabs.get(self.active_tab)
-    }
-
-    /// Get the active tab ID
-    pub fn active_tab_id(&self) -> Option<&str> {
-        self.tabs.get(self.active_tab).map(|t| t.id.as_str())
     }
 
     /// Update tab title
@@ -392,8 +847,17 @@ impl IcedBrowserApp {
     }
 }
 
-/// Implement the Canvas Program trait for Skia integration placeholder
-impl CanvasProgram<Message> for IcedBrowserApp {
+/// Canvas state for rendering - this is needed since we can't store references in the main struct
+struct CanvasState<'a> {
+    tab_manager: &'a Option<TabManager>,
+    active_tab_id: Option<String>,
+    loading: bool,
+    loading_angle: f32,
+    has_tabs: bool,
+}
+
+/// Implement the Canvas Program trait for rendering the content area
+impl<'a> CanvasProgram<Message> for CanvasState<'a> {
     type State = ();
 
     fn draw(
@@ -404,34 +868,100 @@ impl CanvasProgram<Message> for IcedBrowserApp {
         bounds: iced::Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<Geometry> {
-        let geometry = self.canvas_cache.draw(renderer, bounds.size(), |frame| {
-            // Draw a placeholder background
+        let mut cache = Cache::new();
+
+        let geometry = cache.draw(renderer, bounds.size(), |frame| {
+            // Draw background
             let background = Path::rectangle(
                 iced::Point::ORIGIN,
                 frame.size(),
             );
             frame.fill(&background, Color::WHITE);
 
-            // Draw a centered message indicating this is where Skia content goes
+            // Check if we have a rendered frame to display
+            let has_frame = if let Some(tab_manager) = self.tab_manager {
+                if let Some(ref tab_id) = self.active_tab_id {
+                    tab_manager.get_tab(tab_id)
+                        .and_then(|t| t.rendered_frame.as_ref())
+                        .is_some()
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
             let center = iced::Point::new(
                 frame.size().width / 2.0,
                 frame.size().height / 2.0,
             );
 
-            // Draw placeholder text area
-            let placeholder_text = "Skia Canvas Integration Point";
-            let text = canvas::Text {
-                content: placeholder_text.to_string(),
-                position: center,
-                color: Color::from_rgb(0.6, 0.6, 0.6),
-                size: iced::Pixels(16.0),
-                align_x: Alignment::Center,
-                align_y: iced::alignment::Vertical::Center,
-                ..Default::default()
-            };
-            frame.fill_text(text);
+            if !self.has_tabs {
+                // No tabs - show welcome message
+                let welcome_text = canvas::Text {
+                    content: "Welcome! Press + to open a new tab".to_string(),
+                    position: center,
+                    color: Color::from_rgb(0.4, 0.4, 0.4),
+                    size: iced::Pixels(20.0),
+                    align_x: Alignment::Center,
+                    align_y: iced::alignment::Vertical::Center,
+                    ..Default::default()
+                };
+                frame.fill_text(welcome_text);
+            } else if has_frame {
+                // We have content - show "Skia integration point" message
+                // In a real implementation, we would render the Skia image here
+                let placeholder_text = canvas::Text {
+                    content: "Page content renders here (Skia integration)".to_string(),
+                    position: center,
+                    color: Color::from_rgb(0.6, 0.6, 0.6),
+                    size: iced::Pixels(16.0),
+                    align_x: Alignment::Center,
+                    align_y: iced::alignment::Vertical::Center,
+                    ..Default::default()
+                };
+                frame.fill_text(placeholder_text);
+            } else if self.loading {
+                // Loading state - show spinner
+                let loading_text = canvas::Text {
+                    content: "Loading...".to_string(),
+                    position: center,
+                    color: Color::from_rgb(0.5, 0.5, 0.5),
+                    size: iced::Pixels(18.0),
+                    align_x: Alignment::Center,
+                    align_y: iced::alignment::Vertical::Center,
+                    ..Default::default()
+                };
+                frame.fill_text(loading_text);
 
-            // Draw a border to show the canvas bounds
+                // Draw loading spinner
+                let spinner_radius = 20.0;
+                let spinner_center = iced::Point::new(center.x, center.y + 40.0);
+
+                for i in 0..8 {
+                    let angle = self.loading_angle + (i as f32 * std::f32::consts::PI / 4.0);
+                    let x = spinner_center.x + spinner_radius * angle.cos();
+                    let y = spinner_center.y + spinner_radius * angle.sin();
+
+                    let alpha = 0.3 + (0.7 * (i as f32 / 8.0));
+                    let dot = Path::circle(iced::Point::new(x, y), 3.0);
+                    frame.fill(&dot, Color::from_rgba(0.3, 0.5, 0.8, alpha));
+                }
+            } else {
+                // No content yet
+                let placeholder_text = canvas::Text {
+                    content: "Enter a URL to browse".to_string(),
+                    position: center,
+                    color: Color::from_rgb(0.6, 0.6, 0.6),
+                    size: iced::Pixels(16.0),
+                    align_x: Alignment::Center,
+                    align_y: iced::alignment::Vertical::Center,
+                    ..Default::default()
+                };
+                frame.fill_text(placeholder_text);
+            }
+
+            // Draw border around content area
             let border = Path::rectangle(
                 iced::Point::new(1.0, 1.0),
                 Size::new(frame.size().width - 2.0, frame.size().height - 2.0),
@@ -439,7 +969,7 @@ impl CanvasProgram<Message> for IcedBrowserApp {
             frame.stroke(
                 &border,
                 Stroke::default()
-                    .with_color(Color::from_rgb(0.8, 0.8, 0.8))
+                    .with_color(Color::from_rgb(0.85, 0.85, 0.85))
                     .with_width(1.0),
             );
         });
@@ -456,6 +986,7 @@ impl CanvasProgram<Message> for IcedBrowserApp {
 pub fn run_iced_browser() -> iced::Result {
     iced::application(IcedBrowserApp::default, IcedBrowserApp::update, IcedBrowserApp::view)
         .theme(IcedBrowserApp::theme)
+        .subscription(IcedBrowserApp::subscription)
         .window_size((1280.0, 720.0))
         .run()
 }
@@ -536,6 +1067,13 @@ pub mod winit_integration {
     ) -> Option<Message> {
         match event {
             winit::event::WindowEvent::RedrawRequested => Some(Message::CanvasRedraw),
+            winit::event::WindowEvent::Resized(size) => Some(Message::WindowResized {
+                width: size.width,
+                height: size.height,
+            }),
+            winit::event::WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                Some(Message::ScaleFactorChanged(*scale_factor as f32))
+            }
             // Add more event mappings as needed
             _ => None,
         }
