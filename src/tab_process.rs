@@ -395,7 +395,7 @@ impl TabProcess {
                 if let Some(dom) = &mut self.engine.dom {
                     dom.viewport.hidpi_scale = scale;
                 }
-                self.engine.recalculate_layout();
+                self.engine.update_content_dimensions();
                 self.render_frame()?;
             }
             ParentToTabMessage::Shutdown => {

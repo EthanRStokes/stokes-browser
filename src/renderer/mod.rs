@@ -6,14 +6,16 @@ mod cache;
 mod kurbo_css;
 mod layers;
 mod shadow;
+mod gradient;
+mod sizing;
 
+use std::any::Any;
 use crate::dom::node::SpecialElementData;
 use crate::dom::{Dom, DomNode, ElementData, ImageData, NodeData};
-use crate::renderer::background::BackgroundImageCache;
 use crate::renderer::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
 use crate::renderer::layers::maybe_with_layer;
 use crate::renderer::text::{stroke_text, TextPainter, ToColorColor};
-use anyrender::PaintScene;
+use anyrender::{CustomPaint, Paint, PaintScene};
 use color::AlphaColor;
 use kurbo::{Affine, Insets, Point, Rect, Stroke, Vec2};
 use markup5ever::local_name;
@@ -27,6 +29,7 @@ use style::servo_arc::Arc;
 use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, OutlineStyle, Overflow, ZIndex};
 use style::values::generics::color::GenericColor;
 use taffy::Layout;
+use crate::renderer::sizing::compute_object_fit;
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer<'dom> {
@@ -34,7 +37,6 @@ pub struct HtmlRenderer<'dom> {
     pub(crate) scale_factor: f64,
     pub(crate) width: u32,
     pub(crate) height: u32,
-    pub(crate) background_image_cache: BackgroundImageCache,
     /// Debug: Show hitboxes for all elements
     pub(crate) debug_hitboxes: bool,
 }
@@ -408,16 +410,28 @@ impl HtmlRenderer<'_> {
             |painter| {
                 element.draw_background(painter);
                 element.draw_inset_box_shadow(painter);
+                element.draw_table_row_backgrounds(painter);
                 element.draw_table_borders(painter);
                 element.draw_border(painter);
 
                 //let wants_layer = should_clip | has_opacity;
                 let clip = &element.frame.padding_box_path(); // todo content_box_path for text input
                 maybe_with_layer(painter, should_clip, 1.0, element.transform, clip, |painter| {
-                    // TODO scroll node
-
+                    let position = Point {
+                        x: position.x - node.scroll_offset.x,
+                        y: position.y - node.scroll_offset.y,
+                    };
+                    element.position = Point {
+                        x: element.position.x - node.scroll_offset.x,
+                        y: element.position.y - node.scroll_offset.y,
+                    };
+                    element.transform = element.transform.then_translate(Vec2 {
+                        x: -node.scroll_offset.x,
+                        y: -node.scroll_offset.y
+                    });
                     element.draw_image(painter);
-
+                    element.draw_svg(painter);
+                    element.draw_canvas(painter);
                     element.draw_inline_layout(painter, position);
                     element.draw_children(painter);
                 });
@@ -528,28 +542,33 @@ struct Element<'a> {
 
 impl Element<'_> {
     fn draw_children(&self, painter: &mut TextPainter) {
-        let layout_children = self.node.layout_children.borrow();
-        let mut children_with_z: Vec<(&DomNode, i32)> = layout_children.as_ref().unwrap().iter()
-            .map(|child| {
-                let node = self.node.get_node(*child);
-                let z_index = node.style_arc().get_position().z_index;
-                let z_index = match z_index {
-                    ZIndex::Integer(i) => {
-                        i
-                    }
-                    ZIndex::Auto => {
-                        0
-                    }
+        // Negative z_index hoisted nodes
+        if let Some(hoisted) = &self.node.stacking_context {
+            for child in hoisted.neg_z_hoisted_children() {
+                let pos = Point {
+                    x: self.position.x + child.position.x as f64,
+                    y: self.position.y + child.position.y as f64,
                 };
-                (node, z_index)
-            })
-            .collect();
+                self.context.render_node(painter, child.node_id, pos);
+            }
+        }
 
-        // Sort by z-index (lower z-index rendered first, so they appear behind)
-        children_with_z.sort_by_key(|(_, z)| *z);
+        // regular
+        if let Some(children) = &*self.node.paint_children.borrow() {
+            for child_id in children {
+                self.context.render_node(painter, *child_id, self.position);
+            }
+        }
 
-        for (child_node, _) in children_with_z {
-            self.context.render_node(painter, child_node.id, self.position);
+        // Positive z_index hoisted nodes
+        if let Some(hoisted) = &self.node.stacking_context {
+            for child in hoisted.pos_z_hoisted_children() {
+                let pos = Point {
+                    x: self.position.x + child.position.x as f64,
+                    y: self.position.y + child.position.y as f64,
+                };
+                self.context.render_node(painter, child.node_id, pos);
+            }
         }
     }
 
@@ -722,6 +741,55 @@ impl Element<'_> {
         }
     }
 
+    fn draw_svg(&self, scene: &mut impl PaintScene) {
+        use style::properties::generated::longhands::object_fit::computed_value::T as ObjectFit;
+
+        let Some(svg) = self.svg else {
+            return;
+        };
+
+        let width = self.frame.content_box.width() as u32;
+        let height = self.frame.content_box.height() as u32;
+        let svg_size = svg.size();
+
+        let x = self.frame.content_box.origin().x;
+        let y = self.frame.content_box.origin().y;
+
+        // let object_fit = self.style.clone_object_fit();
+        let object_position = self.style.clone_object_position();
+
+        // Apply object-fit algorithm
+        let container_size = taffy::Size {
+            width: width as f32,
+            height: height as f32,
+        };
+        let object_size = taffy::Size {
+            width: svg_size.width(),
+            height: svg_size.height(),
+        };
+        let paint_size = compute_object_fit(container_size, Some(object_size), ObjectFit::Contain);
+
+        // Compute object-position
+        let x_offset = object_position.horizontal.resolve(
+            CSSPixelLength::new(container_size.width - paint_size.width) / self.scale_factor as f32,
+        ) * self.scale_factor as f32;
+        let y_offset = object_position.vertical.resolve(
+            CSSPixelLength::new(container_size.height - paint_size.height) / self.scale_factor as f32,
+        ) * self.scale_factor as f32;
+        let x = x + x_offset.px() as f64;
+        let y = y + y_offset.px() as f64;
+
+        let x_scale = paint_size.width as f64 / object_size.width as f64;
+        let y_scale = paint_size.height as f64 / object_size.height as f64;
+
+        let transform = self
+            .transform
+            .pre_scale_non_uniform(x_scale, y_scale)
+            .then_translate(Vec2 { x, y });
+
+        anyrender_svg::render_svg_tree(scene, svg, transform);
+    }
+
     fn draw_image(&self, painter: &mut TextPainter) {
         // Check if this element has image data
         if let Some(image_data) = self.element.image_data() {
@@ -782,35 +850,29 @@ impl Element<'_> {
         }
     }
 
-    fn draw_background(&self, painter: &mut TextPainter) {
-        let background = self.style.get_background();
-        let bg_color = background.background_color.as_absolute().unwrap().as_color_color();
+    fn draw_canvas(&self, painter: &mut TextPainter) {
+        let Some(custom_paint_source) = self.element.canvas_data() else {
+            return;
+        };
 
-        // Fill background color
-        let background_rect = self.frame.padding_box;
-        if bg_color.components[3] > 0.0 {
-            painter.fill(Fill::NonZero, self.transform, bg_color, None, &background_rect);
-        }
+        let width = self.frame.content_box.width() as u32;
+        let height = self.frame.content_box.height() as u32;
+        let x = self.frame.content_box.origin().x;
+        let y = self.frame.content_box.origin().y;
 
-        // Render background images
-        let layout = self.node.final_layout;
-        let content_rect = Rect::new(
-            layout.location.x as f64,
-            layout.location.y as f64,
-            (layout.location.x + layout.size.width) as f64,
-            (layout.location.y + layout.size.height) as f64,
-        );
-        let scroll_transform = Affine::translate((
-            -self.context.dom.viewport_scroll.x,
-            -self.context.dom.viewport_scroll.y,
-        ));
-        background::render_background_image(
-            painter,
-            &content_rect,
-            &self.style,
-            self.scale_factor as f32,
-            &self.context.background_image_cache,
-            scroll_transform,
+        let transform = self.transform.then_translate(Vec2 { x, y} );
+
+        painter.fill(
+            Fill::NonZero,
+            transform,
+            Paint::Custom(&CustomPaint {
+                source_id: custom_paint_source.custom_paint_source_id,
+                width,
+                height,
+                scale: self.scale_factor
+            } as &(dyn Any + Send + Sync)),
+            None,
+            &Rect::from_origin_size((0.0, 0.0), (width as f64, height as f64)),
         );
     }
 }

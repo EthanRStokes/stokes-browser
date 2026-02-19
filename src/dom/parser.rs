@@ -1,3 +1,4 @@
+use std::ascii::AsciiExt;
 use super::{AttributeMap, Dom, ElementData, ImageData, NodeData};
 use crate::dom::config::DomConfig;
 use crate::dom::node::{SpecialElementData, TextData};
@@ -76,23 +77,36 @@ impl HtmlParser {
                 let mut attributes: AttributeMap = AttributeMap::empty();
                 for attr in attrs.borrow().iter() {
                     let local = attr.name.clone();
-                    let val = &attr.value;
-                    attributes.set(local, &*val);
+                    if local.local.as_ref() == "id" {
+                        let val = &attr.value;
+                        attributes.set(local, &*val);
+                    }
                 }
 
-                let mut elem_data = ElementData::new(name.clone(), attributes);
+                let elem_data = ElementData::new(name.clone(), attributes);
 
-                elem_data.flush_style_attribute(&dom.lock, &dom.url.url_extra_data());
-
-                // Special handling for <img> to create Image node variant, otherwise Element
-                if name.local.as_ref().eq_ignore_ascii_case("img") {
-                    // create ImageData from attributes - start with None, will be loaded later
-                    println!("Parser: Creating img element with src={:?}", elem_data.attr(local_name!("src")));
-                    elem_data.special_data = SpecialElementData::Image(Box::new(ImageData::None));
-                };
                 let node_kind = NodeData::Element(elem_data);
 
                 let id = dom.create_node(node_kind);
+
+                for attr in attrs.borrow().iter() {
+                    let local = attr.name.clone();
+                    let val = &attr.value;
+                    dom.set_attribute(id, local, val);
+                }
+                let elem_data = dom.nodes[id].element_data_mut().unwrap();
+                elem_data.flush_style_attribute(&dom.lock, &dom.url.url_extra_data());
+
+                {
+                    let tag = name.local.as_ref();
+                    if tag.eq_ignore_ascii_case("img") {
+                        dom.load_image(id);
+                    } else if tag.eq_ignore_ascii_case("canvas") {
+                        dom.load_custom_paint_src(id);
+                    } else if tag.eq_ignore_ascii_case("link") {
+                        dom.load_linked_stylesheet(id);
+                    }
+                }
 
                 // Register element id attribute in nodes_to_id map for getElementById lookups
                 if let Some(id_attr) = attrs.borrow().iter().find(|a| a.name.local.as_ref() == "id") {

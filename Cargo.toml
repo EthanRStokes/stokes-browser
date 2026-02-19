@@ -16,7 +16,7 @@ curl = "0.4"
 html5ever = "0.38.0"
 #markup5ever_rcdom = "0.36.0+unofficial"
 markup5ever_rcdom = { git = "https://github.com/EthanRStokes/html5ever", rev = "239a5d7" }
-usvg = "0.47.0"
+usvg = "0.46.0"
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 mozjs = "0.15.0"
 #mozjs = { git = "https://github.com/servo/mozjs.git", rev = "125b5ab" }
@@ -43,11 +43,13 @@ tracing = "0.1.44"
 hashbrown = "0.16.1"
 peniko = "0.6.0"
 anyrender = "0.7.0"
+anyrender_svg = "0.8.0"
 color = "0.3.2"
 html-escape = "0.2.13"
 lazy_static = "1.5.0"
 hirofa_utils = "0.7.4"
 cursor-icon = "1.2.0"
+data-url = "0.3.2"
 
 # Stylo
 stylo = "0.12.0"

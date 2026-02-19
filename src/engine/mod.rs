@@ -7,8 +7,7 @@ use crate::dom::node::{RasterImageData, SpecialElementData};
 use crate::dom::{Dom, ImageData, NodeData};
 use crate::dom::{EventDispatcher, EventType};
 use crate::js::JsRuntime;
-use crate::networking::{resolve_url, HttpClient, NetworkError, NewHttpClient};
-use crate::renderer::background::BackgroundImageCache;
+use crate::networking::{resolve_url, NetworkError, NewHttpClient, Resource};
 use crate::renderer::text::TextPainter;
 use crate::renderer::HtmlRenderer;
 use blitz_traits::shell::{ShellProvider, Viewport};
@@ -22,6 +21,8 @@ use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters
 use style::dom::{TDocument, TNode};
 use style::thread_state::ThreadState;
 use style::traversal::DomTraversal;
+use url::Url;
+use crate::networking;
 
 thread_local! {
     pub(crate) static ENGINE_REF: RefCell<Option<*mut Engine>> = RefCell::new(None);
@@ -31,7 +32,6 @@ thread_local! {
 /// The core browser engine that coordinates all browser activities
 pub struct Engine {
     pub config: EngineConfig,
-    http_client: HttpClient,
     new_http_client: Option<NewHttpClient>,
     current_url: String,
     page_title: String,
@@ -55,7 +55,6 @@ impl Engine {
     pub fn new(config: EngineConfig, viewport: Viewport, shell_provider: Arc<dyn ShellProvider>) -> Self {
         Self {
             config,
-            http_client: HttpClient::new(),
             new_http_client: None,
             current_url: String::new(),
             page_title: "New Tab".to_string(),
@@ -90,7 +89,7 @@ impl Engine {
 
         // Fetch the page content
         let result = async {
-            let html = self.http_client.fetch(url, &self.config.user_agent).unwrap_or_else(|err| {
+            let html = networking::fetch(url, &self.config.user_agent).unwrap_or_else(|err| {
                 include_str!("../../assets/404.html").to_string()
             });
 
@@ -121,7 +120,6 @@ impl Engine {
             self.scroll_y = 0.0;
 
             // Parse and apply CSS styles from the document
-            style::thread_state::enter(ThreadState::LAYOUT);
             self.parse_document_styles().await;
 
             // TODO Execute JavaScript in the page after everything is loaded
@@ -131,14 +129,14 @@ impl Engine {
                 style::thread_state::exit(ThreadState::SCRIPT);
             }
 
-            self.dom.as_mut().unwrap().flush_styles();
+            {
+                let dom = self.dom.as_mut().unwrap();
+
+                dom.resolve();
+            }
 
             // Calculate layout with CSS styles applied
-            self.recalculate_layout();
-
-            // Start loading images after layout is calculated
-            self.start_image_loading().await;
-            style::thread_state::exit(ThreadState::LAYOUT);
+            self.update_content_dimensions();
 
             Ok(())
         }.await;
@@ -154,138 +152,6 @@ impl Engine {
         result
     }
 
-    /// Start loading all images found in the current DOM
-    pub async fn start_image_loading(&mut self) {
-        let dom = self.dom_mut();
-        // Find all image nodes
-        let image_nodes = dom.find_node_ids(|node| node.data.element().is_some_and(|data| {
-            matches!(data.special_data, SpecialElementData::Image(_))
-        }));
-
-        println!("Found {} image nodes in DOM", image_nodes.len());
-
-        // Collect image sources that need to be loaded
-        let mut image_requests: Vec<(usize, Rc<String>)> = Vec::new();
-
-        for image_node in image_nodes {
-            let image_node = dom.get_node_mut(image_node).unwrap();
-            if let NodeData::Element(ref mut elem_data) = image_node.data {
-                if let SpecialElementData::Image(ref image_data) = elem_data.special_data {
-                    // Only start loading if the image is not already loaded
-                    if matches!(**image_data, ImageData::None) {
-                        // Get src from element's attributes
-                        if let Some(src) = elem_data.attr(local_name!("src")) {
-                            if !src.is_empty() {
-                                //println!("Found image to load: node_id={}, src={}", image_node.id, src);
-                                image_requests.push((image_node.id, Rc::new(src.to_string())));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        println!("Total image requests to fetch: {}", image_requests.len());
-
-        // Fetch all images concurrently
-        let mut fetch_futures = Vec::new();
-        for (_, src) in &image_requests {
-            // Resolve URL before creating the future
-            let absolute_url = match self.resolve_url(src) {
-                Ok(url) => url,
-                Err(e) => {
-                    eprintln!("Failed to resolve image URL {}: {}", src, e);
-                    continue;
-                }
-            };
-
-            let http_client = &self.http_client;
-            let user_agent = &self.config.user_agent;
-            fetch_futures.push(async move {
-                let result = self.new_http_client.unwrap().fetch_image(&absolute_url, user_agent).await;
-                (src, result)
-            });
-        }
-
-        let results = futures::future::join_all(fetch_futures).await;
-
-        // Collect node IDs that had their images loaded successfully
-        let mut loaded_image_node_ids: Vec<usize> = Vec::new();
-
-        let dom = self.dom_mut();
-        // Process results and update image nodes
-        for ((node_id, src), (_, result)) in image_requests.iter().zip(results.into_iter()) {
-            let mut node = dom.get_node_mut(*node_id).unwrap();
-            if node.data.element().is_some() {
-                if let SpecialElementData::Image(data) = &mut node.data.element_mut().unwrap().special_data {
-                    match result {
-                        Ok(image_bytes) => {
-                            let image_bytes = bytes::Bytes::from(image_bytes);
-                            //println!("Image bytes length: {} for {}", image_bytes.len(), src);
-
-                            // Debug: check first few bytes to identify format
-                            if image_bytes.len() >= 8 {
-                            //    println!("Image header bytes: {:02x?}", &image_bytes[..8.min(image_bytes.len())]);
-                            }
-
-                            match image::ImageReader::new(Cursor::new(&image_bytes))
-                                .with_guessed_format()
-                            {
-                                Ok(reader) => {
-                                    //println!("Detected image format: {:?}", reader.format());
-                                    match reader.decode() {
-                                        Ok(image) => {
-                                            let (w, h) = (image.width(), image.height());
-                                            //println!("Image color type: {:?}, dimensions: {}x{}", image.color(), w, h);
-                                            let rgba_image = image.to_rgba8();
-                                            let (width, height) = rgba_image.dimensions();
-                                            let rgba_data = rgba_image.into_raw();
-
-                                            // Debug: check if data is all zeros
-                                            let non_zero_count = rgba_data.iter().filter(|&&b| b != 0).count();
-                                            //println!("Image decoded: {}x{}, rgba_data len={}, non-zero bytes={}",
-                                            //    width, height, rgba_data.len(), non_zero_count);
-
-                                            let raster = RasterImageData::new(
-                                                width,
-                                                height,
-                                                Arc::new(rgba_data),
-                                            );
-                                            *data = Box::new(ImageData::Raster(raster.clone()));
-                                            // Track this node for cache clearing
-                                            loaded_image_node_ids.push(*node_id);
-                                            //println!("Successfully loaded and decoded image: {}", src);
-                                        }
-                                        Err(e) => {
-                                            println!("Failed to decode image {}: {}", src, e);
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    println!("Failed to guess image format for {}: {}", src, e);
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            //data.loading_state = ImageLoadingState::Failed(err.to_string());
-                            println!("Failed to load image {}: {}", src, err);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Clear layout caches for all loaded images and their ancestors
-        // This is necessary because taffy caches layout results, and we need
-        // to invalidate them now that images have their actual dimensions
-        for node_id in loaded_image_node_ids {
-            dom.clear_layout_cache_with_ancestors(node_id);
-        }
-
-        // Recalculate layout after images are loaded (dimensions may have changed)
-        self.recalculate_layout();
-    }
-
     /// Fetch a single image from a URL
     async fn fetch_image(&self, url: &str) -> Result<Vec<u8>, NetworkError> {
         // Resolve relative URLs against the current page URL
@@ -294,7 +160,7 @@ impl Engine {
         println!("Fetching image: {}", absolute_url);
 
         // Use the HTTP client to fetch the image data
-        let image_bytes = self.http_client.fetch_resource(&absolute_url, &self.config.user_agent).await?;
+        let image_bytes = networking::fetch_resource(&absolute_url, &self.config.user_agent).await?;
 
         // Validate that we got some data
         if image_bytes.is_empty() {
@@ -326,26 +192,7 @@ impl Engine {
                 }
             }
         }
-
-        // Start loading again
-        self.start_image_loading().await;
-    }
-
-
-    /// Recalculate layout with current DOM and styles
-    pub fn recalculate_layout(&mut self) {
-        if self.dom.is_none() {
-            return;
-        }
-
-        let dom = self.dom.as_mut().unwrap();
-
-        dom.compute_layout();
-
-        self.style_map_dirty = true;
-
-        // Update content dimensions
-        self.update_content_dimensions();
+        println!("ASDJOAJ")
     }
 
     /// Update the viewport size
@@ -357,7 +204,7 @@ impl Engine {
 
         // Recalculate layout with new viewport
         style::thread_state::enter(ThreadState::LAYOUT);
-        self.recalculate_layout();
+        self.update_content_dimensions();
         style::thread_state::exit(ThreadState::LAYOUT);
     }
 
@@ -392,6 +239,12 @@ impl Engine {
 
     /// Render the current page to a canvas
     pub fn render(&mut self, painter: &mut TextPainter) {
+        {
+            let dom = self.dom.as_mut().unwrap();
+
+            //dom.resolve();
+        }
+
         let dom = self.dom.as_ref().unwrap();
         let node = dom.root_node();
 
@@ -400,7 +253,6 @@ impl Engine {
             scale_factor: self.viewport.scale_f64(),
             width: self.viewport_width() as u32,
             height: self.viewport_height() as u32,
-            background_image_cache: BackgroundImageCache::new(),
             debug_hitboxes: self.config.debug_hitboxes,
         };
 
@@ -424,7 +276,7 @@ impl Engine {
     #[inline]
     pub async fn load_external_stylesheet(&mut self, css_url: &str) -> Result<(), NetworkError> {
         let absolute_url = self.resolve_url(css_url)?;
-        let css_content = self.http_client.fetch_resource(&absolute_url, &self.config.user_agent).await?;
+        let css_content = networking::fetch_resource(&absolute_url, &self.config.user_agent).await?;
         let css_content = String::from_utf8(css_content).expect("Failed to decode CSS content as UTF-8");
         self.add_author_stylesheet(&css_content);
         Ok(())
@@ -444,58 +296,9 @@ impl Engine {
             }
         }
 
-        let mut link_hrefs: Vec<String> = Vec::new();
-        let link_elements = dom.query_selector("link");
-        for link_element in link_elements {
-            if let NodeData::Element(element_data) = &link_element.data {
-                if let (Some(rel), Some(href)) = (
-                    element_data.attr(local_name!("rel")),
-                    element_data.attr(local_name!("href"))
-                ) {
-                    if rel.to_lowercase() == "stylesheet" {
-                        link_hrefs.push(href.to_string());
-                    }
-                }
-            }
-        }
-
         // Add all inline stylesheets from <style> tags
         for css_content in style_contents {
             self.add_author_stylesheet(&css_content);
-        }
-
-        // Load and add external stylesheets from <link> tags
-        let mut fetch_futures = Vec::new();
-        for href in link_hrefs {
-            let absolute_url = match self.resolve_url(&href) {
-                Ok(url) => url,
-                Err(e) => {
-                    println!("Failed to resolve stylesheet URL {}: {}", href, e);
-                    continue;
-                }
-            };
-            let http_client = &self.http_client;
-            let user_agent = &self.config.user_agent;
-            fetch_futures.push(async move {
-                http_client.fetch_resource(&absolute_url, user_agent).await
-            });
-        }
-
-        let results = futures::future::join_all(fetch_futures).await;
-
-        for result in results {
-            match result {
-                Ok(css_bytes) => {
-                    if let Ok(css_content) = String::from_utf8(css_bytes) {
-                        self.add_author_stylesheet(&css_content);
-                    } else {
-                        println!("Failed to decode fetched stylesheet as UTF-8");
-                    }
-                }
-                Err(e) => {
-                    println!("Failed to fetch external stylesheet: {}", e);
-                }
-            }
         }
     }
 
@@ -589,178 +392,13 @@ impl Engine {
     }
 
     /// Update content dimensions based on layout
-    fn update_content_dimensions(&mut self) {
+    pub(crate) fn update_content_dimensions(&mut self) {
         if let Some(dom) = &self.dom {
             let root_element = dom.root_element();
             let layout = root_element.final_layout;
             self.content_width = layout.size.width;
             self.content_height = layout.size.height;
         }
-    }
-
-    /// Recursively find the element at the given position (returns the deepest/topmost element)
-    fn find_element_at_position(&self, node_id: usize, x: f32, y: f32, parent_x: f32, parent_y: f32) -> Option<usize> {
-        let dom = self.dom.as_ref()?;
-        let node = dom.get_node(node_id)?;
-        let layout = node.final_layout;
-
-        // Calculate absolute position of this node
-        let abs_x = parent_x + layout.location.x;
-        let abs_y = parent_y + layout.location.y;
-
-        // Check if position is within this box (border box)
-        let left = abs_x;
-        let right = abs_x + layout.size.width;
-        let top = abs_y;
-        let bottom = abs_y + layout.size.height;
-
-        if x >= left && x <= right && y >= top && y <= bottom {
-            // Check layout children first (they are on top)
-            if let Some(layout_children) = node.layout_children.borrow().as_ref() {
-                // Sort children by z-index (highest first for hit testing)
-                // Elements with higher z-index should be checked first as they are visually on top
-                let mut children_with_z: Vec<(usize, i32)> = layout_children
-                    .iter()
-                    .map(|&child_id| {
-                        let child_node = dom.get_node(child_id);
-                        let z_index = child_node
-                            .and_then(|n| n.primary_styles())
-                            .map(|s| {
-                                match s.get_position().z_index {
-                                    style::values::computed::ZIndex::Integer(i) => i,
-                                    style::values::computed::ZIndex::Auto => 0,
-                                }
-                            })
-                            .unwrap_or(0);
-                        (child_id, z_index)
-                    })
-                    .collect();
-
-                // Sort by z-index descending (highest first), then by DOM order descending (later elements first)
-                // This ensures visually topmost elements are checked first
-                children_with_z.sort_by(|a, b| {
-                    b.1.cmp(&a.1).then_with(|| {
-                        // For equal z-index, later DOM order is on top, so check those first
-                        layout_children.iter().position(|&id| id == b.0)
-                            .cmp(&layout_children.iter().position(|&id| id == a.0))
-                    })
-                });
-
-                for (child_id, _) in children_with_z {
-                    if let Some(child_node_id) = self.find_element_at_position(child_id, x, y, abs_x, abs_y) {
-                        return Some(child_node_id);
-                    }
-                }
-            }
-
-            // Check inline boxes from inline layout data (for hyperlinks and inline elements)
-            if let Some(element_data) = node.element_data() {
-                if let Some(inline_layout) = &element_data.inline_layout_data {
-                    // Get content offset (padding + border)
-                    let padding_border = layout.padding + layout.border;
-                    let content_x = abs_x + padding_border.left;
-                    let content_y = abs_y + padding_border.top;
-
-                    let line_count = inline_layout.layout.lines().count();
-
-                    // Check each line and item for hit testing
-                    for line in inline_layout.layout.lines() {
-                        for item in line.items() {
-                            match item {
-                                parley::PositionedLayoutItem::InlineBox(ibox) => {
-                                    let box_left = content_x + ibox.x;
-                                    let box_top = content_y + ibox.y;
-                                    let box_right = box_left + ibox.width;
-                                    let box_bottom = box_top + ibox.height;
-
-                                    if x >= box_left && x <= box_right && y >= box_top && y <= box_bottom {
-                                        let box_id = ibox.id as usize;
-                                        if let Some(result) = self.find_element_in_inline_box(box_id, x, y, content_x, content_y) {
-                                            return Some(result);
-                                        }
-                                        return Some(box_id);
-                                    }
-                                }
-                                parley::PositionedLayoutItem::GlyphRun(glyph_run) => {
-                                    // For glyph runs, check if click is within the run's bounds
-                                    // The run's style.brush.id contains the node ID this text belongs to
-                                    let run_x = content_x + glyph_run.offset();
-                                    let run_y = content_y + glyph_run.baseline() - glyph_run.run().metrics().ascent;
-                                    let run_width = glyph_run.advance();
-                                    let run_height = glyph_run.run().metrics().ascent + glyph_run.run().metrics().descent;
-
-                                    let run_left = run_x;
-                                    let run_top = run_y;
-                                    let run_right = run_left + run_width;
-                                    let run_bottom = run_top + run_height;
-
-                                    let brush_node_id = glyph_run.style().brush.id;
-
-                                    if x >= run_left && x <= run_right && y >= run_top && y <= run_bottom {
-                                        return Some(brush_node_id);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // If no child matched, return this node
-            return Some(node_id);
-        }
-
-        None
-    }
-
-    /// Find element within an inline box (like <a> tags inside text)
-    fn find_element_in_inline_box(&self, node_id: usize, x: f32, y: f32, container_x: f32, container_y: f32) -> Option<usize> {
-        let dom = self.dom.as_ref()?;
-        let node = dom.get_node(node_id)?;
-        let layout = node.final_layout;
-
-        // For inline boxes, location is relative to the inline container
-        let abs_x = container_x + layout.location.x;
-        let abs_y = container_y + layout.location.y;
-
-        // Check children of this inline box
-        if let Some(layout_children) = node.layout_children.borrow().as_ref() {
-            for &child_id in layout_children.iter().rev() {
-                if let Some(child_node_id) = self.find_element_at_position(child_id, x, y, abs_x, abs_y) {
-                    return Some(child_node_id);
-                }
-            }
-        }
-
-        // Check inline layout within this inline box
-        if let Some(element_data) = node.element_data() {
-            if let Some(inline_layout) = &element_data.inline_layout_data {
-                let padding_border = layout.padding + layout.border;
-                let content_x = abs_x + padding_border.left;
-                let content_y = abs_y + padding_border.top;
-
-                for line in inline_layout.layout.lines() {
-                    for item in line.items() {
-                        if let parley::PositionedLayoutItem::InlineBox(ibox) = item {
-                            let box_left = content_x + ibox.x;
-                            let box_top = content_y + ibox.y;
-                            let box_right = box_left + ibox.width;
-                            let box_bottom = box_top + ibox.height;
-
-                            if x >= box_left && x <= box_right && y >= box_top && y <= box_bottom {
-                                let box_id = ibox.id as usize;
-                                if let Some(result) = self.find_element_in_inline_box(box_id, x, y, content_x, content_y) {
-                                    return Some(result);
-                                }
-                                return Some(box_id);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        None
     }
 
     /// Initialize JavaScript runtime for the current document
@@ -873,7 +511,7 @@ impl Engine {
     /// Load an external JavaScript file from a URL
     async fn load_external_script(&self, script_url: &str) -> Result<String, NetworkError> {
         let absolute_url = self.resolve_url(script_url)?;
-        let script_bytes = self.http_client.fetch_resource(&absolute_url, &self.config.user_agent).await?;
+        let script_bytes = networking::fetch_resource(&absolute_url, &self.config.user_agent).await?;
         let script_content = String::from_utf8(script_bytes)
             .map_err(|_| NetworkError::Utf8("Failed to decode script as UTF-8".to_string()))?;
 
@@ -984,12 +622,8 @@ impl Engine {
 
     /// Handle a mouse down event at the given position
     pub fn handle_mouse_down(&mut self, x: f32, y: f32) {
-        let adjusted_x = x + self.scroll_x;
-        let adjusted_y = y + self.scroll_y;
-
         if let Some(dom) = &self.dom {
-            let root_id = dom.root_element().id;
-            if let Some(node_id) = self.find_element_at_position(root_id, adjusted_x, adjusted_y, 0.0, 0.0) {
+            if let Some(node_id) = dom.hover_node_id {
                 self.fire_mouse_event(node_id, EventType::MouseDown, x as f64, y as f64);
             }
         }
@@ -997,12 +631,8 @@ impl Engine {
 
     /// Handle a mouse up event at the given position
     pub fn handle_mouse_up(&mut self, x: f32, y: f32) {
-        let adjusted_x = x + self.scroll_x;
-        let adjusted_y = y + self.scroll_y;
-
         if let Some(dom) = &self.dom {
-            let root_id = dom.root_element().id;
-            if let Some(node_id) = self.find_element_at_position(root_id, adjusted_x, adjusted_y, 0.0, 0.0) {
+            if let Some(node_id) = dom.hover_node_id {
                 self.fire_mouse_event(node_id, EventType::MouseUp, x as f64, y as f64);
             }
         }

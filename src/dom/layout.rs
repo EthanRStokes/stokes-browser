@@ -1,8 +1,8 @@
-use crate::dom::damage::{ALL_DAMAGE, CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC};
-use crate::dom::node::{DomNodeFlags, NodeKind, SpecialElementData, TextLayout};
+use crate::dom::damage::{HoistedPaintChild, HoistedPaintChildren, ALL_DAMAGE, CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC};
+use crate::dom::node::{BackgroundImageData, DomNodeFlags, NodeKind, SpecialElementData, Status, TextLayout};
 use crate::dom::{stylo_to_parley, AttributeMap, Dom, DomNode, ElementData, NodeData};
 use crate::layout::table::build_table_context;
-use crate::networking::parse_svg;
+use crate::networking::{parse_svg, ImageHandler, ImageType, ResourceHandler};
 use crate::qual_name;
 use crate::ui::TextBrush;
 use html5ever::local_name;
@@ -12,8 +12,11 @@ use parley::{FontContext, FontWeight, GenericFamily, InlineBox, InlineBoxKind, L
 use slab::Slab;
 use std::cell::RefCell;
 use std::sync::Arc;
+use blitz_traits::net::Request;
 use style::data::ElementData as StyloElementData;
+use style::properties::longhands;
 use style::selector_parser::RestyleDamage;
+use style::servo::url::ComputedUrl;
 use style::shared_lock::StylesheetGuards;
 use style::values::computed::font::GenericFontFamily;
 use style::values::computed::font::SingleFontFamily;
@@ -22,6 +25,7 @@ use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use style::values::specified::text::TextTransformCase;
 use style::values::specified::TextDecorationLine;
 use taffy::{compute_root_layout, round_layout, AvailableSpace, NodeId};
+use style::properties::generated::longhands::position::computed_value::T as Position;
 
 thread_local! {
     pub static LAYOUT_CTX: RefCell<Option<Box<LayoutContext<TextBrush>>>> = const { RefCell::new(None) };
@@ -935,5 +939,206 @@ impl Dom {
             height: AvailableSpace::Definite(size.height.to_f32_px()),
         });
         round_layout(self, root_element_id);
+    }
+
+    pub fn flush_styles_to_layout(&mut self, node_id: usize) {
+        self.flush_styles_to_layout_inner(node_id, None);
+    }
+
+    pub fn flush_styles_to_layout_inner(&mut self, node_id: usize, parent_stacking_context: Option<&mut HoistedPaintChildren>) {
+        let doc_id = self.id();
+
+        let mut new_stacking_context = HoistedPaintChildren::new();
+        let stacking_context = &mut new_stacking_context;
+
+        let display = {
+            let node = self.nodes.get_mut(node_id).unwrap();
+            let _damage = node.damage().unwrap_or(ALL_DAMAGE);
+            let stylo_element_data = node.stylo_data.borrow();
+            let primary_styles = stylo_element_data
+                .as_ref()
+                .and_then(|data| data.styles.get_primary());
+
+            let Some(style) = primary_styles else {
+                return;
+            };
+
+            // if damage.intersects(RestyleDamage::RELAYOUT | CONSTRUCT_BOX) {
+            node.taffy_style = stylo_taffy::to_taffy_style(style);
+            node.display_constructed_as = style.clone_display();
+            // }
+
+            // Flush background image from style to dedicated storage on the node
+            // TODO: handle multiple background images
+            if let Some(elem) = node.data.element_mut() {
+                let style_bgs = &style.get_background().background_image.0;
+                let elem_bgs = &mut elem.background_images;
+
+                let len = style_bgs.len();
+                elem_bgs.resize_with(len, || None);
+
+                for idx in 0..len {
+                    let background_image = &style_bgs[idx];
+                    let new_bg_image = match background_image {
+                        style::values::computed::image::Image::Url(ComputedUrl::Valid(new_url)) => {
+                            let old_bg_image = elem_bgs[idx].as_ref();
+                            let old_bg_image_url = old_bg_image.map(|data| &data.url);
+                            if old_bg_image_url.is_some_and(|old_url| **new_url == **old_url) {
+                                break;
+                            }
+
+                            // Check cache first
+                            let url_str = new_url.as_str();
+                            if let Some(cached_image) = self.image_cache.get(url_str) {
+                                Some(BackgroundImageData {
+                                    url: new_url.clone(),
+                                    status: Status::Ok,
+                                    image: cached_image.clone(),
+                                })
+                            } else if let Some(waiting_list) = self.pending_images.get_mut(url_str)
+                            {
+                                waiting_list.push((node_id, ImageType::Background(idx)));
+                                Some(BackgroundImageData::new(new_url.clone()))
+                            } else {
+                                // Start fetch and track as pending
+                                #[cfg(feature = "tracing")]
+                                tracing::info!("Fetching image {url_str}");
+                                self.pending_images.insert(
+                                    url_str.to_string(),
+                                    vec![(node_id, ImageType::Background(idx))],
+                                );
+
+                                self.net_provider.fetch(
+                                    doc_id,
+                                    Request::get((**new_url).clone()),
+                                    ResourceHandler::boxed(
+                                        self.tx.clone(),
+                                        doc_id,
+                                        None, // Don't pass node_id, we'll handle via pending_images
+                                        self.shell_provider.clone(),
+                                        ImageHandler::new(ImageType::Background(idx)),
+                                    ),
+                                );
+
+                                Some(BackgroundImageData::new(new_url.clone()))
+                            }
+                        }
+                        _ => None,
+                    };
+
+                    // Element will always exist due to resize_with above
+                    elem_bgs[idx] = new_bg_image;
+                }
+            }
+
+            node.taffy_style.display
+        };
+
+        // If the node has children, then take those children and...
+        let children = self.nodes[node_id].layout_children.borrow_mut().take();
+        if let Some(mut children) = children {
+            let is_flex_or_grid = matches!(display, taffy::Display::Flex | taffy::Display::Grid);
+
+            for &child in children.iter() {
+                self.flush_styles_to_layout_inner(
+                    child,
+                    match self.nodes[child].is_stacking_context_root(is_flex_or_grid) {
+                        true => None,
+                        false => Some(stacking_context),
+                    }
+                )
+            }
+
+            if is_flex_or_grid {
+                children.sort_by(|left, right| {
+                    let left_node = self.nodes.get(*left).unwrap();
+                    let right_node = self.nodes.get(*right).unwrap();
+                    left_node.order().cmp(&right_node.order())
+                });
+            }
+
+            let mut paint_children = self.nodes[node_id].paint_children.borrow_mut();
+            if paint_children.is_none() {
+                *paint_children = Some(Vec::new());
+            }
+            let paint_children = paint_children.as_mut().unwrap();
+            paint_children.clear();
+            paint_children.reserve(children.len());
+
+            for &child_id in children.iter() {
+                let child = &self.nodes[child_id];
+
+                let Some(style) = child.primary_styles() else {
+                    paint_children.push(child_id);
+                    continue;
+                };
+
+                let position = style.clone_position();
+                let z_index = style.clone_z_index().integer_or(0);
+
+                if position != Position::Static && z_index != 0 {
+                    stacking_context.children.push(HoistedPaintChild {
+                        node_id: child_id,
+                        z_index,
+                        position: taffy::Point::ZERO,
+                    })
+                } else {
+                    paint_children.push(child_id);
+                }
+            }
+
+            paint_children.sort_by(|left, right| {
+                let left_node = self.nodes.get(*left).unwrap();
+                let right_node = self.nodes.get(*right).unwrap();
+                node_to_paint_order(left_node, is_flex_or_grid).cmp(&node_to_paint_order(right_node, is_flex_or_grid))
+            });
+
+            // Put children back
+            *self.nodes[node_id].layout_children.borrow_mut() = Some(children);
+        }
+
+        if let Some(parent_stacking_context) = parent_stacking_context {
+            let position = self.nodes[node_id].final_layout.location;
+            let scroll_offset = self.nodes[node_id].scroll_offset;
+            for hoisted in stacking_context.children.iter_mut() {
+                hoisted.position.x += position.x - scroll_offset.x as f32;
+                hoisted.position.y += position.y - scroll_offset.y as f32;
+            }
+            parent_stacking_context.children.extend(stacking_context.children.iter().cloned());
+        } else {
+            stacking_context.sort();
+            stacking_context.compute_content_size(self);
+            self.nodes[node_id].stacking_context = Some(Box::new(new_stacking_context))
+        }
+    }
+}
+
+#[inline(always)]
+fn position_to_order(pos: Position) -> i32 {
+    match pos {
+        Position::Static | Position::Relative | Position::Sticky => 0,
+        Position::Absolute | Position::Fixed => 2,
+    }
+}
+#[inline(always)]
+fn float_to_order(pos: Float) -> i32 {
+    match pos {
+        Float::None => 0,
+        _ => 1,
+    }
+}
+
+#[inline(always)]
+fn node_to_paint_order(node: &DomNode, is_flex_or_grid: bool) -> i32 {
+    let Some(style) = node.primary_styles() else {
+        return 0;
+    };
+    if is_flex_or_grid {
+        match style.clone_position() {
+            Position::Static | Position::Relative | Position::Sticky => style.clone_order(),
+            Position::Absolute | Position::Fixed => 0,
+        }
+    } else {
+        position_to_order(style.clone_position()) + float_to_order(style.clone_float())
     }
 }

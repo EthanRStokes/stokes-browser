@@ -2,7 +2,7 @@ use crate::dom::Dom;
 use crate::renderer::cache::{FontCacheKey, FontCacheKeyBorrowed, GenerationalCache, NormalizedTypefaceCacheKey, NormalizedTypefaceCacheKeyBorrowed};
 use crate::ui::TextBrush;
 use anyrender::PaintScene;
-use color::{AlphaColor, Srgb};
+use color::{AlphaColor, DynamicColor, Srgb};
 use kurbo::{Affine, Point, Shape, Stroke};
 use parley::{Line, PositionedLayoutItem};
 use peniko::{Fill, ImageBrushRef};
@@ -1058,6 +1058,8 @@ mod sk_kurbo {
 pub trait ToColorColor {
     /// Converts a color into the `AlphaColor<Srgb>` type from the `color` crate
     fn as_color_color(&self) -> AlphaColor<Srgb>;
+
+    fn as_dynamic_color(&self) -> DynamicColor;
 }
 impl ToColorColor for AbsoluteColor {
     fn as_color_color(&self) -> AlphaColor<Srgb> {
@@ -1066,5 +1068,9 @@ impl ToColorColor for AbsoluteColor {
                 .to_color_space(style::color::ColorSpace::Srgb)
                 .raw_components(),
         )
+    }
+
+    fn as_dynamic_color(&self) -> DynamicColor {
+        DynamicColor::from_alpha_color(self.as_color_color())
     }
 }

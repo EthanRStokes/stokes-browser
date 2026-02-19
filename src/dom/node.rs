@@ -1,4 +1,4 @@
-use crate::dom::damage::ALL_DAMAGE;
+use crate::dom::damage::{HoistedPaintChildren, ALL_DAMAGE};
 use crate::dom::events::EventListenerRegistry;
 use crate::dom::ZERO;
 use crate::layout::table::TableContext;
@@ -28,16 +28,18 @@ use style::invalidation::element::restyle_hints::RestyleHint;
 use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::properties::style_structs::Font;
 use style::properties::{parse_style_attribute, PropertyDeclarationBlock};
-use style::selector_parser::RestyleDamage;
+use style::selector_parser::{PseudoElement, RestyleDamage};
 use style::servo_arc::{Arc as ServoArc, Arc};
 use style::shared_lock::{Locked, SharedRwLock};
 use style::stylesheets::{CssRuleType, DocumentStyleSheet, UrlExtraData};
 use style::values::computed::{Display, PositionProperty};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
+use style::properties::generated::longhands::position::computed_value::T as Position;
 use style_traits::ToCss;
 use stylo_atoms::Atom;
 use stylo_dom::ElementState;
 use taffy::{Cache, Layout, Point, Style};
+use url::Url;
 
 /// Callback type for layout invalidation
 pub type LayoutInvalidationCallback = Box<dyn Fn()>;
@@ -210,6 +212,8 @@ pub struct ElementData {
 
     pub special_data: SpecialElementData,
 
+    pub background_images: Vec<Option<BackgroundImageData>>,
+
     pub inline_layout_data: Option<Box<TextLayout>>,
 
     /// For HTML <template> elements, holds the template contents
@@ -258,6 +262,7 @@ impl ElementData {
             special_data: SpecialElementData::None,
             inline_layout_data: None,
             template_contents: None,
+            background_images: Vec::new(),
         }
     }
 
@@ -427,6 +432,33 @@ pub enum ImageLoadingState {
     Failed(String),  // Error message
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum Status {
+    Ok,
+    Error,
+    Loading,
+}
+
+#[derive(Debug, Clone)]
+pub struct BackgroundImageData {
+    /// The url of the background image
+    pub url: ServoArc<Url>,
+    /// The loading status of the background image
+    pub status: Status,
+    /// The image data
+    pub image: ImageData,
+}
+
+impl BackgroundImageData {
+    pub fn new(url: ServoArc<Url>) -> Self {
+        Self {
+            url,
+            status: Status::Loading,
+            image: ImageData::None,
+        }
+    }
+}
+
 bitflags! {
     pub struct DomNodeFlags: u32 {
         const IS_INLINE_ROOT = 0b00000001;
@@ -470,6 +502,8 @@ pub struct DomNode {
     pub children: Vec<usize>,
     pub layout_parent: Cell<Option<usize>>,
     pub layout_children: RefCell<Option<Vec<usize>>>,
+    pub paint_children: RefCell<Option<Vec<usize>>>,
+    pub stacking_context: Option<Box<HoistedPaintChildren>>,
 
     pub flags: DomNodeFlags,
 
@@ -532,6 +566,8 @@ impl DomNode {
             children: Vec::new(),
             layout_parent: Cell::new(None),
             layout_children: RefCell::new(None),
+            paint_children: RefCell::new(None),
+            stacking_context: None,
             flags: DomNodeFlags::empty(),
             data,
             stylo_data: Default::default(),
@@ -838,6 +874,55 @@ impl DomNode {
         }
     }
 
+    pub fn order(&self) -> i32 {
+        self.primary_styles()
+            .map(|s| match s.pseudo() {
+                Some(PseudoElement::Before) => i32::MIN,
+                Some(PseudoElement::After) => i32::MAX,
+                _ => s.clone_order(),
+            })
+            .unwrap_or(0)
+    }
+
+    pub fn z_index(&self) -> i32 {
+        self.primary_styles()
+            .map(|s| s.clone_z_index().integer_or(0))
+            .unwrap_or(0)
+    }
+
+    // https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_positioned_layout/Stacking_context#features_creating_stacking_contexts
+    pub fn is_stacking_context_root(&self, is_flex_or_grid_item: bool) -> bool {
+        let Some(style) = self.primary_styles() else {
+            return false;
+        };
+
+        let position = style.clone_position();
+        let has_z_index = !style.clone_z_index().is_auto();
+
+        if style.clone_opacity() != 1.0 {
+            return true;
+        }
+
+        let position_based = match position {
+            Position::Fixed | Position::Sticky => true,
+            Position::Relative | Position::Absolute => has_z_index,
+            Position::Static => has_z_index && is_flex_or_grid_item,
+        };
+        if position_based {
+            return true;
+        }
+
+        // TODO: mix-blend-mode
+        // TODO: transforms
+        // TODO: filter
+        // TODO: clip-path
+        // TODO: mask
+        // TODO: isolation
+        // TODO: contain
+
+        false
+    }
+
     /// Enhanced CSS selector matching (still simplified but more comprehensive)
     pub fn query_selector(&self, selector: &str) -> Vec<usize> {
         self.find_nodes(|node| self.matches_selector(node, selector))
@@ -1022,9 +1107,18 @@ impl DomNode {
             || y < 0.0
             || y > content_size.height + self.scroll_offset.y as f32);
 
-        // todo stacking context
+        let matches_hoisted_content = match &self.stacking_context {
+            Some(sc) => {
+                let content_area = sc.content_area;
+                x >= content_area.left + self.scroll_offset.x as f32
+                && x <= content_area.right + self.scroll_offset.x as f32
+                && y >= content_area.top + self.scroll_offset.y as f32
+                && y <= content_area.bottom + self.scroll_offset.y as f32
+            },
+            None => false,
+        };
 
-        if !matches_self && !matches_content {
+        if !matches_self && !matches_content && !matches_hoisted_content {
             return None;
         }
 
@@ -1037,10 +1131,36 @@ impl DomNode {
             y -= content_box_offset.y;
         }
 
+        // Positive z_index hoisted children
+        if matches_hoisted_content {
+            if let Some(hoisted) = &self.stacking_context {
+                for child in hoisted.pos_z_hoisted_children().rev() {
+                    let x = x - child.position.x;
+                    let y = y - child.position.y;
+                    if let Some(hit) = self.get_node(child.node_id).hit(x, y) {
+                        return Some(hit);
+                    }
+                }
+            }
+        }
+
         // Call `.hit()` on each child in turn. If any return `Some` then return that value. Else return `Some(self.id).
-        for child_id in self.layout_children.borrow().iter().flatten().rev() {
+        for child_id in self.paint_children.borrow().iter().flatten().rev() {
             if let Some(hit) = self.get_node(*child_id).hit(x, y) {
                 return Some(hit);
+            }
+        }
+
+        // Negative z_index hoisted children
+        if matches_hoisted_content {
+            if let Some(hoisted) = &self.stacking_context {
+                for child in hoisted.neg_z_hoisted_children().rev() {
+                    let x = x - child.position.x;
+                    let y = y - child.position.y;
+                    if let Some(hit) = self.get_node(child.node_id).hit(x, y) {
+                        return Some(hit);
+                    }
+                }
             }
         }
 
