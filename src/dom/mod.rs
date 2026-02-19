@@ -11,6 +11,8 @@ pub mod stylo_to_parley;
 mod attr;
 mod snapshot;
 mod stylo_to_cursor;
+mod resource;
+mod resolve;
 
 pub use self::events::{EventDispatcher, EventType};
 pub use self::node::{AttributeMap, DomNode, ElementData, ImageData, ImageLoadingState, NodeData};
@@ -19,9 +21,9 @@ use crate::css::stylo::RecalcStyle;
 use crate::dom::config::DomConfig;
 use crate::dom::damage::{ALL_DAMAGE, CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC};
 use crate::dom::layout::collect_layout_children;
-use crate::dom::node::{DomNodeFlags, TextData};
+use crate::dom::node::{DomNodeFlags, SpecialElementData, TextData};
 use crate::dom::url::DocUrl;
-use crate::networking::{ResourceLoadResponse, StylesheetLoader};
+use crate::networking::{ImageType, ResourceLoadResponse, StylesheetLoader};
 use crate::ui::TextBrush;
 use blitz_traits::events::HitResult;
 use blitz_traits::net::{DummyNetProvider, NetProvider};
@@ -37,7 +39,7 @@ use skrifa::instance::{LocationRef, Size};
 use skrifa::metrics::{GlyphMetrics, Metrics};
 use skrifa::{MetadataProvider, Tag};
 use slab::Slab;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, Bound, HashMap};
 use std::fmt::{Debug, Formatter};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -60,6 +62,7 @@ use style::servo::media_queries::FontMetricsProvider;
 use style::shared_lock::{SharedRwLock, StylesheetGuards};
 use style::stylesheets::{AllowImportRules, DocumentStyleSheet, Origin, Stylesheet};
 use style::stylist::Stylist;
+use style::thread_state::ThreadState;
 use style::traversal::DomTraversal;
 use style::traversal_flags::TraversalFlags;
 use style::values::computed::font::{GenericFontFamily, QueryFontMetricsFlags};
@@ -115,6 +118,9 @@ pub struct Dom {
     pub(crate) nodes_to_id: HashMap<String, usize>,
     pub(crate) nodes_to_stylesheet: BTreeMap<usize, DocumentStyleSheet>,
     pub(crate) stylesheets: HashMap<String, DocumentStyleSheet>,
+
+    pub(crate) image_cache: HashMap<String, ImageData>,
+    pub(crate) pending_images: HashMap<String, Vec<(usize, ImageType)>>,
 
     pub net_provider: Arc<dyn NetProvider>,
     pub shell_provider: Arc<dyn ShellProvider>,
@@ -309,6 +315,8 @@ impl Dom {
             nodes_to_id: Default::default(),
             nodes_to_stylesheet: Default::default(),
             stylesheets: Default::default(),
+            image_cache: HashMap::new(),
+            pending_images: HashMap::new(),
             net_provider,
             shell_provider,
         };
@@ -407,6 +415,47 @@ impl Dom {
         }
     }
 
+    pub fn add_stylesheet_for_node(&mut self, stylesheet: DocumentStyleSheet, node_id: usize) {
+        let old = self.nodes_to_stylesheet.insert(node_id, stylesheet.clone());
+
+        if let Some(old) = old {
+            self.stylist.remove_stylesheet(old, &self.lock.read())
+        }
+
+        // Fetch @font-face fonts
+        crate::networking::fetch_font_face(
+            self.tx.clone(),
+            self.id,
+            Some(node_id),
+            &stylesheet.0,
+            &self.net_provider,
+            &self.shell_provider,
+            &self.lock.read(),
+        );
+
+        // Store data on element
+        let element = &mut self.nodes[node_id].element_data_mut().unwrap();
+        element.special_data = SpecialElementData::Stylesheet(stylesheet.clone());
+
+        // TODO: Nodes could potentially get reused so ordering by node_id might be wrong.
+        let insertion_point = self
+            .nodes_to_stylesheet
+            .range((Bound::Excluded(node_id), Bound::Unbounded))
+            .next()
+            .map(|(_, sheet)| sheet);
+
+        if let Some(insertion_point) = insertion_point {
+            self.stylist.insert_stylesheet_before(
+                stylesheet,
+                insertion_point.clone(),
+                &self.lock.read(),
+            )
+        } else {
+            self.stylist
+                .append_stylesheet(stylesheet, &self.lock.read())
+        }
+    }
+
     pub fn make_stylesheet(&self, css: impl AsRef<str>, origin: Origin) -> DocumentStyleSheet {
         let data = Stylesheet::from_str(
             css.as_ref(),
@@ -429,6 +478,7 @@ impl Dom {
     }
 
     pub fn flush_styles(&mut self) {
+        style::thread_state::enter(ThreadState::LAYOUT);
         let lock = &self.lock;
         let author = lock.read();
         let ua_or_user = lock.read();
@@ -484,13 +534,12 @@ impl Dom {
                 }
             }
             self.snapshots.clear();
+
+            self.stylist.rule_tree().maybe_gc();
         }
         drop(author);
         drop(ua_or_user);
-
-        self.get_layout_children();
-
-        self.flush_layout_style(self.root_element().id);
+        style::thread_state::exit(ThreadState::LAYOUT);
     }
 
     pub fn get_layout_children(&mut self) {

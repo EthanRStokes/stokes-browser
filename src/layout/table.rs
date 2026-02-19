@@ -22,6 +22,7 @@ pub struct TableTreeWrapper<'doc> {
 pub struct TableContext {
     pub style: taffy::Style<Atom>,
     pub items: Vec<TableItem>,
+    pub rows: Vec<TableRow>,
     pub computed_grid_info: AtomicRefCell<Option<DetailedGridInfo>>,
     pub border_style: Option<ServoArc<Border>>,
     pub border_collapse: BorderCollapse
@@ -40,11 +41,19 @@ pub struct TableItem {
     style: taffy::Style<Atom>,
 }
 
+#[derive(Debug, Clone)]
+pub struct TableRow {
+    // kind: TableItemKind,
+    pub node_id: usize,
+    pub height: f32,
+}
+
 pub(crate) fn build_table_context(
     dom: &mut Dom,
     table_root_node_id: usize,
 ) -> (TableContext, Vec<usize>) {
     let mut items: Vec<TableItem> = Vec::new();
+    let mut rows: Vec<TableRow> = Vec::new();
     let mut row = 0u16;
     let mut col = 0u16;
     println!("table is actually used");
@@ -83,6 +92,7 @@ pub(crate) fn build_table_context(
             &mut row,
             &mut col,
             &mut items,
+            &mut rows,
             &mut column_sizes,
             &mut first_cell_border,
         );
@@ -129,7 +139,7 @@ pub(crate) fn build_table_context(
     let root_node = &mut dom.nodes[table_root_node_id];
     root_node.children = children;
 
-    (TableContext { style, items, computed_grid_info: AtomicRefCell::new(None), border_collapse, border_style: first_cell_border }, layout_children)
+    (TableContext { style, items, rows, computed_grid_info: AtomicRefCell::new(None), border_collapse, border_style: first_cell_border }, layout_children)
 }
 
 pub(crate) fn collect_table_cells(
@@ -140,6 +150,7 @@ pub(crate) fn collect_table_cells(
     row: &mut u16,
     col: &mut u16,
     cells: &mut Vec<TableItem>,
+    rows: &mut Vec<TableRow>,
     columns: &mut Vec<Dimension>,
     first_cell_border: &mut Option<ServoArc<Border>>,
 ) {
@@ -168,7 +179,7 @@ pub(crate) fn collect_table_cells(
             for child_id in children.iter().copied() {
                 dom.nodes[child_id]
                     .remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-                collect_table_cells(dom, child_id, is_fixed, border_collapse, row, col, cells, columns, first_cell_border);
+                collect_table_cells(dom, child_id, is_fixed, border_collapse, row, col, cells, rows, columns, first_cell_border);
             }
             dom.nodes[node_id].children = children;
         }
@@ -176,6 +187,11 @@ pub(crate) fn collect_table_cells(
             node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
             *row += 1;
             *col = 0;
+
+            rows.push(TableRow {
+                node_id,
+                height: 0.0,
+            });
 
             {
                 let stylo_style = &node.primary_styles().unwrap();
@@ -197,7 +213,7 @@ pub(crate) fn collect_table_cells(
 
             let children = std::mem::take(&mut dom.nodes[node_id].children);
             for child_id in children.iter().copied() {
-                collect_table_cells(dom, child_id, is_fixed, border_collapse, row, col, cells, columns, first_cell_border);
+                collect_table_cells(dom, child_id, is_fixed, border_collapse, row, col, cells, rows, columns, first_cell_border);
             }
             dom.nodes[node_id].children = children;
         }

@@ -58,6 +58,12 @@ impl Dom {
             return;
         }
 
-        // TODO load stuff
+        if (tag, attr) == tag_attr!("img", "src") {
+            self.load_image(node_id);
+        } else if (tag, attr) == tag_attr!("canvas", "src") {
+            self.load_custom_paint_src(node_id);
+        } else if (tag, attr) == tag_attr!("link", "href") {
+            self.load_linked_stylesheet(node_id);
+        }
     }
 }
