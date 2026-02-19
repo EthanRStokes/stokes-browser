@@ -5683,6 +5683,7 @@ dependencies = [
  "html-escape",
  "html5ever",
  "iced",
+ "iced_runtime",
  "iced_winit",
  "image",
  "kurbo 0.13.0",
