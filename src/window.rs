@@ -91,7 +91,7 @@ impl BackendState {
 pub(crate) struct Env {
     pub(crate) surface: Surface,
     pub(crate) gr_context: DirectContext,
-    pub(crate) window: Arc<Window>,
+    pub(crate) window: Arc<Box<dyn Window>>,
     pub(crate) backend: BackendState,
 }
 
@@ -100,46 +100,21 @@ impl Env {
         self.backend.kind()
     }
 
-    /// Swap to the opposite backend (OpenGL ↔ Vulkan).
-    ///
-    /// Abandons the old Skia context before tearing down the underlying GPU objects, then
-    /// builds a fresh context for the new backend.
-    pub fn swap_backend(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        match self.backend.kind() {
-            BackendKind::OpenGl => {
-                self.gr_context.abandon();
-                let (vk_state, mut new_ctx) = vk_backend_init(self.window.clone(), event_loop);
-                let initial_surface = vk_state.skia_surfaces[0].clone();
-                self.backend = BackendState::Vk(vk_state);
-                self.gr_context = new_ctx;
-                self.surface = initial_surface;
-            }
-            BackendKind::Vulkan => {
-                self.gr_context.abandon();
-                panic!(
-                    "Swapping from Vulkan → OpenGL at runtime is not supported \
-                     (glutin requires the event loop to create a GL context for an existing \
-                     window). Start the application with the OpenGL backend instead."
-                );
-            }
-        }
-    }
-
     /// Recreate the Skia surface after a window resize.
     pub fn recreate_surface(&mut self) {
         match &mut self.backend {
             BackendState::Gl(gl) => {
-                let (w, h) = self.window.inner_size().into();
+                let (w, h) = self.window.surface_size().into();
                 let _ = gl.gl_surface.resize(
                     &gl.gl_context,
                     NonZeroU32::new(u32::max(w, 1)).unwrap(),
                     NonZeroU32::new(u32::max(h, 1)).unwrap(),
                 );
-                self.surface = gl_surface_from_framebuffer(&self.window, gl, &mut self.gr_context);
+                self.surface = gl_surface_from_framebuffer(&**self.window, gl, &mut self.gr_context);
             }
             BackendState::Vk(vk) => {
                 vk.swapchain_valid = false;
-                vk_prepare_swapchain(vk, &self.window, &mut self.gr_context);
+                vk_prepare_swapchain(vk, &**self.window, &mut self.gr_context);
                 // Point env.surface at index 0 as a safe placeholder until the next present.
                 self.surface = vk.skia_surfaces[0].clone();
             }
@@ -158,7 +133,7 @@ impl Env {
                 .swap_buffers(&gl.gl_context)
                 .map_err(|e| format!("GL swap_buffers failed: {e}")),
             BackendState::Vk(vk) => {
-                vk_present(vk, &self.window, &mut self.surface, &mut self.gr_context)
+                vk_present(vk, &**self.window, &mut self.surface, &mut self.gr_context)
             }
         }
     }
@@ -170,11 +145,11 @@ impl Env {
 
 /// Wrap the current GL framebuffer as a Skia `Surface`.
 fn gl_surface_from_framebuffer(
-    window: &Window,
+    window: &dyn Window,
     gl: &GlState,
     gr_context: &mut DirectContext,
 ) -> Surface {
-    let size = window.inner_size();
+    let size = window.surface_size();
     let size = (
         size.width.try_into().expect("Could not convert width"),
         size.height.try_into().expect("Could not convert height"),
@@ -257,12 +232,12 @@ fn vk_make_framebuffers(images: &[Arc<Image>], render_pass: &Arc<RenderPass>) ->
 
 /// Recreate the swapchain + framebuffers after a resize (sets `swapchain_valid = true`).
 /// The caller is responsible for rebuilding `skia_surfaces` afterward via `vk_build_surfaces`.
-fn vk_prepare_swapchain(vk: &mut VkState, window: &Window, gr_context: &mut DirectContext) {
+fn vk_prepare_swapchain(vk: &mut VkState, window: &dyn Window, gr_context: &mut DirectContext) {
     if let Some(last) = vk.last_render.as_mut() {
         last.cleanup_finished();
     }
 
-    let sz = window.inner_size();
+    let sz = window.surface_size();
     if sz.width == 0 || sz.height == 0 || vk.swapchain_valid {
         return;
     }
@@ -359,7 +334,7 @@ fn vk_placeholder_surface(gr_context: &mut DirectContext, vk: &VkState) -> Surfa
 /// Acquire the next swapchain image, redirect the Skia surface to it, flush, and present.
 fn vk_present(
     vk: &mut VkState,
-    window: &Window,
+    window: &dyn Window,
     current_surface: &mut Surface,
     gr_context: &mut DirectContext,
 ) -> Result<(), String> {
@@ -416,8 +391,8 @@ fn vk_present(
 /// Create all Vulkan objects (instance, device, queue, swapchain) and build the Skia
 /// `DirectContext`.  Returns `(VkState, DirectContext)` so the caller can assemble `Env`.
 fn vk_backend_init(
-    window: Arc<Window>,
-    event_loop: &winit::event_loop::ActiveEventLoop,
+    window: Arc<Box<dyn Window>>,
+    event_loop: &Box<dyn ActiveEventLoop>,
 ) -> (VkState, DirectContext) {
     let library = VulkanLibrary::new().expect("Vulkan library not found");
 
@@ -487,7 +462,7 @@ fn vk_backend_init(
 
     let queue = queues.next().unwrap();
 
-    let window_size        = window.inner_size();
+    let window_size        = window.surface_size();
     let surface_caps       = physical_device
         .surface_capabilities(&surface, Default::default())
         .unwrap();
@@ -603,7 +578,7 @@ fn vk_backend_init(
 // ---------------------------------------------------------------------------
 
 /// Create the main window using the **OpenGL** backend (default).
-pub(crate) fn create_window(el: &EventLoop<()>) -> Env {
+pub(crate) fn create_window(el: &dyn ActiveEventLoop) -> Env {
     let icon_data = include_bytes!("../assets/com.ethanstokes.stokes-browser.png");
     let icon = image::load_from_memory(icon_data)
         .expect("Failed to load icon")
@@ -716,25 +691,25 @@ pub(crate) fn create_window(el: &EventLoop<()>) -> Env {
     let stencil_size = gl_config.stencil_size()  as usize;
 
     let gl_state = GlState { gl_surface, gl_context, fb_info, num_samples, stencil_size };
-    let surface  = gl_surface_from_framebuffer(&window, &gl_state, &mut gr_context);
+    let surface  = gl_surface_from_framebuffer(&**window, &gl_state, &mut gr_context);
 
     Env { surface, gr_context, window, backend: BackendState::Gl(gl_state) }
 }
 
 /// Create the main window using the **Vulkan** backend.
-pub(crate) fn create_window_vk(el: &EventLoop<()>) -> Env {
+pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
     let icon_data = include_bytes!("../assets/com.ethanstokes.stokes-browser.png");
     let icon = image::load_from_memory(icon_data)
         .expect("Failed to load icon")
         .into_rgba8();
     let (icon_width, icon_height) = icon.dimensions();
-    let icon = winit::window::Icon::from_rgba(icon.into_raw(), icon_width, icon_height)
-        .expect("Failed to create icon");
+    let icon = Icon::from(RgbaIcon::new(icon.into_raw(), icon_width, icon_height)
+        .expect("Failed to create icon"));
 
     let window_attrs = WindowAttributes::default()
         .with_title("Web Browser")
-        .with_inner_size(LogicalSize::new(1024, 768))
-        .with_min_inner_size(LogicalSize::new(500, crate::ui::BrowserUI::CHROME_HEIGHT as i32))
+        .with_surface_size(LogicalSize::new(1024, 768))
+        .with_min_surface_size(LogicalSize::new(500, crate::ui::BrowserUI::CHROME_HEIGHT as i32))
         .with_window_icon(Some(icon));
 
     // Vulkan doesn't need glutin — create the window directly through winit.
@@ -813,7 +788,7 @@ pub(crate) fn create_window_vk(el: &EventLoop<()>) -> Env {
     .expect("Failed to create Vulkan device");
 
     let queue       = queues.next().unwrap();
-    let window_size = window.inner_size();
+    let window_size = window.surface_size();
     let surface_caps = physical_device
         .surface_capabilities(&vk_surface, Default::default())
         .unwrap();

@@ -546,7 +546,8 @@ impl BrowserApp {
 
 impl ApplicationHandler for BrowserApp {
     fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
-        self.env = Some(crate::window::create_window(event_loop));
+        let event_loop = Box::new(event_loop);
+        self.env = Some(crate::window::create_window_vk(&event_loop));
 
         let env = self.env.as_ref().unwrap();
         let viewport = Viewport {

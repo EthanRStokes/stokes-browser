@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 winit = "0.31.0-beta.2"
 winit-core = "0.31.0-beta.2"
-vulkano = "0.35.2"
+vulkano = { git = "https://github.com/EthanRStokes/vulkano", branch = "0.35.X" }
 ash = "0.38"
 gl = "0.14.0"
 skia-safe = { version = "0.93.1", features = ["gl", "vulkan"] }
@@ -60,6 +60,7 @@ dioxus-core = "0.7.3"
 percent-encoding = "2.3.2"
 cssparser = "0.36.0"
 ipc-channel = "0.21.0"
+raw-window-handle = "0.6.2"
 
 # Stylo
 stylo = "0.12.0"
