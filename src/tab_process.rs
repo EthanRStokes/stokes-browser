@@ -318,7 +318,6 @@ impl TabProcess {
             ParentToTabMessage::MouseMove { x, y } => {
                 // Update cursor if hovering over interactive elements
                 self.engine.handle_mouse_move(x / self.engine.viewport.hidpi_scale, y / self.engine.viewport.hidpi_scale);
-                // TODO: Implement cursor detection and send CursorChanged message
             }
             ParentToTabMessage::KeyboardInput { key_type, modifiers } => {
                 // Handle keyboard input in the engine

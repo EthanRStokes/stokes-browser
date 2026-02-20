@@ -143,9 +143,6 @@ impl TabManager {
                         tab.rendered_frame = Some(frame);
                     }
                 }
-                TabToParentMessage::CursorChanged(_cursor_type) => {
-                    // TODO: Handle cursor changes
-                }
                 TabToParentMessage::Ready => {
                     println!("Tab {} is ready", tab_id);
                 }

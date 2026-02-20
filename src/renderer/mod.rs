@@ -10,7 +10,7 @@ mod gradient;
 mod sizing;
 
 use std::any::Any;
-use crate::dom::node::SpecialElementData;
+use crate::dom::node::{ListItemLayout, ListItemLayoutPosition, Marker, SpecialElementData};
 use crate::dom::{Dom, DomNode, ElementData, ImageData, NodeData};
 use crate::renderer::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
 use crate::renderer::layers::maybe_with_layer;
@@ -433,6 +433,7 @@ impl HtmlRenderer<'_> {
                     element.draw_svg(painter);
                     element.draw_canvas(painter);
                     element.draw_inline_layout(painter, position);
+                    element.draw_marker(painter, position);
                     element.draw_children(painter);
                 });
             }
@@ -484,6 +485,7 @@ impl HtmlRenderer<'_> {
             element,
             transform,
             svg: element.svg_data(),
+            list_item: element.list_item_data.as_deref(),
         }
     }
 }
@@ -538,6 +540,7 @@ struct Element<'a> {
     element: &'a ElementData,
     transform: Affine,
     svg: Option<&'a usvg::Tree>,
+    list_item: Option<&'a ListItemLayout>,
 }
 
 impl Element<'_> {
@@ -572,6 +575,45 @@ impl Element<'_> {
         }
     }
 
+    fn draw_marker(&self, painter: &mut impl PaintScene, pos: Point) {
+        if let Some(ListItemLayout {
+                        marker,
+                        position: ListItemLayoutPosition::Outside(layout),
+                    }) = self.list_item
+        {
+            // Right align and pad the bullet when rendering outside
+            let x_padding = match marker {
+                Marker::Char(_) => 8.0,
+                Marker::String(_) => 0.0,
+            };
+            let x_offset = -(layout.full_width() / layout.scale() + x_padding);
+
+            // Align the marker with the baseline of the first line of text in the list item
+            let y_offset = if let Some(first_text_line) = &self
+                .element
+                .inline_layout_data
+                .as_ref()
+                .and_then(|text_layout| text_layout.layout.lines().next())
+            {
+                (first_text_line.metrics().baseline
+                    - layout.lines().next().unwrap().metrics().baseline)
+                    / layout.scale()
+            } else {
+                0.0
+            };
+
+            let pos = Point {
+                x: pos.x + x_offset as f64,
+                y: pos.y + y_offset as f64,
+            };
+
+            let transform =
+                Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor)) * self.transform;
+
+            stroke_text(painter, layout.lines(), self.context.dom, transform);
+        }
+    }
+
     fn draw_inline_layout(&self, painter: &mut TextPainter, pos: Point) {
         if self.node.flags.is_inline_root() {
             let text_layout = self.element.inline_layout_data.as_ref().unwrap_or_else(|| {
@@ -581,12 +623,14 @@ impl Element<'_> {
                 println!("YO WTF")
             }
 
+            let transform =
+                Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor)) * self.transform;
+
             stroke_text(
-                self.scale_factor,
                 painter,
                 text_layout.layout.lines(),
                 self.context.dom,
-                pos
+                transform,
             )
         }
     }

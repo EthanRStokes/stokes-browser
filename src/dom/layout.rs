@@ -1,5 +1,5 @@
 use crate::dom::damage::{HoistedPaintChild, HoistedPaintChildren, ALL_DAMAGE, CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC};
-use crate::dom::node::{BackgroundImageData, DomNodeFlags, NodeKind, SpecialElementData, Status, TextLayout};
+use crate::dom::node::{BackgroundImageData, DomNodeFlags, ListItemLayout, ListItemLayoutPosition, Marker, NodeKind, SpecialElementData, Status, TextLayout};
 use crate::dom::{stylo_to_parley, AttributeMap, Dom, DomNode, ElementData, NodeData};
 use crate::layout::table::build_table_context;
 use crate::networking::{parse_svg, ImageHandler, ImageType, ResourceHandler};
@@ -26,6 +26,7 @@ use style::values::specified::text::TextTransformCase;
 use style::values::specified::TextDecorationLine;
 use taffy::{compute_root_layout, round_layout, AvailableSpace, NodeId};
 use style::properties::generated::longhands::position::computed_value::T as Position;
+use crate::layout::list::collect_list_item_children;
 
 thread_local! {
     pub static LAYOUT_CTX: RefCell<Option<Box<LayoutContext<TextBrush>>>> = const { RefCell::new(None) };
@@ -97,7 +98,9 @@ pub(crate) fn collect_layout_children(
                 outer_html = outer_html.replace("<svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"");
             }
 
-            // TODO Remove construction damage from subtree
+            dom.iter_subtree_mut(node_id, |id: usize, dom: &mut Dom| {
+                dom.nodes[id].remove_damage(CONSTRUCT_BOX | CONSTRUCT_DESCENDENT | CONSTRUCT_FC);
+            });
 
             match parse_svg(outer_html.as_bytes()) {
                 Ok(svg) => {
@@ -123,7 +126,18 @@ pub(crate) fn collect_layout_children(
             }
         }
 
-        // TODO collect list item children
+        //Only ol tags have start and reversed attributes
+        let (mut index, reversed) = if tag_name == "ol" {
+            (
+                element_data.attr_parsed(local_name!("start"))
+                    .map(|start: usize| start - 1)
+                    .unwrap_or(0),
+                element_data.attr_parsed(local_name!("reversed")).unwrap_or(false),
+            )
+        } else {
+            (1, false)
+        };
+        collect_list_item_children(dom, &mut index, reversed, node_id);
     }
 
     // Skip further construction if the node has no children or pseudo-children
@@ -719,7 +733,15 @@ pub(crate) fn build_inline_layout(
         .unwrap_or(WhiteSpaceCollapse::Collapse);
     builder.set_white_space_mode(collapse_mode);
 
-    // FIXME Render position-inside list items, markers
+    if let Some(ListItemLayout {
+        marker,
+        position: ListItemLayoutPosition::Inside,
+    }) = root_node.element_data().and_then(|el| el.list_item_data.as_deref()) {
+        match marker {
+            Marker::Char(char) => builder.push_text(&format!("{char} ")),
+            Marker::String(str) => builder.push_text(str),
+        }
+    }
 
     if let Some(before_id) = root_node.before {
         build_inline_layout_recursive(
@@ -1000,8 +1022,6 @@ impl Dom {
                                 waiting_list.push((node_id, ImageType::Background(idx)));
                                 Some(BackgroundImageData::new(new_url.clone()))
                             } else {
-                                // Start fetch and track as pending
-                                #[cfg(feature = "tracing")]
                                 tracing::info!("Fetching image {url_str}");
                                 self.pending_images.insert(
                                     url_str.to_string(),
