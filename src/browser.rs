@@ -1,9 +1,7 @@
 use anyrender::PaintScene;
 use blitz_traits::shell::Viewport;
-use glutin::surface::GlSurface;
 use kurbo::Affine;
 use parley::{FontContext, LayoutContext};
-use std::num::NonZeroU32;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -17,7 +15,7 @@ use crate::ipc::{ParentToTabMessage, TabToParentMessage};
 use crate::renderer::text::TextPainter;
 use crate::tab_manager::TabManager;
 use crate::ui::{BrowserUI, TextBrush};
-use crate::window::{create_surface, Env};
+use crate::window::{BackendKind, Env};
 use crate::{input, ipc};
 use crate::shell_provider::ShellProviderMessage;
 
@@ -467,8 +465,7 @@ impl BrowserApp {
         self.ui.render_loading_indicator(&mut painter, is_loading, self.loading_spinner_angle);
 
         self.env.gr_context.flush_and_submit();
-        self.env.gl_surface.swap_buffers(&self.env.gl_context)
-            .map_err(|e| format!("Failed to swap buffers: {}", e))?;
+        self.env.present()?;
 
         Ok(())
     }
@@ -503,21 +500,10 @@ impl ApplicationHandler for BrowserApp {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
-            WindowEvent::Resized(new_size) => {
-                self.env.surface = create_surface(
-                    &self.env.window,
-                    self.env.fb_info,
-                    &mut self.env.gr_context,
-                    self.env.num_samples,
-                    self.env.stencil_size
-                );
+            WindowEvent::Resized(_new_size) => {
+                self.env.recreate_surface();
 
-                let (width, height): (u32, u32) = new_size.into();
-                self.env.gl_surface.resize(
-                    &self.env.gl_context,
-                    NonZeroU32::new(width.max(1)).unwrap(),
-                    NonZeroU32::new(height.max(1)).unwrap()
-                );
+                let new_size = self.env.window.inner_size();
                 // Update viewport size
                 self.set_viewport(new_size.into());
                 let (width, height) = self.page_viewport.read().unwrap().window_size;
