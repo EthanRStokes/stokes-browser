@@ -216,6 +216,8 @@ pub struct ElementData {
 
     pub inline_layout_data: Option<Box<TextLayout>>,
 
+    pub list_item_data: Option<Box<ListItemLayout>>,
+
     /// For HTML <template> elements, holds the template contents
     pub template_contents: Option<usize>,
 }
@@ -261,6 +263,7 @@ impl ElementData {
             style_attribute: Default::default(),
             special_data: SpecialElementData::None,
             inline_layout_data: None,
+            list_item_data: None,
             template_contents: None,
             background_images: Vec::new(),
         }
@@ -360,6 +363,33 @@ impl ElementData {
 
     pub fn take_inline_layout(&mut self) -> Option<Box<TextLayout>> {
         std::mem::take(&mut self.inline_layout_data)
+    }
+}
+
+#[derive(Clone)]
+pub struct ListItemLayout {
+    pub marker: Marker,
+    pub position: ListItemLayoutPosition,
+}
+
+//We seperate chars from strings in order to optimise rendering - ie not needing to
+//construct a whole parley layout for simple char markers
+#[derive(Debug, PartialEq, Clone)]
+pub enum Marker {
+    Char(char),
+    String(String),
+}
+
+//Value depends on list-style-position, determining whether a seperate layout is created for it
+#[derive(Clone)]
+pub enum ListItemLayoutPosition {
+    Inside,
+    Outside(Box<parley::Layout<TextBrush>>),
+}
+
+impl std::fmt::Debug for ListItemLayout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ListItemLayout - marker {:?}", self.marker)
     }
 }
 

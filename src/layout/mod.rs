@@ -3,3 +3,4 @@ mod taffy;
 mod inline;
 pub(crate) mod table;
 mod replaced;
+pub(crate) mod list;

@@ -98,7 +98,7 @@ pub struct Dom {
     pub(crate) snapshots: SnapshotMap,
 
     pub(crate) font_ctx: Arc<Mutex<FontContext>>,
-    pub(crate) layout_ctx: Arc<Mutex<LayoutContext<TextBrush>>>,
+    pub(crate) layout_ctx: LayoutContext<TextBrush>,
 
     // mouse hover
     pub(crate) hover_node_id: Option<usize>,
@@ -303,7 +303,7 @@ impl Dom {
             lock: SharedRwLock::new(),
             snapshots: SnapshotMap::new(),
             font_ctx,
-            layout_ctx: Arc::new(Mutex::new(LayoutContext::new())),
+            layout_ctx: LayoutContext::new(),
             hover_node_id: None,
             hover_node_is_text: false,
             focus_node_id: None,

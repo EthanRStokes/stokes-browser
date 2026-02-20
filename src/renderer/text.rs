@@ -16,13 +16,11 @@ use style::color::AbsoluteColor;
 use style::values::specified::TextDecorationLine;
 
 pub fn stroke_text<'a>(
-    scale: f64,
-    painter: &mut TextPainter,
+    painter: &mut impl PaintScene,
     lines: impl Iterator<Item = Line<'a, TextBrush>>,
     dom: &Dom,
-    pos: Point,
+    transform: Affine,
 ) {
-    let transform = Affine::translate((pos.x * scale, pos.y * scale));
     for line in lines {
         for item in line.items() {
             if let PositionedLayoutItem::GlyphRun(glyph_run) = item {

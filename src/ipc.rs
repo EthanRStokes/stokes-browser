@@ -80,8 +80,6 @@ pub enum TabToParentMessage {
         width: u32,
         height: u32,
     },
-    /// Cursor should change
-    CursorChanged(CursorType),
     /// Tab process is ready
     Ready,
     /// Request navigation to a URL (e.g., from clicking a link)
@@ -100,13 +98,6 @@ pub struct KeyModifiers {
     pub alt: bool,
     pub shift: bool,
     pub meta: bool,
-}
-
-#[derive(Debug, Clone, Encode, Decode)]
-pub enum CursorType {
-    Default,
-    Pointer,
-    Text,
 }
 
 /// IPC channel for bidirectional communication
