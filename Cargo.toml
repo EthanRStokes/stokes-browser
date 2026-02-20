@@ -6,10 +6,11 @@ edition = "2024"
 [dependencies]
 winit = "0.31.0-beta.2"
 winit-core = "0.31.0-beta.2"
+vulkano = "0.35.2"
+ash = "0.38"
 gl = "0.14.0"
-#skia-safe = { version = "0.93.1", features = ["gpu", "gl"] }
-skia-safe = { git = "https://github.com/marcpabst/rust-skia", features = ["gpu", "gl", "graphite"] }
-image = "0.25.6"
+skia-safe = { version = "0.93.1", features = ["gl", "vulkan"] }
+image = "0.25.8"
 tokio = { version = "1.49.0", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"
 curl = "0.4"

@@ -1,9 +1,7 @@
 use anyrender::PaintScene;
 use blitz_traits::shell::Viewport;
-use glutin::surface::GlSurface;
 use kurbo::Affine;
 use parley::{FontContext, LayoutContext};
-use std::num::NonZeroU32;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -23,7 +21,7 @@ use crate::ipc::{ParentToTabMessage, TabToParentMessage};
 use crate::renderer::painter::ScenePainter;
 use crate::tab_manager::TabManager;
 use crate::ui::{BrowserUI, TextBrush};
-use crate::window::{create_surface, Env};
+use crate::window::{BackendKind, Env};
 use crate::{input, ipc};
 use crate::convert_events::{button_source_to_blitz, pointer_source_to_blitz, pointer_source_to_blitz_details, winit_ime_to_blitz, winit_key_event_to_blitz, winit_modifiers_to_kbt_modifiers};
 use crate::events::{BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent};
@@ -520,8 +518,7 @@ impl BrowserApp {
         self.env.as_mut().unwrap().gr_context.flush_and_submit();
         {
             let env = self.env.as_mut().unwrap();
-            env.gl_surface.swap_buffers(&env.gl_context)
-                .map_err(|e| format!("Failed to swap buffers: {}", e))?;
+            env.present()?;
         }
 
         Ok(())
@@ -602,20 +599,8 @@ impl ApplicationHandler for BrowserApp {
             }
             WindowEvent::SurfaceResized(new_size) => {
                 let env = self.env.as_mut().unwrap();
-                env.surface = create_surface(
-                    &env.window,
-                    env.fb_info,
-                    &mut env.gr_context,
-                    env.num_samples,
-                    env.stencil_size
-                );
+                env.recreate_surface();
 
-                let (width, height): (u32, u32) = new_size.into();
-                env.gl_surface.resize(
-                    &env.gl_context,
-                    NonZeroU32::new(width.max(1)).unwrap(),
-                    NonZeroU32::new(height.max(1)).unwrap()
-                );
                 // Update viewport size
                 self.set_viewport(new_size.into());
                 let (width, height) = self.page_viewport.as_ref().unwrap().window_size;
