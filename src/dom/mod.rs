@@ -29,7 +29,7 @@ use blitz_traits::events::HitResult;
 use blitz_traits::net::{DummyNetProvider, NetProvider};
 use blitz_traits::shell::{DummyShellProvider, ShellProvider, Viewport};
 use euclid::Size2D;
-use markup5ever::QualName;
+use markup5ever::{local_name, QualName};
 use parley::fontique::{Attributes, Blob, Query, QueryFont, QueryStatus};
 use parley::{FontContext, FontVariation, LayoutContext};
 use selectors::matching::QuirksMode;
@@ -47,12 +47,14 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use cursor_icon::CursorIcon;
+use skia_safe::wrapper::NativeTransmutableWrapper;
 use style::animation::DocumentAnimationSet;
 use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters, SharedStyleContext};
 use style::data::ElementStyles;
 use style::dom::{TDocument, TNode};
 use style::font_metrics::FontMetrics;
 use style::global_style_data::GLOBAL_STYLE_DATA;
+use style::invalidation::element::restyle_hints::RestyleHint;
 use style::media_queries::{Device, MediaList, MediaType};
 use style::properties::style_structs::Font;
 use style::properties::ComputedValues;
@@ -367,6 +369,29 @@ impl Dom {
         self.create_node(data)
     }
 
+    pub(crate) fn create_comment_node(&mut self) -> usize {
+        self.create_node(NodeData::Comment)
+    }
+
+    pub(crate) fn create_text_node(&mut self, text: &str) -> usize {
+        let content = text.to_string();
+        let data = NodeData::Text(TextData::new(content));
+        self.create_node(data)
+    }
+
+    pub fn append_text_to_node(&mut self, node_id: usize, text: &str) -> Result<(), AppendTextErr> {
+        let node = &mut self.nodes[node_id];
+        node.insert_damage(ALL_DAMAGE);
+        node.mark_ancestors_dirty();
+        match node.text_data_mut() {
+            Some(data) => {
+                data.content += text;
+                Ok(())
+            }
+            None => Err(AppendTextErr::NotTextNode),
+        }
+    }
+
     pub fn tree(&self) -> &Slab<DomNode> {
         &self.nodes
     }
@@ -454,6 +479,13 @@ impl Dom {
             self.stylist
                 .append_stylesheet(stylesheet, &self.lock.read())
         }
+    }
+
+    pub fn process_style_element(&mut self, target_id: usize) {
+        let css = self.nodes[target_id].text_content();
+        let css = html_escape::decode_html_entities(&css);
+        let sheet = self.make_stylesheet(&css, Origin::Author);
+        self.add_stylesheet_for_node(sheet, target_id);
     }
 
     pub fn make_stylesheet(&self, css: impl AsRef<str>, origin: Origin) -> DocumentStyleSheet {
@@ -814,6 +846,221 @@ impl Dom {
         self.root_element().hit(x, y)
     }
 
+    pub fn node_has_parent(&self, node_id: usize) -> bool {
+        self.nodes[node_id].parent.is_some()
+    }
+
+    pub fn previous_sibling_id(&self, node_id: usize) -> Option<usize> {
+        self.nodes[node_id].backward(1).map(|node| node.id)
+    }
+
+    pub fn next_sibling_id(&self, node_id: usize) -> Option<usize> {
+        self.nodes[node_id].forward(1).map(|node| node.id)
+    }
+
+    pub fn parent_id(&self, node_id: usize) -> Option<usize> {
+        self.nodes[node_id].parent
+    }
+
+    pub fn last_child_id(&self, node_id: usize) -> Option<usize> {
+        self.nodes[node_id].children.last().copied()
+    }
+
+    pub fn child_ids(&self, node_id: usize) -> Vec<usize> {
+        self.nodes[node_id].children.clone()
+    }
+
+    pub(crate) fn append_children(&mut self, parent_id: usize, child_ids: &[usize]) {
+        self.add_children_to_parent(parent_id, child_ids, &|parent, child_ids| {
+            parent.children.extend_from_slice(child_ids);
+        })
+    }
+
+    pub fn insert_nodes_before(&mut self, anchor_node_id: usize, new_node_ids: &[usize]) {
+        let parent_id = self.nodes[anchor_node_id].parent.unwrap();
+        self.add_children_to_parent(parent_id, new_node_ids, &|parent, child_ids| {
+            let node_child_idx = parent.index_of_child(anchor_node_id).unwrap();
+            parent
+                .children
+                .splice(node_child_idx..node_child_idx, child_ids.iter().copied());
+        });
+    }
+
+    fn add_children_to_parent(
+        &mut self,
+        parent_id: usize,
+        child_ids: &[usize],
+        insert_children_fn: &dyn Fn(&mut DomNode, &[usize]),
+    ) {
+        let new_parent = &mut self.nodes[parent_id];
+        new_parent.insert_damage(ALL_DAMAGE);
+        let new_parent_is_in_doc = new_parent.flags.is_in_document();
+
+        // TODO: make this fine grained / conditional based on ElementSelectorFlags
+        if new_parent_is_in_doc {
+            if let Some(data) = &mut *new_parent.stylo_data.borrow_mut() {
+                data.hint |= RestyleHint::restyle_subtree();
+            }
+            // Mark ancestors dirty so the style traversal visits this subtree.
+            new_parent.mark_ancestors_dirty();
+        }
+
+        insert_children_fn(new_parent, child_ids);
+
+        for child_id in child_ids.iter().copied() {
+            let child = &mut self.nodes[child_id];
+            let old_parent_id = child.parent.replace(parent_id);
+
+            let child_was_in_doc = child.flags.is_in_document();
+            if new_parent_is_in_doc != child_was_in_doc {
+                self.process_added_subtree(child_id);
+            }
+
+            if let Some(old_parent_id) = old_parent_id {
+                let old_parent = &mut self.nodes[old_parent_id];
+                old_parent.insert_damage(ALL_DAMAGE);
+
+                // TODO: make this fine grained / conditional based on ElementSelectorFlags
+                if child_was_in_doc {
+                    if let Some(data) = &mut *old_parent.stylo_data.borrow_mut() {
+                        data.hint |= RestyleHint::restyle_subtree();
+                    }
+                    // Mark ancestors dirty so the style traversal visits this subtree.
+                    old_parent.mark_ancestors_dirty();
+                }
+
+                old_parent.children.retain(|id| *id != child_id);
+                self.maybe_record_node(old_parent_id);
+            }
+        }
+
+        self.maybe_record_node(parent_id);
+    }
+
+    // Tree mutation methods (that defer to other methods)
+    pub fn insert_nodes_after(&mut self, anchor_node_id: usize, new_node_ids: &[usize]) {
+        match self.next_sibling_id(anchor_node_id) {
+            Some(id) => self.insert_nodes_before(id, new_node_ids),
+            None => {
+                let parent_id = self.parent_id(anchor_node_id).unwrap();
+                self.append_children(parent_id, new_node_ids)
+            }
+        }
+    }
+
+    pub fn reparent_children(&mut self, old_parent_id: usize, new_parent_id: usize) {
+        let child_ids = std::mem::take(&mut self.nodes[old_parent_id].children);
+        self.maybe_record_node(old_parent_id);
+        self.append_children(new_parent_id, &child_ids);
+    }
+
+    pub fn replace_node_with(&mut self, anchor_node_id: usize, new_node_ids: &[usize]) {
+        self.insert_nodes_before(anchor_node_id, new_node_ids);
+        self.remove_node(anchor_node_id);
+    }
+
+    pub fn remove_node(&mut self, node_id: usize) {
+        let node = &mut self.nodes[node_id];
+
+        // Update child_idx values
+        if let Some(parent_id) = node.parent.take() {
+            let parent = &mut self.nodes[parent_id];
+            parent.insert_damage(ALL_DAMAGE);
+            // Mark ancestors dirty so the style traversal visits this subtree.
+            parent.mark_ancestors_dirty();
+            parent.children.retain(|id| *id != node_id);
+            self.maybe_record_node(parent_id);
+        }
+
+        self.process_removed_subtree(node_id);
+    }
+
+    fn maybe_record_node(&mut self, node_id: impl Into<Option<usize>>) {
+        // todo impl
+    }
+
+    fn process_added_subtree(&mut self, node_id: usize) {
+        self.iter_subtree_mut(node_id, |node_id, dom| {
+            let node = &mut dom.nodes[node_id];
+            node.flags.set(DomNodeFlags::IS_IN_DOCUMENT, true);
+            node.insert_damage(ALL_DAMAGE);
+
+            // If the node has an "id" attribute, store it in the ID map.
+            if let Some(id_attr) = node.attr(local_name!("id")) {
+                dom.nodes_to_id.insert(id_attr.to_string(), node_id);
+            }
+
+            let NodeData::Element(ref mut element) = node.data else {
+                return;
+            };
+
+            // TODO Custom post-processing by element tag name
+            let tag = element.name.local.as_ref();
+            match tag {
+                "title" => dom.shell_provider.set_window_title(dom.nodes[node_id].text_content()),
+                "link" => dom.load_linked_stylesheet(node_id),
+                "img" => dom.load_image(node_id),
+                "canvas" => dom.load_custom_paint_src(node_id),
+                "style" => dom.process_style_element(node_id),
+                // todo buttons
+                _ => {}
+            };
+        });
+
+        // todo idk
+    }
+
+    fn process_removed_subtree(&mut self, node_id: usize) {
+        self.iter_subtree_mut(node_id, |node_id, doc| {
+            let node = &mut doc.nodes[node_id];
+            node.flags.set(DomNodeFlags::IS_IN_DOCUMENT, false);
+
+            // Clear hover state if this node was being hovered.
+            // This prevents stale hover_node_id references.
+            if doc.hover_node_id == Some(node_id) {
+                doc.hover_node_id = None;
+                doc.hover_node_is_text = false;
+            }
+
+            // Clear active state if this node was active
+            // This prevents stale active_node_id references.
+            if doc.active_node_id == Some(node_id) {
+                doc.active_node_id = None;
+            }
+
+            // Remove any snapshot for this node to prevent stale snapshot references
+            // during style invalidation.
+            if node.has_snapshot {
+                let opaque_id = style::dom::TNode::opaque(&&*node);
+                doc.snapshots.remove(&opaque_id);
+                node.has_snapshot = false;
+            }
+
+            // If the node has an "id" attribute remove it from the ID map.
+            if let Some(id_attr) = node.attr(local_name!("id")) {
+                doc.nodes_to_id.remove(id_attr);
+            }
+
+            let NodeData::Element(ref mut element) = node.data else {
+                return;
+            };
+
+            match &element.special_data {
+                //todo sub document
+                SpecialElementData::Stylesheet(_) => {} // todo
+                SpecialElementData::Image(_) => {}
+                SpecialElementData::Canvas(_) => {} // todo animation
+                SpecialElementData::TableRoot(_) => {}
+                SpecialElementData::TextInput => {}
+                SpecialElementData::CheckboxInput(_) => {}
+                SpecialElementData::FileInput(_) => {}
+                SpecialElementData::None => {}
+            }
+        });
+
+        // todo idk
+    }
+
     pub(crate) fn root_node(&self) -> &DomNode {
         &self.nodes[0]
     }
@@ -829,4 +1076,10 @@ impl Dom {
             .as_element()
             .unwrap()
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum AppendTextErr {
+    /// The node is not a text node
+    NotTextNode,
 }

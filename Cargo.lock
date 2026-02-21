@@ -130,6 +130,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyrender_svg"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a5ce187851523c78bd616722a68a5d93872d734e82009445d8e2c8d1c955ace"
+dependencies = [
+ "anyrender",
+ "image",
+ "kurbo",
+ "peniko",
+ "thiserror 2.0.17",
+ "usvg",
+]
+
+[[package]]
 name = "app_units"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2608,17 +2622,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "markup5ever_rcdom"
-version = "0.38.0"
-source = "git+https://github.com/EthanRStokes/html5ever?rev=239a5d7#239a5d794e35b92abfe68a8e632046fc375f551e"
-dependencies = [
- "html5ever",
- "markup5ever",
- "tendril",
- "xml5ever",
-]
-
-[[package]]
 name = "maybe-rayon"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4476,6 +4479,7 @@ name = "stokes-browser"
 version = "0.1.0"
 dependencies = [
  "anyrender",
+ "anyrender_svg",
  "arboard",
  "atomic_refcell",
  "base64",
@@ -4487,6 +4491,7 @@ dependencies = [
  "color",
  "curl",
  "cursor-icon",
+ "data-url",
  "dioxus-asset-resolver",
  "dirs",
  "euclid",
@@ -4504,7 +4509,6 @@ dependencies = [
  "libc",
  "log",
  "markup5ever",
- "markup5ever_rcdom",
  "mozjs",
  "parley",
  "peniko",
@@ -4531,6 +4535,7 @@ dependencies = [
  "usvg",
  "winit",
  "wuff",
+ "xml5ever",
 ]
 
 [[package]]
@@ -4948,7 +4953,7 @@ dependencies = [
  "bytemuck",
  "cfg-if",
  "log",
- "tiny-skia-path 0.11.4",
+ "tiny-skia-path",
 ]
 
 [[package]]
@@ -4956,17 +4961,6 @@ name = "tiny-skia-path"
 version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c9e7fc0c2e86a30b117d0462aa261b72b7a99b7ebd7deb3a14ceda95c5bdc93"
-dependencies = [
- "arrayref",
- "bytemuck",
- "strict-num",
-]
-
-[[package]]
-name = "tiny-skia-path"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edca365c3faccca67d06593c5980fa6c57687de727a03131735bb85f01fdeeb9"
 dependencies = [
  "arrayref",
  "bytemuck",
@@ -5319,9 +5313,9 @@ dependencies = [
 
 [[package]]
 name = "usvg"
-version = "0.47.0"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d46cf96c5f498d36b7a9693bc6a7075c0bb9303189d61b2249b0dc3d309c07de"
+checksum = "e419dff010bb12512b0ae9e3d2f318dfbdf0167fde7eb05465134d4e8756076f"
 dependencies = [
  "base64",
  "data-url",
@@ -5337,8 +5331,7 @@ dependencies = [
  "siphasher",
  "strict-num",
  "svgtypes",
- "tiny-skia-path 0.12.0",
- "ttf-parser",
+ "tiny-skia-path",
  "unicode-bidi",
  "unicode-script",
  "unicode-vo",

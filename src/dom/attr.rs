@@ -1,9 +1,11 @@
+use std::collections::HashSet;
 use crate::dom::damage::ALL_DAMAGE;
 use crate::dom::{Dom, NodeData};
 use html5ever::local_name;
 use markup5ever::QualName;
 use style::invalidation::element::restyle_hints::RestyleHint;
 use stylo_atoms::Atom;
+use crate::dom::node::Attribute;
 
 macro_rules! tag_attr {
     ($tag:tt, $attr:tt) => {
@@ -12,6 +14,25 @@ macro_rules! tag_attr {
 }
 
 impl Dom {
+    pub fn add_attrs_if_missing(&mut self, node_id: usize, attrs: Vec<Attribute>) {
+        let node = &mut self.nodes[node_id];
+        node.insert_damage(ALL_DAMAGE);
+        let element_data = node.element_data_mut().expect("Not an element");
+
+        let existing_names = element_data
+            .attributes
+            .iter()
+            .map(|e| e.name.clone())
+            .collect::<HashSet<_>>();
+
+        for attr in attrs
+            .into_iter()
+            .filter(|attr| !existing_names.contains(&attr.name))
+        {
+            self.set_attribute(node_id, attr.name, &attr.value);
+        }
+    }
+
     pub fn set_attribute(&mut self, node_id: usize, name: QualName, value: &str) {
         self.snapshot(node_id);
 
@@ -65,5 +86,9 @@ impl Dom {
         } else if (tag, attr) == tag_attr!("link", "href") {
             self.load_linked_stylesheet(node_id);
         }
+    }
+
+    pub fn element_name(&self, node_id: usize) -> Option<&QualName> {
+        self.nodes[node_id].element_data().map(|el| &el.name)
     }
 }

@@ -8,18 +8,14 @@ glutin = "0.32.3"
 glutin-winit = "0.5.0"
 gl = "0.14.0"
 skia-safe = { version = "0.93.0", features = ["gpu", "gl"] }
-#winit = { version = "0.30.12", features = ["wayland"] }
 image = "0.25.8"
 tokio = { version = "1.49.0", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"
 curl = "0.4"
 html5ever = "0.38.0"
-#markup5ever_rcdom = "0.36.0+unofficial"
-markup5ever_rcdom = { git = "https://github.com/EthanRStokes/html5ever", rev = "239a5d7" }
 usvg = "0.46.0"
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 mozjs = "0.15.0"
-#mozjs = { git = "https://github.com/servo/mozjs.git", rev = "125b5ab" }
 base64 = "0.22"
 stacker = "0.1"
 serde_json = "1.0.149"
@@ -32,6 +28,7 @@ url = "2"
 taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "25759dad44d8350743a4e866fee54962f996895a" }
 slab = "0.4.12"
 markup5ever = "0.38.0"
+xml5ever = "0.38.0"
 parley = { git = "https://github.com/linebender/parley", rev = "37aa8ab7103e9da89eea22899902016ce20739f2" }
 euclid = "0.22.13"
 bitflags = "2.11.0"
@@ -50,6 +47,10 @@ lazy_static = "1.5.0"
 hirofa_utils = "0.7.4"
 cursor-icon = "1.2.0"
 data-url = "0.3.2"
+libc = "0.2.178"
+log = "0.4.28"
+wuff = "0.2.3"
+dirs = "6.0"
 
 # Stylo
 stylo = "0.12.0"
@@ -63,10 +64,6 @@ selectors = "0.35.0"
 blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "eeaa9938fac918bd07e5a30472d0f4a44e8ffa31" }
 blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "eeaa9938fac918bd07e5a30472d0f4a44e8ffa31" }
 stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "eeaa9938fac918bd07e5a30472d0f4a44e8ffa31", features = ["floats"] }
-log = "0.4.28"
-wuff = "0.2.3"
-dirs = "6.0"
-libc = "0.2.178"
 dioxus-asset-resolver = { version = "0.7.3", features = ["native"] }
 
 [dependencies.winit]
