@@ -8,7 +8,7 @@ use crate::dom::{Dom, ImageData, NodeData};
 use crate::dom::{EventDispatcher, EventType};
 use crate::js::JsRuntime;
 use crate::networking::{resolve_url, NetworkError, NewHttpClient, Resource};
-use crate::renderer::text::TextPainter;
+use crate::renderer::painter::ScenePainter;
 use crate::renderer::HtmlRenderer;
 use blitz_traits::shell::{ShellProvider, Viewport};
 use markup5ever::local_name;
@@ -238,7 +238,7 @@ impl Engine {
     }
 
     /// Render the current page to a canvas
-    pub fn render(&mut self, painter: &mut TextPainter) {
+    pub fn render(&mut self, painter: &mut ScenePainter) {
         {
             let dom = self.dom.as_mut().unwrap();
 

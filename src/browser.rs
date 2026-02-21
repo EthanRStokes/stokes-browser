@@ -14,7 +14,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
 
 use crate::ipc::{ParentToTabMessage, TabToParentMessage};
-use crate::renderer::text::TextPainter;
+use crate::renderer::painter::ScenePainter;
 use crate::tab_manager::TabManager;
 use crate::ui::{BrowserUI, TextBrush};
 use crate::window::{create_surface, Env};
@@ -446,7 +446,7 @@ impl BrowserApp {
 
         let canvas = self.env.surface.canvas();
 
-        let mut painter = TextPainter {
+        let mut painter = ScenePainter {
             inner: canvas,
             cache: &mut Default::default(),
         };

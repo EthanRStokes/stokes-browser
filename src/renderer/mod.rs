@@ -8,13 +8,15 @@ mod layers;
 mod shadow;
 mod gradient;
 mod sizing;
+pub mod painter;
 
 use std::any::Any;
 use crate::dom::node::{ListItemLayout, ListItemLayoutPosition, Marker, SpecialElementData};
 use crate::dom::{Dom, DomNode, ElementData, ImageData, NodeData};
 use crate::renderer::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
 use crate::renderer::layers::maybe_with_layer;
-use crate::renderer::text::{stroke_text, TextPainter, ToColorColor};
+use crate::renderer::text::stroke_text;
+use crate::renderer::painter::ToColorColor;
 use anyrender::{CustomPaint, Paint, PaintScene};
 use color::AlphaColor;
 use kurbo::{Affine, Insets, Point, Rect, Stroke, Vec2};
@@ -26,9 +28,10 @@ use style::properties::generated::longhands::visibility::computed_value::T as Vi
 use style::properties::style_structs::Font;
 use style::properties::ComputedValues;
 use style::servo_arc::Arc;
-use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, OutlineStyle, Overflow, ZIndex};
+use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, OutlineStyle, Overflow};
 use style::values::generics::color::GenericColor;
 use taffy::Layout;
+use painter::ScenePainter;
 use crate::renderer::sizing::compute_object_fit;
 
 /// HTML renderer that draws layout boxes to a canvas
@@ -55,7 +58,7 @@ impl HtmlRenderer<'_> {
     /// Render a layout tree to the canvas with transition support
     pub fn render(
         &mut self,
-        painter: &mut TextPainter,
+        painter: &mut ScenePainter,
         node: &DomNode,
     ) {
         let scroll = self.dom.viewport_scroll;
@@ -114,7 +117,7 @@ impl HtmlRenderer<'_> {
     }
 
     /// Render debug hitboxes for all elements (showing click target areas)
-    fn render_debug_hitboxes(&self, painter: &mut TextPainter, node_id: usize, parent_x: f64, parent_y: f64) {
+    fn render_debug_hitboxes(&self, painter: &mut ScenePainter, node_id: usize, parent_x: f64, parent_y: f64) {
         let node = &self.dom.tree()[node_id];
         let layout = node.final_layout;
 
@@ -275,7 +278,7 @@ impl HtmlRenderer<'_> {
     }
 
     /// Render debug hitboxes for inline box children
-    fn render_debug_hitboxes_inline(&self, painter: &mut TextPainter, node_id: usize, container_x: f64, container_y: f64) {
+    fn render_debug_hitboxes_inline(&self, painter: &mut ScenePainter, node_id: usize, container_x: f64, container_y: f64) {
         let node = &self.dom.tree()[node_id];
         let layout = node.final_layout;
 
@@ -337,7 +340,7 @@ impl HtmlRenderer<'_> {
 
     fn render_element(
         &self,
-        painter: &mut TextPainter,
+        painter: &mut ScenePainter,
         node_id: usize,
         location: Point,
     ) {
@@ -440,7 +443,7 @@ impl HtmlRenderer<'_> {
         );
     }
 
-    fn render_node(&self, scene: &mut TextPainter, node_id: usize, location: Point) {
+    fn render_node(&self, scene: &mut ScenePainter, node_id: usize, location: Point) {
         let node = &self.dom.tree()[node_id];
 
         match &node.data {
@@ -544,7 +547,7 @@ struct Element<'a> {
 }
 
 impl Element<'_> {
-    fn draw_children(&self, painter: &mut TextPainter) {
+    fn draw_children(&self, painter: &mut ScenePainter) {
         // Negative z_index hoisted nodes
         if let Some(hoisted) = &self.node.stacking_context {
             for child in hoisted.neg_z_hoisted_children() {
@@ -614,7 +617,7 @@ impl Element<'_> {
         }
     }
 
-    fn draw_inline_layout(&self, painter: &mut TextPainter, pos: Point) {
+    fn draw_inline_layout(&self, painter: &mut ScenePainter, pos: Point) {
         if self.node.flags.is_inline_root() {
             let text_layout = self.element.inline_layout_data.as_ref().unwrap_or_else(|| {
                 panic!("Tried to render node marked as inline root but has no inline layout data: {:?}", self.node)
@@ -632,13 +635,13 @@ impl Element<'_> {
         }
     }
 
-    fn draw_border(&self, painter: &mut TextPainter) {
+    fn draw_border(&self, painter: &mut ScenePainter) {
         for edge in [Edge::Top, Edge::Right, Edge::Bottom, Edge::Left] {
             self.draw_border_edge(painter, edge);
         }
     }
 
-    fn draw_border_edge(&self, painter: &mut TextPainter, edge: Edge) {
+    fn draw_border_edge(&self, painter: &mut ScenePainter, edge: Edge) {
         let style = &*self.style;
         let border = style.get_border();
         let path = self.frame.border_edge_shape(edge);
@@ -669,7 +672,7 @@ impl Element<'_> {
         }
     }
 
-    fn draw_outline(&self, painter: &mut TextPainter) {
+    fn draw_outline(&self, painter: &mut ScenePainter) {
         let outline = self.style.get_outline();
 
         let current_color = self.style.clone_color();
@@ -831,7 +834,7 @@ impl Element<'_> {
         anyrender_svg::render_svg_tree(scene, svg, transform);
     }
 
-    fn draw_image(&self, painter: &mut TextPainter) {
+    fn draw_image(&self, painter: &mut ScenePainter) {
         // Check if this element has image data
         if let Some(image_data) = self.element.image_data() {
             // Use the element's transform (which includes position and scale)
@@ -891,7 +894,7 @@ impl Element<'_> {
         }
     }
 
-    fn draw_canvas(&self, painter: &mut TextPainter) {
+    fn draw_canvas(&self, painter: &mut ScenePainter) {
         let Some(custom_paint_source) = self.element.canvas_data() else {
             return;
         };

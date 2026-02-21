@@ -1,4 +1,3 @@
-use crate::renderer::text::{TextPainter, ToColorColor};
 use anyrender::PaintScene;
 use kurbo::Rect;
 // Text decorations, borders, shadows, and outlines
@@ -6,6 +5,7 @@ use style::computed_values::box_shadow::ComputedList;
 use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::servo_arc::Arc;
 use style::values::computed::{BorderStyle, OutlineStyle};
+use crate::renderer::painter::{ScenePainter, ToColorColor};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Edge {
@@ -17,7 +17,7 @@ pub enum Edge {
 
 /// Render box shadows for an element
 pub fn render_box_shadows(
-    painter: &mut TextPainter,
+    painter: &mut ScenePainter,
     rect: &Rect,
     style: &Arc<StyloComputedValues>,
     scale_factor: f32,
@@ -94,7 +94,7 @@ pub fn render_box_shadows(
 
 /// Render outline for an element with proper BorderStyle implementations
 pub fn render_outline(
-    painter: &mut TextPainter,
+    painter: &mut ScenePainter,
     rect: &Rect,
     style: &Arc<StyloComputedValues>,
     opacity: f32,

@@ -2,7 +2,7 @@
 use crate::engine::{Engine, EngineConfig, ENGINE_REF, USER_AGENT_REF};
 use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage};
 use crate::js;
-use crate::renderer::text::TextPainter;
+use crate::renderer::painter::ScenePainter;
 use blitz_traits::shell::Viewport;
 use shared_memory::{Shmem, ShmemConf};
 use skia_safe::{AlphaType, ColorType, ImageInfo, Surface};
@@ -412,7 +412,7 @@ impl TabProcess {
             // Clear the canvas to prevent old frames from showing through
             canvas.clear(skia_safe::Color::WHITE);
 
-            let mut painter = TextPainter {
+            let mut painter = ScenePainter {
                 inner: canvas,
                 cache: &mut Default::default(),
             };

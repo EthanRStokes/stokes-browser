@@ -1,5 +1,5 @@
 use crate::renderer::layers::maybe_with_layer;
-use crate::renderer::text::ToColorColor;
+use crate::renderer::painter::ToColorColor;
 use crate::renderer::Element;
 use anyrender::PaintScene;
 use kurbo::{Rect, Vec2};

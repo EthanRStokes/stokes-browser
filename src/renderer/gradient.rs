@@ -27,7 +27,7 @@ use style::{
         },
     },
 };
-use crate::renderer::text::ToColorColor;
+use crate::renderer::painter::ToColorColor;
 
 type GradientItem<T> = GenericGradientItem<GenericColor<Percentage>, T>;
 type LinearGradient<'a> = (

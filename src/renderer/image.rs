@@ -1,12 +1,12 @@
 use crate::dom::Dom;
-use crate::renderer::text::TextPainter;
+use crate::renderer::painter::ScenePainter;
 use anyrender::PaintScene;
 use color::AlphaColor;
 // Image rendering functionality
 use skia_safe::{Color, Paint, Rect};
 
 /// Render a placeholder for images (when not loaded, loading, or failed)
-pub fn render_image_placeholder(painter: &mut TextPainter, dom: &Dom, rect: &Rect, text: &str, scale_factor: f32, scroll_transform: kurbo::Affine) {
+pub fn render_image_placeholder(painter: &mut ScenePainter, dom: &Dom, rect: &Rect, text: &str, scale_factor: f32, scroll_transform: kurbo::Affine) {
     // Convert to kurbo::Rect
     let kurbo_rect = kurbo::Rect::new(
         rect.left as f64,

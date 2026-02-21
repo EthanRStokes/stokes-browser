@@ -1,4 +1,4 @@
-use crate::renderer::text::TextPainter;
+use crate::renderer::painter::ScenePainter;
 use anyrender::PaintScene;
 use blitz_traits::shell::Viewport;
 use color::{AlphaColor, Srgb};
@@ -1107,7 +1107,7 @@ impl BrowserUI {
     }
 
     /// Render the UI
-    pub fn render(&self, canvas: &Canvas, font_ctx: &mut FontContext, layout_ctx: &mut LayoutContext<TextBrush>, painter: &mut TextPainter) {
+    pub fn render(&self, canvas: &Canvas, font_ctx: &mut FontContext, layout_ctx: &mut LayoutContext<TextBrush>, painter: &mut ScenePainter) {
         let canvas_width = canvas.image_info().width() as f32;
         let canvas_height = canvas.image_info().height() as f32;
         let chrome_height = self.chrome_height();
@@ -1615,7 +1615,7 @@ impl BrowserUI {
     }
 
     /// Draw a custom icon based on icon type
-    fn draw_icon(&self, painter: &mut TextPainter, icon_type: &IconType, rect: Rect, is_hover: bool, hidpi_scale: f32) {
+    fn draw_icon(&self, painter: &mut ScenePainter, icon_type: &IconType, rect: Rect, is_hover: bool, hidpi_scale: f32) {
         let center_x = rect.center_x() as f64;
         let center_y = rect.center_y() as f64;
         let icon_size = (rect.width().min(rect.height()) * 0.6) as f64;
@@ -1652,7 +1652,7 @@ impl BrowserUI {
     }
 
     /// Render an SVG tree into a rect
-    fn render_svg(painter: &mut TextPainter, tree: &Tree, rect: Rect, color: AlphaColor<Srgb>, hidpi_scale: f32) {
+    fn render_svg(painter: &mut ScenePainter, tree: &Tree, rect: Rect, color: AlphaColor<Srgb>, hidpi_scale: f32) {
         // Save canvas state before SVG rendering
         painter.inner.save();
 
@@ -1679,7 +1679,7 @@ impl BrowserUI {
     }
 
     /// Recursively render SVG nodes
-    fn render_svg_node(painter: &mut TextPainter, node: &usvg::Node, transform: Affine, color: AlphaColor<Srgb>) {
+    fn render_svg_node(painter: &mut ScenePainter, node: &usvg::Node, transform: Affine, color: AlphaColor<Srgb>) {
         match node {
             usvg::Node::Group(group) => {
                 let group_transform = Self::usvg_transform_to_affine(&group.transform());
@@ -1763,7 +1763,7 @@ impl BrowserUI {
 
 
     /// Draw a tooltip
-    fn draw_tooltip(painter: &mut TextPainter, tooltip: &Tooltip, x: f32, y: f32, font: &Font, hidpi_scale: f32, canvas_width: f32, canvas_height: f32) {
+    fn draw_tooltip(painter: &mut ScenePainter, tooltip: &Tooltip, x: f32, y: f32, font: &Font, hidpi_scale: f32, canvas_width: f32, canvas_height: f32) {
         if !tooltip.is_visible {
             return;
         }
@@ -1838,7 +1838,7 @@ impl BrowserUI {
 
     /// Draw a loading spinner indicator
     /// `angle` is the current rotation angle in radians (0 to 2*PI)
-    pub fn render_loading_indicator(&self, painter: &mut TextPainter, is_loading: bool, angle: f32) {
+    pub fn render_loading_indicator(&self, painter: &mut ScenePainter, is_loading: bool, angle: f32) {
         if !is_loading {
             return;
         }
@@ -1860,7 +1860,7 @@ impl BrowserUI {
     }
 
     /// Draw an animated spinner
-    fn draw_spinner(painter: &mut TextPainter, center_x: f32, center_y: f32, radius: f32, angle: f32, hidpi_scale: f32) {
+    fn draw_spinner(painter: &mut ScenePainter, center_x: f32, center_y: f32, radius: f32, angle: f32, hidpi_scale: f32) {
         let stroke_width = 2.5 * hidpi_scale as f64;
         let stroke = kurbo::Stroke::new(stroke_width).with_caps(kurbo::Cap::Round);
 

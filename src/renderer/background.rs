@@ -24,7 +24,7 @@ use crate::dom::ImageData;
 use crate::renderer::Element;
 use crate::renderer::gradient::to_peniko_gradient;
 use crate::renderer::layers::maybe_with_layer;
-use crate::renderer::text::ToColorColor;
+use crate::renderer::painter::ToColorColor;
 
 impl Element<'_> {
     pub(super) fn draw_background(&self, scene: &mut impl PaintScene) {
