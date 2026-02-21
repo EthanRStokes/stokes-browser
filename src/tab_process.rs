@@ -13,6 +13,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use crate::shell_provider::{StokesShellProvider, ShellProviderMessage};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use crate::dom::Dom;
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
@@ -129,6 +130,8 @@ impl TabProcess {
         loop {
             match self.shell_receiver.try_recv() {
                 Ok(msg) => {
+                    self.handle_shell_provider_message(&msg).await?;
+
                     // Convert ShellProviderMessage to appropriate TabToParentMessage(s)
                     if let Ok(mut channel) = self.channel.try_borrow_mut() {
                         let _ = channel.send(&TabToParentMessage::ShellProvider(msg));
@@ -164,6 +167,10 @@ impl TabProcess {
             // Small sleep to prevent CPU spinning
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
+    }
+
+    fn dom(&mut self) -> Option<&mut Dom> {
+        self.engine.dom.as_mut()
     }
 
     /// Handle a message from the parent process
@@ -402,6 +409,16 @@ impl TabProcess {
             }
         }
         Ok(true) // Continue running
+    }
+
+    async fn handle_shell_provider_message(&mut self, message: &ShellProviderMessage) -> io::Result<()> {
+        match message {
+            ShellProviderMessage::RequestRedraw => {
+                self.render_frame()?;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     /// Render a frame to the shared memory surface
