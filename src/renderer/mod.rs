@@ -608,7 +608,7 @@ impl Element<'_> {
             };
 
             let transform =
-                Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor)) * self.transform;
+                Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor));
 
             stroke_text(painter, layout.lines(), self.context.dom, transform);
         }
@@ -619,12 +619,9 @@ impl Element<'_> {
             let text_layout = self.element.inline_layout_data.as_ref().unwrap_or_else(|| {
                 panic!("Tried to render node marked as inline root but has no inline layout data: {:?}", self.node)
             });
-            if text_layout.text.contains("freestar") {
-                println!("YO WTF")
-            }
 
             let transform =
-                Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor)) * self.transform;
+                Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor));
 
             stroke_text(
                 painter,

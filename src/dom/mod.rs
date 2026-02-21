@@ -581,24 +581,36 @@ impl Dom {
             let mut damage = dom.nodes[node_id].damage().unwrap_or(ALL_DAMAGE);
             let _flags = &dom.nodes[node_id].flags;
 
-            let mut layout_children = Vec::new();
-            let mut anonymous_block: Option<usize> = None;
-            collect_layout_children(dom, node_id, &mut layout_children, &mut anonymous_block);
+            if damage.intersects(CONSTRUCT_FC | CONSTRUCT_BOX) {
+                let mut layout_children = Vec::new();
+                let mut anonymous_block: Option<usize> = None;
+                collect_layout_children(dom, node_id, &mut layout_children, &mut anonymous_block);
 
-            // Recurse into newly collected layout children
-            for child_id in layout_children.iter().copied() {
-                get_layout_children_recursive(dom, child_id);
-                dom.nodes[child_id].layout_parent.set(Some(node_id));
-                if let Some(data) = dom.nodes[child_id].stylo_data.get_mut() {
-                    data.damage
-                        .remove(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+                // Recurse into newly collected layout children
+                for child_id in layout_children.iter().copied() {
+                    get_layout_children_recursive(dom, child_id);
+                    dom.nodes[child_id].layout_parent.set(Some(node_id));
+                    if let Some(data) = dom.nodes[child_id].stylo_data.get_mut() {
+                        data.damage
+                            .remove(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+                    }
+                }
+
+                *dom.nodes[node_id].layout_children.borrow_mut() = Some(layout_children.clone());
+
+                damage.remove(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+                // damage.insert(RestyleDamage::RELAYOUT | RestyleDamage::REPAINT);
+            } else {
+                let layout_children = dom.nodes[node_id].layout_children.borrow_mut().take();
+                if let Some(layout_children) = layout_children {
+                    for child_id in layout_children.iter().copied() {
+                        get_layout_children_recursive(dom, child_id);
+                        dom.nodes[child_id].layout_parent.set(Some(node_id));
+                    }
+
+                    *dom.nodes[node_id].layout_children.borrow_mut() = Some(layout_children);
                 }
             }
-
-            *dom.nodes[node_id].layout_children.borrow_mut() = Some(layout_children.clone());
-
-            damage.remove(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-            // damage.insert(RestyleDamage::RELAYOUT | RestyleDamage::REPAINT);
 
             dom.nodes[node_id].set_damage(damage);
         }
