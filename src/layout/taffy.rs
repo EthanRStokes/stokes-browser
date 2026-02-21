@@ -343,7 +343,7 @@ impl PrintTree for Dom {
         match node.data {
             NodeData::Document => "DOCUMENT",
             NodeData::Text { .. } => "TEXT",
-            NodeData::Comment { .. } => "COMMENT",
+            NodeData::Comment => "COMMENT",
             NodeData::Element(_) => "ELEMENT",
             NodeData::AnonymousBlock(_) => "ANONYMOUS BLOCK"
         }

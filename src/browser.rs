@@ -8,12 +8,6 @@ use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use cursor_icon::CursorIcon;
-use iced::{mouse, window, Event, Font, Pixels, Renderer, Theme};
-use iced::advanced::renderer;
-use iced_runtime::core::clipboard;
-use iced_winit::conversion;
-use iced_winit::core::renderer::Headless;
-use iced_winit::runtime::{user_interface, UserInterface};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -43,10 +37,6 @@ pub(crate) struct BrowserApp {
     tab_manager: TabManager,
     active_tab_index: usize,
     ui: BrowserUI,
-    cache: user_interface::Cache,
-    renderer: Renderer,
-    events: Vec<Event>,
-    cursor: mouse::Cursor,
     viewport: Arc<RwLock<Viewport>>,
     page_viewport: Arc<RwLock<Viewport>>,
     cursor_position: (f64, f64),
@@ -96,10 +86,6 @@ impl BrowserApp {
             tab_manager,
             active_tab_index: 0,
             ui,
-            cache: user_interface::Cache::new(),
-            renderer: Renderer::new(Font::default(), Pixels::from(16), None).await.expect("Renderer can't be created"),
-            events: Vec::new(),
-            cursor: mouse::Cursor::default(),
             cursor_position: (0.0, 0.0),
             viewport,
             page_viewport,
@@ -480,38 +466,6 @@ impl BrowserApp {
         self.ui.render(canvas, &mut self.font_ctx, &mut self.layout_ctx, &mut painter);
         self.ui.render_loading_indicator(&mut painter, is_loading, self.loading_spinner_angle);
 
-        // todo wip finish iced
-        let mut interface = UserInterface::build(
-            self.ui.view(),
-            self.viewport.read().unwrap().window_size.into(),
-            std::mem::take(&mut self.cache),
-            &mut self.renderer,
-        );
-
-        let clipboard = &mut clipboard::Null;
-        let (state, a) = interface.update(
-            &[Event::Window(
-                window::Event::RedrawRequested(Instant::now()),
-            )],
-            self.cursor,
-            &mut self.renderer,
-            clipboard,
-            &mut Vec::new()
-        );
-
-        // todo maybe update cursor
-
-        // draw
-        interface.draw(
-            &mut self.renderer,
-            &Theme::Dark,
-            &renderer::Style::default(),
-            self.cursor
-        );
-        self.cache = interface.into_cache();
-
-        // todo present layer
-
         self.env.gr_context.flush_and_submit();
         self.env.gl_surface.swap_buffers(&self.env.gl_context)
             .map_err(|e| format!("Failed to swap buffers: {}", e))?;
@@ -545,8 +499,7 @@ impl ApplicationHandler for BrowserApp {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
-        let mut render: bool = false;
-        match &event {
+        match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
@@ -559,14 +512,14 @@ impl ApplicationHandler for BrowserApp {
                     self.env.stencil_size
                 );
 
-                let (width, height): (u32, u32) = (*new_size).into();
+                let (width, height): (u32, u32) = new_size.into();
                 self.env.gl_surface.resize(
                     &self.env.gl_context,
                     NonZeroU32::new(width.max(1)).unwrap(),
                     NonZeroU32::new(height.max(1)).unwrap()
                 );
                 // Update viewport size
-                self.set_viewport((*new_size).into());
+                self.set_viewport(new_size.into());
                 let (width, height) = self.page_viewport.read().unwrap().window_size;
 
                 self.ui.update_layout(&*self.viewport.read().unwrap());
@@ -580,7 +533,7 @@ impl ApplicationHandler for BrowserApp {
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                let scale_factor = *scale_factor as f32;
+                let scale_factor = scale_factor as f32;
                 let mut viewport = self.viewport.write().unwrap();
                 let old_scale = viewport.hidpi_scale;
                 viewport.hidpi_scale = scale_factor;
@@ -597,7 +550,9 @@ impl ApplicationHandler for BrowserApp {
                 self.env.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                render = true;
+                if let Err(e) = self.render() {
+                    eprintln!("Render error: {}", e);
+                }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 // Update hover state before handling click
@@ -722,7 +677,7 @@ impl ApplicationHandler for BrowserApp {
                 self.env.window.request_redraw();
             }
             WindowEvent::ModifiersChanged(new_modifiers) => {
-                self.modifiers = *new_modifiers;
+                self.modifiers = new_modifiers;
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 // Handle keyboard input with the new multi-process architecture
@@ -784,18 +739,6 @@ impl ApplicationHandler for BrowserApp {
                 }
             }
             _ => {}
-        }
-
-        if let Some(event) = conversion::window_event(event, self.env.window.scale_factor() as f32, self.modifiers.state()) {
-            self.events.push(event);
-        }
-
-        if !self.events.is_empty() {
-
-        }
-
-        if let Err(e) = self.render() {
-            eprintln!("Render error: {}", e);
         }
 
         let expected_frame_length_seconds = 1.0 / 60.0;

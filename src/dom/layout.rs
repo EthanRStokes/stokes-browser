@@ -123,7 +123,8 @@ pub(crate) fn collect_layout_children(
 
                     log::error!("Failed to parse inline SVG: {}", e);
                 }
-            }
+            };
+            return;
         }
 
         //Only ol tags have start and reversed attributes
@@ -679,7 +680,7 @@ pub(crate) fn find_inline_layout_embedded_boxes(
                     }
                 };
             }
-            NodeData::Comment { .. } | NodeData::Text { .. } => {
+            NodeData::Comment | NodeData::Text { .. } => {
                 node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
             }
             NodeData::Document => unreachable!(),
@@ -942,7 +943,7 @@ pub(crate) fn build_inline_layout(
                 // dbg!(&data.content);
                 builder.push_text(&text.content);
             }
-            NodeData::Comment { contents: _ } => {
+            NodeData::Comment => {
                 // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
             }
             NodeData::Document => unreachable!(),

@@ -242,7 +242,7 @@ impl Engine {
         {
             let dom = self.dom.as_mut().unwrap();
 
-            //dom.resolve();
+            dom.resolve();
         }
 
         let dom = self.dom.as_ref().unwrap();

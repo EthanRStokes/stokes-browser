@@ -452,7 +452,7 @@ impl HtmlRenderer<'_> {
             }
             NodeData::Document => {}
             // NodeData::Doctype => {}
-            NodeData::Comment { .. } => {}
+            NodeData::Comment => {}
         }
     }
 

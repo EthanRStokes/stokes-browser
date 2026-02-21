@@ -1,16 +1,25 @@
-use std::ascii::AsciiExt;
-use super::{AttributeMap, Dom, ElementData, ImageData, NodeData};
+use super::Dom;
 use crate::dom::config::DomConfig;
-use crate::dom::node::{SpecialElementData, TextData};
+use crate::dom::node::Attribute;
+use html5ever::tendril::{StrTendril, TendrilSink};
+use html5ever::tokenizer::TokenizerOpts;
+use html5ever::tree_builder::TreeBuilderOpts;
 // HTML parser using html5ever
-use html5ever::parse_document;
-use html5ever::tendril::TendrilSink;
-use markup5ever::local_name;
-use markup5ever_rcdom as rcdom;
-use markup5ever_rcdom::{Handle, NodeData as EverNodeData};
+use html5ever::{parse_document, ParseOpts};
+use markup5ever::interface::{ElementFlags, NodeOrText, QuirksMode, TreeSink};
+use markup5ever::QualName;
+use std::borrow::Cow;
+use std::cell::{Cell, Ref, RefCell, RefMut};
 
 /// HTML Parser for converting HTML strings into DOM structures
 pub struct HtmlParser;
+
+fn html5ever_to_stokes(attribute: html5ever::Attribute) -> Attribute {
+    Attribute {
+        name: attribute.name.clone(),
+        value: attribute.value.to_string(),
+    }
+}
 
 impl HtmlParser {
     pub fn new() -> Self {
@@ -19,161 +28,186 @@ impl HtmlParser {
 
     /// Parse HTML string into a DOM structure
     pub fn parse(&self, html: &str, config: DomConfig) -> Dom {
-        // Parse with html5ever
-        let parser = parse_document(rcdom::RcDom::default(), Default::default());
-        let rcdom = parser.one(html);
-
-        // Convert RcDom to our DOM structure
         let mut dom = Dom::new(config);
-        self.build_dom_from_handle(&rcdom.document, None, &mut dom);
+
+        DomHtmlParser::parse_dom(&mut dom, html);
 
         dom
     }
+}
 
-    /// Convert html5ever's DOM structure to our DOM structure
-    fn build_dom_from_handle(
-        &self, 
-        handle: &Handle, 
-        parent_id: Option<usize>,
-        dom: &mut Dom,
-    ) {
-        // Determine node type from rcdom
-        match &handle.data {
-            EverNodeData::Document => {
-                // Our Dom already has a root Document node at id 0
-                let root_id = 0usize;
-                // Recurse into children of the document, setting parent to root
-                let children = handle.children.borrow();
-                for child in children.iter() {
-                    self.build_dom_from_handle(child, Some(root_id), dom);
-                }
-            }
-            EverNodeData::Doctype { name, public_id, system_id } => {
-                // IGNORE DOCTYPE for now
-            }
-            EverNodeData::Text { contents } => {
-                let text = contents.borrow().to_string();
-                let processed = self.process_html_whitespace(&text);
-                if processed.is_empty() {
-                    return;
-                }
-                let data = NodeData::Text(TextData::new(processed));
-                let id = dom.create_node(data);
-                if let Some(pid) = parent_id {
-                    dom.nodes[id].parent = Some(pid);
-                    dom.nodes[pid].children.push(id);
-                }
-            }
-            EverNodeData::Comment { contents } => {
-                let data = NodeData::Comment { contents: contents.clone() };
-                let id = dom.create_node(data);
-                if let Some(pid) = parent_id {
-                    dom.nodes[id].parent = Some(pid);
-                    dom.nodes[pid].children.push(id);
-                }
-            }
-            EverNodeData::Element { name, attrs, template_contents, .. } => {
-                // Convert attributes to AttributeMap
-                let mut attributes: AttributeMap = AttributeMap::empty();
-                for attr in attrs.borrow().iter() {
-                    let local = attr.name.clone();
-                    if local.local.as_ref() == "id" {
-                        let val = &attr.value;
-                        attributes.set(local, &*val);
-                    }
-                }
+pub struct DomHtmlParser<'m> {
+    dom: RefCell<&'m mut Dom>,
 
-                let elem_data = ElementData::new(name.clone(), attributes);
+    pub errors: RefCell<Vec<Cow<'static, str>>>,
 
-                let node_kind = NodeData::Element(elem_data);
+    pub quirks_mode: Cell<QuirksMode>,
+    pub is_xml: bool,
+}
 
-                let id = dom.create_node(node_kind);
+impl<'m> DomHtmlParser<'m> {
+    pub fn new(dom: &'m mut Dom) -> Self {
+        Self {
+            dom: RefCell::new(dom),
+            errors: RefCell::new(Vec::new()),
+            quirks_mode: Cell::new(QuirksMode::NoQuirks),
+            is_xml: false,
+        }
+    }
 
-                for attr in attrs.borrow().iter() {
-                    let local = attr.name.clone();
-                    let val = &attr.value;
-                    dom.set_attribute(id, local, val);
+    pub fn parse_dom<'a>(dom: &'a mut Dom, html: &str) {
+        let mut sink = DomHtmlParser::new(dom);
+
+        let is_xhtml_doc = html.starts_with("<?xml")
+            || html.starts_with("<!DOCTYPE") && {
+                let first_line = html.lines().next().unwrap();
+                first_line.contains("XHTML") || first_line.contains("xhtml")
+            };
+
+        if is_xhtml_doc {
+            sink.is_xml = true;
+            xml5ever::driver::parse_document(sink, Default::default())
+                .from_utf8()
+                .read_from(&mut html.as_bytes())
+                .unwrap();
+        } else {
+            sink.is_xml = false;
+            let opts = ParseOpts {
+                tokenizer: TokenizerOpts::default(),
+                tree_builder: TreeBuilderOpts {
+                    exact_errors: false,
+                    scripting_enabled: true,
+                    iframe_srcdoc: false,
+                    drop_doctype: true,
+                    quirks_mode: QuirksMode::NoQuirks,
+                },
+            };
+            parse_document(sink, opts)
+                .from_utf8()
+                .read_from(&mut html.as_bytes())
+                .unwrap();
+        }
+    }
+
+    #[track_caller]
+    fn dom(&self) -> RefMut<'_, &'m mut Dom> {
+        self.dom.borrow_mut()
+    }
+}
+
+impl<'m> TreeSink for DomHtmlParser<'m> {
+    type Output = ();
+
+    type Handle = usize;
+
+    type ElemName<'a>
+        = Ref<'a, QualName>
+    where
+        Self: 'a;
+
+    fn finish(self) -> Self::Output {
+        for error in self.errors.borrow().iter() {
+            println!("ERROR: {error}");
+        }
+    }
+
+    fn parse_error(&self, msg: Cow<'static, str>) {
+        self.errors.borrow_mut().push(msg);
+    }
+
+    fn get_document(&self) -> Self::Handle {
+        0
+    }
+
+    fn elem_name<'a>(&'a self, target: &'a Self::Handle) -> Self::ElemName<'a> {
+        Ref::map(self.dom.borrow(), |dom| {
+            dom.element_name(*target).expect("TreeSink::elem_name called on non-element node")
+        })
+    }
+
+    fn create_element(&self, name: QualName, attrs: Vec<markup5ever::Attribute>, flags: ElementFlags) -> Self::Handle {
+        let attrs = attrs.into_iter().map(html5ever_to_stokes).collect();
+        self.dom().create_element(name, attrs)
+    }
+
+    fn create_comment(&self, text: StrTendril) -> Self::Handle {
+        self.dom().create_comment_node()
+    }
+
+    fn create_pi(&self, target: StrTendril, data: StrTendril) -> Self::Handle {
+        self.dom().create_comment_node()
+    }
+
+    fn append(&self, parent: &Self::Handle, child: NodeOrText<Self::Handle>) {
+        match child {
+            NodeOrText::AppendNode(id) => self.dom().append_children(*parent, &[id]),
+            NodeOrText::AppendText(text) => {
+                let last_child_id = self.dom().last_child_id(*parent);
+                let has_appended = if let Some(id) = last_child_id {
+                    self.dom().append_text_to_node(id, &text).is_ok()
+                } else {
+                    false
+                };
+                if !has_appended {
+                    let new_child_id = self.dom().create_text_node(&text);
+                    self.dom().append_children(*parent, &[new_child_id]);
                 }
-                let elem_data = dom.nodes[id].element_data_mut().unwrap();
-                elem_data.flush_style_attribute(&dom.lock, &dom.url.url_extra_data());
-
-                {
-                    let tag = name.local.as_ref();
-                    if tag.eq_ignore_ascii_case("img") {
-                        dom.load_image(id);
-                    } else if tag.eq_ignore_ascii_case("canvas") {
-                        dom.load_custom_paint_src(id);
-                    } else if tag.eq_ignore_ascii_case("link") {
-                        dom.load_linked_stylesheet(id);
-                    }
-                }
-
-                // Register element id attribute in nodes_to_id map for getElementById lookups
-                if let Some(id_attr) = attrs.borrow().iter().find(|a| a.name.local.as_ref() == "id") {
-                    let id_value = id_attr.value.to_string();
-                    if !id_value.is_empty() {
-                        dom.nodes_to_id.insert(id_value, id);
-                    }
-                }
-
-                // Attach to parent
-                if let Some(pid) = parent_id {
-                    dom.nodes[id].parent = Some(pid);
-                    dom.nodes[pid].children.push(id);
-                }
-
-                // Recurse into children (normal child nodes)
-                let children = handle.children.borrow();
-                for child in children.iter() {
-                    self.build_dom_from_handle(child, Some(id), dom);
-                }
-            }
-            EverNodeData::ProcessingInstruction { target, contents } => {
-                // Ignore ProcessingInstruction for now
-            }
-            _ => {
-                // Unknown or unhandled node types - skip
             }
         }
     }
 
-    /// Process raw HTML whitespace in text nodes according to HTML standards
-    fn process_html_whitespace(&self, raw_text: &str) -> String {
-        // HTML whitespace processing rules:
-        // 1. Convert sequences of whitespace characters to single spaces
-        // 2. Preserve explicit line breaks (\n) as they may be intentional
-        // 3. Trim leading and trailing whitespace from text nodes
-
-        if raw_text.trim().is_empty() {
-            return String::new();
-        }
-
-        // Replace sequences of spaces and tabs with single spaces
-        // but preserve newlines as they represent intentional line breaks
-        let mut result = String::new();
-        let mut prev_was_space = false;
-
-        for ch in raw_text.chars() {
-            match ch {
-                ' ' | '\t' | '\r' => {
-                    if !prev_was_space {
-                        result.push(' ');
-                        prev_was_space = true;
-                    }
-                }
-                '\n' => {
-                    // Preserve newlines for proper line break handling
-                    result.push('\n');
-                    prev_was_space = false;
-                }
-                _ => {
-                    result.push(ch);
-                    prev_was_space = false;
+    fn append_before_sibling(&self, sibling: &Self::Handle, new_node: NodeOrText<Self::Handle>) {
+        match new_node {
+            NodeOrText::AppendNode(id) => self.dom().insert_nodes_before(*sibling, &[id]),
+            NodeOrText::AppendText(text) => {
+                let previous_sibling_id = self.dom().previous_sibling_id(*sibling);
+                let has_appended = if let Some(id) = previous_sibling_id {
+                    self.dom().append_text_to_node(id, &text).is_ok()
+                } else {
+                    false
+                };
+                if !has_appended {
+                    let new_child_id = self.dom().create_text_node(&text);
+                    self.dom().insert_nodes_before(*sibling, &[new_child_id]);
                 }
             }
         }
+    }
 
-        // Trim whitespace from start and end, but preserve internal structure
-        result.trim().to_string()
+    fn append_based_on_parent_node(&self, element: &Self::Handle, prev_element: &Self::Handle, child: NodeOrText<Self::Handle>) {
+        if self.dom().node_has_parent(*element) {
+            self.append_before_sibling(element, child);
+        } else {
+            self.append(prev_element, child);
+        }
+    }
+
+    fn append_doctype_to_document(&self, name: StrTendril, public_id: StrTendril, system_id: StrTendril) {
+    }
+
+    fn get_template_contents(&self, target: &Self::Handle) -> Self::Handle {
+        // todo
+        *target
+    }
+
+    fn same_node(&self, x: &Self::Handle, y: &Self::Handle) -> bool {
+        x == y
+    }
+
+    fn set_quirks_mode(&self, mode: QuirksMode) {
+        self.quirks_mode.set(mode);
+    }
+
+    fn add_attrs_if_missing(&self, target: &Self::Handle, attrs: Vec<markup5ever::Attribute>) {
+        let attrs = attrs.into_iter().map(html5ever_to_stokes).collect();
+        self.dom().add_attrs_if_missing(*target, attrs);
+    }
+
+    fn remove_from_parent(&self, target: &Self::Handle) {
+        self.dom().remove_node(*target);
+    }
+
+    fn reparent_children(&self, old_parent: &Self::Handle, new_parent: &Self::Handle) {
+        self.dom().reparent_children(*old_parent, *new_parent);
     }
 }

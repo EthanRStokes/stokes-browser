@@ -93,6 +93,11 @@ impl DerefMut for AttributeMap {
         &mut self.attrs
     }
 }
+impl FromIterator<Attribute> for AttributeMap {
+    fn from_iter<T: IntoIterator<Item=Attribute>>(iter: T) -> Self {
+        Self { attrs: Vec::from_iter(iter) }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NodeKind {
@@ -109,7 +114,7 @@ pub enum NodeData {
     /// The `Document` itself - the root node.
     Document,
     Text(TextData),
-    Comment { contents: StrTendril },
+    Comment,
     Element(ElementData),
     // TODO better pseudo element support
     AnonymousBlock(ElementData),
@@ -155,7 +160,7 @@ impl NodeData {
             NodeData::Element(_) => NodeKind::Element,
             NodeData::AnonymousBlock(_) => NodeKind::AnonymousBlock,
             NodeData::Text { .. } => NodeKind::Text,
-            NodeData::Comment { .. } => NodeKind::Comment,
+            NodeData::Comment => NodeKind::Comment,
         }
     }
 }
@@ -654,7 +659,21 @@ impl DomNode {
         }
     }
 
-    pub fn index(&self) -> Option<usize> {
+    pub fn text_data(&self) -> Option<&TextData> {
+        match self.data {
+            NodeData::Text(ref data) => Some(data),
+            _ => None,
+        }
+    }
+
+    pub fn text_data_mut(&mut self) -> Option<&mut TextData> {
+        match self.data {
+            NodeData::Text(ref mut data) => Some(data),
+            _ => None,
+        }
+    }
+
+    pub fn child_index(&self) -> Option<usize> {
         self.tree()[self.parent?]
             .children
             .iter()
@@ -662,7 +681,7 @@ impl DomNode {
     }
 
     pub fn backward(&self, num: usize) -> Option<&DomNode> {
-        let index = self.index().unwrap_or(0);
+        let index = self.child_index().unwrap_or(0);
         if index < num {
             return None;
         }
@@ -673,8 +692,12 @@ impl DomNode {
             .map(|id| self.get_node(*id))
     }
 
+    pub fn index_of_child(&self, child_id: usize) -> Option<usize> {
+        self.children.iter().position(|id| *id == child_id)
+    }
+
     pub fn forward(&self, num: usize) -> Option<&DomNode> {
-        let index = self.index().unwrap_or(0);
+        let index = self.child_index().unwrap_or(0);
         self.tree()[self.parent?]
             .children
             .get(index + num)
@@ -1244,7 +1267,7 @@ impl DomNode {
 
         match &self.data {
             NodeData::Document => {}
-            NodeData::Comment { contents: _ } => {}
+            NodeData::Comment => {}
             NodeData::AnonymousBlock(_) => {}
             // NodeData::Doctype { name, .. } => write!(s, "DOCTYPE {name}"),
             NodeData::Text(text) => {
@@ -1325,8 +1348,8 @@ impl fmt::Debug for DomNode {
                 };
                 write!(f, "{}", content)
             },
-            NodeData::Comment { contents } => {
-                write!(f, "<!-- {} -->", contents)
+            NodeData::Comment => {
+                write!(f, "<!-- comment -->")
             },
         }
     }

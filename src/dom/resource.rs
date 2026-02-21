@@ -81,6 +81,7 @@ impl Dom {
         let (Some(rels), Some(href)) = (rel_attr, href_attr) else {
             return;
         };
+        println!("Loading linked stylesheet for element <{}> link <{}>", target_id, href);
         if !rels.split_ascii_whitespace().any(|rel| rel == "stylesheet") {
             return;
         }

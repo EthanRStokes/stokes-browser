@@ -8,8 +8,6 @@ use peniko::Fill;
 use skia_safe::{Canvas, Color, Font, FontStyle, Paint, Rect, TextBlob};
 use std::f32::consts::PI;
 use std::time::{Duration, Instant};
-use iced::{Element, Event, Renderer, Theme};
-use iced::widget::text;
 use usvg::Tree;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -236,16 +234,6 @@ pub struct BrowserUI {
     pub reload_svg: Tree,
     pub new_tab_svg: Tree,
     pub close_tab_svg: Tree,
-}
-
-impl BrowserUI {
-    pub fn update(&mut self, event: Event) {
-        // todo impl
-    }
-
-    pub fn view(&self) -> Element<'_, Event, Theme, Renderer> {
-        text("ICED VIEW").into()
-    }
 }
 
 impl BrowserUI {
