@@ -359,13 +359,6 @@ impl ElementData {
         }
     }
 
-    pub fn svg_data_mut(&mut self) -> Option<&mut usvg::Tree> {
-        match self.image_data_mut()? {
-            ImageData::Svg(data) => Some(data),
-            _ => None,
-        }
-    }
-
     pub fn take_inline_layout(&mut self) -> Option<Box<TextLayout>> {
         std::mem::take(&mut self.inline_layout_data)
     }
@@ -426,13 +419,13 @@ impl From<Vec<PathBuf>> for FileData {
 #[derive(Debug, Clone)]
 pub enum ImageData {
     Raster(RasterImageData),
-    Svg(Box<usvg::Tree>),
+    Svg(std::sync::Arc<usvg::Tree>),
     None
 }
 
 impl From<usvg::Tree> for ImageData {
     fn from(value: usvg::Tree) -> Self {
-        ImageData::Svg(Box::new(value))
+        ImageData::Svg(std::sync::Arc::new(value))
     }
 }
 

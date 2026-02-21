@@ -24,7 +24,7 @@ impl StokesNetProvider {
 
 impl NetProvider for StokesNetProvider {
     fn fetch(&self, doc_id: usize, mut request: Request, handler: Box<dyn NetHandler>) {
-        println!("STOKES NET PROVIDER: fetching url {}", request.url.to_string());
+        //println!("STOKES NET PROVIDER: fetching url {}", request.url.to_string());
         if request.url.scheme() == "stokes" {
             match dioxus_asset_resolver::native::serve_asset(request.url.path()) {
                 Ok(res) => {

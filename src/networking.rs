@@ -75,7 +75,7 @@ pub enum ImageType {
 #[derive(Clone, Debug)]
 pub enum Resource {
     Image(ImageType, u32, u32, Arc<Vec<u8>>),
-    Svg(ImageType, Box<usvg::Tree>),
+    Svg(ImageType, Arc<usvg::Tree>),
     Css(DocumentStyleSheet),
     Font(Bytes),
     None,
@@ -473,7 +473,7 @@ impl ImageHandler {
         };
 
         if let Ok(tree) = parse_svg(&bytes) {
-            return Ok(Resource::Svg(self.kind.clone(), Box::new(tree)));
+            return Ok(Resource::Svg(self.kind.clone(), Arc::new(tree)));
         }
 
         Err(String::from("Could not parse image"))
