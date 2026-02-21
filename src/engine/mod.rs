@@ -510,6 +510,10 @@ impl Engine {
 
     /// Load an external JavaScript file from a URL
     async fn load_external_script(&self, script_url: &str) -> Result<String, NetworkError> {
+        if script_url.contains("cloudflare") {
+            return Err(NetworkError::Utf8("Blocked Cloudflare script".to_string()));
+        }
+
         let absolute_url = self.resolve_url(script_url)?;
         let script_bytes = networking::fetch_resource(&absolute_url, &self.config.user_agent).await?;
         let script_content = String::from_utf8(script_bytes)
