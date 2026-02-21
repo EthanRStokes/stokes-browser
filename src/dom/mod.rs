@@ -812,6 +812,34 @@ impl Dom {
         self.hover_node_id
     }
 
+    pub fn set_viewport(&mut self, viewport: Viewport) {
+        let scale_changed = viewport.scale_f64() != self.viewport.scale_f64();
+        self.viewport = viewport;
+        self.set_stylist_device(device(&self.viewport, self.font_ctx.clone()));
+        // todo clamp scroll
+
+        if scale_changed {
+            self.invalidate_inline_contexts();
+            self.shell_provider.request_redraw();
+        }
+    }
+
+    pub fn set_stylist_device(&mut self, device: Device) {
+        let origins = {
+            let lock = &self.lock;
+            let guards = StylesheetGuards {
+                author: &lock.read(),
+                ua_or_user: &lock.read(),
+            };
+            self.stylist.set_device(device, &guards)
+        };
+        self.stylist.force_stylesheet_origins_dirty(origins);
+    }
+
+    pub fn stylist_device(&self) -> &Device {
+        self.stylist.device()
+    }
+
     pub fn get_cursor(&self) -> Option<CursorIcon> {
         let node = &self.nodes[self.get_hover_node_id()?];
 

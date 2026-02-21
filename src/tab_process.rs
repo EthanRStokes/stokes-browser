@@ -397,12 +397,10 @@ impl TabProcess {
                 self.render_frame()?;
             }
             ParentToTabMessage::SetScaleFactor(scale) => {
-                self.engine.viewport.hidpi_scale = scale;
-                if let Some(dom) = &mut self.engine.dom {
-                    dom.viewport.hidpi_scale = scale;
-                }
-                self.engine.update_content_dimensions();
-                self.render_frame()?;
+                self.engine.set_viewport(Viewport {
+                    hidpi_scale: scale,
+                    ..self.engine.viewport
+                });
             }
             ParentToTabMessage::Shutdown => {
                 return Ok(false); // Signal to exit the loop

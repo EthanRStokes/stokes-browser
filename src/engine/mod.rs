@@ -196,10 +196,10 @@ impl Engine {
     }
 
     /// Update the viewport size
-    pub fn set_viewport_size(&mut self, width: f32, height: f32) {
-        self.viewport.window_size = (width as u32, height as u32);
+    pub fn set_viewport(&mut self, viewport: Viewport) {
+        self.viewport = viewport.clone();
         if let Some(dom) = &mut self.dom {
-            dom.viewport.window_size = (width as u32, height as u32);
+            dom.set_viewport(viewport);
         }
 
         // Recalculate layout with new viewport
@@ -231,7 +231,10 @@ impl Engine {
 
     /// Resize the viewport
     pub fn resize(&mut self, width: f32, height: f32) {
-        self.set_viewport_size(width, height);
+        self.set_viewport(Viewport {
+            window_size: (width as u32, height as u32),
+            ..self.viewport
+        });
 
         // Update content dimensions after layout recalculation
         self.update_content_dimensions();
