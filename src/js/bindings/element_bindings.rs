@@ -461,7 +461,6 @@ unsafe extern "C" fn element_has_attribute(raw_cx: *mut JSContext, argc: c_uint,
 }
 
 /// element.appendChild implementation
-// FIXME: Just returns child - doesn't actually add child to DOM tree or update parent/child relationships
 pub(crate) unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
@@ -486,9 +485,7 @@ pub(crate) unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, arg
             let dom = &mut *dom_ptr;
             // Update parent reference in child node
             if let Some(parent_id) = get_node_id_from_this(raw_cx, &args) {
-                dom.snapshot(parent_id);
-                dom.nodes[child_id].parent = Some(parent_id);
-                dom.nodes[parent_id].add_child(child_id);
+                dom.append_children(parent_id, &[child_id]);
             }
         }
     });
@@ -502,13 +499,37 @@ pub(crate) unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, arg
 }
 
 /// element.removeChild implementation
+// TODO
 unsafe extern "C" fn element_remove_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     println!("[JS] element.removeChild() called");
 
+    // Extract the child node id from the first argument using helper
+    let child_id = if argc > 0 {
+        match get_node_id_from_value(raw_cx, *args.get(0)) {
+            Some(id) => id,
+            None => {
+                args.rval().set(UndefinedValue());
+                return true;
+            }
+        }
+    } else {
+        // No child provided
+        args.rval().set(UndefinedValue());
+        return true;
+    };
+    DOM_REF.with(|dom| {
+        if let Some(dom_ptr) = *dom.borrow() {
+            let dom = &mut *dom_ptr;
+            // Update parent reference in child node
+            if let Some(parent_id) = get_node_id_from_this(raw_cx, &args) {
+                dom.remove_node(child_id);
+            }
+        }
+    });
     if argc > 0 {
-        // Return the child that was removed
+        // Return the child that was appended
         args.rval().set(*args.get(0));
     } else {
         args.rval().set(UndefinedValue());
