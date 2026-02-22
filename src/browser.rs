@@ -133,6 +133,10 @@ impl BrowserApp {
     }
 
     pub(crate) fn add_tab(&mut self) {
+        self.add_tab_with_url(None);
+    }
+
+    pub(crate) fn add_tab_with_url(&mut self, url: Option<&str>) {
         if let Ok(new_tab_id) = self.tab_manager.create_tab() {
             self.ui.add_tab(&new_tab_id, "New Tab");
             self.tab_order.push(new_tab_id.clone());
@@ -140,9 +144,6 @@ impl BrowserApp {
             // Switch to new tab
             self.active_tab_index = self.tab_order.len() - 1;
             self.ui.set_active_tab(&new_tab_id);
-
-            // Clear the address bar when opening a new tab
-            self.ui.update_address_bar("");
 
             // Send initial configuration
             let (width, height) = self.page_viewport.read().unwrap().window_size;
@@ -152,7 +153,16 @@ impl BrowserApp {
             });
             let _ = self.tab_manager.send_to_tab(&new_tab_id, ParentToTabMessage::SetScaleFactor(self.viewport.read().unwrap().hidpi_scale));
 
-            self.ui.set_focus("address_bar");
+            if let Some(u) = url {
+                // Navigate to the provided URL immediately
+                self.ui.update_address_bar(u);
+                let _ = self.tab_manager.send_to_tab(&new_tab_id, ParentToTabMessage::Navigate(u.to_string()));
+                self.env.window.set_title(&format!("Loading: {}", u));
+            } else {
+                // Clear the address bar when opening a blank new tab
+                self.ui.update_address_bar("");
+                self.ui.set_focus("address_bar");
+            }
         }
     }
 

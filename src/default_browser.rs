@@ -20,10 +20,6 @@ pub fn set_as_default_browser() {
 fn set_default_linux() {
     use std::process::Command;
 
-    // The desktop file must be installed for xdg-settings to recognise the app.
-    // We attempt to install it to the user data dir first, then call xdg-settings.
-    install_desktop_file_linux();
-
     // Set the default web-browser via xdg-settings (works on most freedesktop DEs)
     let status = Command::new("xdg-settings")
         .args(["set", "default-web-browser", "com.ethanstokes.stokes-browser.desktop"])
@@ -64,36 +60,6 @@ fn set_default_linux_xdg_mime() {
             Err(e) => eprintln!("[default_browser] xdg-mime not found for {}: {}", mime, e),
         }
     }
-}
-
-#[cfg(target_os = "linux")]
-fn install_desktop_file_linux() {
-    use std::fs;
-    use std::path::PathBuf;
-
-    // Write the .desktop file to ~/.local/share/applications/
-    let desktop_content = include_str!("../assets/com.ethanstokes.stokes-browser.desktop");
-
-    let apps_dir: PathBuf = dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share"))
-        .join("applications");
-
-    if let Err(e) = fs::create_dir_all(&apps_dir) {
-        eprintln!("[default_browser] Could not create applications dir: {}", e);
-        return;
-    }
-
-    let desktop_path = apps_dir.join("com.ethanstokes.stokes-browser.desktop");
-    if let Err(e) = fs::write(&desktop_path, desktop_content) {
-        eprintln!("[default_browser] Could not write desktop file: {}", e);
-        return;
-    }
-    println!("[default_browser] Wrote desktop file to {}", desktop_path.display());
-
-    // Refresh the desktop database so the entry is recognised immediately
-    let _ = std::process::Command::new("update-desktop-database")
-        .arg(apps_dir.to_str().unwrap_or(""))
-        .status();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
