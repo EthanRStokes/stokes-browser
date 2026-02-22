@@ -13,6 +13,7 @@ mod tab_manager;
 mod browser;
 mod window;
 mod shell_provider;
+mod default_browser;
 
 use crate::browser::BrowserApp;
 use winit::event_loop::EventLoop;
@@ -29,6 +30,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Main browser process
     println!("Starting Web Browser...");
+
+    // Attempt to register this app as the default browser
+    default_browser::set_as_default_browser();
     let event_loop = EventLoop::new()?;
     let mut app = BrowserApp::new(&event_loop).await;
 

@@ -72,3 +72,6 @@ default-features = true
 
 [patch.crates-io]
 winit = { git = "https://github.com/Treetrain1/winit.git" }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55.0"

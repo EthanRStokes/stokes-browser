@@ -7,3 +7,4 @@ Type=Application
 Icon=com.ethanstokes.stokes-browser
 Categories=Internet;WebBrowser;
 Keywords=Browser;Stokes;Web;
+MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
