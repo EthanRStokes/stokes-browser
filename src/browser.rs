@@ -336,6 +336,13 @@ impl BrowserApp {
                     let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::GoForward);
                 }
             }
+            input::InputAction::OpenSettings => {
+                self.ui.toggle_settings();
+            }
+            input::InputAction::SetDefaultBrowser => {
+                crate::default_browser::set_as_default_browser();
+                self.show_alert("Stokes Browser has been set as your default browser.");
+            }
             input::InputAction::RequestRedraw => {}
             input::InputAction::QuitApp => {
                 event_loop.exit();

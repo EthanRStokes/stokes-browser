@@ -39,8 +39,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", arg);
     }
 
-    // Attempt to register this app as the default browser
-    default_browser::set_as_default_browser();
     let event_loop = EventLoop::new()?;
     let mut app = BrowserApp::new(&event_loop).await;
 

@@ -20,6 +20,8 @@ pub enum InputAction {
     GoBack,
     GoForward,
     ForwardToTab(KeyboardInput),
+    OpenSettings,
+    SetDefaultBrowser,
 }
 
 /// Represents keyboard input to be forwarded to tab process
@@ -46,6 +48,26 @@ pub fn handle_mouse_click_ui(
     tabs: &[(String, String)], // (tab_id, tab_title) pairs
     active_tab_index: usize,
 ) -> InputAction {
+    // If settings panel is open, route clicks to it first
+    if ui.show_settings {
+        if let Some(action_id) = ui.handle_settings_panel_click(x, y) {
+            match action_id.as_str() {
+                "set_default_browser" => {
+                    ui.show_settings = false;
+                    return InputAction::SetDefaultBrowser;
+                }
+                "settings_panel_close" => {
+                    ui.show_settings = false;
+                    return InputAction::RequestRedraw;
+                }
+                _ => {
+                    // noop - click consumed inside panel
+                    return InputAction::RequestRedraw;
+                }
+            }
+        }
+    }
+
     // Check if close button was clicked first
     if let Some(tab_id) = ui.check_close_button_click(x, y) {
         println!("Close button clicked for tab: {}", tab_id);
@@ -69,6 +91,9 @@ pub fn handle_mouse_click_ui(
         } else if component_id == "new_tab" {
             println!("New tab button clicked");
             return InputAction::AddTab;
+        } else if component_id == "settings" {
+            println!("Settings button clicked");
+            return InputAction::OpenSettings;
         } else if component_id == "address_bar" {
             // Focus the address bar for typing with click position
             ui.set_focus_at_click("address_bar", x);

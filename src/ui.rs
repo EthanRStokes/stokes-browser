@@ -100,6 +100,7 @@ pub enum IconType {
     Refresh,
     NewTab,
     Close,
+    Settings,
 }
 
 impl UiComponent {
@@ -234,6 +235,9 @@ pub struct BrowserUI {
     pub reload_svg: Tree,
     pub new_tab_svg: Tree,
     pub close_tab_svg: Tree,
+    pub settings_svg: Tree,
+    /// Whether the settings panel is open
+    pub show_settings: bool,
 }
 
 impl BrowserUI {
@@ -261,7 +265,24 @@ impl BrowserUI {
                 UiComponent::navigation_button("refresh", "⟳", scaled(Self::BUTTON_MARGIN * 3.0 + Self::BUTTON_SIZE * 2.0), IconType::Refresh, "Refresh", scale_factor),
                 UiComponent::address_bar("",
                     scaled(Self::BUTTON_MARGIN * 4.0 + Self::BUTTON_SIZE * 3.0),
-                    window_width - scaled(Self::BUTTON_MARGIN * 5.0 + Self::BUTTON_SIZE * 3.0), scale_factor),
+                    window_width - scaled(Self::BUTTON_MARGIN * 6.0 + Self::BUTTON_SIZE * 4.0), scale_factor),
+                // Settings button - positioned to the right of the address bar
+                UiComponent::Button {
+                    id: "settings".to_string(),
+                    label: "⚙".to_string(),
+                    x: window_width - scaled(Self::BUTTON_MARGIN + Self::BUTTON_SIZE),
+                    y: scaled(48.0),
+                    width: scaled(Self::BUTTON_SIZE),
+                    height: scaled(Self::BUTTON_SIZE),
+                    color: [0.95, 0.95, 0.95],
+                    hover_color: [0.85, 0.9, 1.0],
+                    pressed_color: [0.75, 0.8, 0.95],
+                    is_hover: false,
+                    is_pressed: false,
+                    is_active: false,
+                    tooltip: Tooltip::new("Settings"),
+                    icon_type: IconType::Settings,
+                },
                 // New Tab button - positioned in the tab row, will be updated in update_tab_layout
                 UiComponent::Button {
                     id: "new_tab".to_string(),
@@ -288,6 +309,8 @@ impl BrowserUI {
             reload_svg: load_svg(include_str!("../assets/reload.svg")).unwrap(),
             new_tab_svg: load_svg(include_str!("../assets/plus.svg")).unwrap(),
             close_tab_svg: load_svg(include_str!("../assets/close.svg")).unwrap(),
+            settings_svg: load_svg(include_str!("../assets/settings.svg")).unwrap(),
+            show_settings: false,
         }
     }
 
@@ -297,13 +320,17 @@ impl BrowserUI {
         let scaled = |v: f32| v * self.viewport.hidpi_scale;
         let window_width = self.window_width();
 
-        // Update address bar width
+        // Update address bar width and settings button position
         for comp in &mut self.components {
-            if let UiComponent::TextField { id, width, is_flexible: true, .. } = comp {
-                if id == "address_bar" {
-                    let available_width = window_width - scaled(Self::BUTTON_MARGIN * 5.0 + Self::BUTTON_SIZE * 3.0);
+            match comp {
+                UiComponent::TextField { id, width, is_flexible: true, .. } if id == "address_bar" => {
+                    let available_width = window_width - scaled(Self::BUTTON_MARGIN * 6.0 + Self::BUTTON_SIZE * 4.0);
                     *width = available_width.max(scaled(Self::MIN_ADDRESS_BAR_WIDTH));
                 }
+                UiComponent::Button { id, x, .. } if id == "settings" => {
+                    *x = window_width - scaled(Self::BUTTON_MARGIN + Self::BUTTON_SIZE);
+                }
+                _ => {}
             }
         }
 
@@ -1106,6 +1133,114 @@ impl BrowserUI {
         }
     }
 
+    /// Toggle the settings panel visibility
+    pub fn toggle_settings(&mut self) {
+        self.show_settings = !self.show_settings;
+    }
+
+    /// Check if a click lands inside the settings panel and return the action id
+    pub fn handle_settings_panel_click(&self, x: f32, y: f32) -> Option<String> {
+        if !self.show_settings {
+            return None;
+        }
+        let panel = self.settings_panel_rect();
+        // If click is outside the panel, close it (no action id but signal close)
+        if x < panel.0 || x > panel.0 + panel.2 || y < panel.1 || y > panel.1 + panel.3 {
+            return Some("settings_panel_close".to_string());
+        }
+        // Check "Set as Default Browser" button inside panel
+        let btn = self.default_browser_button_rect();
+        if x >= btn.0 && x <= btn.0 + btn.2 && y >= btn.1 && y <= btn.1 + btn.3 {
+            return Some("set_default_browser".to_string());
+        }
+        // Click inside panel but not on any button — consume the event
+        Some("settings_panel_noop".to_string())
+    }
+
+    /// Returns (x, y, width, height) for the settings panel
+    fn settings_panel_rect(&self) -> (f32, f32, f32, f32) {
+        let s = self.viewport.hidpi_scale;
+        let panel_width = 260.0 * s;
+        let panel_height = 120.0 * s;
+        let window_width = self.window_width();
+        let chrome_height = self.chrome_height();
+        let x = (window_width - panel_width - 8.0 * s).max(0.0);
+        let y = chrome_height + 4.0 * s;
+        (x, y, panel_width, panel_height)
+    }
+
+    /// Returns (x, y, width, height) for the "Set as Default Browser" button inside the panel
+    fn default_browser_button_rect(&self) -> (f32, f32, f32, f32) {
+        let s = self.viewport.hidpi_scale;
+        let (px, py, pw, _ph) = self.settings_panel_rect();
+        let padding = 16.0 * s;
+        let btn_height = 32.0 * s;
+        let btn_width = pw - padding * 2.0;
+        // Position below the "Settings" title
+        let btn_x = px + padding;
+        let btn_y = py + 52.0 * s;
+        (btn_x, btn_y, btn_width, btn_height)
+    }
+
+    /// Render the settings panel overlay
+    pub fn render_settings_panel(&self, canvas: &Canvas, font: &Font) {
+        if !self.show_settings {
+            return;
+        }
+
+        let s = self.viewport.hidpi_scale;
+        let mut paint = Paint::default();
+        let (px, py, pw, ph) = self.settings_panel_rect();
+        let panel_rect = Rect::from_xywh(px, py, pw, ph);
+
+        // Shadow
+        paint.set_color(Color::from_argb(60, 0, 0, 0));
+        canvas.draw_round_rect(Rect::from_xywh(px + 3.0 * s, py + 3.0 * s, pw, ph), 8.0 * s, 8.0 * s, &paint);
+
+        // Panel background
+        paint.set_color(Color::from_rgb(250, 250, 252));
+        canvas.draw_round_rect(panel_rect, 8.0 * s, 8.0 * s, &paint);
+
+        // Panel border
+        paint.set_color(Color::from_rgb(200, 200, 210));
+        paint.set_stroke(true);
+        paint.set_stroke_width(1.0 * s);
+        canvas.draw_round_rect(panel_rect, 8.0 * s, 8.0 * s, &paint);
+        paint.set_stroke(false);
+
+        // Title "Settings"
+        paint.set_color(Color::from_rgb(40, 40, 40));
+        let title = "Settings";
+        if let Some(blob) = TextBlob::new(title, font) {
+            let bounds = blob.bounds();
+            let text_y = py + 16.0 * s - bounds.top;
+            canvas.draw_text_blob(&blob, (px + 16.0 * s, text_y), &paint);
+        }
+
+        // Separator line
+        paint.set_color(Color::from_rgb(220, 220, 220));
+        paint.set_stroke(true);
+        paint.set_stroke_width(1.0 * s);
+        canvas.draw_line((px + 8.0 * s, py + 40.0 * s), (px + pw - 8.0 * s, py + 40.0 * s), &paint);
+        paint.set_stroke(false);
+
+        // "Set as Default Browser" button
+        let (bx, by, bw, bh) = self.default_browser_button_rect();
+        let btn_rect = Rect::from_xywh(bx, by, bw, bh);
+        paint.set_color(Color::from_rgb(70, 130, 220));
+        canvas.draw_round_rect(btn_rect, 6.0 * s, 6.0 * s, &paint);
+
+        // Button label
+        paint.set_color(Color::WHITE);
+        let label = "Set as Default Browser";
+        if let Some(blob) = TextBlob::new(label, font) {
+            let bounds = blob.bounds();
+            let text_x = bx + (bw - bounds.width()) / 2.0;
+            let text_y = by + (bh / 2.0) - (bounds.top + bounds.height() / 2.0);
+            canvas.draw_text_blob(&blob, (text_x, text_y), &paint);
+        }
+    }
+
     /// Render the UI
     pub fn render(&self, canvas: &Canvas, font_ctx: &mut FontContext, layout_ctx: &mut LayoutContext<TextBrush>, painter: &mut ScenePainter) {
         let canvas_width = canvas.image_info().width() as f32;
@@ -1451,6 +1586,9 @@ impl BrowserUI {
         for (tooltip, x, y) in tooltips_to_render {
             Self::draw_tooltip(painter, tooltip, x, y, &font, self.viewport.hidpi_scale, canvas_width, canvas_height);
         }
+
+        // Render settings panel on top of everything
+        self.render_settings_panel(canvas, &font);
     }
 
     /// Update mouse hover state and handle tooltips
@@ -1647,6 +1785,9 @@ impl BrowserUI {
             IconType::Close => {
                 let color = if is_hover { hover_color } else { icon_color };
                 Self::render_svg(painter, &self.close_tab_svg, rect, color, hidpi_scale);
+            }
+            IconType::Settings => {
+                Self::render_svg(painter, &self.settings_svg, rect, icon_color, hidpi_scale);
             }
         }
     }
