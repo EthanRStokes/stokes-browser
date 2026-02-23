@@ -37,6 +37,8 @@ pub enum ParentToTabMessage {
     RequestFrame,
     /// Update scale factor
     SetScaleFactor(f32),
+    /// Set the zoom level (1.0 = 100%)
+    SetZoom(f32),
     /// Shutdown the tab process
     Shutdown,
 }

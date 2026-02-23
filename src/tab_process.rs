@@ -402,6 +402,13 @@ impl TabProcess {
                     ..self.engine.viewport
                 });
             }
+            ParentToTabMessage::SetZoom(zoom) => {
+                self.engine.set_viewport(Viewport {
+                    zoom,
+                    ..self.engine.viewport
+                });
+                self.render_frame()?;
+            }
             ParentToTabMessage::Shutdown => {
                 return Ok(false); // Signal to exit the loop
             }

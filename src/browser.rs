@@ -680,16 +680,30 @@ impl ApplicationHandler for BrowserApp {
                         winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
                     };
 
-                    // If shift is held, convert vertical scroll to horizontal scroll with increased speed
-                    if self.modifiers.state().shift_key() {
-                        delta_x = -delta_y * 5.0;
-                        delta_y = 0.0;
-                    }
+                    // Ctrl+scroll changes zoom level instead of scrolling
+                    if self.modifiers.state().control_key() {
+                        let zoom_delta = delta_y * 0.01;
+                        let new_zoom = if let Some(tab) = self.tab_manager.get_tab_mut(&tab_id) {
+                            tab.zoom = (tab.zoom + zoom_delta).clamp(0.25, 5.0);
+                            Some(tab.zoom)
+                        } else {
+                            None
+                        };
+                        if let Some(zoom) = new_zoom {
+                            let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::SetZoom(zoom));
+                        }
+                    } else {
+                        // If shift is held, convert vertical scroll to horizontal scroll with increased speed
+                        if self.modifiers.state().shift_key() {
+                            delta_x = -delta_y * 5.0;
+                            delta_y = 0.0;
+                        }
 
-                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Scroll {
-                        delta_x,
-                        delta_y: -delta_y * 2.0
-                    });
+                        let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Scroll {
+                            delta_x,
+                            delta_y: -delta_y * 2.0
+                        });
+                    }
                 }
                 self.env.window.request_redraw();
             }
