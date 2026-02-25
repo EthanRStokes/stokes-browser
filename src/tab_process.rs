@@ -11,6 +11,7 @@ use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 use crate::shell_provider::{StokesShellProvider, ShellProviderMessage};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use crate::dom::Dom;
@@ -18,6 +19,7 @@ use crate::dom::Dom;
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
     pub(crate) engine: Engine,
+    animation_time: Option<Instant>,
     channel: Rc<RefCell<IpcChannel>>,
     tab_id: String,
     shared_surface: Option<SharedSurface>,
@@ -62,12 +64,23 @@ impl TabProcess {
 
         Ok(Self {
             engine,
+            animation_time: None,
             channel,
             tab_id,
             shared_surface: None,
             surface_generation: 0,
             shell_receiver: shell_rx,
         })
+    }
+
+    fn animation_time(&mut self) -> f64 {
+        match &self.animation_time {
+            Some(start) => Instant::now().duration_since(*start).as_secs_f64(),
+            None => {
+                self.animation_time = Some(Instant::now());
+                0.0
+            }
+        }
     }
 
     /// Initialize shared memory surface
@@ -428,6 +441,7 @@ impl TabProcess {
 
     /// Render a frame to the shared memory surface
     fn render_frame(&mut self) -> io::Result<()> {
+        let animation_time = self.animation_time();
         if let Some(ref mut shared) = self.shared_surface {
             let canvas = shared.surface.canvas();
 
@@ -441,7 +455,7 @@ impl TabProcess {
 
             let engine = &mut self.engine;
             if engine.dom.is_some() {
-                engine.render(&mut painter);
+                engine.render(&mut painter, animation_time);
             }
 
             // Copy the pixel data to shared memory
@@ -464,6 +478,12 @@ impl TabProcess {
                 width: shared.width,
                 height: shared.height,
             })?;
+
+            let dom = self.dom().unwrap();
+            // todo check if window is visible
+            if dom.animating() {
+                dom.shell_provider.request_redraw();
+            }
         }
         Ok(())
     }

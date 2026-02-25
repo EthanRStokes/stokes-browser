@@ -48,7 +48,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use cursor_icon::CursorIcon;
 use skia_safe::wrapper::NativeTransmutableWrapper;
-use style::animation::DocumentAnimationSet;
+use style::animation::{AnimationState, DocumentAnimationSet};
 use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters, SharedStyleContext};
 use style::data::ElementStyles;
 use style::dom::{TDocument, TNode};
@@ -72,6 +72,7 @@ use style::values::computed::{Au, CSSPixelLength, Length};
 use stylo_atoms::Atom;
 use taffy::Point;
 use crate::dom::stylo_to_cursor::stylo_to_cursor_icon;
+use crate::dom::traverse::TreeTraverser;
 use crate::engine::net_provider::StokesNetProvider;
 
 const ZERO: Point<f64> = Point { x: 0.0, y: 0.0 };
@@ -111,6 +112,9 @@ pub struct Dom {
     pub(crate) active_node_id: Option<usize>,
     pub(crate) mousedown_node_id: Option<usize>,
     pub(crate) last_mousedown_time: Option<Instant>,
+    pub(crate) mousedown_pos: taffy::Point<f32>,
+    pub(crate) quick_clicks: u16,
+
 
     // todo text selection
 
@@ -509,7 +513,7 @@ impl Dom {
         DocumentStyleSheet(style::servo_arc::Arc::new(data))
     }
 
-    pub fn flush_styles(&mut self) {
+    pub fn flush_styles(&mut self, now: f64) {
         style::thread_state::enter(ThreadState::LAYOUT);
         let lock = &self.lock;
         let author = lock.read();
@@ -529,6 +533,34 @@ impl Dom {
 
             self.stylist.flush(&guards).process_style(root, Some(&self.snapshots));
         }
+
+        // mark animating as dirty
+        let mut sets = self.animations.sets.write();
+        for (key, value) in sets.iter_mut() {
+            let node_id = key.node.id();
+            self.nodes[node_id].set_restyle_hint(RestyleHint::RESTYLE_SELF);
+
+            for animation in value.animations.iter_mut() {
+                if animation.state == AnimationState::Pending && animation.started_at <= now {
+                    animation.state = AnimationState::Running;
+                }
+                animation.iterate_if_necessary(now);
+
+                if animation.state == AnimationState::Running && animation.has_ended(now) {
+                    animation.state = AnimationState::Finished;
+                }
+            }
+
+            for transition in value.transitions.iter_mut() {
+                if transition.state == AnimationState::Pending && transition.start_time <= now {
+                    transition.state = AnimationState::Running;
+                }
+                if transition.state == AnimationState::Running && transition.has_ended(now) {
+                    transition.state = AnimationState::Finished;
+                }
+            }
+        }
+        drop(sets);
 
         struct Painters;
         impl RegisteredSpeculativePainters for Painters {
@@ -566,6 +598,19 @@ impl Dom {
                 }
             }
             self.snapshots.clear();
+
+            let mut sets = self.animations.sets.write();
+            for set in sets.values_mut() {
+                set.clear_canceled_animations();
+                for animation in set.animations.iter_mut() {
+                    animation.is_new = false;
+                }
+                for transition in set.transitions.iter_mut() {
+                    transition.is_new = false;
+                }
+            }
+            sets.retain(|_, state| !state.is_empty());
+            self.has_active_animations = sets.values().any(|state| state.needs_animation_ticks());
 
             self.stylist.rule_tree().maybe_gc();
         }
@@ -664,6 +709,26 @@ impl Dom {
         }
 
         node
+    }
+
+    pub(crate) fn compute_has_canvas(&self) -> bool {
+        TreeTraverser::new(self).any(|node_id| {
+            let node = &self.nodes[node_id];
+            let Some(element) = node.element_data() else {
+                return false;
+            };
+            if element.name.local == local_name!("canvas") && element.has_attr(local_name!("src")) {
+                return true;
+            }
+
+            false
+        })
+    }
+
+    pub fn animating(&self) -> bool {
+        self.has_canvas
+            | self.has_active_animations
+            // todo scroll anim
     }
 
     /// Find nodes by tag name
@@ -1051,6 +1116,7 @@ impl Dom {
     }
 
     fn process_removed_subtree(&mut self, node_id: usize) {
+        let mut compute_canvas: bool = false;
         self.iter_subtree_mut(node_id, |node_id, doc| {
             let node = &mut doc.nodes[node_id];
             node.flags.set(DomNodeFlags::IS_IN_DOCUMENT, false);
@@ -1089,7 +1155,9 @@ impl Dom {
                 //todo sub document
                 SpecialElementData::Stylesheet(_) => {} // todo
                 SpecialElementData::Image(_) => {}
-                SpecialElementData::Canvas(_) => {} // todo animation
+                SpecialElementData::Canvas(_) => {
+                    compute_canvas = true;
+                }
                 SpecialElementData::TableRoot(_) => {}
                 SpecialElementData::TextInput => {}
                 SpecialElementData::CheckboxInput(_) => {}
@@ -1097,6 +1165,10 @@ impl Dom {
                 SpecialElementData::None => {}
             }
         });
+
+        if compute_canvas {
+            self.has_canvas = self.compute_has_canvas();
+        }
 
         // todo idk
     }

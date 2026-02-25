@@ -132,7 +132,7 @@ impl Engine {
             {
                 let dom = self.dom.as_mut().unwrap();
 
-                dom.resolve();
+                dom.resolve(0.0);
             }
 
             // Calculate layout with CSS styles applied
@@ -241,11 +241,11 @@ impl Engine {
     }
 
     /// Render the current page to a canvas
-    pub fn render(&mut self, painter: &mut ScenePainter) {
+    pub fn render(&mut self, painter: &mut ScenePainter, now: f64) {
         {
             let dom = self.dom.as_mut().unwrap();
 
-            dom.resolve();
+            dom.resolve(now);
         }
 
         let dom = self.dom.as_ref().unwrap();

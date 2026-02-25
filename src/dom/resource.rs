@@ -61,14 +61,19 @@ impl Dom {
 
     pub(crate) fn load_custom_paint_src(&mut self, node_id: usize) {
         let node = &mut self.nodes[node_id];
+        let mut compute_has_canvas = false;
         if let Some(raw_src) = node.attr(local_name!("src")) {
             if let Ok(custom_paint_source_id) = raw_src.parse::<u64>() {
-                // todo animation stuff
+                compute_has_canvas = true;
                 let canvas_data = SpecialElementData::Canvas(CanvasData {
                     custom_paint_source_id,
                 });
                 node.element_data_mut().unwrap().special_data = canvas_data;
             }
+        }
+
+        if compute_has_canvas {
+            self.has_canvas = self.compute_has_canvas();
         }
     }
 

@@ -4,7 +4,7 @@ use style::selector_parser::RestyleDamage;
 use crate::dom::{Dom, DomEvent};
 
 impl Dom {
-    pub(crate) fn resolve(&mut self) {
+    pub(crate) fn resolve(&mut self, now: f64) {
         if TDocument::as_node(&&self.nodes[0])
             .first_element_child()
             .is_none()
@@ -17,7 +17,7 @@ impl Dom {
 
         let root_node_id = self.root_element().id;
 
-        self.flush_styles();
+        self.flush_styles(now);
 
         self.propagate_damage_flags(root_node_id, RestyleDamage::empty());
 
