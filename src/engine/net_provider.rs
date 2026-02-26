@@ -90,6 +90,20 @@ impl StokesNetProvider {
             }
         })
     }
+
+    pub fn fetch_with_callback(
+        &self,
+        request: Request,
+        callback: Box<dyn FnOnce(Result<(String, Bytes), ProviderError>) + Send + Sync + 'static>,
+    ) {
+        let url = request.url.to_string();
+
+        self.rt.spawn(async move {
+            let result = Self::fetch_inner(request).await;
+
+            callback(result);
+        });
+    }
 }
 
 /// A future that is cancellable using an AbortSignal

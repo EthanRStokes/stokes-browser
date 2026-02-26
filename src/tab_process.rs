@@ -12,10 +12,12 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
+use blitz_traits::net::NetProvider;
 use crate::shell_provider::{StokesShellProvider, ShellProviderMessage};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use winit::dpi::{LogicalPosition, PhysicalPosition};
 use crate::dom::Dom;
+use crate::engine::nav_provider::{NavigationProviderMessage, StokesNavigationProvider};
 use crate::events::{PointerCoords, UiEvent};
 use crate::ui::BrowserUI;
 
@@ -28,6 +30,7 @@ pub struct TabProcess {
     shared_surface: Option<SharedSurface>,
     surface_generation: u32,
     shell_receiver: UnboundedReceiver<ShellProviderMessage>,
+    nav_receiver: UnboundedReceiver<NavigationProviderMessage>,
 }
 
 /// Shared memory surface for efficient rendering data transfer
@@ -51,11 +54,14 @@ impl TabProcess {
 
         let shell_provider = StokesShellProvider::new(shell_tx);
 
+        let (nav_tx, nav_rx) = unbounded_channel::<NavigationProviderMessage>();
+        let navigation_provider = StokesNavigationProvider::new(nav_tx);
+
         let config = EngineConfig {
             ..Default::default()
         };
 
-        let mut engine = Engine::new(config, Viewport::default(), Arc::new(shell_provider)); // Default viewport, will be resized later
+        let mut engine = Engine::new(config, Viewport::default(), Arc::new(shell_provider), Arc::new(navigation_provider)); // Default viewport, will be resized later
 
         // Set the engine reference in the thread-local storage
         ENGINE_REF.with(|engine_ref| {
@@ -73,6 +79,7 @@ impl TabProcess {
             shared_surface: None,
             surface_generation: 0,
             shell_receiver: shell_rx,
+            nav_receiver: nav_rx,
         })
     }
 
@@ -151,6 +158,56 @@ impl TabProcess {
                     // Convert ShellProviderMessage to appropriate TabToParentMessage(s)
                     if let Ok(mut channel) = self.channel.try_borrow_mut() {
                         let _ = channel.send(&TabToParentMessage::ShellProvider(msg));
+                    }
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {},
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {},
+            }
+            match self.nav_receiver.try_recv() {
+                Ok(msg) => {
+                    match msg {
+                        NavigationProviderMessage::NavigateTo(options) => {
+                            let nav_provider = self.engine.navigation_provider.clone();
+                            self.channel.borrow_mut().send(&TabToParentMessage::LoadingStateChanged(true))?;
+                            self.channel.borrow_mut().send(&TabToParentMessage::NavigationStarted(options.url.as_str().to_string()))?;
+                            self.dom().unwrap().net_provider.fetch_with_callback(
+                                options.into_request(),
+                                Box::new(move |result| {
+                                    let (url, bytes) = result.unwrap();
+                                    let contents = std::str::from_utf8(&bytes).unwrap().to_string();
+                                    let _ = nav_provider.sender.send(NavigationProviderMessage::Navigate {
+                                        url,
+                                        contents,
+                                        is_md: false,
+                                        retain_scroll_position: false,
+                                    });
+                                })
+                            );
+                        }
+                        NavigationProviderMessage::Navigate { url, contents, retain_scroll_position, is_md } => {
+                            self.engine.set_loading_state(true);
+
+                            match self.engine.navigate(&url, true, true).await {
+                                Ok(_) => {
+                                    let title = self.engine.page_title().to_string();
+                                    let mut channel = self.channel.borrow_mut();
+                                    channel.send(&TabToParentMessage::NavigationCompleted {
+                                        url: url.clone(),
+                                        title: title.clone(),
+                                    })?;
+                                    channel.send(&TabToParentMessage::TitleChanged(title))?;
+                                    channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+
+                                    drop(channel);
+                                    self.render_frame()?;
+                                }
+                                Err(e) => {
+                                    self.channel.borrow_mut().send(&TabToParentMessage::NavigationFailed(e.to_string()))?;
+                                    self.channel.borrow_mut().send(&TabToParentMessage::LoadingStateChanged(false))?;
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {},

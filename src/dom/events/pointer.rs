@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use blitz_traits::navigation::NavigationOptions;
+use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use blitz_traits::shell::ShellProvider;
 use keyboard_types::Modifiers;
 use markup5ever::local_name;
@@ -499,12 +499,11 @@ pub(crate) fn handle_click(
                 local_name!("a") => {
                     if let Some(href) = el.attr(local_name!("href")) {
                         if let Some(url) = doc.url.resolve_relative(href) {
-                            // todo impl nav provider
-                            //doc.navigation_provider.navigate_to(NavigationOptions::new(
-                            //    url,
-                            //    String::from("text/plain"),
-                            //    doc.id(),
-                            //));
+                            doc.nav_provider.navigate_to(NavigationOptions::new(
+                                url,
+                                String::from("text/plain"),
+                                doc.id(),
+                            ));
                         } else {
                         }
                         break 'matched true;

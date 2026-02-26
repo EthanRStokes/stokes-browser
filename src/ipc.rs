@@ -66,6 +66,11 @@ pub enum ScrollDirection {
 /// Messages sent from child (tab process) to parent (browser UI)
 #[derive(Debug, Clone, Encode, Decode)]
 pub enum TabToParentMessage {
+    Navigate {
+        url: String,
+        retain_scroll_position: bool,
+        is_md: bool,
+    },
     /// Navigation started
     NavigationStarted(String),
     /// Navigation completed

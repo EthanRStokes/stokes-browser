@@ -22,6 +22,7 @@ use style::stylesheets::{ImportRule, StylesheetLoader as StyloStylesheetLoader};
 use style::values::{CssUrl, SourceLocation};
 use url::Url;
 use usvg::fontdb;
+use crate::engine::net_provider::StokesNetProvider;
 use crate::shell_provider::StokesShellProvider;
 
 #[derive(Debug)]
@@ -146,7 +147,7 @@ pub struct ResourceLoadResponse {
 pub struct StylesheetHandler {
     pub source_url: Url,
     pub guard: SharedRwLock,
-    pub net_provider: Arc<dyn NetProvider>,
+    pub net_provider: Arc<StokesNetProvider>,
 }
 
 impl NetHandler for ResourceHandler<StylesheetHandler> {
@@ -197,7 +198,7 @@ impl NetHandler for ResourceHandler<StylesheetHandler> {
 pub(crate) struct StylesheetLoader {
     pub(crate) tx: Sender<DomEvent>,
     pub(crate) dom_id: usize,
-    pub(crate) net_provider: Arc<dyn NetProvider>,
+    pub(crate) net_provider: Arc<StokesNetProvider>,
     pub(crate) shell_provider: Arc<StokesShellProvider>,
 }
 
@@ -260,7 +261,7 @@ struct StylesheetLoaderInner {
     url: ServoArc<Url>,
     media: ServoArc<Locked<MediaList>>,
     import_rule: ServoArc<Locked<ImportRule>>,
-    provider: Arc<dyn NetProvider>,
+    provider: Arc<StokesNetProvider>,
 }
 
 impl NetHandler for ResourceHandler<StylesheetLoaderInner> {
@@ -376,7 +377,7 @@ pub(crate) fn fetch_font_face(
     doc_id: usize,
     node_id: Option<usize>,
     sheet: &Stylesheet,
-    network_provider: &Arc<dyn NetProvider>,
+    network_provider: &Arc<StokesNetProvider>,
     shell_provider: &Arc<StokesShellProvider>,
     read_guard: &SharedRwLockReadGuard,
 ) {
@@ -566,12 +567,12 @@ pub fn resolve_url(current_url: &str, url: &str) -> Result<String, NetworkError>
 pub struct NewHttpClient {
     pub(crate) tx: Sender<DomEvent>,
     pub(crate) dom_id: usize,
-    pub(crate) net_provider: Arc<dyn NetProvider>,
+    pub(crate) net_provider: Arc<StokesNetProvider>,
     pub(crate) shell_provider: Arc<StokesShellProvider>,
 }
 
 impl NewHttpClient {
-    pub fn new(tx: Sender<DomEvent>, dom_id: usize, net_provider: Arc<dyn NetProvider>, shell_provider: Arc<StokesShellProvider>) -> Self {
+    pub fn new(tx: Sender<DomEvent>, dom_id: usize, net_provider: Arc<StokesNetProvider>, shell_provider: Arc<StokesShellProvider>) -> Self {
         Self {
             tx,
             dom_id,

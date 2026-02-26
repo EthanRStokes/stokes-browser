@@ -1,6 +1,7 @@
 // The core browser engine that coordinates between components
 mod config;
 pub mod net_provider;
+pub mod nav_provider;
 
 pub use self::config::EngineConfig;
 use crate::dom::node::{RasterImageData, SpecialElementData};
@@ -23,6 +24,7 @@ use style::dom::{TDocument, TNode};
 use style::thread_state::ThreadState;
 use style::traversal::DomTraversal;
 use url::Url;
+use crate::engine::nav_provider::StokesNavigationProvider;
 use crate::networking;
 use crate::shell_provider::StokesShellProvider;
 
@@ -51,10 +53,11 @@ pub struct Engine {
     history: Vec<String>,
     history_index: Option<usize>,
     shell_provider: Arc<StokesShellProvider>,
+    pub(crate) navigation_provider: Arc<StokesNavigationProvider>,
 }
 
 impl Engine {
-    pub fn new(config: EngineConfig, viewport: Viewport, shell_provider: Arc<StokesShellProvider>) -> Self {
+    pub fn new(config: EngineConfig, viewport: Viewport, shell_provider: Arc<StokesShellProvider>, navigation_provider: Arc<StokesNavigationProvider>) -> Self {
         Self {
             config,
             new_http_client: None,
@@ -72,6 +75,7 @@ impl Engine {
             history: Vec::new(),
             history_index: None,
             shell_provider,
+            navigation_provider,
         }
     }
 
@@ -96,7 +100,13 @@ impl Engine {
             });
 
             // Parse the HTML into our DOM
-            let mut dom = Dom::parse_html(url, &html, self.viewport.clone(), self.shell_provider.clone());
+            let dom = Dom::parse_html(
+                url,
+                &html,
+                self.viewport.clone(),
+                self.shell_provider.clone(),
+                self.navigation_provider.clone()
+            );
 
             // Extract page title
             self.page_title = dom.get_title();

@@ -12,11 +12,11 @@ pub mod painter;
 
 use std::any::Any;
 use std::collections::HashMap;
-use crate::dom::node::{ListItemLayout, ListItemLayoutPosition, Marker, SpecialElementData};
+use crate::dom::node::{ListItemLayout, ListItemLayoutPosition, Marker, SpecialElementData, TextInputData};
 use crate::dom::{Dom, DomNode, ElementData, ImageData, NodeData};
 use crate::renderer::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
 use crate::renderer::layers::maybe_with_layer;
-use crate::renderer::text::stroke_text;
+use crate::renderer::text::{draw_text_selection, stroke_text, SELECTION_COLOR};
 use crate::renderer::painter::ToColorColor;
 use anyrender::{CustomPaint, Paint, PaintScene};
 use color::AlphaColor;
@@ -29,8 +29,8 @@ use style::properties::generated::longhands::visibility::computed_value::T as Vi
 use style::properties::style_structs::Font;
 use style::properties::ComputedValues;
 use style::servo_arc::Arc;
-use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, OutlineStyle, Overflow};
-use style::values::generics::color::GenericColor;
+use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, Color, OutlineStyle, Overflow};
+use style::values::generics::color::{GenericColor, GenericColorOrAuto};
 use taffy::Layout;
 use painter::ScenePainter;
 use crate::renderer::sizing::compute_object_fit;
@@ -437,6 +437,7 @@ impl HtmlRenderer<'_> {
                     element.draw_image(painter);
                     element.draw_svg(painter);
                     element.draw_canvas(painter);
+                    element.draw_text_input_text(painter, position);
                     element.draw_inline_layout(painter, position);
                     element.draw_marker(painter, position);
                     element.draw_children(painter);
@@ -490,6 +491,7 @@ impl HtmlRenderer<'_> {
             element,
             transform,
             svg: element.svg_data(),
+            text_input: element.text_input_data(),
             list_item: element.list_item_data.as_deref(),
         }
     }
@@ -545,6 +547,7 @@ struct Element<'a> {
     element: &'a ElementData,
     transform: Affine,
     svg: Option<&'a usvg::Tree>,
+    text_input: Option<&'a TextInputData>,
     list_item: Option<&'a ListItemLayout>,
 }
 
@@ -628,12 +631,70 @@ impl Element<'_> {
             let transform =
                 Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor));
 
+            if let Some(&(start, end)) = self.context.selection_ranges.get(&self.node.id) {
+                draw_text_selection(
+                    painter,
+                    &text_layout.layout,
+                    transform,
+                    start,
+                    end,
+                );
+            }
+
             stroke_text(
                 painter,
                 text_layout.layout.lines(),
                 self.context.dom,
                 transform,
             )
+        }
+    }
+
+    fn draw_text_input_text(&self, painter: &mut ScenePainter, pos: Point) {
+        if let Some(input_data) = self.text_input {
+            let y_offset = self.node.text_input_v_centering_offset(self.scale_factor);
+            let pos = Point {
+                x: pos.x,
+                y: pos.y + y_offset,
+            };
+
+            let transform = Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor));
+
+            if self.node.is_focused() {
+                // Render selection/caret
+                for (rect, |line_idx) in input_data.editor.selection_geometry().iter() {
+                    painter.fill(
+                        Fill::NonZero,
+                        transform,
+                        SELECTION_COLOR,
+                        None,
+                        &Rect::new(rect.x0, rect.y0, rect.x1, rect.y1),
+                    )
+                }
+
+                if let Some(cursor) = input_data.editor.cursor_geometry(1.5) {
+                    let color = self.style.get_inherited_text().color;
+                    let caret_color = match &self.style.get_inherited_ui().caret_color.0 {
+                        GenericColorOrAuto::Color(caret_color) => caret_color.resolve_to_absolute(&color),
+                        GenericColorOrAuto::Auto => color,
+                    };
+
+                    painter.fill(
+                        Fill::NonZero,
+                        transform,
+                        caret_color.as_color_color(),
+                        None,
+                        &Rect::new(cursor.x0, cursor.y0, cursor.x1, cursor.y1),
+                    );
+                }
+            }
+
+            stroke_text(
+                painter,
+                input_data.editor.try_layout().unwrap().lines(),
+                self.context.dom,
+                transform,
+            );
         }
     }
 

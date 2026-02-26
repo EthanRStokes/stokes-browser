@@ -79,6 +79,7 @@ use crate::dom::events::pointer::{DragMode, ScrollAnimationState};
 use crate::dom::selection::TextSelection;
 use crate::dom::stylo_to_cursor::stylo_to_cursor_icon;
 use crate::dom::traverse::{AncestorTraverser, TreeTraverser};
+use crate::engine::nav_provider::StokesNavigationProvider;
 use crate::engine::net_provider::StokesNetProvider;
 use crate::events::{BlitzScrollEvent, DomEventData};
 use crate::qual_name;
@@ -139,8 +140,9 @@ pub struct Dom {
     pub(crate) image_cache: HashMap<String, ImageData>,
     pub(crate) pending_images: HashMap<String, Vec<(usize, ImageType)>>,
 
-    pub net_provider: Arc<dyn NetProvider>,
+    pub net_provider: Arc<StokesNetProvider>,
     pub shell_provider: Arc<StokesShellProvider>,
+    pub nav_provider: Arc<StokesNavigationProvider>,
 }
 
 pub enum DomEvent {
@@ -301,8 +303,9 @@ impl Dom {
         stylo_config::set_bool("layout.columns.enabled", true);
 
         let base_url = config.base_url.and_then(|url| DocUrl::from_str(&url).ok()).unwrap_or_default();
-        let net_provider = config.net_provider.unwrap_or_else(|| Arc::new(DummyNetProvider));
+        let net_provider = config.net_provider.unwrap();
         let shell_provider = config.shell_provider.unwrap();
+        let nav_provider = config.nav_provider.unwrap();
 
         let (tx, rx) = channel();
 
@@ -342,6 +345,7 @@ impl Dom {
             pending_images: HashMap::new(),
             net_provider,
             shell_provider,
+            nav_provider,
         };
 
         // Create the root document node
@@ -430,13 +434,20 @@ impl Dom {
     }
 
     /// Parse HTML into a DOM
-    pub fn parse_html(url: &str, html: &str, viewport: Viewport, shell_provider: Arc<StokesShellProvider>) -> Self {
+    pub fn parse_html(
+        url: &str,
+        html: &str,
+        viewport: Viewport,
+        shell_provider: Arc<StokesShellProvider>,
+        nav_provider: Arc<StokesNavigationProvider>,
+    ) -> Self {
         let parser = HtmlParser::new();
         parser.parse(html, DomConfig {
             viewport: Some(viewport),
             base_url: Some(url.to_string()),
             net_provider: Some(Arc::new(StokesNetProvider::new())),
             shell_provider: Some(shell_provider),
+            nav_provider: Some(nav_provider),
             ..Default::default()
         })
     }

@@ -12,7 +12,7 @@ use parley::{FontContext, FontWeight, GenericFamily, InlineBox, InlineBoxKind, L
 use slab::Slab;
 use std::cell::RefCell;
 use std::sync::Arc;
-use blitz_traits::net::Request;
+use blitz_traits::net::{NetProvider, Request};
 use style::data::ElementData as StyloElementData;
 use style::properties::longhands;
 use style::selector_parser::RestyleDamage;

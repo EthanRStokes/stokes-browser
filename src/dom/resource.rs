@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use blitz_traits::net::Request;
+use blitz_traits::net::{NetProvider, Request};
 use markup5ever::local_name;
 use peniko::Blob;
 use crate::dom::damage::ALL_DAMAGE;

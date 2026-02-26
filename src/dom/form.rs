@@ -3,7 +3,7 @@
 
 use std::fmt::Display;
 use std::str::FromStr;
-use blitz_traits::navigation::NavigationOptions;
+use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use html5ever::serialize::Serializer;
 use blitz_traits::net::{Body, Entry, EntryValue, FormData, Method};
 use html5ever::local_name;
@@ -158,8 +158,7 @@ impl Dom {
                 .set_document_resource(post_resource)
                 .set_method(method);
 
-        // TODO nav provider impl
-        //self.navigation_provider.navigate_to(navigation_options)
+        self.nav_provider.navigate_to(navigation_options)
     }
 }
 

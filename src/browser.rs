@@ -263,11 +263,11 @@ impl BrowserApp {
                     shift: self.modifiers.state().shift_key(),
                     meta: self.modifiers.state().meta_key(),
                 };
-                let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Click {
-                    x,
-                    y: forwarded_y,
-                    modifiers: key_modifiers,
-                });
+                //let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Click {
+                //    x,
+                //    y: forwarded_y,
+                //    modifiers: key_modifiers,
+                //});
             }
         }
     }
@@ -773,6 +773,49 @@ impl ApplicationHandler for BrowserApp {
                 self.pointer_position = <(f64, f64)>::from(position);
                 let button = MouseEventButton::Main;
 
+                self.buttons -= button.into();
+
+                if id != BlitzPointerId::Mouse {
+                    let event = UiEvent::PointerMove(BlitzPointerEvent {
+                        id,
+                        is_primary: primary,
+                        coords,
+                        button: Default::default(),
+                        buttons: Compat(self.buttons),
+                        mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                        details: PointerDetails::default()
+                    });
+                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
+                }
+
+                let event = BlitzPointerEvent {
+                    id,
+                    is_primary: primary,
+                    coords,
+                    button,
+                    buttons: Compat(self.buttons),
+                    mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                    // TODO: details for pointer up/down events
+                    details: PointerDetails::default(),
+                };
+
+                let event = UiEvent::PointerUp(event);
+
+                let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
+                self.request_redraw();
+            }
+            WindowEvent::PointerButton { state: ElementState::Pressed, button: ButtonSource::Mouse(MouseButton::Middle), primary, position, .. } => {
+                // Handle middle-click (open link in new tab)
+                self.handle_middle_click(self.pointer_position.0 as f32, self.pointer_position.1 as f32, event_loop);
+
+                let Some(tab_id) = self.active_tab_id().cloned() else {
+                    return;
+                };
+                let id = button_source_to_blitz(&ButtonSource::Mouse(MouseButton::Left));
+                let coords = self.pointer_coords(position);
+                self.pointer_position = <(f64, f64)>::from(position);
+                let button = MouseEventButton::Auxiliary;
+
                 self.buttons |= button.into();
 
                 if id != BlitzPointerId::Mouse {
@@ -804,10 +847,7 @@ impl ApplicationHandler for BrowserApp {
                 let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
                 self.request_redraw();
             }
-            WindowEvent::PointerButton { state: ElementState::Pressed, button: ButtonSource::Mouse(MouseButton::Middle), primary, position, .. } => {
-                // Handle middle-click (open link in new tab)
-                self.handle_middle_click(self.pointer_position.0 as f32, self.pointer_position.1 as f32, event_loop);
-
+            WindowEvent::PointerButton { state, button, primary, position, .. } => {
                 let Some(tab_id) = self.active_tab_id().cloned() else {
                     return;
                 };

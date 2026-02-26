@@ -2,8 +2,8 @@ use crate::dom::Dom;
 use crate::ui::TextBrush;
 use anyrender::PaintScene;
 use kurbo::{Affine, Shape, Stroke};
-use parley::{Line, PositionedLayoutItem};
-use peniko::Fill;
+use parley::{Affinity, Cursor, Layout, Line, PositionedLayoutItem, Selection};
+use peniko::{Color, Fill};
 use style::values::specified::TextDecorationLine;
 use crate::renderer::painter::ToColorColor;
 
@@ -84,4 +84,23 @@ pub fn stroke_text<'a>(
             }
         }
     }
+}
+
+pub const SELECTION_COLOR: Color = Color::from_rgb8(180, 213, 255);
+
+pub(crate) fn draw_text_selection(
+    scene: &mut impl PaintScene,
+    layout: &Layout<TextBrush>,
+    transform: Affine,
+    selection_start: usize,
+    selection_end: usize,
+) {
+    let anchor = Cursor::from_byte_index(layout, selection_start, Affinity::Downstream);
+    let focus = Cursor::from_byte_index(layout, selection_end, Affinity::Downstream);
+    let selection = Selection::new(anchor, focus);
+
+    selection.geometry_with(layout, |rect, _line_idx| {
+        let rect = kurbo::Rect::new(rect.x0, rect.y0, rect.x1, rect.y1);
+        scene.fill(Fill::NonZero, transform, SELECTION_COLOR, None, &rect);
+    });
 }

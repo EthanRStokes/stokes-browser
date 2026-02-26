@@ -165,6 +165,7 @@ impl TabManager {
                     // This is just here for exhaustive pattern matching
                 },
                 TabToParentMessage::UpdateButtons(_) => {},
+                TabToParentMessage::Navigate { .. } => todo!(),
             }
         }
     }
