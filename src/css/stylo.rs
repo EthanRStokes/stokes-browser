@@ -24,9 +24,9 @@ use style::color::AbsoluteColor;
 use style::context::{QuirksMode, SharedStyleContext, StyleContext};
 use style::data::ElementData;
 use style::dom::{AttributeProvider, LayoutIterator, NodeInfo, OpaqueNode, TDocument, TElement, TNode, TShadowRoot};
-use style::properties::{Importance, PropertyDeclaration, PropertyDeclarationBlock};
+use style::properties::{ComputedValues, Importance, PropertyDeclaration, PropertyDeclarationBlock};
 use style::rule_tree::CascadeLevel;
-use style::selector_parser::{AttrValue, Lang, NonTSPseudoClass, PseudoElement, SelectorImpl};
+use style::selector_parser::{AttrValue, Lang, NonTSPseudoClass, PseudoElement, RestyleDamage, SelectorImpl};
 use style::servo_arc::{Arc, ArcBorrow};
 use style::shared_lock::{Locked, SharedRwLock};
 use style::stylesheets::layer_rule::LayerOrder;
@@ -35,8 +35,10 @@ use style::traversal::{recalc_style_at, DomTraversal, PerLevelTraversalData};
 use style::values::computed::{Au, Display};
 use style::values::{AtomIdent, AtomString, GenericAtomIdent};
 use style::CaseSensitivityExt;
+use style::servo::restyle_damage::ServoRestyleDamage;
 use stylo_atoms::Atom;
 use stylo_dom::ElementState;
+use crate::dom::damage::compute_layout_damage;
 
 type Node<'a> = &'a DomNode;
 
@@ -273,12 +275,12 @@ impl selectors::Element for Node<'_> {
                 (element.name.local == local_name!("a") || element.name.local == local_name!("area")) && element.has_attr(local_name!("href"))
             }).unwrap_or(false),
             NonTSPseudoClass::Autofill => false,
-            NonTSPseudoClass::Checked => false, // TODO support checkboxes
+            NonTSPseudoClass::Checked => self.data.element().and_then(|elem| elem.checkbox_input_checked()).unwrap_or(false),
             NonTSPseudoClass::CustomState(_) => false,
             NonTSPseudoClass::Default => false,
             NonTSPseudoClass::Defined => false,
-            NonTSPseudoClass::Disabled => false,
-            NonTSPseudoClass::Enabled => false,
+            NonTSPseudoClass::Disabled => self.element_state.contains(ElementState::DISABLED),
+            NonTSPseudoClass::Enabled => self.element_state.contains(ElementState::ENABLED),
             NonTSPseudoClass::Focus => self.element_state.contains(ElementState::FOCUS),
             NonTSPseudoClass::FocusWithin => false,
             NonTSPseudoClass::FocusVisible => false,
@@ -327,14 +329,14 @@ impl selectors::Element for Node<'_> {
         // self
         let self_flags = flags.for_self();
         if !self_flags.is_empty() {
-            *self.selector_flags.borrow_mut() = self_flags;
+            self.selector_flags.set(self.selector_flags.get() | self_flags);
         }
 
         // parent
         let parent_flags = flags.for_parent();
         if !parent_flags.is_empty() {
             if let Some(parent) = self.parent_node() {
-                *parent.selector_flags.borrow_mut() |= parent_flags;
+                parent.selector_flags.set(self.selector_flags.get() | parent_flags);
             }
         }
     }
@@ -724,11 +726,11 @@ impl<'a> TElement for Node<'a> {
     }
 
     fn has_selector_flags(&self, flags: ElementSelectorFlags) -> bool {
-        self.selector_flags.borrow().contains(flags)
+        self.selector_flags.get().contains(flags)
     }
 
     fn relative_selector_search_direction(&self) -> ElementSelectorFlags {
-        let flags = self.selector_flags.borrow();
+        let flags = self.selector_flags.get();
 
         if flags.contains(ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR_SIBLING) {
             ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR_SIBLING
@@ -739,6 +741,10 @@ impl<'a> TElement for Node<'a> {
         } else {
             ElementSelectorFlags::empty()
         }
+    }
+
+    fn compute_layout_damage(old: &ComputedValues, new: &ComputedValues) -> RestyleDamage {
+        compute_layout_damage(old, &new)
     }
 }
 

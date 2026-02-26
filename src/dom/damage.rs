@@ -1,5 +1,9 @@
 use std::ops::Range;
+use style::properties::ComputedValues;
 use style::selector_parser::RestyleDamage;
+use style::values::specified::align::AlignFlags;
+use style::values::specified::box_::{DisplayInside, DisplayOutside};
+use style::values::generics::image::Image as StyloImage;
 use taffy::Rect;
 use crate::dom::Dom;
 use crate::dom::node::DomNodeFlags;
@@ -130,6 +134,101 @@ impl Dom {
                 self.nodes[parent_id].insert_damage(ALL_DAMAGE);
             }
         }
+    }
+}
+
+pub(crate) fn compute_layout_damage(old: &ComputedValues, new: &ComputedValues) -> RestyleDamage {
+    let box_tree_needs_rebuild = || {
+        let old_box = old.get_box();
+        let new_box = new.get_box();
+
+        if old_box.display != new_box.display
+            || old_box.float != new_box.float
+            || old_box.position != new_box.position
+            || old.clone_visibility() != new.clone_visibility()
+        {
+            return true;
+        }
+
+        if old.get_font() != new.get_font() {
+            return true;
+        }
+
+        if new_box.display.outside() == DisplayOutside::Block
+            && new_box.display.inside() == DisplayInside::Flow
+        {
+            let alignment_establishes_new_block_formatting_context = |style: &ComputedValues| {
+                style.get_position().align_content.primary() != AlignFlags::NORMAL
+            };
+
+            let old_column = old.get_column();
+            let new_column = new.get_column();
+            if old_box.overflow_x.is_scrollable() != new_box.overflow_x.is_scrollable()
+                || old_column.is_multicol() != new_column.is_multicol()
+                || old_column.column_span != new_column.column_span
+                || alignment_establishes_new_block_formatting_context(old)
+                != alignment_establishes_new_block_formatting_context(new)
+            {
+                return true;
+            }
+        }
+
+        if old_box.display.is_list_item() {
+            let old_list = old.get_list();
+            let new_list = new.get_list();
+            if old_list.list_style_position != new_list.list_style_position
+                || old_list.list_style_image != new_list.list_style_image
+                || (new_list.list_style_image == StyloImage::None
+                && old_list.list_style_type != new_list.list_style_type)
+            {
+                return true;
+            }
+        }
+
+        if new.is_pseudo_style() && old.get_counters().content != new.get_counters().content {
+            return true;
+        }
+
+        false
+    };
+
+    let text_shaping_needs_recollect = || {
+        if old.clone_direction() != new.clone_direction()
+            || old.clone_unicode_bidi() != new.clone_unicode_bidi()
+        {
+            return true;
+        }
+
+        let old_text = old.get_inherited_text();
+        let new_text = new.get_inherited_text();
+        if !std::ptr::eq(old_text, new_text)
+            && (old_text.white_space_collapse != new_text.white_space_collapse
+            || old_text.text_transform != new_text.text_transform
+            || old_text.word_break != new_text.word_break
+            || old_text.overflow_wrap != new_text.overflow_wrap
+            || old_text.letter_spacing != new_text.letter_spacing
+            || old_text.word_spacing != new_text.word_spacing
+            || old_text.text_rendering != new_text.text_rendering)
+        {
+            return true;
+        }
+
+        false
+    };
+
+    #[allow(
+        clippy::if_same_then_else,
+        reason = "these branches will soon be different"
+    )]
+    if box_tree_needs_rebuild() {
+        ALL_DAMAGE
+    } else if text_shaping_needs_recollect() {
+        ALL_DAMAGE
+    } else {
+        // This element needs to be laid out again, but does not have any damage to
+        // its box. In the future, we will distinguish between types of damage to the
+        // fragment as well.
+        RestyleDamage::RELAYOUT
     }
 }
 

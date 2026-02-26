@@ -10,7 +10,7 @@ use html5ever::tendril::StrTendril;
 use html5ever::{LocalName, QualName};
 use html_escape::encode_quoted_attribute_to_string;
 use markup5ever::local_name;
-use parley::{BreakReason, Cluster, ClusterSide, ContentWidths};
+use parley::{BreakReason, Cluster, ClusterSide, ContentWidths, FontContext, LayoutContext};
 use peniko::Blob;
 use selectors::matching::{ElementSelectorFlags, QuirksMode};
 use skia_safe::wrapper::PointerWrapper;
@@ -24,21 +24,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fmt, ptr};
 use bincode_next::serde::Compat;
 use blitz_traits::shell::ShellProvider;
+use cssparser::ParserInput;
 use keyboard_types::Modifiers;
 use style::data::ElementData as StyleElementData;
 use style::data::ElementData as StyloElementData;
 use style::invalidation::element::restyle_hints::RestyleHint;
+use style::parser::ParserContext;
 use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::properties::style_structs::Font;
-use style::properties::{parse_style_attribute, PropertyDeclarationBlock};
+use style::properties::{parse_style_attribute, Importance, PropertyDeclaration, PropertyDeclarationBlock, PropertyId, SourcePropertyDeclaration};
 use style::selector_parser::{PseudoElement, RestyleDamage};
 use style::servo_arc::{Arc as ServoArc, Arc};
 use style::shared_lock::{Locked, SharedRwLock};
-use style::stylesheets::{CssRuleType, DocumentStyleSheet, UrlExtraData};
+use style::stylesheets::{CssRuleType, DocumentStyleSheet, Origin, UrlExtraData};
 use style::values::computed::{Display, PositionProperty};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use style::properties::generated::longhands::position::computed_value::T as Position;
-use style_traits::ToCss;
+use style_traits::{ParsingMode, ToCss};
 use stylo_atoms::Atom;
 use stylo_dom::ElementState;
 use taffy::{Cache, Layout, Point, Style};
@@ -239,6 +241,27 @@ pub struct TextInputData {
     pub is_multiline: bool,
 }
 
+impl TextInputData {
+    pub fn new(is_multiline: bool) -> Self {
+        Self {
+            editor: Box::new(parley::PlainEditor::new(16.0)),
+            is_multiline,
+        }
+    }
+
+    pub fn set_text(
+        &mut self,
+        font_ctx: &mut FontContext,
+        layout_ctx: &mut LayoutContext<TextBrush>,
+        text: &str,
+    ) {
+        if self.editor.text() != text {
+            self.editor.set_text(text);
+            self.editor.driver(font_ctx, layout_ctx).refresh_layout();
+        }
+    }
+}
+
 /// Heterogeneous data that depends on the element's type.
 #[derive(Clone, Default)]
 pub enum SpecialElementData {
@@ -334,6 +357,85 @@ impl ElementData {
                 CssRuleType::Style
             )))
         })
+    }
+
+    pub fn set_style_property(
+        &mut self,
+        name: &str,
+        value: &str,
+        guard: &SharedRwLock,
+        url_extra_data: UrlExtraData,
+    ) -> bool {
+        let context = ParserContext::new(
+            Origin::Author,
+            &url_extra_data,
+            Some(CssRuleType::Style),
+            ParsingMode::DEFAULT,
+            QuirksMode::NoQuirks,
+            /* namespaces = */ Default::default(),
+            None,
+            None,
+        );
+
+        let Ok(property_id) = PropertyId::parse(name, &context) else {
+            return false;
+        };
+        let mut source_property_declaration = SourcePropertyDeclaration::default();
+        let mut input = ParserInput::new(value);
+        let mut parser = style::values::Parser::new(&mut input);
+        let Ok(_) = PropertyDeclaration::parse_into(
+            &mut source_property_declaration,
+            property_id,
+            &context,
+            &mut parser,
+        ) else {
+            #[cfg(feature = "tracing")]
+            tracing::warn!(property = name, value, "Invalid property value");
+            return false;
+        };
+
+        if self.style_attribute.is_none() {
+            self.style_attribute = Some(ServoArc::new(guard.wrap(PropertyDeclarationBlock::new())));
+        }
+        self.style_attribute
+            .as_mut()
+            .unwrap()
+            .write_with(&mut guard.write())
+            .extend(source_property_declaration.drain(), Importance::Normal);
+
+        true
+    }
+
+    pub fn remove_style_property(
+        &mut self,
+        name: &str,
+        guard: &SharedRwLock,
+        url_extra_data: UrlExtraData,
+    ) -> bool {
+        let context = ParserContext::new(
+            Origin::Author,
+            &url_extra_data,
+            Some(CssRuleType::Style),
+            ParsingMode::DEFAULT,
+            QuirksMode::NoQuirks,
+            /* namespaces = */ Default::default(),
+            None,
+            None,
+        );
+        let Ok(property_id) = PropertyId::parse(name, &context) else {
+            return false;
+        };
+
+        if let Some(style) = &mut self.style_attribute {
+            let mut guard = guard.write();
+            let style = style.write_with(&mut guard);
+            if let Some(index) = style.first_declaration_to_remove(&property_id) {
+                style.remove_property(&property_id, index);
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Get the ID attribute
@@ -633,7 +735,7 @@ pub struct DomNode {
     pub data: NodeData,
 
     pub stylo_data: AtomicRefCell<Option<StyleElementData>>,
-    pub selector_flags: AtomicRefCell<ElementSelectorFlags>,
+    pub selector_flags: Cell<ElementSelectorFlags>,
     pub lock: SharedRwLock,
     pub element_state: ElementState,
 
@@ -693,7 +795,7 @@ impl DomNode {
             flags: DomNodeFlags::empty(),
             data,
             stylo_data: Default::default(),
-            selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
+            selector_flags: Cell::new(ElementSelectorFlags::empty()),
             lock,
             element_state: ElementState::empty(),
             before: None,
@@ -841,6 +943,13 @@ impl DomNode {
 
     pub fn unset_dirty_descendants(&self) {
         self.dirty_descendants.store(false, Ordering::Relaxed);
+    }
+
+    pub(crate) fn mark_style_attr_updated(&mut self) {
+        if let Some(data) = &mut self.stylo_data.get_mut() {
+            data.hint |= RestyleHint::RESTYLE_STYLE_ATTRIBUTE;
+            self.set_dirty_descendants();
+        }
     }
 
     pub fn mark_ancestors_dirty(&self) {

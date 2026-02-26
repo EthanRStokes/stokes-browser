@@ -4217,6 +4217,7 @@ dependencies = [
  "blitz-traits",
  "bytes",
  "color",
+ "cssparser",
  "curl",
  "cursor-icon",
  "data-url",

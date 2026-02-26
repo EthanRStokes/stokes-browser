@@ -56,6 +56,7 @@ smol_str = { version = "0.3.5",features = ["serde"] }
 rustc-hash = "2.1.1"
 dioxus-core = "0.7.3"
 percent-encoding = "2.3.2"
+cssparser = "0.36.0"
 
 # Stylo
 stylo = "0.12.0"

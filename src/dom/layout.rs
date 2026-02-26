@@ -1,5 +1,5 @@
 use crate::dom::damage::{HoistedPaintChild, HoistedPaintChildren, ALL_DAMAGE, CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC};
-use crate::dom::node::{BackgroundImageData, DomNodeFlags, ListItemLayout, ListItemLayoutPosition, Marker, NodeKind, SpecialElementData, Status, TextLayout};
+use crate::dom::node::{BackgroundImageData, DomNodeFlags, ListItemLayout, ListItemLayoutPosition, Marker, NodeKind, SpecialElementData, Status, TextInputData, TextLayout};
 use crate::dom::{stylo_to_parley, AttributeMap, Dom, DomNode, ElementData, NodeData};
 use crate::layout::table::build_table_context;
 use crate::networking::{parse_svg, ImageHandler, ImageType, ResourceHandler};
@@ -88,8 +88,27 @@ pub(crate) fn collect_layout_children(
     flush_pseudo_elements(dom, node_id);
 
     if let Some(element_data) = dom.nodes[node_id].data.element() {
-        // TODO handle text input
         let tag_name = element_data.name.local.as_ref();
+
+        if matches!(tag_name, "input" | "textarea") {
+            let type_attr: Option<&str> = dom.nodes[node_id]
+                .data
+                .element()
+                .and_then(|el| el.attr(local_name!("type")));
+            if tag_name == "textarea" {
+                create_text_editor(dom, node_id, true);
+                return;
+            } else if matches!(
+                type_attr,
+                None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url")
+            ) {
+                create_text_editor(dom, node_id, false);
+                return;
+            } else if matches!(type_attr, Some("checkbox" | "radio")) {
+                create_checkbox_input(dom, node_id);
+                return;
+            }
+        }
 
         if matches!(tag_name, "svg") {
             let mut outer_html = dom.get_node(node_id).unwrap().outer_html();
@@ -246,6 +265,7 @@ pub(crate) fn collect_layout_children(
                 dom.nodes[node_id]
                     .flags
                     .insert(DomNodeFlags::IS_INLINE_ROOT);
+
                 find_inline_layout_embedded_boxes(dom, node_id, layout_children);
 
                 let mut layout_ctx = LAYOUT_CTX.take().unwrap_or_else(|| Box::new(LayoutContext::new()));
@@ -385,13 +405,19 @@ fn flush_pseudo_elements(dom: &mut Dom, node_id: usize) {
             )));
             dom.nodes[new_node_id].parent = Some(node_id);
             dom.nodes[new_node_id].layout_parent.set(Some(node_id));
+            if dom.nodes[node_id].flags.contains(DomNodeFlags::IS_IN_DOCUMENT) {
+                dom.nodes[new_node_id]
+                    .flags
+                    .insert(DomNodeFlags::IS_IN_DOCUMENT);
+            }
 
             let content = &pe_style.as_ref().get_counters().content;
             if let Content::Items(item_data) = content {
                 let items = &item_data.items[0..item_data.alt_start];
                 match &items[0] {
                     ContentItem::String(owned_str) => {
-                        // create text node
+                        let text_node_id = dom.create_text_node(owned_str);
+                        dom.nodes[new_node_id].children.push(text_node_id);
                     }
                     _ => {
                         // TODO: other types of content
@@ -543,6 +569,49 @@ fn collect_complex_layout_children(
             doc.nodes.remove(anon_id);
             *anonymous_block_id = None;
         }
+    }
+}
+
+fn create_text_editor(dom: &mut Dom, input_element_id: usize, is_multiline: bool) {
+    let node = &mut dom.nodes[input_element_id];
+    let parley_style = node
+        .primary_styles()
+        .as_ref()
+        .map(|s| stylo_to_parley::style(node.id, s))
+        .unwrap_or_default();
+
+    let element = &mut node.data.element_mut().unwrap();
+    if !matches!(element.special_data, SpecialElementData::TextInput(_)) {
+        let mut text_input_data = TextInputData::new(is_multiline);
+        let editor = &mut text_input_data.editor;
+        editor.set_text(element.attr(local_name!("value")).unwrap_or(" "));
+        element.special_data = SpecialElementData::TextInput(text_input_data);
+    }
+
+    let SpecialElementData::TextInput(text_input_data) = &mut element.special_data else {
+        unreachable!();
+    };
+
+    let editor = &mut text_input_data.editor;
+    editor.set_scale(dom.viewport.scale_f64() as f32);
+    editor.set_width(None);
+
+    let styles = editor.edit_styles();
+    styles.retain(|_| false);
+    styles.insert(StyleProperty::FontSize(parley_style.font_size));
+    styles.insert(StyleProperty::LineHeight(parley_style.line_height));
+    styles.insert(StyleProperty::Brush(parley_style.brush));
+
+    editor.refresh_layout(&mut dom.font_ctx.lock().unwrap(), &mut dom.layout_ctx);
+}
+
+fn create_checkbox_input(dom: &mut Dom, input_element_id: usize) {
+    let node = &mut dom.nodes[input_element_id];
+
+    let element = &mut node.data.element_mut().unwrap();
+    if !matches!(element.special_data, SpecialElementData::CheckboxInput(_)) {
+        let checked = element.has_attr(local_name!("checked"));
+        element.special_data = SpecialElementData::CheckboxInput(checked);
     }
 }
 

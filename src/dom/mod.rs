@@ -57,7 +57,7 @@ use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters
 use style::data::ElementStyles;
 use style::dom::{TDocument, TNode};
 use style::font_metrics::FontMetrics;
-use style::global_style_data::GLOBAL_STYLE_DATA;
+use style::global_style_data::{GLOBAL_STYLE_DATA, STYLE_THREAD_POOL};
 use style::invalidation::element::restyle_hints::RestyleHint;
 use style::media_queries::{Device, MediaList, MediaType};
 use style::properties::style_structs::Font;
@@ -287,6 +287,12 @@ impl Dom {
 
         let id = ID_GENERATOR.fetch_add(1, Ordering::SeqCst);
 
+        stylo_config::set_bool("layout.flexbox.enabled", true);
+        stylo_config::set_bool("layout.grid.enabled", true);
+        stylo_config::set_bool("layout.legacy_layout", true);
+        stylo_config::set_bool("layout.unimplemented", true);
+        stylo_config::set_bool("layout.columns.enabled", true);
+
         let viewport = config.viewport.unwrap_or_default();
         let font_ctx = config.font_ctx.unwrap_or_else(|| {
             let mut font_ctx = FontContext::default();
@@ -295,12 +301,6 @@ impl Dom {
         });
         let font_ctx = Arc::new(Mutex::new(font_ctx));
         let device = device(&viewport, font_ctx.clone());
-
-        stylo_config::set_bool("layout.flexbox.enabled", true);
-        stylo_config::set_bool("layout.grid.enabled", true);
-        stylo_config::set_bool("layout.legacy_layout", true);
-        stylo_config::set_bool("layout.unimplemented", true);
-        stylo_config::set_bool("layout.columns.enabled", true);
 
         let base_url = config.base_url.and_then(|url| DocUrl::from_str(&url).ok()).unwrap_or_default();
         let net_provider = config.net_provider.unwrap();
@@ -616,7 +616,8 @@ impl Dom {
 
             if token.should_traverse() {
                 let traverser = RecalcStyle::new(context);
-                style::driver::traverse_dom(&traverser, token, None);
+                let rayon_pool = STYLE_THREAD_POOL.pool();
+                style::driver::traverse_dom(&traverser, token, rayon_pool.as_ref());
             }
 
             for opaque in self.snapshots.keys() {
@@ -874,6 +875,31 @@ impl Dom {
                     *is_checked = was_clicked;
                 }
             }
+        }
+    }
+
+    pub fn set_style_property(&mut self, node_id: usize, name: &str, value: &str) {
+        let node = &mut self.nodes[node_id];
+        let did_change = node.element_data_mut().unwrap().set_style_property(
+            name,
+            value,
+            &self.lock,
+            self.url.url_extra_data(),
+        );
+        if did_change {
+            node.mark_style_attr_updated();
+        }
+    }
+
+    pub fn remove_style_property(&mut self, node_id: usize, name: &str) {
+        let node = &mut self.nodes[node_id];
+        let did_change = node.element_data_mut().unwrap().remove_style_property(
+            name,
+            &self.lock,
+            self.url.url_extra_data(),
+        );
+        if did_change {
+            node.mark_style_attr_updated();
         }
     }
 
@@ -1734,6 +1760,7 @@ impl Dom {
 
     fn process_removed_subtree(&mut self, node_id: usize) {
         let mut compute_canvas: bool = false;
+        let mut stylesheets_to_unload = Vec::new();
         self.iter_subtree_mut(node_id, |node_id, doc| {
             let node = &mut doc.nodes[node_id];
             node.flags.set(DomNodeFlags::IS_IN_DOCUMENT, false);
@@ -1770,7 +1797,9 @@ impl Dom {
 
             match &element.special_data {
                 //todo sub document
-                SpecialElementData::Stylesheet(_) => {} // todo
+                SpecialElementData::Stylesheet(_) => {
+                    stylesheets_to_unload.push(node_id);
+                }
                 SpecialElementData::Image(_) => {}
                 SpecialElementData::Canvas(_) => {
                     compute_canvas = true;
@@ -1786,8 +1815,9 @@ impl Dom {
         if compute_canvas {
             self.has_canvas = self.compute_has_canvas();
         }
-
-        // todo idk
+        for node_id in stylesheets_to_unload {
+            self.unload_stylesheet(node_id);
+        }
     }
 
     fn process_button_input(&mut self, target_id: usize) {

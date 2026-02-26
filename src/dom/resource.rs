@@ -2,6 +2,7 @@ use std::sync::Arc;
 use blitz_traits::net::{NetProvider, Request};
 use markup5ever::local_name;
 use peniko::Blob;
+use style::stylesheets::OriginSet;
 use crate::dom::damage::ALL_DAMAGE;
 use crate::dom::{Dom, ImageData};
 use crate::dom::node::{CanvasData, RasterImageData, SpecialElementData, Status};
@@ -107,6 +108,24 @@ impl Dom {
                 },
             ),
         );
+    }
+
+    pub(crate) fn unload_stylesheet(&mut self, node_id: usize) {
+        let node = &mut self.nodes[node_id];
+        let Some(element) = node.element_data_mut() else {
+            unreachable!();
+        };
+        let SpecialElementData::Stylesheet(stylesheet) = element.special_data.take() else {
+            unreachable!();
+        };
+
+        let guard = self.lock.read();
+        self.stylist.remove_stylesheet(stylesheet, &guard);
+        self
+            .stylist
+            .force_stylesheet_origins_dirty(OriginSet::all());
+
+        self.nodes_to_stylesheet.remove(&node_id);
     }
 
     pub(crate) fn load_resource(&mut self, res: ResourceLoadResponse) {
