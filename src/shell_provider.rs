@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use bincode::{Decode, Encode};
+use bincode_next::{Decode, Encode};
 use blitz_traits::shell::{ClipboardError, FileDialogFilter, ShellProvider};
 use tokio::sync::mpsc::UnboundedSender;
 use cursor_icon::CursorIcon;

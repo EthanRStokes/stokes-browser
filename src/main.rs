@@ -6,6 +6,7 @@ mod layout;
 mod renderer;
 mod css;
 mod js;
+pub mod events;
 mod input;
 mod ipc;
 mod tab_process;
@@ -40,15 +41,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let event_loop = EventLoop::new()?;
-    let mut app = BrowserApp::new(&event_loop).await;
+    let app = BrowserApp::new(&event_loop, startup_url).await;
 
-    // Create initial tab, navigating to the startup URL if one was provided
-    if let Some(ref url) = startup_url {
-        app.add_tab_with_url(Some(url.as_str()));
-    } else {
-        app.add_tab();
-    }
-
-    event_loop.run_app(&mut app)?;
+    event_loop.run_app(app)?;
     Ok(())
 }

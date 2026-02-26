@@ -1,7 +1,8 @@
 // Inter-Process Communication module for browser processes
-use bincode::{Decode, Encode};
+use bincode_next::{Decode, Encode};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
+use crate::events::UiEvent;
 
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -26,6 +27,7 @@ pub enum ParentToTabMessage {
     Scroll { delta_x: f32, delta_y: f32 },
     /// Click at position
     Click { x: f32, y: f32, modifiers: KeyModifiers },
+    UI(UiEvent),
     /// Mouse move
     MouseMove { x: f32, y: f32 },
     /// Keyboard input (character or named key)
@@ -105,7 +107,7 @@ pub struct KeyModifiers {
 /// IPC channel for bidirectional communication
 pub struct IpcChannel {
     stream: UnixStream,
-    config: bincode::config::Configuration,
+    config: bincode_next::config::Configuration,
 }
 
 impl IpcChannel {
@@ -113,13 +115,13 @@ impl IpcChannel {
     pub fn new(stream: UnixStream) -> Self {
         Self {
             stream,
-            config: bincode::config::standard(),
+            config: bincode_next::config::standard(),
         }
     }
 
     /// Send a message through the channel
     pub fn send<T: Encode>(&mut self, message: &T) -> io::Result<()> {
-        let encoded = bincode::encode_to_vec(message, self.config)
+        let encoded = bincode_next::encode_to_vec(message, self.config)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         // Send length prefix (4 bytes)
@@ -135,7 +137,7 @@ impl IpcChannel {
     /// Receive a message from the channel
     pub fn receive<T>(&mut self) -> io::Result<T>
     where
-        T: bincode::Decode<()>,
+        T: bincode_next::Decode<()>,
     {
         // Read length prefix
         let mut len_bytes = [0u8; 4];
@@ -146,13 +148,13 @@ impl IpcChannel {
         let mut buffer = vec![0u8; len];
         self.stream.read_exact(&mut buffer)?;
 
-        let (decoded, _) = bincode::decode_from_slice(&buffer, self.config)
+        let (decoded, _) = bincode_next::decode_from_slice(&buffer, self.config)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         Ok(decoded)
     }
 
     /// Try to receive a message without blocking
-    pub fn try_receive<T: for<'de> Encode + bincode::Decode<()>>(&mut self) -> io::Result<Option<T>> {
+    pub fn try_receive<T: for<'de> Encode + bincode_next::Decode<()>>(&mut self) -> io::Result<Option<T>> {
         self.stream.set_nonblocking(true)?;
         let result = self.receive();
         self.stream.set_nonblocking(false)?;

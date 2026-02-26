@@ -316,6 +316,8 @@ impl Dom {
             active_node_id: None,
             mousedown_node_id: None,
             last_mousedown_time: None,
+            mousedown_pos: Point::ZERO,
+            quick_clicks: 0,
             has_active_animations: false,
             has_canvas: false,
             nodes_to_id: Default::default(),
@@ -576,10 +578,10 @@ impl Dom {
                 visited_styles_enabled: false,
                 options: GLOBAL_STYLE_DATA.options.clone(),
                 guards: guards,
-                current_time_for_animations: 0.0, // TODO animations
+                animations: self.animations.clone(),
+                current_time_for_animations: now,
                 traversal_flags: TraversalFlags::empty(),
                 snapshot_map: &self.snapshots,
-                animations: Default::default(),
                 registered_speculative_painters: &Painters,
             };
 

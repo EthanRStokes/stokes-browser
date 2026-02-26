@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-glutin = "0.32.3"
-glutin-winit = "0.5.0"
+winit = "0.31.0-beta.2"
+winit-core = "0.31.0-beta.2"
 gl = "0.14.0"
-skia-safe = { version = "0.93.0", features = ["gpu", "gl"] }
+skia-safe = { version = "0.93.1", features = ["gpu", "gl"] }
 image = "0.25.8"
 tokio = { version = "1.49.0", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"
@@ -21,7 +21,7 @@ stacker = "0.1"
 serde_json = "1.0.149"
 shared_memory = "0.12.4"
 serde = { version = "1.0", features = ["derive"] }
-bincode = "2.0.1"
+bincode-next = { version = "3.0.0-rc.2", features = ["serde"] }
 uds_windows = "1.1.0"
 rfd = "0.17.2"
 url = "2"
@@ -31,7 +31,7 @@ markup5ever = "0.38.0"
 xml5ever = "0.38.0"
 parley = { git = "https://github.com/linebender/parley", rev = "37aa8ab7103e9da89eea22899902016ce20739f2" }
 euclid = "0.22.13"
-bitflags = "2.11.0"
+bitflags = { version = "2.11.0", features = ["serde"] }
 atomic_refcell = "0.1.13"
 skrifa = "0.40.0"
 kurbo = "0.13.0"
@@ -51,6 +51,8 @@ libc = "0.2.178"
 log = "0.4.28"
 wuff = "0.2.3"
 dirs = "6.0"
+keyboard-types = { version = "0.8.3",features = ["serde"] }
+smol_str = { version = "0.3.5",features = ["serde"] }
 
 # Stylo
 stylo = "0.12.0"
@@ -66,12 +68,19 @@ blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "eeaa9938fac918
 stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "eeaa9938fac918bd07e5a30472d0f4a44e8ffa31", features = ["floats"] }
 dioxus-asset-resolver = { version = "0.7.3", features = ["native"] }
 
-[dependencies.winit]
-git = "https://github.com/Treetrain1/winit.git"
+[dependencies.glutin-winit]
+git = "https://github.com/Treetrain1/glutin.git"
+rev = "48b8f8d"
+default-features = true
+
+[dependencies.glutin]
+git = "https://github.com/Treetrain1/glutin.git"
+rev = "48b8f8d"
 default-features = true
 
 [patch.crates-io]
-winit = { git = "https://github.com/Treetrain1/winit.git" }
+glutin = { git = "https://github.com/Treetrain1/glutin.git" }
+glutin-winit = { git = "https://github.com/Treetrain1/glutin.git" }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55.0"

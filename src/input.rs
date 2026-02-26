@@ -1,6 +1,7 @@
 use crate::engine::Engine;
 use crate::ui::BrowserUI;
 use arboard::Clipboard;
+use smol_str::SmolStr;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseScrollDelta};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::Window;
@@ -449,24 +450,28 @@ pub fn handle_keyboard_input(
                 amount: 300.0,
             });
         }
-        Key::Named(NamedKey::Space) => {
-            if !has_focused_text_field {
-                // Space bar scrolls down when not in a text field
-                let scroll_amount: f32 = if modifiers.state().shift_key() {
-                    -300.0 // Shift+Space scrolls up
-                } else {
-                    300.0
-                };
-                return InputAction::ForwardToTab(KeyboardInput::Scroll {
-                    direction: if scroll_amount > 0.0 { ScrollDirection::Down } else { ScrollDirection::Up },
-                    amount: scroll_amount.abs(),
-                });
-            }
-            // Space in text field is handled as regular character input
-            ui.handle_text_input(" ");
-            return InputAction::RequestRedraw;
-        }
         Key::Character(text) => {
+            match text.as_str() {
+                // SPACE
+                " " => {
+                    if !has_focused_text_field {
+                        // Space bar scrolls down when not in a text field
+                        let scroll_amount: f32 = if modifiers.state().shift_key() {
+                            -300.0 // Shift+Space scrolls up
+                        } else {
+                            300.0
+                        };
+                        return InputAction::ForwardToTab(KeyboardInput::Scroll {
+                            direction: if scroll_amount > 0.0 { ScrollDirection::Down } else { ScrollDirection::Up },
+                            amount: scroll_amount.abs(),
+                        });
+                    }
+                    // Space in text field is handled as regular character input
+                    ui.handle_text_input(text);
+                    return InputAction::RequestRedraw;
+                }
+                _ => {}
+            }
             if has_focused_text_field {
                 // Handle regular character input in UI text fields
                 ui.handle_text_input(text.as_str());

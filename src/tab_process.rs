@@ -339,6 +339,11 @@ impl TabProcess {
                 // Update cursor if hovering over interactive elements
                 self.engine.handle_mouse_move(x / self.engine.viewport.hidpi_scale, y / self.engine.viewport.hidpi_scale);
             }
+            ParentToTabMessage::UI(event) => {
+                if let Some(dom) = self.dom() {
+                    //dom.handle_ui_event(event);
+                }
+            }
             ParentToTabMessage::KeyboardInput { key_type, modifiers } => {
                 // Handle keyboard input in the engine
                 use crate::ipc::{KeyInputType, ScrollDirection};
@@ -456,6 +461,12 @@ impl TabProcess {
             let engine = &mut self.engine;
             if engine.dom.is_some() {
                 engine.render(&mut painter, animation_time);
+
+                let dom = engine.dom.as_ref().unwrap();
+                // todo check if window is visible
+                if dom.animating() {
+                    dom.shell_provider.request_redraw();
+                }
             }
 
             // Copy the pixel data to shared memory
@@ -478,12 +489,6 @@ impl TabProcess {
                 width: shared.width,
                 height: shared.height,
             })?;
-
-            let dom = self.dom().unwrap();
-            // todo check if window is visible
-            if dom.animating() {
-                dom.shell_provider.request_redraw();
-            }
         }
         Ok(())
     }

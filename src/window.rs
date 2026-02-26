@@ -14,33 +14,36 @@ use winit::dpi::LogicalSize;
 use winit::event_loop::EventLoop;
 use winit::raw_window_handle::HasWindowHandle;
 use winit::window::{Window, WindowAttributes};
+use winit_core::event_loop::ActiveEventLoop;
+use winit_core::icon::{Icon, RgbaIcon};
 
 pub(crate) struct Env {
     pub(crate) surface: Surface,
     pub(crate) gl_surface: GlutinSurface<WindowSurface>,
     pub(crate) gr_context: DirectContext,
     pub(crate) gl_context: PossiblyCurrentContext,
-    pub(crate) window: Window,
+    pub(crate) window: Box<dyn Window>,
     pub(crate) fb_info: FramebufferInfo,
     pub(crate) num_samples: usize,
     pub(crate) stencil_size: usize,
 }
 
-pub(crate) fn create_window(el: &EventLoop<()>) -> Env {
+pub(crate) fn create_window(el: &dyn ActiveEventLoop) -> Env {
     // Load and set window icon
     let icon_data = include_bytes!("../assets/com.ethanstokes.stokes-browser.png");
     let icon = image::load_from_memory(icon_data)
         .expect("Failed to load icon")
         .into_rgba8();
     let (icon_width, icon_height) = icon.dimensions();
-    let icon = winit::window::Icon::from_rgba(icon.into_raw(), icon_width, icon_height)
-        .expect("Failed to create icon");
+    let icon: Icon = RgbaIcon::new(icon.into_raw(), icon_width, icon_height)
+        .expect("Failed to create icon")
+        .into();
 
     // Create window
     let window_attrs = WindowAttributes::default()
         .with_title("Web Browser")
-        .with_inner_size(LogicalSize::new(1024, 768))
-        .with_min_inner_size(LogicalSize::new(500, crate::ui::BrowserUI::CHROME_HEIGHT as i32))
+        .with_surface_size(LogicalSize::new(1024, 768))
+        .with_min_surface_size(LogicalSize::new(500, crate::ui::BrowserUI::CHROME_HEIGHT as i32))
         .with_window_icon(Some(icon));
 
     let template = ConfigTemplateBuilder::new()
@@ -86,7 +89,7 @@ pub(crate) fn create_window(el: &EventLoop<()>) -> Env {
             })
     };
 
-    let (width, height) = window.inner_size().into();
+    let (width, height) = window.surface_size().into();
     let attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(
         raw_window_handle,
         NonZeroU32::new(width).unwrap(),
@@ -123,7 +126,7 @@ pub(crate) fn create_window(el: &EventLoop<()>) -> Env {
     let mut gr_context = gpu::direct_contexts::make_gl(interface, Some(&context_options))
         .expect("Failed to create Skia GL context");
 
-    let size = window.inner_size();
+    let size = window.surface_size();
 
     let fb_info = {
         let mut fboid: GLint = 0;
@@ -153,13 +156,13 @@ pub(crate) fn create_window(el: &EventLoop<()>) -> Env {
 }
 
 pub(crate) fn create_surface(
-    window: &Window,
+    window: &Box<dyn Window>,
     fb_info: FramebufferInfo,
     gr_context: &mut DirectContext,
     num_samples: usize,
     stencil_size: usize
 ) -> Surface {
-    let size = window.inner_size();
+    let size = window.surface_size();
     let size = (
         size.width.try_into().expect("Could not convert width"),
         size.height.try_into().expect("Could not convert height")
