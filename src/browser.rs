@@ -131,6 +131,7 @@ impl BrowserApp {
         if let Some(tab_id) = self.active_tab_id().cloned() {
             let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Navigate(url.to_string()));
             self.env.as_ref().unwrap().window.set_title(&format!("Loading: {}", url));
+            self.ui.as_mut().unwrap().clear_focus();
         }
     }
 
