@@ -126,7 +126,12 @@ impl Dom {
                 } else {
                     node.insert_damage(ALL_DAMAGE);
                 }
-            } // TODO text input
+            } else if let Some(input) = element.text_input_data_mut() {
+                input.editor.set_scale(scale);
+                let mut font_ctx = font_ctx.lock().unwrap();
+                input.editor.refresh_layout(&mut font_ctx, layout_ctx);
+                node.insert_damage(ONLY_RELAYOUT);
+            }
         }
 
         for node_id in anon_nodes {

@@ -427,7 +427,6 @@ impl Engine {
         let user_agent = self.config.user_agent.clone();
         let dom = self.dom_mut();
         let dom = dom as *mut Dom;
-        // TODO reimplement JavaScript
         match JsRuntime::new(dom, user_agent) {
             Ok(runtime) => {
                 println!("JavaScript runtime initialized successfully");

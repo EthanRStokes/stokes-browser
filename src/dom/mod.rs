@@ -162,7 +162,7 @@ pub(crate) fn device(viewport: &Viewport, font_ctx: Arc<Mutex<FontContext>>) -> 
         pixel_ratio,
         Box::new(StokesFontMetricsProvider { font_ctx }),
         ComputedValues::initial_values_with_font_override(Font::initial_values()),
-        PrefersColorScheme::Light // TODO detect color scheme preference
+        PrefersColorScheme::Dark // TODO detect color scheme preference
     )
 }
 
@@ -1060,7 +1060,9 @@ impl Dom {
             return Some(keyword);
         }
 
-        // todo text cursor for text inputs
+        if node.element_data().is_some_and(|el| el.text_input_data().is_some()) {
+            return Some(CursorIcon::Text);
+        }
 
         // Use "pointer" cursor if any ancestor is a link
         let mut maybe_node = Some(node);
@@ -1754,9 +1756,24 @@ impl Dom {
                 }
                 _ => {}
             };
-        });
+            let node = &dom.nodes[node_id];
 
-        // todo idk
+            if node.is_focusable() {
+                if let NodeData::Element(ref element) = node.data {
+                    if let Some(value) = element.attr(local_name!("autofocus")) {
+                        if value == "true" {
+                            dom.autofocus(node_id);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    fn autofocus(&mut self, node_id: usize) {
+        if self.get_node(node_id).is_some() {
+            self.set_focus_to(node_id);
+        }
     }
 
     fn process_removed_subtree(&mut self, node_id: usize) {
