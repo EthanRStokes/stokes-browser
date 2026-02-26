@@ -1,10 +1,136 @@
+pub mod pointer;
+pub mod focus;
+pub mod keyboard;
+mod ime;
+
 // Event system for DOM nodes using mozjs
-use crate::dom::DomNode;
+use crate::dom::{Dom, DomNode};
 use mozjs::context::JSContext;
 use mozjs::jsapi::{JSObject, JS_DefineProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JSPROP_ENUMERATE};
 use mozjs::jsval::{BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, StringValue};
 use mozjs::rooted;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use blitz_traits::shell::ShellProvider;
+use crate::dom::events::ime::handle_ime_event;
+use crate::dom::events::keyboard::handle_keypress;
+use crate::dom::events::pointer::{handle_click, handle_pointerdown, handle_pointermove, handle_pointerup, handle_wheel};
+use crate::events::{BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, DomEvent, DomEventData, EventState, UiEvent};
+
+impl Dom {
+    pub(crate) fn handle_ui_event(&mut self, event: UiEvent) {
+        let handler = NoopEventHandler;
+        let mut driver = EventDriver::new(self, handler);
+        driver.handle_ui_event(event);
+    }
+
+    pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
+        &mut self,
+        event: &mut DomEvent,
+        mut dispatch_event: F,
+    ) {
+        let target_node_id = event.target;
+
+        // Handle forwarding event sub-document
+        let node = &mut self.nodes[target_node_id];
+
+        match &event.data {
+            DomEventData::PointerMove(event) => {
+                let changed = handle_pointermove(self, target_node_id, event, dispatch_event);
+                if changed {
+                    self.shell_provider.request_redraw();
+                }
+            }
+            DomEventData::MouseMove(_) => {
+                // Do nothing (handled in PointerMove)
+            }
+            DomEventData::PointerDown(event) => {
+                handle_pointerdown(
+                    self,
+                    target_node_id,
+                    event.page_x(),
+                    event.page_y(),
+                    event.mods.0,
+                    &mut dispatch_event,
+                );
+            }
+            DomEventData::MouseDown(_) => {
+                // Do nothing (handled in PointerDown)
+            }
+            DomEventData::PointerUp(event) => {
+                handle_pointerup(self, target_node_id, event, dispatch_event);
+            }
+            DomEventData::MouseUp(_) => {
+                // Do nothing (handled in PointerUp)
+            }
+            DomEventData::Click(event) => {
+                handle_click(self, target_node_id, event, &mut dispatch_event);
+            }
+            DomEventData::KeyDown(event) => {
+                handle_keypress(self, target_node_id, event.clone(), dispatch_event);
+            }
+            DomEventData::KeyPress(_) => {
+                // Do nothing (no default action)
+            }
+            DomEventData::KeyUp(_) => {
+                // Do nothing (no default action)
+            }
+            DomEventData::Ime(event) => {
+                handle_ime_event(self, event.clone(), dispatch_event);
+            }
+            DomEventData::Input(_) => {
+                // Do nothing (no default action)
+            }
+            DomEventData::ContextMenu(_) => {
+                // TODO: Open context menu
+            }
+            DomEventData::DoubleClick(_) => {
+                // Do nothing (no default action)
+            }
+            DomEventData::PointerEnter(_) => {
+                // Do nothing (no default action)
+            }
+            DomEventData::PointerLeave(_) => {
+                // Do nothing (no default action)
+            }
+            DomEventData::PointerOver(_) => {
+                // Do nothing (no default action)
+            }
+            DomEventData::PointerOut(_) => {
+                // Do nothing (no default action)
+            }
+            DomEventData::MouseEnter(_) => {
+                // Do nothing (no default action)
+            }
+            DomEventData::MouseLeave(_) => {
+                // Do nothing (no default action)
+            }
+            DomEventData::MouseOver(_) => {
+                // Do nothing (no default action)
+            }
+            DomEventData::MouseOut(_) => {
+                // Do nothing (no default action)
+            }
+            DomEventData::Scroll(_) => {
+                // Handled elsewhere
+            }
+            DomEventData::Wheel(event) => {
+                handle_wheel(self, target_node_id, event.clone(), dispatch_event);
+            }
+            DomEventData::Focus(_) => {
+                // Do nothing (no default action)
+            }
+            DomEventData::Blur(_) => {
+                // Do nothing (no default action)
+            }
+            DomEventData::FocusIn(_) => {
+                // Do nothing (no default action)
+            }
+            DomEventData::FocusOut(_) => {
+                // Do nothing (no default action)
+            }
+        }
+    }
+}
 
 /// Event types supported by the browser
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -579,5 +705,283 @@ impl EventDispatcher {
     ) -> Result<(), String> {
         let event = Event::new(event_type);
         Self::dispatch_event(target, event, context)
+    }
+}
+
+// Copyright DioxusLabs
+// Licensed under the Apache License, Version 2.0 or the MIT license.
+
+pub trait EventHandler {
+    fn handle_event(
+        &mut self,
+        chain: &[usize],
+        event: &mut DomEvent,
+        doc: &mut Dom,
+        event_state: &mut EventState,
+    );
+}
+
+pub struct NoopEventHandler;
+impl EventHandler for NoopEventHandler {
+    fn handle_event(
+        &mut self,
+        _chain: &[usize],
+        _event: &mut DomEvent,
+        _doc: &mut Dom,
+        _event_state: &mut EventState,
+    ) {
+        // Do nothing
+    }
+}
+
+pub struct EventDriver<'doc, Handler: EventHandler> {
+    doc: &'doc mut Dom,
+    handler: Handler,
+    queue: VecDeque<DomEvent>,
+}
+
+impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
+    pub fn new(doc: &'doc mut Dom, handler: Handler) -> Self {
+        EventDriver {
+            doc,
+            handler,
+            queue: VecDeque::with_capacity(4),
+        }
+    }
+
+    pub fn handle_pointer_move(&mut self, event: &BlitzPointerEvent) -> Option<usize> {
+        let doc = &mut self.doc;
+
+        let prev_hover_node_id = doc.hover_node_id;
+        let changed = doc.set_hover(event.page_x(), event.page_y());
+        let hover_node_id = doc.hover_node_id;
+
+        if !changed {
+            return prev_hover_node_id;
+        }
+
+        let mut old_chain = prev_hover_node_id
+            .map(|id| doc.node_chain(id))
+            .unwrap_or_default();
+        let mut new_chain = hover_node_id
+            .map(|id| doc.node_chain(id))
+            .unwrap_or_default();
+        old_chain.reverse();
+        new_chain.reverse();
+
+        // Find the difference in the node chain of the last hovered objected and the newest
+        let old_len = old_chain.len();
+        let new_len = new_chain.len();
+
+        let first_difference_index = old_chain
+            .iter()
+            .zip(&new_chain)
+            .position(|(old, new)| old != new)
+            .unwrap_or_else(|| old_len.min(new_len));
+
+        let is_mouse = event.is_mouse();
+
+        if let Some(target) = prev_hover_node_id {
+            self.handle_dom_event(DomEvent::new(
+                target,
+                DomEventData::PointerOut(event.clone()),
+            ));
+            if is_mouse {
+                self.handle_dom_event(DomEvent::new(target, DomEventData::MouseOut(event.clone())));
+            }
+
+            // Send an mouseleave event to all old elements on the chain
+            for node_id in old_chain
+                .get(first_difference_index..)
+                .unwrap_or(&[])
+                .iter()
+            {
+                self.handle_dom_event(DomEvent::new(
+                    *node_id,
+                    DomEventData::PointerLeave(event.clone()),
+                ));
+                if is_mouse {
+                    self.handle_dom_event(DomEvent::new(
+                        *node_id,
+                        DomEventData::MouseLeave(event.clone()),
+                    ));
+                }
+            }
+        }
+
+        if let Some(target) = hover_node_id {
+            self.handle_dom_event(DomEvent::new(
+                target,
+                DomEventData::PointerOver(event.clone()),
+            ));
+
+            if is_mouse {
+                self.handle_dom_event(DomEvent::new(
+                    target,
+                    DomEventData::MouseOver(event.clone()),
+                ));
+            }
+
+            // Send an mouseenter event to all new elements on the chain
+            for node_id in new_chain
+                .get(first_difference_index..)
+                .unwrap_or(&[])
+                .iter()
+            {
+                self.handle_dom_event(DomEvent::new(
+                    *node_id,
+                    DomEventData::PointerEnter(event.clone()),
+                ));
+
+                if is_mouse {
+                    self.handle_dom_event(DomEvent::new(
+                        *node_id,
+                        DomEventData::MouseEnter(event.clone()),
+                    ));
+                }
+            }
+        }
+
+        hover_node_id
+    }
+
+    pub fn handle_ui_event(&mut self, event: UiEvent) {
+        let mut should_clear_hover = false;
+        let mut hover_node_id = self.doc.hover_node_id;
+        let focussed_node_id = self.doc.focus_node_id;
+
+        // Update document input state (hover, focus, active, etc)
+        match &event {
+            UiEvent::PointerMove(event) => {
+                hover_node_id = self.handle_pointer_move(event);
+            }
+            UiEvent::PointerDown(event) => {
+                hover_node_id = self.handle_pointer_move(event);
+                self.doc.active_node();
+                self.doc.set_mousedown_node_id(hover_node_id);
+            }
+            UiEvent::PointerUp(event) => {
+                hover_node_id = self.handle_pointer_move(event);
+                self.doc.unactive_node();
+
+                if event.is_primary && matches!(event.id, BlitzPointerId::Finger(_)) {
+                    should_clear_hover = true;
+                }
+            }
+            _ => {}
+        };
+
+        let target = match event {
+            UiEvent::PointerMove(_) => hover_node_id,
+            UiEvent::PointerUp(_) => hover_node_id,
+            UiEvent::PointerDown(_) => hover_node_id,
+            UiEvent::Wheel(_) => hover_node_id,
+            UiEvent::KeyUp(_) => focussed_node_id,
+            UiEvent::KeyDown(_) => focussed_node_id,
+            UiEvent::Ime(_) => focussed_node_id,
+        };
+        let target = target.unwrap_or_else(|| self.doc.root_element().id);
+
+        match event {
+            UiEvent::PointerMove(data) => {
+                self.handle_pointer_event(
+                    target,
+                    data,
+                    DomEventData::PointerMove,
+                    DomEventData::MouseMove,
+                );
+            }
+            UiEvent::PointerUp(data) => {
+                self.handle_pointer_event(
+                    target,
+                    data,
+                    DomEventData::PointerUp,
+                    DomEventData::MouseUp,
+                );
+            }
+            UiEvent::PointerDown(data) => {
+                self.handle_pointer_event(
+                    target,
+                    data,
+                    DomEventData::PointerDown,
+                    DomEventData::MouseDown,
+                );
+            }
+            UiEvent::Wheel(data) => {
+                self.handle_dom_event(DomEvent::new(target, DomEventData::Wheel(data)))
+            }
+            UiEvent::KeyUp(data) => {
+                self.handle_dom_event(DomEvent::new(target, DomEventData::KeyUp(data)))
+            }
+            UiEvent::KeyDown(data) => {
+                self.handle_dom_event(DomEvent::new(target, DomEventData::KeyDown(data)))
+            }
+            UiEvent::Ime(data) => {
+                self.handle_dom_event(DomEvent::new(target, DomEventData::Ime(data)))
+            }
+        };
+
+        // Update document input state (hover, focus, active, etc)
+        if should_clear_hover {
+            self.doc.clear_hover();
+        }
+    }
+
+    pub fn handle_dom_event(&mut self, event: DomEvent) {
+        self.queue.push_back(event);
+        self.process_queue();
+    }
+
+    fn handle_pointer_event(
+        &mut self,
+        target: usize,
+        data: BlitzPointerEvent,
+        make_ptr_data: impl FnOnce(BlitzPointerEvent) -> DomEventData,
+        make_mouse_data: impl FnOnce(BlitzPointerEvent) -> DomEventData,
+    ) {
+        let mut ptr_event = DomEvent::new(target, make_ptr_data(data.clone()));
+        let mut event_state = EventState::default();
+        event_state = self.run_handler_event(&mut ptr_event, event_state);
+        if !event_state.is_cancelled() && data.is_mouse() {
+            let mut mouse_event = DomEvent::new(target, make_mouse_data(data));
+            event_state = self.run_handler_event(&mut mouse_event, event_state);
+        }
+        if !event_state.is_cancelled() {
+            self.run_default_action(&mut ptr_event);
+        }
+        self.process_queue();
+    }
+
+    fn process_queue(&mut self) {
+        while let Some(mut event) = self.queue.pop_front() {
+            let event_state = self.run_handler_event(&mut event, EventState::default());
+            if !event_state.is_cancelled() {
+                self.run_default_action(&mut event);
+            }
+        }
+    }
+
+    fn run_handler_event(
+        &mut self,
+        event: &mut DomEvent,
+        initial_event_state: EventState,
+    ) -> EventState {
+        let chain = if event.bubbles {
+            let doc = &mut self.doc;
+            doc.node_chain(event.target)
+        } else {
+            vec![event.target]
+        };
+
+        let mut event_state = initial_event_state;
+        self.handler
+            .handle_event(&chain, event, self.doc, &mut event_state);
+
+        event_state
+    }
+
+    fn run_default_action(&mut self, event: &mut DomEvent) {
+        let mut doc = &mut self.doc;
+        doc.handle_dom_event(event, |new_evt| self.queue.push_back(new_evt));
     }
 }

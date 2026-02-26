@@ -22,6 +22,7 @@ use style::stylesheets::{ImportRule, StylesheetLoader as StyloStylesheetLoader};
 use style::values::{CssUrl, SourceLocation};
 use url::Url;
 use usvg::fontdb;
+use crate::shell_provider::StokesShellProvider;
 
 #[derive(Debug)]
 pub enum NetworkError {
@@ -86,7 +87,7 @@ pub(crate) struct ResourceHandler<T: Send + Sync + 'static> {
     request_id: usize,
     node_id: Option<usize>,
     tx: Sender<DomEvent>,
-    shell_provider: Arc<dyn ShellProvider>,
+    shell_provider: Arc<StokesShellProvider>,
     data: T,
 }
 
@@ -95,7 +96,7 @@ impl<T: Send + Sync + 'static> ResourceHandler<T> {
         tx: Sender<DomEvent>,
         doc_id: usize,
         node_id: Option<usize>,
-        shell_provider: Arc<dyn ShellProvider>,
+        shell_provider: Arc<StokesShellProvider>,
         data: T,
     ) -> Self {
         static REQUEST_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -113,7 +114,7 @@ impl<T: Send + Sync + 'static> ResourceHandler<T> {
         tx: Sender<DomEvent>,
         doc_id: usize,
         node_id: Option<usize>,
-        shell_provider: Arc<dyn ShellProvider>,
+        shell_provider: Arc<StokesShellProvider>,
         data: T,
     ) -> Box<dyn NetHandler>
     where
@@ -197,7 +198,7 @@ pub(crate) struct StylesheetLoader {
     pub(crate) tx: Sender<DomEvent>,
     pub(crate) dom_id: usize,
     pub(crate) net_provider: Arc<dyn NetProvider>,
-    pub(crate) shell_provider: Arc<dyn ShellProvider>,
+    pub(crate) shell_provider: Arc<StokesShellProvider>,
 }
 
 impl StyloStylesheetLoader for StylesheetLoader {
@@ -376,7 +377,7 @@ pub(crate) fn fetch_font_face(
     node_id: Option<usize>,
     sheet: &Stylesheet,
     network_provider: &Arc<dyn NetProvider>,
-    shell_provider: &Arc<dyn ShellProvider>,
+    shell_provider: &Arc<StokesShellProvider>,
     read_guard: &SharedRwLockReadGuard,
 ) {
     sheet
@@ -566,11 +567,11 @@ pub struct NewHttpClient {
     pub(crate) tx: Sender<DomEvent>,
     pub(crate) dom_id: usize,
     pub(crate) net_provider: Arc<dyn NetProvider>,
-    pub(crate) shell_provider: Arc<dyn ShellProvider>,
+    pub(crate) shell_provider: Arc<StokesShellProvider>,
 }
 
 impl NewHttpClient {
-    pub fn new(tx: Sender<DomEvent>, dom_id: usize, net_provider: Arc<dyn NetProvider>, shell_provider: Arc<dyn ShellProvider>) -> Self {
+    pub fn new(tx: Sender<DomEvent>, dom_id: usize, net_provider: Arc<dyn NetProvider>, shell_provider: Arc<StokesShellProvider>) -> Self {
         Self {
             tx,
             dom_id,

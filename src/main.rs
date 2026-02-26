@@ -6,6 +6,7 @@ mod layout;
 mod renderer;
 mod css;
 mod js;
+pub mod convert_events;
 pub mod events;
 mod input;
 mod ipc;

@@ -12,6 +12,7 @@ pub enum ShellProviderMessage {
     SetWindowTitle(String),
     SetImeEnabled(bool),
     SetImeCursorArea { x: f32, y: f32, width: f32, height: f32 },
+    ViewportScroll((f64, f64)),
 }
 
 pub(crate) struct StokesShellProvider {

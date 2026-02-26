@@ -1,7 +1,7 @@
 // DOM module for parsing and representing HTML content
 mod parser;
 pub(crate) mod node;
-mod events;
+pub mod events;
 mod config;
 pub(crate) mod damage;
 mod url;
@@ -13,8 +13,11 @@ mod snapshot;
 mod stylo_to_cursor;
 mod resource;
 mod resolve;
+mod state;
+mod selection;
+pub(crate) mod form;
 
-pub use self::events::{EventDispatcher, EventType};
+pub use events::{EventDispatcher, EventType};
 pub use self::node::{AttributeMap, DomNode, ElementData, ImageData, ImageLoadingState, NodeData};
 pub use self::parser::HtmlParser;
 use crate::css::stylo::RecalcStyle;
@@ -68,12 +71,16 @@ use style::thread_state::ThreadState;
 use style::traversal::DomTraversal;
 use style::traversal_flags::TraversalFlags;
 use style::values::computed::font::{GenericFontFamily, QueryFontMetricsFlags};
-use style::values::computed::{Au, CSSPixelLength, Length};
+use style::values::computed::{Au, CSSPixelLength, Length, Overflow};
 use stylo_atoms::Atom;
 use taffy::Point;
+use crate::dom::events::pointer::{DragMode, ScrollAnimationState};
+use crate::dom::selection::TextSelection;
 use crate::dom::stylo_to_cursor::stylo_to_cursor_icon;
-use crate::dom::traverse::TreeTraverser;
+use crate::dom::traverse::{AncestorTraverser, TreeTraverser};
 use crate::engine::net_provider::StokesNetProvider;
+use crate::events::{BlitzScrollEvent, DomEventData};
+use crate::shell_provider::{ShellProviderMessage, StokesShellProvider};
 
 const ZERO: Point<f64> = Point { x: 0.0, y: 0.0 };
 
@@ -114,9 +121,10 @@ pub struct Dom {
     pub(crate) last_mousedown_time: Option<Instant>,
     pub(crate) mousedown_pos: taffy::Point<f32>,
     pub(crate) quick_clicks: u16,
+    pub(crate) drag_mode: DragMode,
+    pub(crate) scroll_animation: ScrollAnimationState,
 
-
-    // todo text selection
+    pub(crate) text_selection: TextSelection,
 
     pub(crate) has_active_animations: bool,
     pub(crate) has_canvas: bool,
@@ -124,12 +132,13 @@ pub struct Dom {
     pub(crate) nodes_to_id: HashMap<String, usize>,
     pub(crate) nodes_to_stylesheet: BTreeMap<usize, DocumentStyleSheet>,
     pub(crate) stylesheets: HashMap<String, DocumentStyleSheet>,
+    pub(crate) controls_to_form: HashMap<usize, usize>,
 
     pub(crate) image_cache: HashMap<String, ImageData>,
     pub(crate) pending_images: HashMap<String, Vec<(usize, ImageType)>>,
 
     pub net_provider: Arc<dyn NetProvider>,
-    pub shell_provider: Arc<dyn ShellProvider>,
+    pub shell_provider: Arc<StokesShellProvider>,
 }
 
 pub enum DomEvent {
@@ -291,7 +300,7 @@ impl Dom {
 
         let base_url = config.base_url.and_then(|url| DocUrl::from_str(&url).ok()).unwrap_or_default();
         let net_provider = config.net_provider.unwrap_or_else(|| Arc::new(DummyNetProvider));
-        let shell_provider = config.shell_provider.unwrap_or_else(|| Arc::new(DummyShellProvider));
+        let shell_provider = config.shell_provider.unwrap();
 
         let (tx, rx) = channel();
 
@@ -318,11 +327,15 @@ impl Dom {
             last_mousedown_time: None,
             mousedown_pos: Point::ZERO,
             quick_clicks: 0,
+            drag_mode: DragMode::None,
+            scroll_animation: ScrollAnimationState::None,
+            text_selection: TextSelection::default(),
             has_active_animations: false,
             has_canvas: false,
             nodes_to_id: Default::default(),
             nodes_to_stylesheet: Default::default(),
             stylesheets: Default::default(),
+            controls_to_form: HashMap::new(),
             image_cache: HashMap::new(),
             pending_images: HashMap::new(),
             net_provider,
@@ -415,7 +428,7 @@ impl Dom {
     }
 
     /// Parse HTML into a DOM
-    pub fn parse_html(url: &str, html: &str, viewport: Viewport, shell_provider: Arc<dyn ShellProvider>) -> Self {
+    pub fn parse_html(url: &str, html: &str, viewport: Viewport, shell_provider: Arc<StokesShellProvider>) -> Self {
         let parser = HtmlParser::new();
         parser.parse(html, DomConfig {
             viewport: Some(viewport),
@@ -788,6 +801,69 @@ impl Dom {
         }
     }
 
+    /// Find the label's bound input elements:
+    /// the element id referenced by the "for" attribute of a given label element
+    /// or the first input element which is nested in the label
+    /// Note that although there should only be one bound element,
+    /// we return all possibilities instead of just the first
+    /// in order to allow the caller to decide which one is correct
+    pub fn label_bound_input_element(&self, label_node_id: usize) -> Option<&DomNode> {
+        let label_element = self.nodes[label_node_id].element_data()?;
+        if let Some(target_element_dom_id) = label_element.attr(local_name!("for")) {
+            TreeTraverser::new(self)
+                .filter_map(|id| {
+                    let node = self.get_node(id)?;
+                    let element_data = node.element_data()?;
+                    if element_data.name.local != local_name!("input") {
+                        return None;
+                    }
+                    let id = element_data.id.as_ref()?;
+                    if *id == *target_element_dom_id {
+                        Some(node)
+                    } else {
+                        None
+                    }
+                })
+                .next()
+        } else {
+            TreeTraverser::new_with_root(self, label_node_id)
+                .filter_map(|child_id| {
+                    let node = self.get_node(child_id)?;
+                    let element_data = node.element_data()?;
+                    if element_data.name.local == local_name!("input") {
+                        Some(node)
+                    } else {
+                        None
+                    }
+                })
+                .next()
+        }
+    }
+
+    pub fn toggle_checkbox(el: &mut ElementData) -> bool {
+        let Some(is_checked) = el.checkbox_input_checked_mut() else {
+            return false;
+        };
+        *is_checked = !*is_checked;
+
+        *is_checked
+    }
+
+    pub fn toggle_radio(&mut self, radio_set_name: String, target_radio_id: usize) {
+        for i in 0..self.nodes.len() {
+            let node = &mut self.nodes[i];
+            if let Some(node_data) = node.data.element_mut() {
+                if node_data.attr(local_name!("name")) == Some(&radio_set_name) {
+                    let was_clicked = i == target_radio_id;
+                    let Some(is_checked) = node_data.checkbox_input_checked_mut() else {
+                        continue;
+                    };
+                    *is_checked = was_clicked;
+                }
+            }
+        }
+    }
+
     /// Set the text content of a node
     /// For text nodes, replaces the text content
     /// For element nodes, removes all children and creates a single text node child
@@ -875,6 +951,29 @@ impl Dom {
         true
     }
 
+    pub fn clear_hover(&mut self) -> bool {
+        let Some(hover_node_id) = self.hover_node_id else {
+            return false;
+        };
+
+        let old_node_path = self.maybe_node_layout_ancestors(Some(hover_node_id));
+        for &id in old_node_path.iter() {
+            self.snapshot_and(id, |node| node.unhover());
+        }
+
+        self.hover_node_id = None;
+        self.hover_node_is_text = false;
+
+        // Update the cursor
+        let cursor = self.get_cursor().unwrap_or_default();
+        self.shell_provider.set_cursor(cursor);
+
+        // Request redraw
+        self.shell_provider.request_redraw();
+
+        true
+    }
+
     pub fn get_hover_node_id(&self) -> Option<usize> {
         self.hover_node_id
     }
@@ -941,6 +1040,149 @@ impl Dom {
         Some(CursorIcon::Default)
     }
 
+    pub fn scroll_node_by<F: FnMut(crate::events::DomEvent)>(
+        &mut self,
+        node_id: usize,
+        x: f64,
+        y: f64,
+        dispatch_event: F,
+    ) {
+        self.scroll_node_by_has_changed(node_id, x, y, dispatch_event);
+    }
+
+    pub fn scroll_node_by_has_changed<F: FnMut(crate::events::DomEvent)>(
+        &mut self,
+        node_id: usize,
+        x: f64,
+        y: f64,
+        mut dispatch_event: F,
+    ) -> bool {
+        let Some(node) = self.nodes.get_mut(node_id) else {
+            return false;
+        };
+
+        let is_html_or_body = node.data.element().is_some_and(|e| {
+            let tag = &e.name.local;
+            tag == "html" || tag == "body"
+        });
+
+        let (can_x_scroll, can_y_scroll) = node
+            .primary_styles()
+            .map(|styles| {
+                (
+                    matches!(styles.clone_overflow_x(), Overflow::Scroll | Overflow::Auto),
+                    matches!(styles.clone_overflow_y(), Overflow::Scroll | Overflow::Auto)
+                        || (styles.clone_overflow_y() == Overflow::Visible && is_html_or_body),
+                )
+            })
+            .unwrap_or((false, false));
+
+        let initial = node.scroll_offset;
+        let new_x = node.scroll_offset.x - x;
+        let new_y = node.scroll_offset.y - y;
+
+        let mut bubble_x = 0.0;
+        let mut bubble_y = 0.0;
+
+        let scroll_width = node.final_layout.scroll_width() as f64;
+        let scroll_height = node.final_layout.scroll_height() as f64;
+
+        // Todo subdoc
+
+        if !can_x_scroll {
+            bubble_x = x
+        } else if new_x < 0.0 {
+            bubble_x = -new_x;
+            node.scroll_offset.x = 0.0;
+        } else if new_x > scroll_width {
+            bubble_x = scroll_width - new_x;
+            node.scroll_offset.x = scroll_width;
+        } else {
+            node.scroll_offset.x = new_x;
+        }
+
+        if !can_y_scroll {
+            bubble_y = y
+        } else if new_y < 0.0 {
+            bubble_y = -new_y;
+            node.scroll_offset.y = 0.0;
+        } else if new_y > scroll_height {
+            bubble_y = scroll_height - new_y;
+            node.scroll_offset.y = scroll_height;
+        } else {
+            node.scroll_offset.y = new_y;
+        }
+
+        let has_changed = node.scroll_offset != initial;
+
+        if has_changed {
+            let layout = node.final_layout;
+            let event = BlitzScrollEvent {
+                scroll_top: node.scroll_offset.y,
+                scroll_left: node.scroll_offset.x,
+                scroll_width: layout.scroll_width() as i32,
+                scroll_height: layout.scroll_height() as i32,
+                client_width: layout.size.width as i32,
+                client_height: layout.size.height as i32,
+            };
+
+            dispatch_event(crate::events::DomEvent::new(node_id, DomEventData::Scroll(event)));
+        }
+
+        if bubble_x != 0.0 || bubble_y != 0.0 {
+            if let Some(parent) = node.parent {
+                return self.scroll_node_by_has_changed(parent, bubble_x, bubble_y, dispatch_event)
+                    | has_changed;
+            } else {
+                return self.scroll_viewport_by_has_changed(bubble_x, bubble_y) | has_changed;
+            }
+        }
+
+        has_changed
+    }
+
+    pub fn scroll_viewport_by(&mut self, x: f64, y: f64) {
+        self.scroll_viewport_by_has_changed(x, y);
+    }
+
+    /// Scroll the viewport by the given values
+    pub fn scroll_viewport_by_has_changed(&mut self, x: f64, y: f64) -> bool {
+        let content_size = self.root_element().final_layout.size;
+        let new_scroll = (self.viewport_scroll.x - x, self.viewport_scroll.y - y);
+        let window_width = self.viewport.window_size.0 as f64 / self.viewport.scale() as f64;
+        let window_height = self.viewport.window_size.1 as f64 / self.viewport.scale() as f64;
+
+        let (initial_x, inital_y) = (self.viewport_scroll.x, self.viewport_scroll.y);
+        self.viewport_scroll.x = f64::max(
+            0.0,
+            f64::min(new_scroll.0, content_size.width as f64 - window_width),
+        );
+        self.viewport_scroll.y = f64::max(
+            0.0,
+            f64::min(new_scroll.1, content_size.height as f64 - window_height),
+        );
+
+        let result = self.viewport_scroll.x != initial_x || self.viewport_scroll.y != inital_y;
+        if result {
+            let _ = self.shell_provider.sender.send(ShellProviderMessage::ViewportScroll((self.viewport_scroll.x, self.viewport_scroll.y)));
+        }
+        result
+    }
+
+    pub fn scroll_by(
+        &mut self,
+        anchor_node_id: Option<usize>,
+        scroll_x: f64,
+        scroll_y: f64,
+        dispatch_event: &mut dyn FnMut(crate::events::DomEvent),
+    ) -> bool {
+        if let Some(anchor_node_id) = anchor_node_id {
+            self.scroll_node_by_has_changed(anchor_node_id, scroll_x, scroll_y, dispatch_event)
+        } else {
+            self.scroll_viewport_by_has_changed(scroll_x, scroll_y)
+        }
+    }
+
     pub fn hit(&self, x: f32, y: f32) -> Option<HitResult> {
         if TDocument::as_node(&&self.nodes[0])
             .first_element_child()
@@ -951,6 +1193,341 @@ impl Dom {
         }
 
         self.root_element().hit(x, y)
+    }
+
+    pub fn try_root_element(&self) -> Option<&DomNode> {
+        TDocument::as_node(&self.root_node()).first_element_child()
+    }
+
+    pub fn get_focused_node_id(&self) -> Option<usize> {
+        self.focus_node_id
+            .or(self.try_root_element().map(|el| el.id))
+    }
+
+    pub fn focus_next_node(&mut self) -> Option<usize> {
+        let focussed_node_id = self.get_focused_node_id()?;
+        let id = self.next_node(&self.nodes[focussed_node_id], |node| node.is_focusable())?;
+        self.set_focus_to(id);
+        Some(id)
+    }
+
+    /// Clear the focussed node
+    pub fn clear_focus(&mut self) {
+        if let Some(id) = self.focus_node_id {
+            let shell_provider = self.shell_provider.clone();
+            self.snapshot_and(id, |node| node.blur(shell_provider));
+            self.focus_node_id = None;
+        }
+    }
+
+    pub fn set_mousedown_node_id(&mut self, node_id: Option<usize>) {
+        self.mousedown_node_id = node_id;
+    }
+    pub fn set_focus_to(&mut self, focus_node_id: usize) -> bool {
+        if Some(focus_node_id) == self.focus_node_id {
+            return false;
+        }
+
+        let shell_provider = self.shell_provider.clone();
+
+        // Remove focus from the old node
+        if let Some(id) = self.focus_node_id {
+            self.snapshot_and(id, |node| node.blur(shell_provider.clone()));
+        }
+
+        // Focus the new node
+        self.snapshot_and(focus_node_id, |node| node.focus(shell_provider));
+
+        self.focus_node_id = Some(focus_node_id);
+
+        true
+    }
+
+    pub fn active_node(&mut self) -> bool {
+        let Some(hover_node_id) = self.get_hover_node_id() else {
+            return false;
+        };
+
+        if let Some(active_node_id) = self.active_node_id {
+            if active_node_id == hover_node_id {
+                return true;
+            }
+            self.unactive_node();
+        }
+
+        let active_node_id = Some(hover_node_id);
+
+        let node_path = self.maybe_node_layout_ancestors(active_node_id);
+        for &id in node_path.iter() {
+            self.snapshot_and(id, |node| node.active());
+        }
+
+        self.active_node_id = active_node_id;
+
+        true
+    }
+
+    pub fn unactive_node(&mut self) -> bool {
+        let Some(active_node_id) = self.active_node_id.take() else {
+            return false;
+        };
+
+        let node_path = self.maybe_node_layout_ancestors(Some(active_node_id));
+        for &id in node_path.iter() {
+            self.snapshot_and(id, |node| node.unactive());
+        }
+
+        true
+    }
+
+    pub fn find_text_position(&self, x: f32, y: f32) -> Option<(usize, usize)> {
+        let hit = self.hit(x, y)?;
+        let hit_node = self.get_node(hit.node_id)?;
+        let inline_root = hit_node.inline_root_ancestor()?;
+        let byte_offset = inline_root.text_offset_at_point(hit.x, hit.y)?;
+        Some((inline_root.id, byte_offset))
+    }
+
+    pub fn set_text_selection(
+        &mut self,
+        anchor_node: usize,
+        anchor_offset: usize,
+        focus_node: usize,
+        focus_offset: usize,
+    ) {
+        self.text_selection =
+            TextSelection::new(anchor_node, anchor_offset, focus_node, focus_offset);
+
+        // For anonymous blocks, switch to storing parent+sibling_index (stable reference)
+        if let (Some(parent), Some(idx)) = self.anonymous_block_location(anchor_node) {
+            self.text_selection
+                .anchor
+                .set_anonymous(parent, idx, anchor_offset);
+        }
+        if let (Some(parent), Some(idx)) = self.anonymous_block_location(focus_node) {
+            self.text_selection
+                .focus
+                .set_anonymous(parent, idx, focus_offset);
+        }
+    }
+
+    fn anonymous_block_location(&self, node_id: usize) -> (Option<usize>, Option<usize>) {
+        let Some(node) = self.get_node(node_id) else {
+            return (None, None);
+        };
+
+        if !node.is_anonymous() {
+            return (None, None);
+        }
+
+        let Some(parent_id) = node.parent else {
+            return (None, None);
+        };
+
+        let Some(parent) = self.get_node(parent_id) else {
+            return (Some(parent_id), None);
+        };
+
+        let layout_children = parent.layout_children.borrow();
+        let Some(children) = layout_children.as_ref() else {
+            return (Some(parent_id), None);
+        };
+
+        // Find the index of this anonymous block among siblings
+        let mut anon_index = 0;
+        for &child_id in children.iter() {
+            if child_id == node_id {
+                return (Some(parent_id), Some(anon_index));
+            }
+            if self.get_node(child_id).is_some_and(|n| n.is_anonymous()) {
+                anon_index += 1;
+            }
+        }
+
+        (Some(parent_id), None)
+    }
+
+    pub fn clear_text_selection(&mut self) {
+        self.text_selection.clear();
+    }
+
+    /// Update the selection focus point (used during mouse drag to extend selection).
+    pub fn update_selection_focus(&mut self, focus_node: usize, focus_offset: usize) {
+        // For anonymous blocks, store parent+sibling_index; otherwise store node directly
+        if let (Some(parent), Some(idx)) = self.anonymous_block_location(focus_node) {
+            self.text_selection
+                .focus
+                .set_anonymous(parent, idx, focus_offset);
+        } else {
+            self.text_selection.set_focus(focus_node, focus_offset);
+        }
+    }
+
+    /// Extend text selection to the given point. Returns true if selection was updated.
+    /// This is a convenience method that combines find_text_position and update_selection_focus.
+    pub fn extend_text_selection_to_point(&mut self, x: f32, y: f32) -> bool {
+        if !self.text_selection.anchor.is_some() {
+            return false;
+        }
+
+        if let Some((node, offset)) = self.find_text_position(x, y) {
+            self.update_selection_focus(node, offset);
+            self.shell_provider.request_redraw();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Find the Nth anonymous block under a parent.
+    fn find_anonymous_block_by_index(
+        &self,
+        parent_id: usize,
+        target_index: usize,
+    ) -> Option<usize> {
+        let parent = self.get_node(parent_id)?;
+        let layout_children = parent.layout_children.borrow();
+        let children = layout_children.as_ref()?;
+
+        children
+            .iter()
+            .filter(|&&child_id| self.get_node(child_id).is_some_and(|n| n.is_anonymous()))
+            .nth(target_index)
+            .copied()
+    }
+
+    /// Check if there is an active (non-empty) text selection
+    pub fn has_text_selection(&self) -> bool {
+        self.text_selection.is_active()
+    }
+
+    /// Get the selected text content, supporting selection across multiple inline roots.
+    pub fn get_selected_text(&self) -> Option<String> {
+        let ranges = self.get_text_selection_ranges();
+        if ranges.is_empty() {
+            return None;
+        }
+
+        let mut result = String::new();
+        for (node_id, start, end) in &ranges {
+            let node = self.get_node(*node_id)?;
+            let element_data = node.element_data()?;
+            let inline_layout = element_data.inline_layout_data.as_ref()?;
+
+            if *end > inline_layout.text.len() {
+                continue;
+            }
+
+            if !result.is_empty() {
+                result.push(' ');
+            }
+            result.push_str(&inline_layout.text[*start..*end]);
+        }
+
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
+    }
+
+    /// Get all selection ranges as Vec<(node_id, start_offset, end_offset)>.
+    /// Returns empty vec if no selection.
+    pub fn get_text_selection_ranges(&self) -> Vec<(usize, usize, usize)> {
+        let lookup = |parent_id, idx| self.find_anonymous_block_by_index(parent_id, idx);
+
+        let anchor_node = match self.text_selection.anchor.resolve_node_id(lookup) {
+            Some(id) => id,
+            None => return Vec::new(),
+        };
+        let focus_node = match self.text_selection.focus.resolve_node_id(lookup) {
+            Some(id) => id,
+            None => return Vec::new(),
+        };
+
+        // Single node selection
+        if anchor_node == focus_node {
+            let start = self
+                .text_selection
+                .anchor
+                .offset
+                .min(self.text_selection.focus.offset);
+            let end = self
+                .text_selection
+                .anchor
+                .offset
+                .max(self.text_selection.focus.offset);
+
+            if start == end {
+                return Vec::new();
+            }
+            return vec![(anchor_node, start, end)];
+        }
+
+        // Multi-node selection: collect all inline roots between anchor and focus
+        let inline_roots = self.collect_inline_roots_in_range(anchor_node, focus_node);
+        if inline_roots.is_empty() {
+            return Vec::new();
+        }
+
+        // Determine document order using the collected inline_roots order
+        // (inline_roots is already in document order from first to last)
+        let first_in_roots = inline_roots[0];
+
+        let (first_node, first_offset, last_node, last_offset) =
+            if first_in_roots == anchor_node || (first_in_roots != focus_node) {
+                // anchor is first (or neither endpoint is in roots, which shouldn't happen)
+                (
+                    anchor_node,
+                    self.text_selection.anchor.offset,
+                    focus_node,
+                    self.text_selection.focus.offset,
+                )
+            } else {
+                // focus is first
+                (
+                    focus_node,
+                    self.text_selection.focus.offset,
+                    anchor_node,
+                    self.text_selection.anchor.offset,
+                )
+            };
+
+        let mut ranges = Vec::with_capacity(inline_roots.len());
+
+        for &node_id in &inline_roots {
+            let Some(node) = self.get_node(node_id) else {
+                continue;
+            };
+            let Some(element_data) = node.element_data() else {
+                continue;
+            };
+            let Some(inline_layout) = element_data.inline_layout_data.as_ref() else {
+                continue;
+            };
+
+            let text_len = inline_layout.text.len();
+
+            if node_id == first_node && node_id == last_node {
+                let start = first_offset.min(last_offset);
+                let end = first_offset.max(last_offset);
+                if start < end && end <= text_len {
+                    ranges.push((node_id, start, end));
+                }
+            } else if node_id == first_node {
+                if first_offset < text_len {
+                    ranges.push((node_id, first_offset, text_len));
+                }
+            } else if node_id == last_node {
+                if last_offset > 0 && last_offset <= text_len {
+                    ranges.push((node_id, 0, last_offset));
+                }
+            } else if text_len > 0 {
+                ranges.push((node_id, 0, text_len));
+            }
+        }
+
+        ranges
     }
 
     pub fn node_has_parent(&self, node_id: usize) -> bool {
@@ -1161,7 +1738,7 @@ impl Dom {
                     compute_canvas = true;
                 }
                 SpecialElementData::TableRoot(_) => {}
-                SpecialElementData::TextInput => {}
+                SpecialElementData::TextInput(_) => {}
                 SpecialElementData::CheckboxInput(_) => {}
                 SpecialElementData::FileInput(_) => {}
                 SpecialElementData::None => {}

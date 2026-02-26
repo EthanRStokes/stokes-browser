@@ -3,15 +3,13 @@
 
 //! Types to represent UI and DOM events
 
-use std::str::FromStr;
-use bincode_next::{Decode, Encode};
-use bincode_next::enc::Encoder;
-use bincode_next::error::EncodeError;
 use bincode_next::serde::Compat;
+use bincode_next::{Decode, Encode};
 use bitflags::bitflags;
 use keyboard_types::{Code, Key, Location, Modifiers};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
+use std::str::FromStr;
 
 #[derive(Default)]
 pub struct EventState {
@@ -194,7 +192,7 @@ impl FromStr for DomEventKind {
     }
 }
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone)]
 #[repr(u8)]
 pub enum DomEventData {
     PointerMove(BlitzPointerEvent),
@@ -631,7 +629,7 @@ pub struct BlitzKeyEvent {
     pub is_auto_repeating: bool,
     pub is_composing: bool,
     pub state: KeyState,
-    //pub text: Option<SmolStr>,
+    pub text: Compat<Option<SmolStr>>,
 }
 
 #[derive(Clone, Debug, Encode, Decode)]

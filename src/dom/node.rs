@@ -10,7 +10,7 @@ use html5ever::tendril::StrTendril;
 use html5ever::{LocalName, QualName};
 use html_escape::encode_quoted_attribute_to_string;
 use markup5ever::local_name;
-use parley::{Cluster, ContentWidths};
+use parley::{BreakReason, Cluster, ClusterSide, ContentWidths};
 use peniko::Blob;
 use selectors::matching::{ElementSelectorFlags, QuirksMode};
 use skia_safe::wrapper::PointerWrapper;
@@ -22,6 +22,9 @@ use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fmt, ptr};
+use bincode_next::serde::Compat;
+use blitz_traits::shell::ShellProvider;
+use keyboard_types::Modifiers;
 use style::data::ElementData as StyleElementData;
 use style::data::ElementData as StyloElementData;
 use style::invalidation::element::restyle_hints::RestyleHint;
@@ -40,6 +43,7 @@ use stylo_atoms::Atom;
 use stylo_dom::ElementState;
 use taffy::{Cache, Layout, Point, Style};
 use url::Url;
+use crate::events::{BlitzPointerEvent, BlitzPointerId, DomEventData, PointerCoords};
 
 /// Callback type for layout invalidation
 pub type LayoutInvalidationCallback = Box<dyn Fn()>;
@@ -109,7 +113,7 @@ pub enum NodeKind {
 }
 
 /// Represents the type of DOM node
-#[derive(Debug, Clone)]
+//#[derive(Debug, Clone)]
 pub enum NodeData {
     /// The `Document` itself - the root node.
     Document,
@@ -202,7 +206,7 @@ impl std::fmt::Debug for TextLayout {
 }
 
 /// Data specific to element nodes
-#[derive(Debug, Clone)]
+//#[derive(Clone)]
 pub struct ElementData {
     /// Tag name of the element (e.g., "div", "span", "a")
     pub name: QualName,
@@ -212,6 +216,8 @@ pub struct ElementData {
 
     /// Element attributes (e.g., id, class, href)
     pub attributes: AttributeMap,
+
+    pub is_focusable: bool,
 
     pub style_attribute: Option<ServoArc<Locked<PropertyDeclarationBlock>>>,
 
@@ -227,9 +233,14 @@ pub struct ElementData {
     pub template_contents: Option<usize>,
 }
 
+#[derive(Clone)]
+pub struct TextInputData {
+    pub editor: Box<parley::PlainEditor<TextBrush>>,
+    pub is_multiline: bool,
+}
+
 /// Heterogeneous data that depends on the element's type.
 #[derive(Clone, Default)]
-#[derive(Debug)]
 pub enum SpecialElementData {
     Stylesheet(DocumentStyleSheet),
     /// An \<img\> element's image data
@@ -238,7 +249,7 @@ pub enum SpecialElementData {
     Canvas(CanvasData),
     /// Pre-computed table layout data
     TableRoot(std::sync::Arc<TableContext>),
-    TextInput,
+    TextInput(TextInputData),
     /// Checkbox checked state
     CheckboxInput(bool),
     FileInput(FileData),
@@ -253,6 +264,12 @@ impl SpecialElementData {
     }
 }
 
+macro_rules! local_names {
+    ($($name:tt),+) => {
+        [$(local_name!($name),)+]
+    };
+}
+
 impl ElementData {
     pub fn new(name: QualName, attrs: AttributeMap) -> Self {
         let id_attr_atom = attrs
@@ -261,16 +278,49 @@ impl ElementData {
             .map(|attr| attr.value.as_ref())
             .map(|value: &str| Atom::from(value));
 
-        Self {
+        let mut data = Self {
             name,
             id: id_attr_atom,
             attributes: attrs,
+            is_focusable: false,
             style_attribute: Default::default(),
             special_data: SpecialElementData::None,
             inline_layout_data: None,
             list_item_data: None,
             template_contents: None,
             background_images: Vec::new(),
+        };
+        data.flush_is_focusable();
+        data
+    }
+
+    pub fn flush_is_focusable(&mut self) {
+        let disabled: bool = self.attr_parsed(local_name!("disabled")).unwrap_or(false);
+        let tabindex: Option<i32> = self.attr_parsed(local_name!("tabindex"));
+
+        self.is_focusable = !disabled && match tabindex {
+            Some(index) => index >= 0,
+            None => {
+                // Some focusable HTML elements have a default tabindex value of 0 set under the hood by the user agent.
+                // These elements are:
+                //   - <a> or <area> with href attribute
+                //   - <button>, <frame>, <iframe>, <input>, <object>, <select>, <textarea>, and SVG <a> element
+                //   - <summary> element that provides summary for a <details> element.
+
+                if [local_name!("a"), local_name!("area")].contains(&self.name.local) {
+                    self.attr(local_name!("href")).is_some()
+                } else {
+                    const DEFAULT_FOCUSSABLE_ELEMENTS: [LocalName; 6] = [
+                        local_name!("button"),
+                        local_name!("input"),
+                        local_name!("select"),
+                        local_name!("textarea"),
+                        local_name!("frame"),
+                        local_name!("iframe"),
+                    ];
+                    DEFAULT_FOCUSSABLE_ELEMENTS.contains(&self.name.local)
+                }
+            }
         }
     }
 
@@ -317,6 +367,10 @@ impl ElementData {
         self.attributes.iter().any(|attr| attr_name == attr.name.local)
     }
 
+    pub fn can_be_disabled(&self) -> bool {
+        local_names!("button", "input", "select", "textarea").contains(&self.name.local)
+    }
+
     pub fn image_data(&self) -> Option<&ImageData> {
         match &self.special_data {
             SpecialElementData::Image(data) => Some(&**data),
@@ -359,8 +413,48 @@ impl ElementData {
         }
     }
 
+    pub fn text_input_data(&self) -> Option<&TextInputData> {
+        match &self.special_data {
+            SpecialElementData::TextInput(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    pub fn text_input_data_mut(&mut self) -> Option<&mut TextInputData> {
+        match self.special_data {
+            SpecialElementData::TextInput(ref mut data) => Some(data),
+            _ => None,
+        }
+    }
+
+    pub fn checkbox_input_checked(&self) -> Option<bool> {
+        match self.special_data {
+            SpecialElementData::CheckboxInput(checked) => Some(checked),
+            _ => None,
+        }
+    }
+
+    pub fn checkbox_input_checked_mut(&mut self) -> Option<&mut bool> {
+        match self.special_data {
+            SpecialElementData::CheckboxInput(ref mut checked) => Some(checked),
+            _ => None,
+        }
+    }
+
     pub fn take_inline_layout(&mut self) -> Option<Box<TextLayout>> {
         std::mem::take(&mut self.inline_layout_data)
+    }
+
+    pub fn is_submit_button(&self) -> bool {
+        if self.name.local != local_name!("button") {
+            return false;
+        }
+        let type_attr = self.attr(local_name!("type"));
+        let is_submit = type_attr == Some("submit");
+        let is_auto_submit = type_attr.is_none()
+            && self.attr(LocalName::from("command")).is_none()
+            && self.attr(LocalName::from("commandfor")).is_none();
+        is_submit || is_auto_submit
     }
 }
 
@@ -880,6 +974,190 @@ impl DomNode {
             NodeData::Text(text) => text.content.chars().all(|c| c.is_ascii_whitespace()),
             _ => false,
         }
+    }
+
+    /// Find the inline root ancestor of this node (or self if this is an inline root).
+    /// Returns None if no inline root ancestor exists.
+    pub fn inline_root_ancestor(&self) -> Option<&DomNode> {
+        let mut node = self;
+        loop {
+            if node.flags.is_inline_root() {
+                return Some(node);
+            }
+            match node.layout_parent.get() {
+                Some(id) => node = self.get_node(id),
+                None => return None,
+            }
+        }
+    }
+
+    /// Get the text byte offset at a given point, using coordinates already transformed
+    /// to be relative to this inline root's content box.
+    /// Returns Some(byte_offset) if the point hits text, None otherwise.
+    pub fn text_offset_at_point(&self, x: f32, y: f32) -> Option<usize> {
+        if !self.flags.is_inline_root() {
+            return None;
+        }
+
+        let element_data = self.element_data()?;
+        let inline_layout = element_data.inline_layout_data.as_ref()?;
+        let layout = &inline_layout.layout;
+        let scale = layout.scale();
+
+        // Use Parley's cluster hit testing (from_point is more forgiving than from_point_exact)
+        let (cluster, side) = Cluster::from_point(layout, x * scale, y * scale)?;
+
+        // Determine byte offset based on which side of the cluster was clicked
+        // For LTR text: left side = start of cluster, right side = end of cluster
+        // For RTL text: left side = end of cluster, right side = start of cluster
+        // Also, explicit line breaks should always use start to avoid cursor appearing on next line
+        let is_leading = side == ClusterSide::Left;
+        let offset = if cluster.is_rtl() {
+            if is_leading {
+                cluster.text_range().end
+            } else {
+                cluster.text_range().start
+            }
+        } else {
+            // LTR text
+            if is_leading || cluster.is_line_break() == Some(BreakReason::Explicit) {
+                cluster.text_range().start
+            } else {
+                cluster.text_range().end
+            }
+        };
+
+        Some(offset)
+    }
+
+    pub fn absolute_position(&self, x: f32, y: f32) -> Point<f32> {
+        let x = x + self.final_layout.location.x - self.scroll_offset.x as f32;
+        let y = y + self.final_layout.location.y - self.scroll_offset.y as f32;
+
+        // Recurse up the layout hierarchy
+        self.layout_parent
+            .get()
+            .map(|i| self.get_node(i).absolute_position(x, y))
+            .unwrap_or(Point { x, y })
+    }
+
+    /// Creates a synthetic click event
+    pub fn synthetic_click_event(&self, mods: Modifiers) -> DomEventData {
+        DomEventData::Click(self.synthetic_click_event_data(mods))
+    }
+
+    pub fn synthetic_click_event_data(&self, mods: Modifiers) -> BlitzPointerEvent {
+        let absolute_position = self.absolute_position(0.0, 0.0);
+        let x = absolute_position.x + (self.final_layout.size.width / 2.0);
+        let y = absolute_position.y + (self.final_layout.size.height / 2.0);
+
+        BlitzPointerEvent {
+            id: BlitzPointerId::Mouse,
+            is_primary: true,
+            coords: PointerCoords {
+                page_x: x,
+                page_y: y,
+
+                // TODO: should these be different?
+                screen_x: x,
+                screen_y: y,
+                client_x: x,
+                client_y: y,
+            },
+            mods: Compat(mods),
+            button: Default::default(),
+            buttons: Default::default(),
+            details: Default::default(),
+        }
+    }
+
+    pub fn focus(&mut self, shell_provider: std::sync::Arc<dyn ShellProvider>) {
+        self.element_state
+            .insert(ElementState::FOCUS | ElementState::FOCUSRING);
+        self.set_restyle_hint(RestyleHint::restyle_subtree());
+
+        // If focussing a text input, enable IME and set IME area
+        if self
+            .element_data()
+            .and_then(|elem| elem.text_input_data())
+            .is_some()
+        {
+            shell_provider.set_ime_enabled(true);
+            let mut pos = self.absolute_position(0.0, 0.0);
+            pos.x += self.final_layout.content_box_x();
+            pos.y += self.final_layout.content_box_y();
+            let width = self.final_layout.content_box_width();
+            let height = self.final_layout.content_box_height();
+            shell_provider.set_ime_cursor_area(pos.x, pos.y, width, height);
+        }
+    }
+
+    pub fn blur(&mut self, shell_provider: std::sync::Arc<dyn ShellProvider>) {
+        self.element_state
+            .remove(ElementState::FOCUS | ElementState::FOCUSRING);
+        self.set_restyle_hint(RestyleHint::restyle_subtree());
+
+        // If blurring a text input, disable IME
+        if self
+            .element_data()
+            .and_then(|elem| elem.text_input_data())
+            .is_some()
+        {
+            shell_provider.set_ime_enabled(false);
+        }
+    }
+
+    pub fn is_focusable(&self) -> bool {
+        self.data
+            .element()
+            .map(|el| el.is_focusable)
+            .unwrap_or(false)
+    }
+
+    pub fn is_focused(&self) -> bool {
+        self.element_state.contains(ElementState::FOCUS)
+    }
+
+    pub fn active(&mut self) {
+        self.element_state.insert(ElementState::ACTIVE);
+        self.set_restyle_hint(RestyleHint::restyle_subtree());
+    }
+
+    pub fn unactive(&mut self) {
+        self.element_state.remove(ElementState::ACTIVE);
+        self.set_restyle_hint(RestyleHint::restyle_subtree());
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.element_state.contains(ElementState::ACTIVE)
+    }
+
+    // Marks the node as disabled if it can be.
+    // It does not disable any children which should be disabled as well (relevant for the `select` element).
+    pub fn disable(&mut self) {
+        if self
+            .data
+            .element()
+            .is_some_and(|data| data.can_be_disabled())
+        {
+            self.element_state.insert(ElementState::DISABLED);
+            self.element_state.remove(ElementState::ENABLED);
+        }
+        self.set_restyle_hint(RestyleHint::restyle_subtree());
+    }
+
+    // Marks the node as enabled if it can be.
+    // It does not enable any children which should be enabled as well (relevant for the `select` element).
+    pub fn enable(&mut self) {
+        if self
+            .data
+            .element()
+            .is_some_and(|data| data.can_be_disabled())
+        {
+            self.element_state.insert(ElementState::ENABLED);
+            self.element_state.remove(ElementState::DISABLED);
+        }
+        self.set_restyle_hint(RestyleHint::restyle_subtree());
     }
 
     pub fn primary_styles(&self) -> Option<AtomicRef<'_, StyloComputedValues>> {

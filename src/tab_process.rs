@@ -3,7 +3,7 @@ use crate::engine::{Engine, EngineConfig, ENGINE_REF, USER_AGENT_REF};
 use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage};
 use crate::js;
 use crate::renderer::painter::ScenePainter;
-use blitz_traits::shell::Viewport;
+use blitz_traits::shell::{ShellProvider, Viewport};
 use shared_memory::{Shmem, ShmemConf};
 use skia_safe::{AlphaType, ColorType, ImageInfo, Surface};
 use std::cell::RefCell;
@@ -14,7 +14,10 @@ use std::sync::Arc;
 use std::time::Instant;
 use crate::shell_provider::{StokesShellProvider, ShellProviderMessage};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use winit::dpi::{LogicalPosition, PhysicalPosition};
 use crate::dom::Dom;
+use crate::events::{PointerCoords, UiEvent};
+use crate::ui::BrowserUI;
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
@@ -182,7 +185,11 @@ impl TabProcess {
         }
     }
 
-    fn dom(&mut self) -> Option<&mut Dom> {
+    fn dom(&self) -> Option<&Dom> {
+        self.engine.dom.as_ref()
+    }
+
+    fn dom_mut(&mut self) -> Option<&mut Dom> {
         self.engine.dom.as_mut()
     }
 
@@ -335,13 +342,13 @@ impl TabProcess {
                 }
                 self.render_frame()?;
             }
-            ParentToTabMessage::MouseMove { x, y } => {
+            //ParentToTabMessage::MouseMove { x, y } => {
                 // Update cursor if hovering over interactive elements
-                self.engine.handle_mouse_move(x / self.engine.viewport.hidpi_scale, y / self.engine.viewport.hidpi_scale);
-            }
+                //self.engine.handle_mouse_move(x / self.engine.viewport.hidpi_scale, y / self.engine.viewport.hidpi_scale);
+            //}
             ParentToTabMessage::UI(event) => {
-                if let Some(dom) = self.dom() {
-                    //dom.handle_ui_event(event);
+                if let Some(dom) = self.dom_mut() {
+                    dom.handle_ui_event(event);
                 }
             }
             ParentToTabMessage::KeyboardInput { key_type, modifiers } => {
@@ -351,20 +358,6 @@ impl TabProcess {
                 match key_type {
                     KeyInputType::Scroll { direction, amount } => {
                         // Handle keyboard scrolling
-                        match direction {
-                            ScrollDirection::Up => {
-                                self.engine.scroll_vertical(-amount);
-                            }
-                            ScrollDirection::Down => {
-                                self.engine.scroll_vertical(amount);
-                            }
-                            ScrollDirection::Left => {
-                                self.engine.scroll_horizontal(-amount);
-                            }
-                            ScrollDirection::Right => {
-                                self.engine.scroll_horizontal(amount);
-                            }
-                        }
                     }
                     KeyInputType::Named(key_name) => {
                         // Handle named keys

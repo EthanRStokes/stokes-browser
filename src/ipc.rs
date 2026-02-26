@@ -2,11 +2,11 @@
 use bincode_next::{Decode, Encode};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use crate::events::UiEvent;
+use crate::events::{MouseEventButtons, UiEvent};
 
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
-
+use bincode_next::serde::Compat;
 #[cfg(target_os = "windows")]
 use uds_windows::{UnixListener, UnixStream};
 
@@ -28,8 +28,6 @@ pub enum ParentToTabMessage {
     /// Click at position
     Click { x: f32, y: f32, modifiers: KeyModifiers },
     UI(UiEvent),
-    /// Mouse move
-    MouseMove { x: f32, y: f32 },
     /// Keyboard input (character or named key)
     KeyboardInput {
         key_type: KeyInputType,
@@ -94,6 +92,8 @@ pub enum TabToParentMessage {
     Alert(String),
     /// Shell provider message (for shell operations like cursor changes, redraws, etc.)
     ShellProvider(crate::shell_provider::ShellProviderMessage),
+    /// Update buttons
+    UpdateButtons(Compat<MouseEventButtons>)
 }
 
 #[derive(Debug, Clone, Encode, Decode)]

@@ -7,14 +7,17 @@ use std::num::NonZeroU32;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+use bincode_next::serde::Compat;
 use cursor_icon::CursorIcon;
+use taffy::Point;
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalPosition, LogicalSize};
+use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
 use winit_core::cursor::Cursor;
 use winit_core::event::ButtonSource;
+use winit_core::keyboard::{KeyCode, PhysicalKey};
 use winit_core::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
 use crate::ipc::{ParentToTabMessage, TabToParentMessage};
 use crate::renderer::painter::ScenePainter;
@@ -22,6 +25,8 @@ use crate::tab_manager::TabManager;
 use crate::ui::{BrowserUI, TextBrush};
 use crate::window::{create_surface, Env};
 use crate::{input, ipc};
+use crate::convert_events::{button_source_to_blitz, pointer_source_to_blitz, pointer_source_to_blitz_details, winit_ime_to_blitz, winit_key_event_to_blitz, winit_modifiers_to_kbt_modifiers};
+use crate::events::{BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent};
 use crate::shell_provider::ShellProviderMessage;
 
 /// Result of closing a tab
@@ -40,15 +45,17 @@ pub(crate) struct BrowserApp {
     tab_manager: TabManager,
     active_tab_index: usize,
     ui: Option<BrowserUI>,
-    viewport: Option<Arc<RwLock<Viewport>>>,
-    page_viewport: Option<Arc<RwLock<Viewport>>>,
-    cursor_position: (f64, f64),
+    viewport: Option<Viewport>,
+    page_viewport: Option<Viewport>,
+    pointer_position: (f64, f64),
     loading_spinner_angle: f32,
     last_spinner_update: Instant,
     tab_order: Vec<String>,
     font_ctx: FontContext,
     layout_ctx: LayoutContext<TextBrush>,
     startup_url: Option<String>,
+    viewport_scroll: Point<f64>,
+    buttons: MouseEventButtons,
 }
 
 impl BrowserApp {
@@ -63,7 +70,7 @@ impl BrowserApp {
             tab_manager,
             active_tab_index: 0,
             ui: None,
-            cursor_position: (0.0, 0.0),
+            pointer_position: (0.0, 0.0),
             viewport: None,
             page_viewport: None,
             loading_spinner_angle: 0.0,
@@ -72,6 +79,8 @@ impl BrowserApp {
             font_ctx: FontContext::new(),
             layout_ctx: LayoutContext::new(),
             startup_url,
+            viewport_scroll: Point::default(),
+            buttons: MouseEventButtons::None,
         }
     }
 
@@ -92,21 +101,20 @@ impl BrowserApp {
     }
 
     fn set_viewport(&mut self, size: (u32, u32)) {
-        let mut vp = self.viewport.as_ref().unwrap().write().unwrap();
+        let mut vp = self.viewport.as_mut().unwrap();
 
         vp.window_size = size;
-        drop(vp);
 
         self.update_page_viewport();
     }
 
     fn update_page_viewport(&mut self) {
-        let vp = self.viewport.as_ref().unwrap().read().unwrap();
+        let vp = self.viewport.as_ref().unwrap();
         // Calculate the page viewport height in physical pixels by subtracting the chrome height
         // converted to physical pixels using the current hidpi scale.
         let chrome_physical = (BrowserUI::CHROME_HEIGHT as f32 * vp.hidpi_scale).round() as u32;
 
-        let mut pvp = self.page_viewport.as_ref().unwrap().write().unwrap();
+        let pvp = self.page_viewport.as_mut().unwrap();
 
         pvp.window_size = (vp.window_size.0, vp.window_size.1.saturating_sub(chrome_physical));
         pvp.hidpi_scale = vp.hidpi_scale;
@@ -142,12 +150,12 @@ impl BrowserApp {
             ui.set_active_tab(&new_tab_id);
 
             // Send initial configuration
-            let (width, height) = self.page_viewport.as_ref().unwrap().read().unwrap().window_size;
+            let (width, height) = self.page_viewport.as_ref().unwrap().window_size;
             let _ = self.tab_manager.send_to_tab(&new_tab_id, ParentToTabMessage::Resize {
                 width: width as f32,
                 height: height as f32
             });
-            let _ = self.tab_manager.send_to_tab(&new_tab_id, ParentToTabMessage::SetScaleFactor(self.viewport.as_ref().unwrap().read().unwrap().hidpi_scale));
+            let _ = self.tab_manager.send_to_tab(&new_tab_id, ParentToTabMessage::SetScaleFactor(self.viewport.as_ref().unwrap().hidpi_scale));
 
             if let Some(u) = url {
                 // Navigate to the provided URL immediately
@@ -224,25 +232,6 @@ impl BrowserApp {
         self.handle_input_action(&action, event_loop);
 
         // Only forward click to active tab process if UI didn't handle it
-        if action == input::InputAction::None {
-            if let Some(tab_id) = self.active_tab_id().cloned() {
-                // Apply chrome offset to forwarded coordinates so tab sees coordinates relative to its page canvas
-                let chrome_offset = BrowserUI::CHROME_HEIGHT * self.viewport.as_ref().unwrap().read().unwrap().hidpi_scale;
-                let forwarded_y = (y - chrome_offset).max(0.0);
-
-                let key_modifiers = ipc::KeyModifiers {
-                    ctrl: self.modifiers.state().control_key(),
-                    alt: self.modifiers.state().alt_key(),
-                    shift: self.modifiers.state().shift_key(),
-                    meta: self.modifiers.state().meta_key(),
-                };
-                let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Click {
-                    x,
-                    y: forwarded_y,
-                    modifiers: key_modifiers,
-                });
-            }
-        }
     }
 
     fn handle_middle_click(&mut self, x: f32, y: f32, event_loop: &dyn ActiveEventLoop) {
@@ -265,7 +254,7 @@ impl BrowserApp {
         if action == input::InputAction::None {
             if let Some(tab_id) = self.active_tab_id().cloned() {
                 // Apply chrome offset to forwarded coordinates so tab sees coordinates relative to its page canvas
-                let chrome_offset = BrowserUI::CHROME_HEIGHT as f32 * self.viewport.as_ref().unwrap().read().unwrap().hidpi_scale;
+                let chrome_offset = BrowserUI::CHROME_HEIGHT as f32 * self.viewport.as_ref().unwrap().hidpi_scale;
                 let forwarded_y = (y - chrome_offset).max(0.0);
 
                 let key_modifiers = ipc::KeyModifiers {
@@ -431,11 +420,43 @@ impl BrowserApp {
                                     LogicalSize::new(width, height).into(),
                                 ),
                             ));
+                        },
+                        ShellProviderMessage::ViewportScroll((x, y)) => {
+                            self.viewport_scroll = Point { x, y }
                         }
                     }
+                },
+                TabToParentMessage::UpdateButtons(buttons) => {
+                    self.buttons = buttons.0;
                 }
                 _ => {}
             }
+        }
+    }
+
+    pub fn pointer_coords(&self, position: PhysicalPosition<f64>) -> PointerCoords {
+        let scale = self.viewport.as_ref().unwrap().scale_f64();
+        let chrome_offset = BrowserUI::CHROME_HEIGHT;
+        let LogicalPosition::<f32> {
+            x: screen_x,
+            y: mut screen_y,
+        } = position.to_logical(scale);
+        screen_y = screen_y - chrome_offset;
+        let viewport_scroll_offset = self.viewport_scroll;
+
+
+        let client_x = screen_x;
+        let client_y = screen_y;
+        let page_x = client_x + viewport_scroll_offset.x as f32;
+        let page_y = client_y + viewport_scroll_offset.y as f32;
+
+        PointerCoords {
+            screen_x,
+            screen_y,
+            client_x,
+            client_y,
+            page_x,
+            page_y,
         }
     }
 
@@ -487,7 +508,7 @@ impl BrowserApp {
         // Render the active tab's frame from shared memory
         if let Some(image) = frame_to_render {
             // Offset the page content so it renders below the chrome
-            let chrome_offset = BrowserUI::CHROME_HEIGHT as f32 * self.viewport.as_ref().unwrap().read().unwrap().hidpi_scale;
+            let chrome_offset = BrowserUI::CHROME_HEIGHT * self.viewport.as_ref().unwrap().hidpi_scale;
             painter.set_matrix(Affine::translate((0.0, 0.0)));
 
             canvas.draw_image(image, (0.0, chrome_offset), None);
@@ -521,6 +542,10 @@ impl BrowserApp {
             .set_buttons(rfd::MessageButtons::Ok)
             .show();
     }
+
+    fn request_redraw(&self) {
+        self.env.as_ref().unwrap().window.request_redraw();
+    }
 }
 
 impl ApplicationHandler for BrowserApp {
@@ -528,13 +553,13 @@ impl ApplicationHandler for BrowserApp {
         self.env = Some(crate::window::create_window(event_loop));
 
         let env = self.env.as_ref().unwrap();
-        let viewport = Arc::new(RwLock::new(Viewport {
+        let viewport = Viewport {
             color_scheme: Default::default(),
             window_size: env.window.surface_size().into(),
             hidpi_scale: env.window.scale_factor() as f32,
-            zoom: 0.0,
-        }));
-        let page_viewport = Arc::new(RwLock::new(Viewport {
+            zoom: 1.0,
+        };
+        let page_viewport = Viewport {
             color_scheme: Default::default(),
             window_size: (
                 env.window.surface_size().width,
@@ -544,11 +569,11 @@ impl ApplicationHandler for BrowserApp {
                     .round() as u32,
             ),
             hidpi_scale: env.window.scale_factor() as f32,
-            zoom: 0.0,
-        }));
+            zoom: 1.0,
+        };
 
         // Initialize UI
-        let mut ui = BrowserUI::new(&env.gr_context, &viewport.read().unwrap());
+        let mut ui = BrowserUI::new(&env.gr_context, &viewport);
         ui.initialize_renderer();
         self.ui = Some(ui);
         self.viewport = Some(viewport);
@@ -594,9 +619,9 @@ impl ApplicationHandler for BrowserApp {
                 );
                 // Update viewport size
                 self.set_viewport(new_size.into());
-                let (width, height) = self.page_viewport.as_ref().unwrap().read().unwrap().window_size;
+                let (width, height) = self.page_viewport.as_ref().unwrap().window_size;
 
-                self.ui.as_mut().unwrap().update_layout(&*self.viewport.as_ref().unwrap().read().unwrap());
+                self.ui.as_mut().unwrap().update_layout(&*self.viewport.as_ref().unwrap());
 
                 // Notify all tabs of resize
                 for tab_id in &self.tab_order {
@@ -608,12 +633,11 @@ impl ApplicationHandler for BrowserApp {
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let scale_factor = scale_factor as f32;
-                let mut viewport = self.viewport.as_ref().unwrap().write().unwrap();
+                let mut viewport = self.viewport.as_mut().unwrap();
                 let old_scale = viewport.hidpi_scale;
                 viewport.hidpi_scale = scale_factor;
                 self.ui.as_mut().unwrap().update_scale(viewport.hidpi_scale, old_scale);
 
-                drop(viewport);
                 self.update_page_viewport();
 
                 // Notify all tabs of scale factor change
@@ -628,18 +652,18 @@ impl ApplicationHandler for BrowserApp {
                     eprintln!("Render error: {}", e);
                 }
             }
-            WindowEvent::PointerButton { state: ElementState::Pressed, button: ButtonSource::Mouse(MouseButton::Left), .. } => {
+            WindowEvent::PointerButton { state: ElementState::Pressed, button: ButtonSource::Mouse(MouseButton::Left), primary, position, .. } => {
                 let ui = self.ui.as_mut().unwrap();
                 // Update hover state before handling click
                 ui.update_mouse_hover(
-                    self.cursor_position.0 as f32,
-                    self.cursor_position.1 as f32,
+                    self.pointer_position.0 as f32,
+                    self.pointer_position.1 as f32,
                     Instant::now()
                 );
 
                 // Check if we're starting a tab drag (only start drag on tabs)
-                let x = self.cursor_position.0 as f32;
-                let y = self.cursor_position.1 as f32;
+                let x = self.pointer_position.0 as f32;
+                let y = self.pointer_position.1 as f32;
                 let chrome_height = ui.chrome_height();
 
                 // Only try to start drag if we're in the tab area (first row)
@@ -659,11 +683,50 @@ impl ApplicationHandler for BrowserApp {
                     }
                 } else {
                     self.handle_click(x, y, event_loop);
+
+                    let Some(tab_id) = self.active_tab_id().cloned() else {
+                        return;
+                    };
+                    let id = button_source_to_blitz(&ButtonSource::Mouse(MouseButton::Left));
+                    let coords = self.pointer_coords(position);
+                    self.pointer_position = <(f64, f64)>::from(position);
+                    let button = MouseEventButton::Main;
+
+                    self.buttons |= button.into();
+
+                    if id != BlitzPointerId::Mouse {
+                        let event = UiEvent::PointerMove(BlitzPointerEvent {
+                            id,
+                            is_primary: primary,
+                            coords,
+                            button: Default::default(),
+                            buttons: Compat(self.buttons),
+                            mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                            details: PointerDetails::default()
+                        });
+                        let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
+                    }
+
+                    let event = BlitzPointerEvent {
+                        id,
+                        is_primary: primary,
+                        coords,
+                        button,
+                        buttons: Compat(self.buttons),
+                        mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                        // TODO: details for pointer up/down events
+                        details: PointerDetails::default(),
+                    };
+
+                    let event = UiEvent::PointerDown(event);
+
+                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
+                    self.request_redraw();
                 }
             }
-            WindowEvent::PointerButton { state: ElementState::Released, button: ButtonSource::Mouse(MouseButton::Left), .. } => {
-                let x = self.cursor_position.0 as f32;
-                let y = self.cursor_position.1 as f32;
+            WindowEvent::PointerButton { state: ElementState::Released, button: ButtonSource::Mouse(MouseButton::Left), primary, position, .. } => {
+                let x = self.pointer_position.0 as f32;
+                let y = self.pointer_position.1 as f32;
 
                 // Check if we were dragging a tab
                 if self.ui().is_dragging_tab() {
@@ -700,14 +763,92 @@ impl ApplicationHandler for BrowserApp {
 
                 // Update hover state after mouse release
                 self.ui_mut().update_mouse_hover(x, y, Instant::now());
-                self.env.as_ref().unwrap().window.request_redraw();
+
+
+                let Some(tab_id) = self.active_tab_id().cloned() else {
+                    return;
+                };
+                let id = button_source_to_blitz(&ButtonSource::Mouse(MouseButton::Left));
+                let coords = self.pointer_coords(position);
+                self.pointer_position = <(f64, f64)>::from(position);
+                let button = MouseEventButton::Main;
+
+                self.buttons |= button.into();
+
+                if id != BlitzPointerId::Mouse {
+                    let event = UiEvent::PointerMove(BlitzPointerEvent {
+                        id,
+                        is_primary: primary,
+                        coords,
+                        button: Default::default(),
+                        buttons: Compat(self.buttons),
+                        mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                        details: PointerDetails::default()
+                    });
+                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
+                }
+
+                let event = BlitzPointerEvent {
+                    id,
+                    is_primary: primary,
+                    coords,
+                    button,
+                    buttons: Compat(self.buttons),
+                    mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                    // TODO: details for pointer up/down events
+                    details: PointerDetails::default(),
+                };
+
+                let event = UiEvent::PointerDown(event);
+
+                let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
+                self.request_redraw();
             }
-            WindowEvent::PointerButton { state: ElementState::Pressed, button: ButtonSource::Mouse(MouseButton::Middle), .. } => {
+            WindowEvent::PointerButton { state: ElementState::Pressed, button: ButtonSource::Mouse(MouseButton::Middle), primary, position, .. } => {
                 // Handle middle-click (open link in new tab)
-                self.handle_middle_click(self.cursor_position.0 as f32, self.cursor_position.1 as f32, event_loop);
+                self.handle_middle_click(self.pointer_position.0 as f32, self.pointer_position.1 as f32, event_loop);
+
+                let Some(tab_id) = self.active_tab_id().cloned() else {
+                    return;
+                };
+                let id = button_source_to_blitz(&ButtonSource::Mouse(MouseButton::Left));
+                let coords = self.pointer_coords(position);
+                self.pointer_position = <(f64, f64)>::from(position);
+                let button = MouseEventButton::Main;
+
+                self.buttons |= button.into();
+
+                if id != BlitzPointerId::Mouse {
+                    let event = UiEvent::PointerMove(BlitzPointerEvent {
+                        id,
+                        is_primary: primary,
+                        coords,
+                        button: Default::default(),
+                        buttons: Compat(self.buttons),
+                        mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                        details: PointerDetails::default()
+                    });
+                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
+                }
+
+                let event = BlitzPointerEvent {
+                    id,
+                    is_primary: primary,
+                    coords,
+                    button,
+                    buttons: Compat(self.buttons),
+                    mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                    // TODO: details for pointer up/down events
+                    details: PointerDetails::default(),
+                };
+
+                let event = UiEvent::PointerDown(event);
+
+                let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
+                self.request_redraw();
             }
-            WindowEvent::PointerMoved { position, .. } => {
-                self.cursor_position = (position.x, position.y);
+            WindowEvent::PointerMoved { position, source, primary, .. } => {
+                self.pointer_position = (position.x, position.y);
 
                 let ui = self.ui.as_mut().unwrap();
                 // Update tab drag if dragging
@@ -719,13 +860,16 @@ impl ApplicationHandler for BrowserApp {
                     ui.update_mouse_hover(position.x as f32, position.y as f32, Instant::now());
 
                     if let Some(tab_id) = self.active_tab_id().cloned() {
-                        // Forward mouse move to tab with chrome offset applied
-                        let chrome_offset = BrowserUI::CHROME_HEIGHT as f32 * self.viewport.as_ref().unwrap().read().unwrap().hidpi_scale;
-                        let forwarded_y = (position.y as f32 - chrome_offset).max(0.0);
-                        let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::MouseMove {
-                            x: position.x as f32,
-                            y: forwarded_y
+                        let event = UiEvent::PointerMove(BlitzPointerEvent {
+                            id: pointer_source_to_blitz(&source),
+                            is_primary: primary,
+                            coords: self.pointer_coords(position),
+                            button: Default::default(),
+                            buttons: Compat(self.buttons),
+                            mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                            details: pointer_source_to_blitz_details(&source)
                         });
+                        let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
                     }
                 }
 
@@ -734,40 +878,29 @@ impl ApplicationHandler for BrowserApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if let Some(tab_id) = self.active_tab_id().cloned() {
-                    let (mut delta_x, mut delta_y) = match delta {
-                        winit::event::MouseScrollDelta::LineDelta(x, y) => (x * 20.0, y * 20.0),
-                        winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
+                    let blitz_delta = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(x, y) => BlitzWheelDelta::Lines(x as f64, y as f64),
+                        winit::event::MouseScrollDelta::PixelDelta(pos) => BlitzWheelDelta::Pixels(pos.x, pos.y),
                     };
 
-                    // Ctrl+scroll changes zoom level instead of scrolling
-                    if self.modifiers.state().control_key() {
-                        let zoom_delta = delta_y * 0.01;
-                        let new_zoom = if let Some(tab) = self.tab_manager.get_tab_mut(&tab_id) {
-                            tab.zoom = (tab.zoom + zoom_delta).clamp(0.25, 5.0);
-                            Some(tab.zoom)
-                        } else {
-                            None
-                        };
-                        if let Some(zoom) = new_zoom {
-                            let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::SetZoom(zoom));
-                        }
-                    } else {
-                        // If shift is held, convert vertical scroll to horizontal scroll with increased speed
-                        if self.modifiers.state().shift_key() {
-                            delta_x = -delta_y * 5.0;
-                            delta_y = 0.0;
-                        }
+                    let event = BlitzWheelEvent {
+                        delta: blitz_delta,
+                        coords: self.pointer_coords(PhysicalPosition::from(self.pointer_position)),
+                        buttons: Compat(self.buttons),
+                        mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                    };
 
-                        let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Scroll {
-                            delta_x,
-                            delta_y: -delta_y * 2.0
-                        });
-                    }
+                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(UiEvent::Wheel(event)));
                 }
                 self.env.as_ref().unwrap().window.request_redraw();
             }
             WindowEvent::ModifiersChanged(new_modifiers) => {
                 self.modifiers = new_modifiers;
+            }
+            WindowEvent::Ime(ime) => {
+                let active_tab_id = self.active_tab_id().cloned().unwrap();
+                let _ = self.tab_manager.send_to_tab(&active_tab_id, ParentToTabMessage::UI(UiEvent::Ime(winit_ime_to_blitz(ime))));
+                self.env.as_ref().unwrap().window.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 // Handle keyboard input with the new multi-process architecture
@@ -819,6 +952,15 @@ impl ApplicationHandler for BrowserApp {
                                     modifiers: key_modifiers,
                                 },
                             );
+
+                            let key_event_data = winit_key_event_to_blitz(&event, self.modifiers.state());
+                            let event = if event.state.is_pressed() {
+                                UiEvent::KeyDown(key_event_data)
+                            } else {
+                                UiEvent::KeyUp(key_event_data)
+                            };
+
+                            let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
                         }
                         self.env.as_ref().unwrap().window.request_redraw();
                     }

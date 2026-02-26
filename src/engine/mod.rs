@@ -23,6 +23,7 @@ use style::thread_state::ThreadState;
 use style::traversal::DomTraversal;
 use url::Url;
 use crate::networking;
+use crate::shell_provider::StokesShellProvider;
 
 thread_local! {
     pub(crate) static ENGINE_REF: RefCell<Option<*mut Engine>> = RefCell::new(None);
@@ -48,11 +49,11 @@ pub struct Engine {
     // Navigation history
     history: Vec<String>,
     history_index: Option<usize>,
-    shell_provider: Arc<dyn ShellProvider>,
+    shell_provider: Arc<StokesShellProvider>,
 }
 
 impl Engine {
-    pub fn new(config: EngineConfig, viewport: Viewport, shell_provider: Arc<dyn ShellProvider>) -> Self {
+    pub fn new(config: EngineConfig, viewport: Viewport, shell_provider: Arc<StokesShellProvider>) -> Self {
         Self {
             config,
             new_http_client: None,

@@ -163,7 +163,8 @@ impl TabManager {
                 TabToParentMessage::ShellProvider(_msg) => {
                     // Shell provider messages are handled by the browser process, not the tab manager
                     // This is just here for exhaustive pattern matching
-                }
+                },
+                TabToParentMessage::UpdateButtons(_) => {},
             }
         }
     }
