@@ -437,6 +437,7 @@ impl Dom {
     pub fn parse_html(
         url: &str,
         html: &str,
+        user_agent: String,
         viewport: Viewport,
         shell_provider: Arc<StokesShellProvider>,
         nav_provider: Arc<StokesNavigationProvider>,
@@ -445,7 +446,7 @@ impl Dom {
         parser.parse(html, DomConfig {
             viewport: Some(viewport),
             base_url: Some(url.to_string()),
-            net_provider: Some(Arc::new(StokesNetProvider::new())),
+            net_provider: Some(Arc::new(StokesNetProvider::new(user_agent))),
             shell_provider: Some(shell_provider),
             nav_provider: Some(nav_provider),
             ..Default::default()

@@ -12,12 +12,14 @@ use tokio::runtime::Handle;
 
 pub struct StokesNetProvider {
     rt: Handle,
+    user_agent: String,
 }
 
 impl StokesNetProvider {
-    pub fn new() -> Self {
+    pub fn new(user_agent: String) -> Self {
         Self {
             rt: Handle::current(),
+            user_agent,
         }
     }
 }
@@ -35,14 +37,15 @@ impl NetProvider for StokesNetProvider {
                 }
             }
         } else {
+            let user_agent = self.user_agent.clone();
             self.rt.spawn(async move {
                 let url = request.url.to_string();
 
                 let signal = request.signal.take();
                 let result = if let Some(signal) = signal {
-                    AbortFetch::new(signal, Box::pin(async move { Self::fetch_inner(request).await })).await
+                    AbortFetch::new(signal, Box::pin(async move { Self::fetch_inner(request, &user_agent).await })).await
                 } else {
-                    Self::fetch_inner(request).await
+                    Self::fetch_inner(request, &user_agent).await
                 };
 
                 match result {
@@ -69,7 +72,7 @@ impl Handler for Collector {
 }
 
 impl StokesNetProvider {
-    async fn fetch_inner(request: Request) -> Result<(String, Bytes), ProviderError> {
+    async fn fetch_inner(request: Request, user_agent: &str) -> Result<(String, Bytes), ProviderError> {
         Ok(match request.url.scheme() {
             "data" => {
                 let data_url = DataUrl::process(request.url.as_str())?;
@@ -84,6 +87,7 @@ impl StokesNetProvider {
                 let mut easy = Easy2::new(Collector(Vec::new()));
                 easy.url(request.url.as_str()).unwrap();
                 easy.follow_location(true).unwrap();
+                easy.useragent(user_agent).unwrap();
                 easy.perform().unwrap();
 
                 (request.url.to_string(), Bytes::from(easy.get_ref().0.clone()))
@@ -97,9 +101,10 @@ impl StokesNetProvider {
         callback: Box<dyn FnOnce(Result<(String, Bytes), ProviderError>) + Send + Sync + 'static>,
     ) {
         let url = request.url.to_string();
+        let user_agent = self.user_agent.clone();
 
         self.rt.spawn(async move {
-            let result = Self::fetch_inner(request).await;
+            let result = Self::fetch_inner(request, &user_agent).await;
 
             callback(result);
         });

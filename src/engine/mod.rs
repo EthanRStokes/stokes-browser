@@ -101,6 +101,7 @@ impl Engine {
             let dom = Dom::parse_html(
                 url,
                 &contents,
+                self.config.user_agent.clone(),
                 self.viewport.clone(),
                 self.shell_provider.clone(),
                 self.navigation_provider.clone()
