@@ -1,7 +1,7 @@
 // Tab process module - runs the browser engine in a separate process
 use crate::engine::{Engine, EngineConfig, ENGINE_REF, USER_AGENT_REF};
 use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage};
-use crate::js;
+use crate::{js, networking};
 use crate::renderer::painter::ScenePainter;
 use blitz_traits::shell::{ShellProvider, Viewport};
 use shared_memory::{Shmem, ShmemConf};
@@ -12,14 +12,10 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
-use blitz_traits::net::NetProvider;
 use crate::shell_provider::{StokesShellProvider, ShellProviderMessage};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
-use winit::dpi::{LogicalPosition, PhysicalPosition};
 use crate::dom::Dom;
 use crate::engine::nav_provider::{NavigationProviderMessage, StokesNavigationProvider};
-use crate::events::{PointerCoords, UiEvent};
-use crate::ui::BrowserUI;
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
@@ -169,11 +165,17 @@ impl TabProcess {
                         NavigationProviderMessage::NavigateTo(options) => {
                             let nav_provider = self.engine.navigation_provider.clone();
                             self.channel.borrow_mut().send(&TabToParentMessage::LoadingStateChanged(true))?;
-                            self.channel.borrow_mut().send(&TabToParentMessage::NavigationStarted(options.url.as_str().to_string()))?;
+                            let url = options.url.as_str().to_string();
+                            self.channel.borrow_mut().send(&TabToParentMessage::NavigationStarted(url.clone()))?;
                             self.dom().unwrap().net_provider.fetch_with_callback(
                                 options.into_request(),
                                 Box::new(move |result| {
-                                    let (url, bytes) = result.unwrap();
+                                    let (url, bytes) = match result {
+                                        Ok(res) => res,
+                                        Err(_) => {
+                                            (url, include_str!("../assets/404.html").into())
+                                        }
+                                    };
                                     let contents = std::str::from_utf8(&bytes).unwrap().to_string();
                                     let _ = nav_provider.sender.send(NavigationProviderMessage::Navigate {
                                         url,
@@ -187,7 +189,7 @@ impl TabProcess {
                         NavigationProviderMessage::Navigate { url, contents, retain_scroll_position, is_md } => {
                             self.engine.set_loading_state(true);
 
-                            match self.engine.navigate(&url, true, true).await {
+                            match self.engine.navigate(&url, contents, true, true).await {
                                 Ok(_) => {
                                     let title = self.engine.page_title().to_string();
                                     let mut channel = self.channel.borrow_mut();
@@ -257,7 +259,10 @@ impl TabProcess {
                 self.channel.borrow_mut().send(&TabToParentMessage::NavigationStarted(url.clone()))?;
                 self.engine.set_loading_state(true);
 
-                match self.engine.navigate(&url, true, true).await {
+                let contents = networking::fetch(&url, &self.engine.config.user_agent).unwrap_or_else(|err| {
+                    include_str!("../assets/404.html").to_string()
+                });
+                match self.engine.navigate(&url, contents, true, true).await {
                     Ok(_) => {
                         let title = self.engine.page_title().to_string();
                         let mut channel = self.channel.borrow_mut();
@@ -283,7 +288,10 @@ impl TabProcess {
                     self.channel.borrow_mut().send(&TabToParentMessage::NavigationStarted(url.clone()))?;
                     self.engine.set_loading_state(true);
 
-                    match self.engine.navigate(&url, true, true).await {
+                    let contents = networking::fetch(&url, &self.engine.config.user_agent).unwrap_or_else(|err| {
+                        include_str!("../assets/404.html").to_string()
+                    });
+                    match self.engine.navigate(&url, contents, true, true).await {
                         Ok(_) => {
                             let title = self.engine.page_title().to_string();
                             let mut channel = self.channel.borrow_mut();

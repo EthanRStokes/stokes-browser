@@ -88,21 +88,19 @@ impl Engine {
     }
 
     /// Navigate to a new URL
-    pub async fn navigate(&mut self, url: &str, invalidate_js: bool, history: bool) -> Result<(), NetworkError> {
+    pub async fn navigate(&mut self, url: &str, contents: String, invalidate_js: bool, history: bool) -> Result<(), NetworkError> {
         println!("Navigating to: {}", url);
         self.is_loading = true;
         self.current_url = url.to_string();
 
         // Fetch the page content
         let result = async {
-            let html = networking::fetch(url, &self.config.user_agent).unwrap_or_else(|err| {
-                include_str!("../../assets/404.html").to_string()
-            });
+
 
             // Parse the HTML into our DOM
             let dom = Dom::parse_html(
                 url,
-                &html,
+                &contents,
                 self.viewport.clone(),
                 self.shell_provider.clone(),
                 self.navigation_provider.clone()
@@ -893,7 +891,10 @@ impl Engine {
         if let Some(index) = self.history_index {
             self.history_index = Some(index - 1);
             let url = self.history[index - 1].clone();
-            self.navigate(&url, true, false).await
+            let contents = networking::fetch(&url, &self.config.user_agent).unwrap_or_else(|err| {
+                include_str!("../../assets/404.html").to_string()
+            });
+            self.navigate(&url, contents, true, false).await
         } else {
             Err(NetworkError::Curl("Invalid history state".to_string()))
         }
@@ -908,7 +909,10 @@ impl Engine {
         if let Some(index) = self.history_index {
             self.history_index = Some(index + 1);
             let url = self.history[index + 1].clone();
-            self.navigate(&url, true, false).await
+            let contents = networking::fetch(&url, &self.config.user_agent).unwrap_or_else(|err| {
+                include_str!("../../assets/404.html").to_string()
+            });
+            self.navigate(&url, contents, true, false).await
         } else {
             Err(NetworkError::Curl("Invalid history state".to_string()))
         }
