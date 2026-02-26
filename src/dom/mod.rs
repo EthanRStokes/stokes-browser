@@ -17,6 +17,7 @@ mod state;
 mod selection;
 pub(crate) mod form;
 
+use html5ever::ns;
 pub use events::{EventDispatcher, EventType};
 pub use self::node::{AttributeMap, DomNode, ElementData, ImageData, ImageLoadingState, NodeData};
 pub use self::parser::HtmlParser;
@@ -24,7 +25,7 @@ use crate::css::stylo::RecalcStyle;
 use crate::dom::config::DomConfig;
 use crate::dom::damage::{ALL_DAMAGE, CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC};
 use crate::dom::layout::collect_layout_children;
-use crate::dom::node::{DomNodeFlags, SpecialElementData, TextData};
+use crate::dom::node::{Attribute, DomNodeFlags, SpecialElementData, TextData};
 use crate::dom::url::DocUrl;
 use crate::networking::{ImageType, ResourceLoadResponse, StylesheetLoader};
 use crate::ui::TextBrush;
@@ -80,6 +81,7 @@ use crate::dom::stylo_to_cursor::stylo_to_cursor_icon;
 use crate::dom::traverse::{AncestorTraverser, TreeTraverser};
 use crate::engine::net_provider::StokesNetProvider;
 use crate::events::{BlitzScrollEvent, DomEventData};
+use crate::qual_name;
 use crate::shell_provider::{ShellProviderMessage, StokesShellProvider};
 
 const ZERO: Point<f64> = Point { x: 0.0, y: 0.0 };
@@ -743,7 +745,7 @@ impl Dom {
     pub fn animating(&self) -> bool {
         self.has_canvas
             | self.has_active_animations
-            // todo scroll anim
+            | (self.scroll_animation != ScrollAnimationState::None)
     }
 
     /// Find nodes by tag name
@@ -877,7 +879,8 @@ impl Dom {
                 if let Some(child_id) = self.nodes[node_id].children.clone().iter().find(|child_id| {
                     matches!(self.tree()[**child_id].data, NodeData::Text { .. })
                 }) {
-                    self.nodes[*child_id].data.element_mut().unwrap().inline_layout_data = None;
+                    // TODO check if this is correct
+                    //self.nodes[*child_id].data.element_mut().is_some_and().inline_layout_data = None;
                     if let NodeData::Text(ref mut text) = self.nodes[*child_id].data {
                         text
                     } else {
@@ -904,14 +907,14 @@ impl Dom {
             text.content.clear();
             text.content.push_str(&value);
             self.nodes[node_id].insert_damage(ALL_DAMAGE);
-            // todo mark ancestors dirty
+            self.nodes[node_id].mark_ancestors_dirty();
 
             let parent_id = self.nodes[node_id].parent;
             if let Some(parent_id) = parent_id {
                 self.nodes[parent_id].insert_damage(ALL_DAMAGE);
             }
 
-            // todo record ig
+            self.maybe_record_node(parent_id);
         }
     }
 
@@ -1660,7 +1663,28 @@ impl Dom {
     }
 
     fn maybe_record_node(&mut self, node_id: impl Into<Option<usize>>) {
-        // todo impl
+        let Some(node_id) = node_id.into() else {
+            return;
+        };
+
+        let Some(tag_name) = self.nodes[node_id]
+            .data
+            .element()
+            .map(|elem| &elem.name.local)
+        else {
+            return;
+        };
+
+        match tag_name.as_ref() {
+            "title" => {
+                let title = self.nodes[node_id].text_content();
+                self.shell_provider.set_window_title(title);
+            },
+            "style" => {
+                self.process_style_element(node_id);
+            }
+            _ => {}
+        }
     }
 
     fn process_added_subtree(&mut self, node_id: usize) {
@@ -1686,7 +1710,10 @@ impl Dom {
                 "img" => dom.load_image(node_id),
                 "canvas" => dom.load_custom_paint_src(node_id),
                 "style" => dom.process_style_element(node_id),
-                // todo buttons
+                "button" | "fieldset" | "input" | "select" | "textarea" | "object" | "output" => {
+                    dom.process_button_input(node_id);
+                    dom.reset_form_owner(node_id);
+                }
                 _ => {}
             };
         });
@@ -1750,6 +1777,49 @@ impl Dom {
         }
 
         // todo idk
+    }
+
+    fn process_button_input(&mut self, target_id: usize) {
+        let node = &self.nodes[target_id];
+        let Some(data) = node.element_data() else {
+            return;
+        };
+
+        let tagname = data.name.local.as_ref();
+        let type_attr = data.attr(local_name!("type"));
+        let value = data.attr(local_name!("value"));
+
+        // Add content of "value" attribute as a text node child if:
+        //   - Tag name is
+        if let ("input", Some("button" | "submit" | "reset"), Some(value)) =
+            (tagname, type_attr, value)
+        {
+            let value = value.to_string();
+            let id = self.create_text_node(&value);
+            self.append_children(target_id, &[id]);
+            return;
+        }
+        if let ("input", Some("file")) = (tagname, type_attr) {
+            let button_id = self.create_element(
+                qual_name!("button", html),
+                AttributeMap::new(vec![
+                    Attribute {
+                        name: qual_name!("type", html),
+                        value: "button".to_string(),
+                    },
+                    Attribute {
+                        name: qual_name!("tabindex", html),
+                        value: "-1".to_string(),
+                    },
+                ]),
+            );
+            let label_id = self.create_element(qual_name!("label", html), AttributeMap::empty());
+            let text_id = self.create_text_node("No File Selected");
+            let button_text_id = self.create_text_node("Browse");
+            self.append_children(target_id, &[button_id, label_id]);
+            self.append_children(label_id, &[text_id]);
+            self.append_children(button_id, &[button_text_id]);
+        }
     }
 
     pub(crate) fn root_node(&self) -> &DomNode {

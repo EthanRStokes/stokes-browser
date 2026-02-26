@@ -11,6 +11,7 @@ mod sizing;
 pub mod painter;
 
 use std::any::Any;
+use std::collections::HashMap;
 use crate::dom::node::{ListItemLayout, ListItemLayoutPosition, Marker, SpecialElementData};
 use crate::dom::{Dom, DomNode, ElementData, ImageData, NodeData};
 use crate::renderer::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
@@ -40,6 +41,7 @@ pub struct HtmlRenderer<'dom> {
     pub(crate) scale_factor: f64,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    pub(crate) selection_ranges: HashMap<usize, (usize, usize)>,
     /// Debug: Show hitboxes for all elements
     pub(crate) debug_hitboxes: bool,
 }

@@ -14,6 +14,7 @@ use blitz_traits::shell::{ShellProvider, Viewport};
 use markup5ever::local_name;
 use selectors::Element;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -252,11 +253,18 @@ impl Engine {
         let dom = self.dom.as_ref().unwrap();
         let node = dom.root_node();
 
+        let selection: HashMap<usize, (usize, usize)> = dom
+            .get_text_selection_ranges()
+            .into_iter()
+            .map(|(node_id, start, end)| (node_id, (start, end)))
+            .collect();
+
         let mut renderer = HtmlRenderer {
             dom: &dom,
             scale_factor: self.viewport.scale_f64(),
             width: self.viewport_width() as u32,
             height: self.viewport_height() as u32,
+            selection_ranges: selection,
             debug_hitboxes: self.config.debug_hitboxes,
         };
 
