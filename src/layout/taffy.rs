@@ -1,6 +1,7 @@
 use crate::dom::node::SpecialElementData;
 use crate::dom::{Dom, ImageData, NodeData};
 use crate::layout::replaced::{replaced_measure_function, ReplacedContext};
+use crate::layout::stylo_style::StyloStyleRef;
 use crate::layout::table::{TableContext, TableTreeWrapper};
 use markup5ever::local_name;
 use std::cell::Ref;
@@ -9,6 +10,7 @@ use style::values::computed::length_percentage::CalcLengthPercentage;
 use style::values::computed::{CSSPixelLength, LineHeight};
 use stylo_atoms::Atom;
 pub(crate) use taffy::{compute_block_layout, compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout, AvailableSpace, BlockContext, CacheTree, CollapsibleMarginSet, Display, Layout, LayoutBlockContainer, LayoutFlexboxContainer, LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, PrintTree, ResolveOrZero, RoundTree, RunMode, Size, Style, TraversePartialTree, TraverseTree};
+use taffy::CoreStyle;
 
 impl Dom {
     fn compute_child_layout_internal(
@@ -32,7 +34,7 @@ impl Dom {
             (font_size, line_height)
         });
         let font_size = font_styles.map(|s| s.0);
-        let resolved_line_height = font_styles.map(|s| s.1);
+        let line_height = font_styles.map(|s| s.1);
 
         match &mut node.data {
             NodeData::Text(data) => {
@@ -68,15 +70,16 @@ impl Dom {
                         .attr(local_name!("cols"))
                         .and_then(|val| val.parse::<f32>().ok());
 
+                    let style = self.stylo_style_ref(node_id);
                     return compute_leaf_layout(
                         inputs,
-                        &node.taffy_style,
+                        &style,
                         resolve_calc_value,
-                        |_known_size, _available_space| taffy::Size {
+                        |_known_size, _available_space| Size {
                             width: cols
                                 .map(|cols| cols * font_size.unwrap_or(16.0) * 0.6)
                                 .unwrap_or(300.0),
-                            height: resolved_line_height.unwrap_or(16.0) * rows,
+                            height: line_height.unwrap_or(16.0) * rows,
                         },
                     );
                 }
@@ -85,25 +88,25 @@ impl Dom {
                     match element_data.attr(local_name!("type")) {
                         // if the input type is hidden, hide it
                         Some("hidden") => {
-                            node.taffy_style.display = Display::None;
                             return taffy::LayoutOutput::HIDDEN;
                         }
                         Some("checkbox") => {
+                            let style = self.stylo_style_ref(node_id);
                             return compute_leaf_layout(
                                 inputs,
-                                &node.taffy_style,
+                                &style,
                                 resolve_calc_value,
                                 |_known_size, _available_space| {
-                                    let width = node.taffy_style.size.width.resolve_or_zero(
+                                    let width = style.size().width.resolve_or_zero(
                                         inputs.parent_size.width,
                                         resolve_calc_value,
                                     );
-                                    let height = node.taffy_style.size.height.resolve_or_zero(
+                                    let height = style.size().height.resolve_or_zero(
                                         inputs.parent_size.height,
                                         resolve_calc_value,
                                     );
                                     let min_size = width.min(height);
-                                    taffy::Size {
+                                    Size {
                                         width: min_size,
                                         height: min_size,
                                     }
@@ -111,17 +114,18 @@ impl Dom {
                             );
                         }
                         None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
+                            let style = self.stylo_style_ref(node_id);
                             return compute_leaf_layout(
                                 inputs,
-                                &node.taffy_style,
+                                &style,
                                 resolve_calc_value,
-                                |_known_size, _available_space| taffy::Size {
+                                |_known_size, _available_space| Size {
                                     width: match inputs.available_space.width {
                                         AvailableSpace::Definite(limit) => limit.min(300.0),
                                         AvailableSpace::MinContent => 0.0,
                                         AvailableSpace::MaxContent => 300.0,
                                     },
-                                    height: resolved_line_height.unwrap_or(16.0),
+                                    height: line_height.unwrap_or(16.0),
                                 },
                             );
                         }
@@ -172,12 +176,13 @@ impl Dom {
                         attr_size,
                     };
 
+                    let style = self.stylo_style_ref(node_id);
                     let computed = replaced_measure_function(
                         inputs.known_dimensions,
                         inputs.parent_size,
                         inputs.available_space,
                         &replaced_context,
-                        &node.taffy_style,
+                        &style,
                         false,
                     );
 
@@ -219,15 +224,19 @@ impl Dom {
                     return self.compute_inline_layout(usize::from(node_id), inputs, block_ctx);
                 }
 
-                // The default CSS file will set
-                match node.taffy_style.display {
+                // Determine the display mode from computed styles
+                let display = self.nodes[node_id.into()]
+                    .primary_styles()
+                    .map(|s| stylo_taffy::convert::display(s.clone_display()))
+                    .unwrap_or(Display::Block);
+
+                match display {
                     Display::Block => compute_block_layout(self, node_id, inputs, block_ctx),
                     Display::Flex => compute_flexbox_layout(self, node_id, inputs),
                     Display::Grid => compute_grid_layout(self, node_id, inputs),
                     Display::None => taffy::LayoutOutput::HIDDEN,
                 }
             }
-            NodeData::Document => compute_block_layout(self, node_id, inputs, None),
 
             _ => taffy::LayoutOutput::HIDDEN,
         }
@@ -267,14 +276,14 @@ impl TraverseTree for Dom {}
 
 impl LayoutPartialTree for Dom {
     type CoreContainerStyle<'a>
-        = &'a Style<Atom>
+        = &'a StyloStyleRef<'a>
     where
         Self: 'a;
 
     type CustomIdent = Atom;
 
     fn get_core_container_style(&self, node_id: NodeId) -> Self::CoreContainerStyle<'_> {
-        &self.node_from_id(node_id).taffy_style
+        StyloStyleRef::new(&**self.node_from_id(node_id).primary_styles().unwrap())
     }
 
     fn set_unrounded_layout(&mut self, node_id: NodeId, layout: &Layout) {
@@ -308,20 +317,20 @@ impl CacheTree for Dom {
 
 impl LayoutBlockContainer for Dom {
     type BlockContainerStyle<'a>
-        = &'a Style<Atom>
+        = StyloStyleRef<'a>
     where
         Self: 'a;
     type BlockItemStyle<'a>
-        = &'a Style<Atom>
+        = StyloStyleRef<'a>
     where
         Self: 'a;
 
     fn get_block_container_style(&self, node_id: NodeId) -> Self::BlockContainerStyle<'_> {
-        self.get_core_container_style(node_id)
+        self.stylo_style_ref(node_id)
     }
 
     fn get_block_child_style(&self, child_node_id: NodeId) -> Self::BlockItemStyle<'_> {
-        self.get_core_container_style(child_node_id)
+        self.stylo_style_ref(child_node_id)
     }
 
     fn compute_block_child_layout(
@@ -338,39 +347,39 @@ impl LayoutBlockContainer for Dom {
 
 impl LayoutFlexboxContainer for Dom {
     type FlexboxContainerStyle<'a>
-    = &'a Style<Atom>
+        = StyloStyleRef<'a>
     where
         Self: 'a;
     type FlexboxItemStyle<'a>
-    = &'a Style<Atom>
+        = StyloStyleRef<'a>
     where
         Self: 'a;
 
     fn get_flexbox_container_style(&self, node_id: NodeId) -> Self::FlexboxContainerStyle<'_> {
-        self.get_core_container_style(node_id)
+        self.stylo_style_ref(node_id)
     }
 
     fn get_flexbox_child_style(&self, child_node_id: NodeId) -> Self::FlexboxItemStyle<'_> {
-        self.get_core_container_style(child_node_id)
+        self.stylo_style_ref(child_node_id)
     }
 }
 
 impl LayoutGridContainer for Dom {
     type GridContainerStyle<'a>
-        = &'a Style<Atom>
+        = StyloStyleRef<'a>
     where
         Self: 'a;
     type GridItemStyle<'a>
-        = &'a Style<Atom>
+        = StyloStyleRef<'a>
     where
         Self: 'a;
 
     fn get_grid_container_style(&self, node_id: NodeId) -> Self::GridContainerStyle<'_> {
-        self.get_core_container_style(node_id)
+        self.stylo_style_ref(node_id)
     }
 
     fn get_grid_child_style(&self, child_node_id: NodeId) -> Self::GridItemStyle<'_> {
-        self.get_core_container_style(child_node_id)
+        self.stylo_style_ref(child_node_id)
     }
 }
 

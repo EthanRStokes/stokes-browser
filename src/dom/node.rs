@@ -43,7 +43,7 @@ use style::properties::generated::longhands::position::computed_value::T as Posi
 use style_traits::{ParsingMode, ToCss};
 use stylo_atoms::Atom;
 use stylo_dom::ElementState;
-use taffy::{Cache, Layout, Point, Style};
+use taffy::{Cache, Layout, Point};
 use url::Url;
 use crate::dom::stylo_data::StyloData;
 use crate::events::{BlitzPointerEvent, BlitzPointerId, DomEventData, PointerCoords};
@@ -833,7 +833,6 @@ pub struct DomNode {
     pub after: Option<usize>,
 
     // layout data:
-    pub taffy_style: Style<Atom>,
     pub cache: Cache,
     pub unrounded_layout: Layout,
     pub final_layout: Layout,
@@ -892,7 +891,6 @@ impl DomNode {
             element_state: ElementState::empty(),
             before: None,
             after: None,
-            taffy_style: Default::default(),
             cache: Cache::new(),
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),

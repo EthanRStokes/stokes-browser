@@ -359,7 +359,7 @@ impl HtmlRenderer<'_> {
     ) {
         let node = &self.dom.tree()[node_id];
 
-        if matches!(node.taffy_style.display, taffy::Display::None) {
+        if node.display_style().is_none_or(|d| d.is_none()) {
             return; // Skip rendering for display: none
         }
 

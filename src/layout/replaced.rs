@@ -1,4 +1,3 @@
-use style::Atom;
 use taffy::{
     AvailableSpace, BoxSizing, CoreStyle as _, MaybeMath, MaybeResolve, ResolveOrZero as _, Size,
 };
@@ -28,7 +27,7 @@ pub fn replaced_measure_function(
     parent_size: taffy::Size<Option<f32>>,
     available_space: taffy::Size<AvailableSpace>,
     image_context: &ReplacedContext,
-    style: &taffy::Style<Atom>,
+    style: &impl taffy::CoreStyle,
     _debug: bool,
 ) -> taffy::Size<f32> {
     let inherent_size = image_context.inherent_size;
@@ -51,7 +50,7 @@ pub fn replaced_measure_function(
     };
 
     // Use aspect_ratio from style, fall back to inherent aspect ratio
-    let s_aspect_ratio = style.aspect_ratio;
+    let s_aspect_ratio = style.aspect_ratio();
     let aspect_ratio = s_aspect_ratio.unwrap_or_else(|| inherent_size.width / inherent_size.height);
     let inv_aspect_ratio = 1.0 / aspect_ratio;
 
@@ -71,16 +70,16 @@ pub fn replaced_measure_function(
 
     // Resolve sizes
     let style_size = style
-        .size
+        .size()
         .maybe_resolve(basis_for_max_and_preferred, resolve_calc_value)
         .maybe_apply_aspect_ratio(Some(aspect_ratio))
         .maybe_sub(box_sizing_adjustment);
     let min_size = style
-        .min_size
+        .min_size()
         .maybe_resolve(parent_size, resolve_calc_value)
         .maybe_sub(box_sizing_adjustment);
     let max_size = style
-        .max_size
+        .max_size()
         .maybe_resolve(basis_for_max_and_preferred, resolve_calc_value)
         .or(available_space.into_options())
         .maybe_min(available_space.into_options())

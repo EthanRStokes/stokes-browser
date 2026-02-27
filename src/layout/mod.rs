@@ -4,3 +4,4 @@ mod inline;
 pub(crate) mod table;
 mod replaced;
 pub(crate) mod list;
+pub(crate) mod stylo_style;

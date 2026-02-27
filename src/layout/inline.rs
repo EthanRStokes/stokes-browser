@@ -4,7 +4,7 @@ use parley::{AlignmentOptions, IndentOptions, YieldData};
 use style::values::computed::{CSSPixelLength, LengthPercentage};
 use style::values::generics::text::GenericTextIndent;
 use taffy::prelude::TaffyMaxContent;
-use taffy::{AvailableSpace, BlockContext, BlockFormattingContext, BoxSizing, Clear, CollapsibleMarginSet, CoreStyle, Float, LayoutInput, LayoutOutput, LayoutPartialTree, MaybeMath, MaybeResolve, NodeId, Point, Position, ResolveOrZero, RunMode, Size, SizingMode};
+use taffy::{AvailableSpace, BlockContext, BlockFormattingContext, BlockItemStyle, BoxSizing, Clear, CollapsibleMarginSet, CoreStyle, Float, LayoutInput, LayoutOutput, LayoutPartialTree, MaybeMath, MaybeResolve, NodeId, Point, Position, ResolveOrZero, RunMode, Size, SizingMode};
 
 impl Dom {
     // Copyright DioxusLabs
@@ -22,19 +22,25 @@ impl Dom {
             run_mode,
             ..
         } = inputs;
-        let style = &self.nodes[node_id].taffy_style;
+
+        // Extract all needed style values eagerly to avoid holding the borrow
+        let (is_scroll_container, padding, border, box_sizing, aspect_ratio, style_size, style_min_size, style_max_size) = {
+            let style = self.stylo_style_ref(NodeId::from(node_id));
+            let overflow = style.overflow();
+            let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
+            let padding = style.padding().resolve_or_zero(parent_size.width, resolve_calc_value);
+            let border = style.border().resolve_or_zero(parent_size.width, resolve_calc_value);
+            let box_sizing = style.box_sizing();
+            let aspect_ratio = style.aspect_ratio();
+            let style_size = style.size();
+            let style_min_size = style.min_size();
+            let style_max_size = style.max_size();
+            (is_scroll_container, padding, border, box_sizing, aspect_ratio, style_size, style_min_size, style_max_size)
+        };
 
         // Pull these out earlier to avoid borrowing issues
-        let is_scroll_container =
-            style.overflow.x.is_scroll_container() || style.overflow.y.is_scroll_container();
-        let padding = style
-            .padding()
-            .resolve_or_zero(parent_size.width, resolve_calc_value);
-        let border = style
-            .border()
-            .resolve_or_zero(parent_size.width, resolve_calc_value);
         let padding_border_size = (padding + border).sum_axes();
-        let box_sizing_adjustment = if style.box_sizing() == BoxSizing::ContentBox {
+        let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox {
             padding_border_size
         } else {
             Size::ZERO
@@ -50,19 +56,15 @@ impl Dom {
                 (node_size, node_min_size, node_max_size, None)
             }
             SizingMode::InherentSize => {
-                let aspect_ratio = style.aspect_ratio();
-                let style_size = style
-                    .size()
+                let style_size = style_size
                     .maybe_resolve(parent_size, resolve_calc_value)
                     .maybe_apply_aspect_ratio(aspect_ratio)
                     .maybe_add(box_sizing_adjustment);
-                let style_min_size = style
-                    .min_size()
+                let style_min_size = style_min_size
                     .maybe_resolve(parent_size, resolve_calc_value)
                     .maybe_apply_aspect_ratio(aspect_ratio)
                     .maybe_add(box_sizing_adjustment);
-                let style_max_size = style
-                    .max_size()
+                let style_max_size = style_max_size
                     .maybe_resolve(parent_size, resolve_calc_value)
                     .maybe_add(box_sizing_adjustment);
 
@@ -143,22 +145,31 @@ impl Dom {
             .take_inline_layout()
             .unwrap();
 
-        let style = &self.nodes[node_id].taffy_style;
+        // Extract all needed style values eagerly, then drop the borrow
+        let (margin, padding, border, box_sizing, overflow, scrollbar_width, is_block, position,
+             aspect_ratio, style_size, style_min_size, style_max_size) = {
+            let style = self.stylo_style_ref(NodeId::from(node_id));
+            let margin = style.margin().resolve_or_zero(parent_size.width, resolve_calc_value);
+            let padding = style.padding().resolve_or_zero(parent_size.width, resolve_calc_value);
+            let border = style.border().resolve_or_zero(parent_size.width, resolve_calc_value);
+            let box_sizing = style.box_sizing();
+            let overflow = style.overflow();
+            let scrollbar_width = style.scrollbar_width();
+            let is_block = style.is_block();
+            let position = style.position();
+            let aspect_ratio = style.aspect_ratio();
+            let style_size = style.size();
+            let style_min_size = style.min_size();
+            let style_max_size = style.max_size();
+            (margin, padding, border, box_sizing, overflow, scrollbar_width, is_block, position,
+             aspect_ratio, style_size, style_min_size, style_max_size)
+        };
 
         // Note: both horizontal and vertical percentage padding/borders are resolved against the container's inline size (i.e. width).
         // This is not a bug, but is how CSS is specified (see: https://developer.mozilla.org/en-US/docs/Web/CSS/padding#values)
-        let margin = style
-            .margin()
-            .resolve_or_zero(parent_size.width, resolve_calc_value);
-        let padding = style
-            .padding()
-            .resolve_or_zero(parent_size.width, resolve_calc_value);
-        let border = style
-            .border()
-            .resolve_or_zero(parent_size.width, resolve_calc_value);
         let container_pb = padding + border;
         let pb_sum = container_pb.sum_axes();
-        let box_sizing_adjustment = if style.box_sizing() == BoxSizing::ContentBox {
+        let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox {
             pb_sum
         } else {
             Size::ZERO
@@ -176,8 +187,8 @@ impl Dom {
         // Scrollbar gutters are reserved when the `overflow` property is set to `Overflow::Scroll`.
         // However, the axis are switched (transposed) because a node that scrolls vertically needs
         // *horizontal* space to be reserved for a scrollbar
-        let scrollbar_gutter = style.overflow().transpose().map(|overflow| match overflow {
-            taffy::style::Overflow::Scroll => style.scrollbar_width(),
+        let scrollbar_gutter = overflow.transpose().map(|o| match o {
+            taffy::style::Overflow::Scroll => scrollbar_width,
             _ => 0.0,
         });
         // TODO: make side configurable based on the `direction` property
@@ -185,10 +196,10 @@ impl Dom {
         content_box_inset.right += scrollbar_gutter.x;
         content_box_inset.bottom += scrollbar_gutter.y;
 
-        let has_styles_preventing_being_collapsed_through = !style.is_block()
-            || style.overflow().x.is_scroll_container()
-            || style.overflow().y.is_scroll_container()
-            || style.position() == Position::Absolute
+        let has_styles_preventing_being_collapsed_through = !is_block
+            || overflow.x.is_scroll_container()
+            || overflow.y.is_scroll_container()
+            || position == Position::Absolute
             || padding.top > 0.0
             || padding.bottom > 0.0
             || border.top > 0.0
@@ -224,25 +235,21 @@ impl Dom {
                 (node_size, node_min_size, node_max_size, None)
             }
             SizingMode::InherentSize => {
-                let aspect_ratio = style.aspect_ratio();
-                let style_size = style
-                    .size()
+                let resolved_size = style_size
                     .maybe_resolve(parent_size, resolve_calc_value)
                     .maybe_apply_aspect_ratio(aspect_ratio)
                     .maybe_add(box_sizing_adjustment);
-                let style_min_size = style
-                    .min_size()
+                let resolved_min_size = style_min_size
                     .maybe_resolve(parent_size, resolve_calc_value)
                     .maybe_apply_aspect_ratio(aspect_ratio)
                     .maybe_add(box_sizing_adjustment);
-                let style_max_size = style
-                    .max_size()
+                let resolved_max_size = style_max_size
                     .maybe_resolve(parent_size, resolve_calc_value)
                     .maybe_add(box_sizing_adjustment);
 
                 let node_size =
-                    known_dimensions.or(style_size.maybe_clamp(style_min_size, style_max_size));
-                (node_size, style_min_size, style_max_size, aspect_ratio)
+                    known_dimensions.or(resolved_size.maybe_clamp(resolved_min_size, resolved_max_size));
+                (node_size, resolved_min_size, resolved_max_size, aspect_ratio)
             }
         };
 
@@ -286,17 +293,18 @@ impl Dom {
         };
 
         for ibox in inline_layout.layout.inline_boxes_mut() {
-            let style = &self.nodes[ibox.id as usize].taffy_style;
+            let style = self.stylo_style_ref(NodeId::from(ibox.id));
             let margin = style
-                .margin
+                .margin()
                 .resolve_or_zero(inputs.parent_size, resolve_calc_value);
 
-            let is_floated = style.float.is_floated();
+            let is_floated = BlockItemStyle::float(&style).is_floated();
 
-            if style.position == Position::Absolute || is_floated {
+            if style.position() == Position::Absolute || is_floated {
                 ibox.width = 0.0;
                 ibox.height = 0.0;
             } else {
+                drop(style);
                 let output = self.compute_child_layout(NodeId::from(ibox.id), child_inputs);
                 ibox.width = (margin.left + margin.right + output.size.width) * scale;
                 ibox.height = (margin.top + margin.bottom + output.size.height) * scale;
@@ -338,12 +346,13 @@ impl Dom {
                     AvailableSpace::MinContent => {
                         let mut width: f32 = 0.0;
                         for ibox in inline_layout.layout.inline_boxes_mut() {
-                            let style = &self.nodes[ibox.id as usize].taffy_style;
+                            let style = self.stylo_style_ref(NodeId::from(ibox.id));
 
-                            if style.float.is_floated() {
+                            if BlockItemStyle::float(&style).is_floated() {
                                 let margin = style
-                                    .margin
+                                    .margin()
                                     .resolve_or_zero(inputs.parent_size, resolve_calc_value);
+                                drop(style);
                                 let output =
                                     self.compute_child_layout(NodeId::from(ibox.id), child_inputs);
                                 width = width.max(output.size.width + margin.left + margin.right);
@@ -355,12 +364,13 @@ impl Dom {
                     AvailableSpace::MaxContent => {
                         let mut width: f32 = 0.0;
                         for ibox in inline_layout.layout.inline_boxes_mut() {
-                            let style = &self.nodes[ibox.id as usize].taffy_style;
+                            let style = self.stylo_style_ref(NodeId::from(ibox.id));
 
-                            if style.float.is_floated() {
+                            if BlockItemStyle::float(&style).is_floated() {
                                 let margin = style
-                                    .margin
+                                    .margin()
                                     .resolve_or_zero(inputs.parent_size, resolve_calc_value);
+                                drop(style);
                                 let output =
                                     self.compute_child_layout(NodeId::from(ibox.id), child_inputs);
                                 width += output.size.width + margin.left + margin.right;
@@ -470,19 +480,19 @@ impl Dom {
                     YieldData::InlineBoxBreak(box_break_data) => {
                         let state = breaker.state_mut();
                         let node_id = box_break_data.inline_box_id as usize;
-                        let node = &mut self.nodes[node_id];
 
                         // We can assume that the box is a float because we only set `break_on_box: true` for floats
-                        let direction = match node.taffy_style.float {
+                        let style = self.stylo_style_ref(NodeId::from(node_id));
+                        let direction = match BlockItemStyle::float(&style) {
                             Float::Left => taffy::FloatDirection::Left,
                             Float::Right => taffy::FloatDirection::Right,
                             Float::None => unreachable!(),
                         };
-                        let clear = node.taffy_style.clear;
-                        let margin = node
-                            .taffy_style
-                            .margin
+                        let clear = BlockItemStyle::clear(&style);
+                        let margin = style
+                            .margin()
                             .resolve_or_zero(inputs.parent_size, resolve_calc_value);
+                        drop(style);
 
                         let margin_sum = margin.sum_axes();
 
@@ -578,45 +588,39 @@ impl Dom {
         for line in inline_layout.layout.lines() {
             for item in line.items() {
                 if let parley::layout::PositionedLayoutItem::InlineBox(ibox) = item {
-                    let node = &mut self.nodes[ibox.id as usize];
-                    let padding = node
-                        .taffy_style
-                        .padding
+                    let style = self.stylo_style_ref(NodeId::from(ibox.id));
+                    let padding = style
+                        .padding()
                         .resolve_or_zero(child_inputs.parent_size, resolve_calc_value);
-                    let border = node
-                        .taffy_style
-                        .border
+                    let border = style
+                        .border()
                         .resolve_or_zero(child_inputs.parent_size, resolve_calc_value);
-                    let margin = node
-                        .taffy_style
-                        .margin
+                    let margin = style
+                        .margin()
                         .resolve_or_zero(child_inputs.parent_size, resolve_calc_value);
 
                     // Resolve inset
-                    let left = node
-                        .taffy_style
-                        .inset
+                    let inset = style.inset();
+                    let left = inset
                         .left
                         .maybe_resolve(final_size.width, resolve_calc_value);
-                    let right = node
-                        .taffy_style
-                        .inset
+                    let right = inset
                         .right
                         .maybe_resolve(final_size.width, resolve_calc_value);
-                    let top = node
-                        .taffy_style
-                        .inset
+                    let top = inset
                         .top
                         .maybe_resolve(final_size.height, resolve_calc_value);
-                    let bottom = node
-                        .taffy_style
-                        .inset
+                    let bottom = inset
                         .bottom
                         .maybe_resolve(final_size.height, resolve_calc_value);
 
-                    let is_floated = node.taffy_style.float != Float::None;
+                    let is_floated = BlockItemStyle::float(&style) != Float::None;
+                    let is_absolute = style.position() == Position::Absolute;
+                    drop(style);
 
-                    if node.taffy_style.position == Position::Absolute {
+                    let node = &mut self.nodes[ibox.id as usize];
+
+                    if is_absolute {
                         let output = self.compute_child_layout(NodeId::from(ibox.id), child_inputs);
 
                         let layout = &mut self.nodes[ibox.id as usize].unrounded_layout;

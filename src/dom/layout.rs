@@ -1153,10 +1153,8 @@ impl Dom {
                 return;
             };
 
-            // if damage.intersects(RestyleDamage::RELAYOUT | CONSTRUCT_BOX) {
-            node.taffy_style = stylo_taffy::to_taffy_style(style);
+            // Set display_constructed_as from styles (used by traversal)
             node.display_constructed_as = style.clone_display();
-            // }
 
             // Flush background image from style to dedicated storage on the node
             // TODO: handle multiple background images
@@ -1225,7 +1223,7 @@ impl Dom {
                 }
             }
 
-            node.taffy_style.display
+            stylo_taffy::convert::display(style.clone_display())
         };
 
         // If the node has children, then take those children and...
