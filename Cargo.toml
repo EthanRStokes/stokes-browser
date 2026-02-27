@@ -78,3 +78,7 @@ dioxus-asset-resolver = { version = "0.7.3", features = ["native"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55.0"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }

@@ -580,23 +580,15 @@ impl ApplicationHandler for BrowserApp {
         self.page_viewport = Some(page_viewport);
 
         // Supply the Vulkan context to the tab manager so it can import shared VkImages.
-        // We clone the ash handles by re-loading them from the raw Vulkan handle values
-        // already stored in VkState.  ash handles are thin wrappers over pointers so
-        // cloning is cheap and safe (the underlying objects are owned by vulkano which
-        // lives as long as this Env).
+        // Clone the ash handles directly from VkState — they already have fully-populated
+        // function tables from create_window_vk.  ash handle clones are cheap (just pointer copies).
         {
-            use ash::vk::Handle;
             let vk = &env.vk;
             let device_info = vk.device_info();
-            // Re-wrap the raw handles for the tab manager (same device, different ash wrapper).
-            let ash_instance = unsafe {
-                let entry = ash::Entry::load().expect("ash Entry::load");
-                ash::Instance::load(entry.static_fn(), ash::vk::Instance::from_raw(device_info.instance_handle))
-            };
-            let ash_physical_device = ash::vk::PhysicalDevice::from_raw(device_info.physical_device_handle);
-            let ash_device = unsafe {
-                ash::Device::load(ash_instance.fp_v1_0(), ash::vk::Device::from_raw(vk.ash_device.handle().as_raw()))
-            };
+            // ash::Instance and ash::Device implement Clone.
+            let ash_instance = vk.ash_instance.clone();
+            let ash_physical_device = vk.ash_physical_device;
+            let ash_device = vk.ash_device.clone();
             self.tab_manager.set_vulkan_context(device_info, ash_instance, ash_physical_device, ash_device);
         }
 

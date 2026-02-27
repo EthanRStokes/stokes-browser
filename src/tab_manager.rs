@@ -75,17 +75,15 @@ impl TabManager {
         // Create a fresh one-shot server for this tab.
         let server = IpcServer::new()?;
         let server_name = server.server_name().to_string();
-        let fd_socket_path = server.fd_socket_path.clone();
 
         // Get the current executable path
         let exe_path = std::env::current_exe()?;
 
-        // Spawn the tab process, passing the server name and fd socket path.
+        // Spawn the tab process, passing the server name.
         let mut cmd = Command::new(exe_path);
         cmd.arg("--tab-process")
             .arg(&tab_id)
-            .arg(&server_name)
-            .arg(&fd_socket_path);
+            .arg(&server_name);
 
         // Pass VulkanDeviceInfo if available
         if let Some(ref info) = self.vk_device_info {
@@ -175,34 +173,30 @@ impl TabManager {
                 TabToParentMessage::LoadingStateChanged(is_loading) => {
                     tab.is_loading = is_loading;
                 }
-                TabToParentMessage::FrameRendered { vk_image_handle, width, height, vk_format } => {
-                    // Try to receive the fd from the fd socket
-                    if let Ok(Some(mem_fd)) = tab.channel.try_recv_fd() {
-                        let format = vk::Format::from_raw(vk_format);
-                        if let (Some(inst), Some(phys), Some(dev)) = (
-                            self.ash_instance.as_ref(),
-                            self.ash_physical_device.as_ref(),
-                            self.ash_device.as_ref(),
-                        ) {
-                            match unsafe {
-                                import_skia_image(
-                                    inst,
-                                    *phys,
-                                    dev,
-                                    gr_context,
-                                    mem_fd,
-                                    vk_image_handle,
-                                    width,
-                                    height,
-                                    format,
-                                )
-                            } {
-                                Ok(image) => {
-                                    tab.rendered_frame = Some(RenderedFrame { image, width, height });
-                                }
-                                Err(e) => {
-                                    eprintln!("[TabManager] Failed to import VkImage: {}", e);
-                                }
+                TabToParentMessage::FrameRendered { mem_handle, width, height, vk_format } => {
+                    let format = vk::Format::from_raw(vk_format);
+                    if let (Some(inst), Some(phys), Some(dev)) = (
+                        self.ash_instance.as_ref(),
+                        self.ash_physical_device.as_ref(),
+                        self.ash_device.as_ref(),
+                    ) {
+                        match unsafe {
+                            import_skia_image(
+                                inst,
+                                *phys,
+                                dev,
+                                gr_context,
+                                mem_handle,
+                                width,
+                                height,
+                                format,
+                            )
+                        } {
+                            Ok(image) => {
+                                tab.rendered_frame = Some(RenderedFrame { image, width, height });
+                            }
+                            Err(e) => {
+                                eprintln!("[TabManager] Failed to import VkImage: {}", e);
                             }
                         }
                     }

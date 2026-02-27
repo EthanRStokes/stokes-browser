@@ -133,18 +133,29 @@ impl TabProcess {
             .and_then(|info| physical_devices.iter().find(|&&d| d.as_raw() == info.physical_device_handle).copied())
             .unwrap_or(physical_devices[0]);
 
-        // Find a graphics queue family
-        let queue_families = instance.get_physical_device_queue_family_properties(physical_device);
-        let queue_family_index = queue_families.iter().enumerate()
-            .find(|(_, q)| q.queue_flags.contains(vk::QueueFlags::GRAPHICS))
-            .map(|(i, _)| i as u32)
-            .ok_or("No graphics queue family")?;
+        // Use the parent's queue family index if provided, otherwise find a graphics family.
+        let queue_family_index = parent_info
+            .map(|info| info.queue_family_index)
+            .unwrap_or_else(|| {
+                let queue_families = instance.get_physical_device_queue_family_properties(physical_device);
+                queue_families.iter().enumerate()
+                    .find(|(_, q)| q.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+                    .map(|(i, _)| i as u32)
+                    .unwrap_or(0)
+            });
 
         let queue_priority = [1.0f32];
         let queue_ci = vk::DeviceQueueCreateInfo::default()
             .queue_family_index(queue_family_index)
             .queue_priorities(&queue_priority);
 
+        // Enable the correct external memory extension for the platform.
+        #[cfg(windows)]
+        let ext_names: Vec<*const std::ffi::c_char> = vec![
+            ash::khr::external_memory::NAME.as_ptr(),
+            ash::khr::external_memory_win32::NAME.as_ptr(),
+        ];
+        #[cfg(not(windows))]
         let ext_names: Vec<*const std::ffi::c_char> = vec![
             ash::khr::external_memory::NAME.as_ptr(),
             ash::khr::external_memory_fd::NAME.as_ptr(),
@@ -562,32 +573,29 @@ impl TabProcess {
         }
 
         let vk_image = self.vk_image.as_ref().unwrap();
-        let vk_image_handle = vk_image.image.as_raw();
         let width = vk_image.width;
         let height = vk_image.height;
         let vk_format = vk_image.format.as_raw();
 
-        // Export the memory fd and send it over the fd socket
-        let fd = match unsafe { vk_image.export_fd() } {
-            Ok(fd) => fd,
+        // Retrieve the parent PID from VulkanDeviceInfo (set via env at startup).
+        let parent_pid = std::env::var("STOKES_VK_DEVICE_INFO")
+            .ok()
+            .and_then(|s| serde_json::from_str::<crate::vk_shared::VulkanDeviceInfo>(&s).ok())
+            .map(|info| info.parent_pid)
+            .unwrap_or(0);
+
+        // Export the backing memory as a cross-process handle.
+        let mem_handle = match unsafe { vk_image.export_handle(parent_pid) } {
+            Ok(h) => h,
             Err(e) => {
-                eprintln!("[Tab {}] export_fd failed: {}", self.tab_id, e);
+                eprintln!("[Tab {}] export_handle failed: {}", self.tab_id, e);
                 return Ok(());
             }
         };
 
-        if let Err(e) = self.channel.send_fd(fd) {
-            eprintln!("[Tab {}] send_fd failed: {}", self.tab_id, e);
-            unsafe { libc::close(fd) };
-            return Ok(());
-        }
-
-        // Close our copy of the fd — the Vulkan driver dup'd it for the export
-        unsafe { libc::close(fd) };
-
-        // Send the FrameRendered metadata message
+        // Send the FrameRendered metadata message with the handle embedded.
         self.channel.send(&TabToParentMessage::FrameRendered {
-            vk_image_handle,
+            mem_handle,
             width,
             height,
             vk_format,
