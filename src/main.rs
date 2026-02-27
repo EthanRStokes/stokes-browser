@@ -16,6 +16,7 @@ mod browser;
 mod window;
 mod shell_provider;
 mod default_browser;
+mod vk_shared;
 
 use crate::browser::BrowserApp;
 use winit::event_loop::EventLoop;
@@ -25,7 +26,7 @@ use winit_core::event_loop::ControlFlow;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check if this is a tab process
     let args: Vec<String> = std::env::args().collect();
-    if args.len() >= 4 && args[1] == "--tab-process" {
+    if args.len() >= 5 && args[1] == "--tab-process" {
         let tab_id = args[2].clone();
         let server_name = args[3].clone();
         return tab_process::tab_process_main(tab_id, server_name).await.map_err(|e| e.into());

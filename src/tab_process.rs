@@ -3,9 +3,9 @@ use crate::engine::{Engine, EngineConfig, ENGINE_REF, USER_AGENT_REF};
 use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage};
 use crate::{js, networking};
 use crate::renderer::painter::ScenePainter;
+use crate::vk_shared::{TabVkImage, VulkanDeviceInfo};
+use ash::vk::{self, Handle};
 use blitz_traits::shell::{ShellProvider, Viewport};
-use shared_memory::{Shmem, ShmemConf};
-use skia_safe::{AlphaType, ColorType, ImageInfo, Surface};
 use std::io;
 use std::sync::Arc;
 use std::time::Instant;
@@ -13,6 +13,7 @@ use crate::shell_provider::{StokesShellProvider, ShellProviderMessage};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use crate::dom::Dom;
 use crate::engine::nav_provider::{NavigationProviderMessage, StokesNavigationProvider};
+use skia_safe::gpu::{self as sk_gpu, DirectContext};
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
@@ -20,19 +21,19 @@ pub struct TabProcess {
     animation_time: Option<Instant>,
     channel: IpcChannel,
     tab_id: String,
-    shared_surface: Option<SharedSurface>,
-    surface_generation: u32,
+    /// Skia DirectContext backed by our own Vulkan device
+    gr_context: Option<DirectContext>,
+    /// Current Vulkan image + Skia surface used for rendering
+    vk_image: Option<TabVkImage>,
+    /// ash handles for our private Vulkan device
+    ash_instance: Option<ash::Instance>,
+    ash_physical_device: Option<vk::PhysicalDevice>,
+    ash_device: Option<ash::Device>,
+    queue_family_index: u32,
+    /// Preferred image format taken from the parent's swapchain
+    vk_format: vk::Format,
     shell_receiver: UnboundedReceiver<ShellProviderMessage>,
     nav_receiver: UnboundedReceiver<NavigationProviderMessage>,
-}
-
-/// Shared memory surface for efficient rendering data transfer
-struct SharedSurface {
-    shmem: Shmem,
-    surface: Surface,
-    width: u32,
-    height: u32,
-    generation: u32,
 }
 
 impl TabProcess {
@@ -52,7 +53,7 @@ impl TabProcess {
             ..Default::default()
         };
 
-        let mut engine = Engine::new(config, Viewport::default(), Arc::new(shell_provider), Arc::new(navigation_provider)); // Default viewport, will be resized later
+        let mut engine = Engine::new(config, Viewport::default(), Arc::new(shell_provider), Arc::new(navigation_provider));
 
         // Set the engine reference in the thread-local storage
         ENGINE_REF.with(|engine_ref| {
@@ -62,16 +63,130 @@ impl TabProcess {
             *agent_ref.borrow_mut() = Some(engine.config.user_agent.clone());
         });
 
+        // Parse VulkanDeviceInfo from the environment variable set by the parent
+        let vk_device_info: Option<VulkanDeviceInfo> = std::env::var("STOKES_VK_DEVICE_INFO")
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok());
+
+        // Determine preferred format (fall back to R8G8B8A8_UNORM)
+        let vk_format = vk_device_info.as_ref()
+            .map(|i| vk::Format::from_raw(i.image_format))
+            .unwrap_or(vk::Format::R8G8B8A8_UNORM);
+
+        // Initialise our private Vulkan device so we can create exportable VkImages.
+        let (ash_instance, ash_physical_device, ash_device, queue_family_index, gr_context) =
+            match unsafe { Self::init_vulkan(vk_device_info.as_ref()) } {
+                Ok(handles) => {
+                    let (inst, phys, dev, qfi, ctx) = handles;
+                    (Some(inst), Some(phys), Some(dev), qfi, Some(ctx))
+                }
+                Err(e) => {
+                    eprintln!("[Tab {}] Vulkan init failed (will use CPU fallback): {}", tab_id, e);
+                    (None, None, None, 0, None)
+                }
+            };
+
         Ok(Self {
             engine,
             animation_time: None,
             channel,
             tab_id,
-            shared_surface: None,
-            surface_generation: 0,
+            gr_context,
+            vk_image: None,
+            ash_instance,
+            ash_physical_device,
+            ash_device,
+            queue_family_index,
+            vk_format,
             shell_receiver: shell_rx,
             nav_receiver: nav_rx,
         })
+    }
+
+    /// Initialise a private Vulkan instance + device suitable for offscreen rendering.
+    /// Tries to select the same physical device the parent is using (by index/handles from
+    /// `VulkanDeviceInfo`), falling back to the first GPU if not found.
+    unsafe fn init_vulkan(
+        parent_info: Option<&VulkanDeviceInfo>,
+    ) -> Result<(ash::Instance, vk::PhysicalDevice, ash::Device, u32, DirectContext), String> {
+        let entry = ash::Entry::load().map_err(|e| format!("ash Entry::load: {:?}", e))?;
+
+        let app_info = vk::ApplicationInfo::default()
+            .application_name(c"stokes-tab")
+            .api_version(vk::API_VERSION_1_1);
+
+        let instance_ci = vk::InstanceCreateInfo::default()
+            .application_info(&app_info);
+
+        let instance = entry.create_instance(&instance_ci, None)
+            .map_err(|e| format!("vkCreateInstance: {:?}", e))?;
+
+        let physical_devices = instance.enumerate_physical_devices()
+            .map_err(|e| format!("enumerate_physical_devices: {:?}", e))?;
+
+        if physical_devices.is_empty() {
+            return Err("No Vulkan physical devices found".into());
+        }
+
+        // Try to match the parent's physical device handle; fall back to first device.
+        let physical_device = parent_info
+            .and_then(|info| physical_devices.iter().find(|&&d| d.as_raw() == info.physical_device_handle).copied())
+            .unwrap_or(physical_devices[0]);
+
+        // Find a graphics queue family
+        let queue_families = instance.get_physical_device_queue_family_properties(physical_device);
+        let queue_family_index = queue_families.iter().enumerate()
+            .find(|(_, q)| q.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+            .map(|(i, _)| i as u32)
+            .ok_or("No graphics queue family")?;
+
+        let queue_priority = [1.0f32];
+        let queue_ci = vk::DeviceQueueCreateInfo::default()
+            .queue_family_index(queue_family_index)
+            .queue_priorities(&queue_priority);
+
+        let ext_names: Vec<*const std::ffi::c_char> = vec![
+            ash::khr::external_memory::NAME.as_ptr(),
+            ash::khr::external_memory_fd::NAME.as_ptr(),
+        ];
+
+        let device_ci = vk::DeviceCreateInfo::default()
+            .queue_create_infos(std::slice::from_ref(&queue_ci))
+            .enabled_extension_names(&ext_names);
+
+        let device = instance.create_device(physical_device, &device_ci, None)
+            .map_err(|e| format!("vkCreateDevice: {:?}", e))?;
+
+        // Build a Skia DirectContext against this device
+        let queue = device.get_device_queue(queue_family_index, 0);
+        let get_device_proc_addr = instance.fp_v1_0().get_device_proc_addr;
+        let get_proc = |gpo: skia_safe::gpu::vk::GetProcOf| {
+            match gpo {
+                skia_safe::gpu::vk::GetProcOf::Instance(raw_instance, name) => {
+                    let vk_instance = vk::Instance::from_raw(raw_instance as _);
+                    entry.get_instance_proc_addr(vk_instance, name)
+                }
+                skia_safe::gpu::vk::GetProcOf::Device(raw_device, name) => {
+                    let vk_device = vk::Device::from_raw(raw_device as _);
+                    get_device_proc_addr(vk_device, name)
+                }
+            }
+            .map(|f| f as _)
+            .unwrap_or(std::ptr::null())
+        };
+
+        let gr_context = sk_gpu::direct_contexts::make_vulkan(
+            &skia_safe::gpu::vk::BackendContext::new(
+                instance.handle().as_raw() as _,
+                physical_device.as_raw() as _,
+                device.handle().as_raw() as _,
+                (queue.as_raw() as _, queue_family_index as usize),
+                &get_proc,
+            ),
+            None,
+        ).ok_or_else(|| "Failed to create Skia Vulkan DirectContext in tab".to_string())?;
+
+        Ok((instance, physical_device, device, queue_family_index, gr_context))
     }
 
     fn animation_time(&mut self) -> f64 {
@@ -84,48 +199,50 @@ impl TabProcess {
         }
     }
 
-    /// Initialize shared memory surface
-    fn init_shared_surface(&mut self, width: u32, height: u32) -> io::Result<()> {
-        // Drop the old shared memory surface first to avoid conflicts
-        if let Some(old_surface) = self.shared_surface.take() {
-            // Explicitly drop the old shmem to release the OS resource
-            drop(old_surface.shmem);
+    /// Ensure the VkImage is allocated at the given dimensions.
+    /// Returns `Ok(false)` if Vulkan is not available (tab continues without GPU rendering).
+    fn ensure_vk_image(&mut self, width: u32, height: u32) -> io::Result<bool> {
+        // Check if we need to (re)create the image
+        let needs_create = match &self.vk_image {
+            None => true,
+            Some(img) => img.width != width || img.height != height,
+        };
+
+        if !needs_create {
+            return Ok(true);
         }
 
-        // Increment generation counter for unique ID
-        self.surface_generation = self.surface_generation.wrapping_add(1);
+        // Drop the old image first
+        self.vk_image = None;
 
-        let shmem_name = format!("stokes_tab_{}_{}_{}", self.tab_id, std::process::id(), self.surface_generation);
+        let (inst, phys, dev, ctx) = match (
+            self.ash_instance.as_ref(),
+            self.ash_physical_device.as_ref(),
+            self.ash_device.as_ref(),
+            self.gr_context.as_mut(),
+        ) {
+            (Some(i), Some(p), Some(d), Some(c)) => (i, p, d, c),
+            _ => {
+                eprintln!("[Tab {}] Vulkan not available — skipping VkImage creation", self.tab_id);
+                return Ok(false);
+            }
+        };
 
-        // Calculate required size (RGBA8888 = 4 bytes per pixel)
-        let size = (width * height * 4) as usize;
+        let img = unsafe {
+            TabVkImage::new(
+                inst,
+                *phys,
+                dev,
+                ctx,
+                width,
+                height,
+                self.vk_format,
+                self.queue_family_index,
+            )
+        }.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-        let shmem = ShmemConf::new()
-            .size(size)
-            .os_id(&shmem_name)
-            .create()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-        // Create a reusable raster surface
-        let image_info = ImageInfo::new(
-            (width as i32, height as i32),
-            ColorType::RGBA8888,
-            AlphaType::Premul,
-            None,
-        );
-
-        let surface = skia_safe::surfaces::raster(&image_info, None, None)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to create surface"))?;
-
-        self.shared_surface = Some(SharedSurface {
-            shmem,
-            surface,
-            width,
-            height,
-            generation: self.surface_generation,
-        });
-
-        Ok(())
+        self.vk_image = Some(img);
+        Ok(true)
     }
 
     /// Main event loop for the tab process
@@ -136,8 +253,8 @@ impl TabProcess {
         loop {
             match self.shell_receiver.try_recv() {
                 Ok(msg) => {
-                    self.handle_shell_provider_message(&msg).await?;
-                    self.channel.send(&TabToParentMessage::ShellProvider(msg))?;
+                    let _ = self.handle_shell_provider_message(&msg).await;
+                    let _ = self.channel.send(&TabToParentMessage::ShellProvider(msg));
                 }
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {},
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {},
@@ -146,10 +263,13 @@ impl TabProcess {
                 Ok(msg) => {
                     match msg {
                         NavigationProviderMessage::NavigateTo(options) => {
+                            if self.engine.dom.is_none() {
+                                continue;
+                            }
                             let nav_provider = self.engine.navigation_provider.clone();
-                            self.channel.send(&TabToParentMessage::LoadingStateChanged(true))?;
+                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(true));
                             let url = options.url.as_str().to_string();
-                            self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()))?;
+                            let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                             self.dom().unwrap().net_provider.fetch_with_callback(
                                 options.into_request(),
                                 Box::new(move |result| {
@@ -171,21 +291,20 @@ impl TabProcess {
                         }
                         NavigationProviderMessage::Navigate { url, contents, retain_scroll_position: _, is_md: _ } => {
                             self.engine.set_loading_state(true);
-
                             match self.engine.navigate(&url, contents, true, true).await {
                                 Ok(_) => {
                                     let title = self.engine.page_title().to_string();
-                                    self.channel.send(&TabToParentMessage::NavigationCompleted {
+                                    let _ = self.channel.send(&TabToParentMessage::NavigationCompleted {
                                         url: url.clone(),
                                         title: title.clone(),
-                                    })?;
-                                    self.channel.send(&TabToParentMessage::TitleChanged(title))?;
-                                    self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                                    });
+                                    let _ = self.channel.send(&TabToParentMessage::TitleChanged(title));
+                                    let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                                     self.render_frame()?;
                                 }
                                 Err(e) => {
-                                    self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()))?;
-                                    self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                                    let _ = self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()));
+                                    let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                                 }
                             }
                         }
@@ -198,11 +317,13 @@ impl TabProcess {
 
             // Process all pending messages from parent (non-blocking)
             let mut has_messages = true;
+            println!("Yo");
             while has_messages {
                 let msg_option = self.channel.try_receive()?;
                 match msg_option {
                     Some(msg) => {
                         if !self.handle_message(msg).await? {
+                            println!("Shutting down");
                             return Ok(()); // Shutdown requested
                         }
                     }
@@ -211,12 +332,7 @@ impl TabProcess {
                     }
                 }
             }
-
-            // TODO Process engine timers
-            /*if self.engine.process_timers() {
-                // If timers executed, render a new frame
-                self.render_frame()?;
-            }*/
+            println!("loop");
 
             // Small sleep to prevent CPU spinning
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -233,53 +349,50 @@ impl TabProcess {
 
     /// Handle a message from the parent process
     async fn handle_message(&mut self, message: ParentToTabMessage) -> io::Result<bool> {
+        println!("Handling message from parent: {:?}", message);
         match message {
             ParentToTabMessage::Navigate(url) => {
-                self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()))?;
+                let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                 self.engine.set_loading_state(true);
 
-                let contents = networking::fetch(&url, &self.engine.config.user_agent).unwrap_or_else(|err| {
+                let contents = networking::fetch(&url, &self.engine.config.user_agent).unwrap_or_else(|_| {
                     include_str!("../assets/404.html").to_string()
                 });
                 match self.engine.navigate(&url, contents, true, true).await {
                     Ok(_) => {
                         let title = self.engine.page_title().to_string();
-                        self.channel.send(&TabToParentMessage::NavigationCompleted {
+                        let _ = self.channel.send(&TabToParentMessage::NavigationCompleted {
                             url: url.clone(),
                             title: title.clone(),
-                        })?;
-                        self.channel.send(&TabToParentMessage::TitleChanged(title))?;
-                        self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                        });
+                        let _ = self.channel.send(&TabToParentMessage::TitleChanged(title));
+                        let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                         self.render_frame()?;
                     }
                     Err(e) => {
-                        self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()))?;
-                        self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                        let _ = self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()));
+                        let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                     }
                 }
             }
             ParentToTabMessage::Reload => {
                 let url = self.engine.current_url().to_string();
                 if !url.is_empty() {
-                    self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()))?;
+                    let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                     self.engine.set_loading_state(true);
-
-                    let contents = networking::fetch(&url, &self.engine.config.user_agent).unwrap_or_else(|_err| {
+                    let contents = networking::fetch(&url, &self.engine.config.user_agent).unwrap_or_else(|_| {
                         include_str!("../assets/404.html").to_string()
                     });
                     match self.engine.navigate(&url, contents, true, true).await {
                         Ok(_) => {
                             let title = self.engine.page_title().to_string();
-                            self.channel.send(&TabToParentMessage::NavigationCompleted {
-                                url: url.clone(),
-                                title,
-                            })?;
-                            self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                            let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
+                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                             self.render_frame()?;
                         }
                         Err(e) => {
-                            self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()))?;
-                            self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                            let _ = self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()));
+                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                         }
                     }
                 }
@@ -287,23 +400,19 @@ impl TabProcess {
             ParentToTabMessage::GoBack => {
                 if self.engine.can_go_back() {
                     let url = self.engine.current_url().to_string();
-                    self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()))?;
+                    let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                     self.engine.set_loading_state(true);
-
                     match self.engine.go_back().await {
                         Ok(_) => {
                             let title = self.engine.page_title().to_string();
                             let url = self.engine.current_url().to_string();
-                            self.channel.send(&TabToParentMessage::NavigationCompleted {
-                                url: url.clone(),
-                                title,
-                            })?;
-                            self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                            let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
+                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                             self.render_frame()?;
                         }
                         Err(e) => {
                             eprintln!("Go back failed: {}", e);
-                            self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                         }
                     }
                 }
@@ -311,30 +420,27 @@ impl TabProcess {
             ParentToTabMessage::GoForward => {
                 if self.engine.can_go_forward() {
                     let url = self.engine.current_url().to_string();
-                    self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()))?;
+                    let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                     self.engine.set_loading_state(true);
-
                     match self.engine.go_forward().await {
                         Ok(_) => {
                             let title = self.engine.page_title().to_string();
                             let url = self.engine.current_url().to_string();
-                            self.channel.send(&TabToParentMessage::NavigationCompleted {
-                                url: url.clone(),
-                                title,
-                            })?;
-                            self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                            let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
+                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                             self.render_frame()?;
                         }
                         Err(e) => {
                             eprintln!("Go forward failed: {}", e);
-                            self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                         }
                     }
                 }
             }
             ParentToTabMessage::Resize { width, height } => {
                 self.engine.resize(width, height);
-                self.init_shared_surface(width as u32, height as u32)?;
+                // (Re)create the VkImage at the new size; non-fatal if Vulkan unavailable
+                let _ = self.ensure_vk_image(width as u32, height as u32);
                 self.render_frame()?;
             }
             ParentToTabMessage::Scroll { delta_x, delta_y } => {
@@ -344,96 +450,50 @@ impl TabProcess {
                 }
             }
             ParentToTabMessage::Click { x, y, modifiers } => {
-                // Handle click and check if a link was clicked
                 if let Some(href) = self.engine.handle_click(x, y) {
-                    println!("[Tab Process] Link clicked: {}", href);
-
-                    // Resolve the href against the current page URL
                     match self.engine.resolve_url(&href) {
                         Ok(resolved_url) => {
-                            println!("[Tab Process] Resolved to: {}", resolved_url);
-                            // Check if Ctrl key was pressed - open in new tab
                             if modifiers.ctrl {
-                                println!("[Tab Process] Ctrl+click detected, opening in new tab");
-                                self.channel.send(&TabToParentMessage::NavigateRequestInNewTab(resolved_url))?;
+                                let _ = self.channel.send(&TabToParentMessage::NavigateRequestInNewTab(resolved_url));
                             } else {
-                                // Send navigation request to parent
-                                self.channel.send(&TabToParentMessage::NavigateRequest(resolved_url))?;
+                                let _ = self.channel.send(&TabToParentMessage::NavigateRequest(resolved_url));
                             }
                         }
-                        Err(e) => {
-                            eprintln!("[Tab Process] Failed to resolve URL '{}': {}", href, e);
-                            // Try with the raw href as fallback
+                        Err(_) => {
                             if modifiers.ctrl {
-                                self.channel.send(&TabToParentMessage::NavigateRequestInNewTab(href))?;
+                                let _ = self.channel.send(&TabToParentMessage::NavigateRequestInNewTab(href));
                             } else {
-                                self.channel.send(&TabToParentMessage::NavigateRequest(href))?;
+                                let _ = self.channel.send(&TabToParentMessage::NavigateRequest(href));
                             }
                         }
                     }
                 }
                 self.render_frame()?;
             }
-            //ParentToTabMessage::MouseMove { x, y } => {
-                // Update cursor if hovering over interactive elements
-                //self.engine.handle_mouse_move(x / self.engine.viewport.hidpi_scale, y / self.engine.viewport.hidpi_scale);
-            //}
             ParentToTabMessage::UI(event) => {
                 if let Some(dom) = self.dom_mut() {
                     dom.handle_ui_event(event);
                 }
             }
             ParentToTabMessage::KeyboardInput { key_type, modifiers } => {
-                // Handle keyboard input in the engine
                 use crate::ipc::{KeyInputType, ScrollDirection};
-
                 match key_type {
-                    KeyInputType::Scroll { direction, amount } => {
-                        // Handle keyboard scrolling
-                    }
+                    KeyInputType::Scroll { direction, amount } => {}
                     KeyInputType::Named(key_name) => {
-                        // Handle named keys
                         match key_name.as_str() {
-                            "Home" => {
-                                self.engine.set_scroll_position(0.0, 0.0);
-                            }
-                            "End" => {
-                                self.engine.set_scroll_position(0.0, f32::MAX);
-                            }
-                            "Enter" | "Escape" | "Tab" | "ShiftTab" | "Backspace" | "Delete" => {
-                                // These keys might be handled by JavaScript or form elements
-                                // For now, we just trigger a re-render
-                                // TODO: Forward to focused element in DOM
-                            }
+                            "Home" => { self.engine.set_scroll_position(0.0, 0.0); }
+                            "End" => { self.engine.set_scroll_position(0.0, f32::MAX); }
                             _ => {}
                         }
                     }
                     KeyInputType::Character(text) => {
-                        // Handle character input
-                        // This could be for text input fields, keyboard shortcuts, etc.
-                        // TODO: Forward to focused element in DOM
-
-                        // Check for special keyboard shortcuts
                         if modifiers.ctrl {
                             match text.as_str() {
-                                "ctrl+a" => {
-                                    // Select all in page
-                                    // TODO: Implement text selection
-                                }
-                                "ctrl+c" => {
-                                    // Copy selected text
-                                    // TODO: Implement copy from page content
-                                }
-                                "ctrl+f" => {
-                                    // Find in page
-                                    // TODO: Implement find functionality
-                                }
                                 _ => {}
                             }
                         }
                     }
                 }
-
                 self.render_frame()?;
             }
             ParentToTabMessage::RequestFrame => {
@@ -453,10 +513,10 @@ impl TabProcess {
                 self.render_frame()?;
             }
             ParentToTabMessage::Shutdown => {
-                return Ok(false); // Signal to exit the loop
+                return Ok(false);
             }
         }
-        Ok(true) // Continue running
+        Ok(true)
     }
 
     async fn handle_shell_provider_message(&mut self, message: &ShellProviderMessage) -> io::Result<()> {
@@ -469,52 +529,70 @@ impl TabProcess {
         Ok(())
     }
 
-    /// Render a frame to the shared memory surface
+    /// Render a frame into the shared Vulkan image and notify the parent.
     fn render_frame(&mut self) -> io::Result<()> {
         let animation_time = self.animation_time();
-        if let Some(ref mut shared) = self.shared_surface {
-            let canvas = shared.surface.canvas();
 
-            // Clear the canvas to prevent old frames from showing through
-            canvas.clear(skia_safe::Color::WHITE);
+        let vk_image = match self.vk_image.as_mut() {
+            Some(img) => img,
+            None => return Ok(()), // Not yet initialised or Vulkan unavailable
+        };
 
-            let mut painter = ScenePainter {
-                inner: canvas,
-                cache: &mut Default::default(),
-            };
+        let canvas = vk_image.surface_mut().canvas();
+        canvas.clear(skia_safe::Color::WHITE);
 
-            let engine = &mut self.engine;
-            if engine.dom.is_some() {
-                engine.render(&mut painter, animation_time);
+        let mut painter = ScenePainter {
+            inner: canvas,
+            cache: &mut Default::default(),
+        };
 
-                let dom = engine.dom.as_ref().unwrap();
-                // todo check if window is visible
-                if dom.animating() {
-                    dom.shell_provider.request_redraw();
-                }
+        let engine = &mut self.engine;
+        if engine.dom.is_some() {
+            engine.render(&mut painter, animation_time);
+
+            let dom = engine.dom.as_ref().unwrap();
+            if dom.animating() {
+                dom.shell_provider.request_redraw();
             }
-
-            // Copy the pixel data to shared memory
-            if let Some(pixmap) = shared.surface.peek_pixels() {
-                if let Some(src) = pixmap.bytes() {
-                    let dst = unsafe { shared.shmem.as_slice_mut() };
-
-                    // Copy all pixel data at once
-                    dst.copy_from_slice(src);
-                } else {
-                    return Err(io::Error::new(io::ErrorKind::Other, "Failed to get pixel bytes"));
-                }
-            } else {
-                return Err(io::Error::new(io::ErrorKind::Other, "Failed to peek pixels"));
-            }
-
-            // Notify parent that frame is ready
-            self.channel.send(&TabToParentMessage::FrameRendered {
-                shmem_name: format!("stokes_tab_{}_{}_{}", self.tab_id, std::process::id(), shared.generation),
-                width: shared.width,
-                height: shared.height,
-            })?;
         }
+
+        // Flush the Skia GPU commands so the image memory is ready to export
+        if let Some(ctx) = self.gr_context.as_mut() {
+            ctx.flush_and_submit();
+        }
+
+        let vk_image = self.vk_image.as_ref().unwrap();
+        let vk_image_handle = vk_image.image.as_raw();
+        let width = vk_image.width;
+        let height = vk_image.height;
+        let vk_format = vk_image.format.as_raw();
+
+        // Export the memory fd and send it over the fd socket
+        let fd = match unsafe { vk_image.export_fd() } {
+            Ok(fd) => fd,
+            Err(e) => {
+                eprintln!("[Tab {}] export_fd failed: {}", self.tab_id, e);
+                return Ok(());
+            }
+        };
+
+        if let Err(e) = self.channel.send_fd(fd) {
+            eprintln!("[Tab {}] send_fd failed: {}", self.tab_id, e);
+            unsafe { libc::close(fd) };
+            return Ok(());
+        }
+
+        // Close our copy of the fd — the Vulkan driver dup'd it for the export
+        unsafe { libc::close(fd) };
+
+        // Send the FrameRendered metadata message
+        self.channel.send(&TabToParentMessage::FrameRendered {
+            vk_image_handle,
+            width,
+            height,
+            vk_format,
+        })?;
+
         Ok(())
     }
 }

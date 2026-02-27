@@ -342,7 +342,10 @@ impl BrowserApp {
         let messages = self.tab_manager.poll_messages();
 
         for (tab_id, message) in messages {
-            self.tab_manager.process_tab_message(&tab_id, message.clone());
+            {
+                let gr_context = &mut self.env.as_mut().unwrap().gr_context;
+                self.tab_manager.process_tab_message(&tab_id, message.clone(), gr_context);
+            }
 
             let env = self.env.as_ref().unwrap();
 
@@ -576,6 +579,27 @@ impl ApplicationHandler for BrowserApp {
         self.viewport = Some(viewport);
         self.page_viewport = Some(page_viewport);
 
+        // Supply the Vulkan context to the tab manager so it can import shared VkImages.
+        // We clone the ash handles by re-loading them from the raw Vulkan handle values
+        // already stored in VkState.  ash handles are thin wrappers over pointers so
+        // cloning is cheap and safe (the underlying objects are owned by vulkano which
+        // lives as long as this Env).
+        {
+            use ash::vk::Handle;
+            let vk = &env.vk;
+            let device_info = vk.device_info();
+            // Re-wrap the raw handles for the tab manager (same device, different ash wrapper).
+            let ash_instance = unsafe {
+                let entry = ash::Entry::load().expect("ash Entry::load");
+                ash::Instance::load(entry.static_fn(), ash::vk::Instance::from_raw(device_info.instance_handle))
+            };
+            let ash_physical_device = ash::vk::PhysicalDevice::from_raw(device_info.physical_device_handle);
+            let ash_device = unsafe {
+                ash::Device::load(ash_instance.fp_v1_0(), ash::vk::Device::from_raw(vk.ash_device.handle().as_raw()))
+            };
+            self.tab_manager.set_vulkan_context(device_info, ash_instance, ash_physical_device, ash_device);
+        }
+
         // Create initial tab, navigating to the startup URL if one was provided
         if let Some(url) = self.startup_url.clone() {
             self.add_tab_with_url(Some(&url));
@@ -672,6 +696,22 @@ impl ApplicationHandler for BrowserApp {
                     let Some(tab_id) = self.active_tab_id().cloned() else {
                         return;
                     };
+
+                    // Forward the click to the tab process so the engine can detect link clicks.
+                    // Subtract the chrome height so coordinates are relative to the page canvas.
+                    let chrome_offset = BrowserUI::CHROME_HEIGHT as f32 * self.viewport.as_ref().unwrap().hidpi_scale;
+                    let page_y = (y - chrome_offset).max(0.0);
+                    let click_modifiers = ipc::KeyModifiers {
+                        ctrl: self.modifiers.state().control_key(),
+                        alt: self.modifiers.state().alt_key(),
+                        shift: self.modifiers.state().shift_key(),
+                        meta: self.modifiers.state().meta_key(),
+                    };
+                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Click {
+                        x,
+                        y: page_y,
+                        modifiers: click_modifiers,
+                    });
                     let id = button_source_to_blitz(&ButtonSource::Mouse(MouseButton::Left));
                     let coords = self.pointer_coords(position);
                     self.pointer_position = <(f64, f64)>::from(position);

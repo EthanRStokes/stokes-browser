@@ -20,6 +20,7 @@ use winit::dpi::LogicalSize;
 use winit::window::{Window, WindowAttributes};
 use winit_core::event_loop::ActiveEventLoop;
 use winit_core::icon::{Icon, RgbaIcon};
+use crate::vk_shared::VulkanDeviceInfo;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -66,6 +67,28 @@ pub(crate) struct VkState {
     pub(crate) color_type: ColorType,
     /// Skia/Vulkan format tag for `ImageInfo`.
     pub(crate) vk_format: skia_safe::gpu::vk::Format,
+    /// Raw ash handles for external operations (e.g. importing tab VkImages).
+    pub(crate) ash_instance: ash::Instance,
+    pub(crate) ash_physical_device: ash::vk::PhysicalDevice,
+    pub(crate) ash_device: ash::Device,
+    /// Queue family index used when creating the device.
+    pub(crate) queue_family_index: u32,
+    /// The swapchain image format as a raw VkFormat integer.
+    pub(crate) swapchain_vk_format: i32,
+}
+
+impl VkState {
+    /// Build a `VulkanDeviceInfo` that tab processes can use to attach to the
+    /// same physical device and share VkImages with the parent.
+    pub(crate) fn device_info(&self) -> VulkanDeviceInfo {
+        use ash::vk::Handle;
+        VulkanDeviceInfo {
+            instance_handle: self.ash_instance.handle().as_raw(),
+            physical_device_handle: self.ash_physical_device.as_raw(),
+            queue_family_index: self.queue_family_index,
+            image_format: self.swapchain_vk_format,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -312,6 +335,8 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
 
     let device_extensions = DeviceExtensions {
         khr_swapchain: true,
+        khr_external_memory: true,
+        khr_external_memory_fd: true,
         ..DeviceExtensions::empty()
     };
 
@@ -450,6 +475,24 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
     let skia_surfaces = vk_build_surfaces(&mut skia_ctx, &framebuffers, vk_format, color_type);
     let initial_surface = skia_surfaces[0].clone();
 
+    // Build ash handles by wrapping the raw Vulkan handles from vulkano.
+    // SAFETY: the raw handles are valid for as long as the vulkano objects live.
+    // We keep the vulkano objects in `VkState` alongside these ash wrappers, so
+    // the lifetime constraint is satisfied as long as `VkState` is alive.
+    let ash_instance = unsafe {
+        let entry = ash::Entry::load().expect("Failed to load Vulkan entry (ash)");
+        ash::Instance::load(entry.static_fn(), ash::vk::Instance::from_raw(instance.handle().as_raw()))
+    };
+    let ash_physical_device = ash::vk::PhysicalDevice::from_raw(physical_device.handle().as_raw());
+    let ash_device = unsafe {
+        ash::Device::load(ash_instance.fp_v1_0(), ash::vk::Device::from_raw(device.handle().as_raw()))
+    };
+    let swapchain_vk_format = {
+        // vulkano's VkFormat discriminants match the Vulkan spec, which also matches
+        // ash::vk::Format raw values.  We can safely cast through i32.
+        image_format as i32
+    };
+
     let vk_state = VkState {
         instance,
         device,
@@ -463,6 +506,11 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         swapchain_valid: true,
         color_type,
         vk_format,
+        ash_instance,
+        ash_physical_device,
+        ash_device,
+        queue_family_index,
+        swapchain_vk_format,
     };
 
     Env { surface: initial_surface, gr_context: skia_ctx, window, vk: vk_state }
