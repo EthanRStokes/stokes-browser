@@ -1450,91 +1450,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "gl"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a94edab108827d67608095e269cf862e60d920f144a5026d3dbcfd8b877fb404"
-dependencies = [
- "gl_generator",
-]
-
-[[package]]
-name = "gl_generator"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a95dfc23a2b4a9a2f5ab41d194f8bfda3cabec42af4e39f08c339eb2a0c124d"
-dependencies = [
- "khronos_api",
- "log",
- "xml-rs",
-]
-
-[[package]]
 name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
-
-[[package]]
-name = "glutin"
-version = "0.32.3"
-source = "git+https://github.com/Treetrain1/glutin.git?rev=48b8f8d#48b8f8d2954ebcca2cf27f7310ed07071afea762"
-dependencies = [
- "bitflags 2.11.0",
- "cfg_aliases",
- "dispatch2",
- "glutin_egl_sys",
- "glutin_glx_sys",
- "glutin_wgl_sys",
- "libloading",
- "objc2",
- "objc2-app-kit",
- "objc2-core-foundation",
- "objc2-foundation",
- "objc2-open-gl",
- "once_cell",
- "raw-window-handle",
- "wayland-sys",
- "windows-sys 0.52.0",
- "x11-dl",
-]
-
-[[package]]
-name = "glutin-winit"
-version = "0.5.0"
-source = "git+https://github.com/Treetrain1/glutin.git?rev=48b8f8d#48b8f8d2954ebcca2cf27f7310ed07071afea762"
-dependencies = [
- "cfg_aliases",
- "glutin",
- "raw-window-handle",
- "winit",
-]
-
-[[package]]
-name = "glutin_egl_sys"
-version = "0.7.1"
-source = "git+https://github.com/Treetrain1/glutin.git?rev=48b8f8d#48b8f8d2954ebcca2cf27f7310ed07071afea762"
-dependencies = [
- "gl_generator",
- "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "glutin_glx_sys"
-version = "0.6.1"
-source = "git+https://github.com/Treetrain1/glutin.git?rev=48b8f8d#48b8f8d2954ebcca2cf27f7310ed07071afea762"
-dependencies = [
- "gl_generator",
- "x11-dl",
-]
-
-[[package]]
-name = "glutin_wgl_sys"
-version = "0.6.1"
-source = "git+https://github.com/Treetrain1/glutin.git?rev=48b8f8d#48b8f8d2954ebcca2cf27f7310ed07071afea762"
-dependencies = [
- "gl_generator",
-]
 
 [[package]]
 name = "grid"
@@ -2519,12 +2438,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "khronos_api"
-version = "3.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
-
-[[package]]
 name = "kurbo"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3001,7 +2914,6 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation",
- "objc2-open-gl",
 ]
 
 [[package]]
@@ -3089,15 +3001,6 @@ dependencies = [
  "bitflags 2.11.0",
  "objc2",
  "objc2-foundation",
-]
-
-[[package]]
-name = "objc2-open-gl"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ecc7fd7519a189d9ba9ed9de51af81e41d096aea1d08cca59fd9d8c65d8f585"
-dependencies = [
- "objc2",
 ]
 
 [[package]]
@@ -4420,9 +4323,6 @@ dependencies = [
  "dirs",
  "euclid",
  "futures",
- "gl",
- "glutin",
- "glutin-winit",
  "hashbrown 0.16.1",
  "hirofa_utils",
  "html-escape",
@@ -6973,13 +6873,3 @@ checksum = "410e9ecef634c709e3831c2cfdb8d9c32164fae1c67496d5b68fff728eec37fe"
 dependencies = [
  "zune-core 0.5.1",
 ]
-
-[[patch.unused]]
-name = "glutin"
-version = "0.32.3"
-source = "git+https://github.com/Treetrain1/glutin.git#48b8f8d2954ebcca2cf27f7310ed07071afea762"
-
-[[patch.unused]]
-name = "glutin-winit"
-version = "0.5.0"
-source = "git+https://github.com/Treetrain1/glutin.git#48b8f8d2954ebcca2cf27f7310ed07071afea762"

@@ -21,7 +21,7 @@ use crate::ipc::{ParentToTabMessage, TabToParentMessage};
 use crate::renderer::painter::ScenePainter;
 use crate::tab_manager::TabManager;
 use crate::ui::{BrowserUI, TextBrush};
-use crate::window::{BackendKind, Env};
+use crate::window::Env;
 use crate::{input, ipc};
 use crate::convert_events::{button_source_to_blitz, pointer_source_to_blitz, pointer_source_to_blitz_details, winit_ime_to_blitz, winit_key_event_to_blitz, winit_modifiers_to_kbt_modifiers};
 use crate::events::{BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent};
