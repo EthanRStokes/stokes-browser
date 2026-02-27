@@ -1,11 +1,11 @@
 use std::path::PathBuf;
-use bincode_next::{Decode, Encode};
 use blitz_traits::shell::{ClipboardError, FileDialogFilter, ShellProvider};
 use tokio::sync::mpsc::UnboundedSender;
 use cursor_icon::CursorIcon;
+use serde::{Deserialize, Serialize};
 
 /// Messages sent from child (tab process) to parent (main process) to control the shell
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ShellProviderMessage {
     RequestRedraw,
     SetCursor(String), // string is CursorIcon.name()

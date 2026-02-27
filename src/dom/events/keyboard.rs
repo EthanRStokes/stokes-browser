@@ -20,16 +20,16 @@ pub(crate) fn handle_keypress<F: FnMut(DomEvent)>(
     event: BlitzKeyEvent,
     mut dispatch_event: F,
 ) {
-    if event.key.0 == Key::Tab {
+    if event.key == Key::Tab {
         doc.focus_next_node();
         return;
     }
 
     // Handle copy (Ctrl+C/Cmd+C) for text selection when no text input is focused
     if event.state.is_pressed() {
-        let action_mod = event.modifiers.0.contains(ACTION_MOD);
+        let action_mod = event.modifiers.contains(ACTION_MOD);
         if action_mod {
-            if let Key::Character(c) = &event.key.0 {
+            if let Key::Character(c) = &event.key {
                 if c.to_lowercase() == "c" {
                     // Check if we have a text selection (and no focused text input)
                     let has_focused_text_input = doc.focus_node_id.is_some_and(|id| {
@@ -108,14 +108,14 @@ fn apply_keypress_event(
         return None;
     }
 
-    let mods = event.modifiers.0;
+    let mods = event.modifiers;
     let shift = mods.contains(Modifiers::SHIFT);
     let action_mod = mods.contains(ACTION_MOD);
 
     let is_multiline = input_data.is_multiline;
     let editor = &mut input_data.editor;
     let mut driver = editor.driver(font_ctx, layout_ctx);
-    match event.key.0 {
+    match event.key {
         Key::Character(c) if action_mod && matches!(c.as_str(), "c" | "x" | "v") => {
             match c.to_lowercase().as_str() {
                 "c" => {

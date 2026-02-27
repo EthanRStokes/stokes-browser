@@ -1,12 +1,12 @@
 // Tab Manager - manages tab processes from the parent process
-use crate::ipc::{IpcChannel, IpcServer, ParentToTabMessage, TabToParentMessage};
+use crate::ipc::{IpcServer, ParentIpcChannel, ParentToTabMessage, TabToParentMessage};
 use shared_memory::ShmemConf;
 use skia_safe::{AlphaType, ColorType, Data, Image, ImageInfo};
 use std::collections::HashMap;
 use std::io;
 use std::process::{Child, Command};
-use std::sync::Arc;
 use std::thread;
+use std::time::Instant;
 
 /// Represents a managed tab process
 pub struct ManagedTab {
@@ -16,7 +16,7 @@ pub struct ManagedTab {
     pub is_loading: bool,
     pub zoom: f32,
     process: Child,
-    channel: IpcChannel,
+    channel: ParentIpcChannel,
     pub rendered_frame: Option<RenderedFrame>,
 }
 
@@ -30,18 +30,14 @@ pub struct RenderedFrame {
 /// Manages all tab processes
 pub struct TabManager {
     tabs: HashMap<String, ManagedTab>,
-    ipc_server: Arc<IpcServer>,
     next_tab_id: usize,
 }
 
 impl TabManager {
     /// Create a new tab manager
     pub fn new() -> io::Result<Self> {
-        let ipc_server = Arc::new(IpcServer::new()?);
-
         Ok(Self {
             tabs: HashMap::new(),
-            ipc_server,
             next_tab_id: 1,
         })
     }
@@ -51,18 +47,22 @@ impl TabManager {
         let tab_id = format!("tab{}", self.next_tab_id);
         self.next_tab_id += 1;
 
+        // Create a fresh one-shot server for this tab.
+        let server = IpcServer::new()?;
+        let server_name = server.server_name().to_string();
+
         // Get the current executable path
         let exe_path = std::env::current_exe()?;
 
-        // Spawn the tab process
+        // Spawn the tab process, passing the server name instead of a path.
         let child = Command::new(exe_path)
             .arg("--tab-process")
             .arg(&tab_id)
-            .arg(self.ipc_server.socket_path().to_str().unwrap())
+            .arg(&server_name)
             .spawn()?;
 
-        // Accept the connection from the tab process
-        let channel = self.ipc_server.accept()?;
+        // Block until the tab process completes the bootstrap handshake.
+        let channel = server.accept()?;
 
         let managed_tab = ManagedTab {
             id: tab_id.clone(),
@@ -93,7 +93,7 @@ impl TabManager {
 
     /// Send a message to a tab
     pub fn send_to_tab(&mut self, tab_id: &str, message: ParentToTabMessage) -> io::Result<()> {
-        if let Some(tab) = self.tabs.get_mut(tab_id) {
+        if let Some(tab) = self.tabs.get(tab_id) {
             tab.channel.send(&message)?;
         }
         Ok(())
@@ -103,16 +103,14 @@ impl TabManager {
     pub fn poll_messages(&mut self) -> Vec<(String, TabToParentMessage)> {
         let mut messages = Vec::new();
 
-        for (tab_id, tab) in self.tabs.iter_mut() {
-            // Try to receive messages without blocking
-            while let Ok(Some(msg)) = tab.channel.try_receive::<TabToParentMessage>() {
+        for (tab_id, tab) in self.tabs.iter() {
+            while let Ok(Some(msg)) = tab.channel.try_receive() {
                 messages.push((tab_id.clone(), msg));
             }
         }
 
         messages
     }
-
 
     /// Process a message from a tab and update state
     pub fn process_tab_message(&mut self, tab_id: &str, message: TabToParentMessage) {
@@ -210,13 +208,8 @@ impl TabManager {
     /// Close a tab
     pub fn close_tab(&mut self, tab_id: &str) -> io::Result<()> {
         if let Some(mut tab) = self.tabs.remove(tab_id) {
-            // Send shutdown message
             let _ = tab.channel.send(&ParentToTabMessage::Shutdown);
-
-            // Wait for process to exit (with timeout)
             thread::sleep(std::time::Duration::from_millis(100));
-
-            // Kill if still running
             let _ = tab.process.kill();
         }
         Ok(())
@@ -236,10 +229,10 @@ impl TabManager {
 
 impl Drop for TabManager {
     fn drop(&mut self) {
-        // Clean up all tab processes
-        for (_, mut tab) in self.tabs.drain() {
+        for (_, tab) in self.tabs.drain() {
             let _ = tab.channel.send(&ParentToTabMessage::Shutdown);
-            let _ = tab.process.kill();
+            let mut process = tab.process;
+            let _ = process.kill();
         }
     }
 }

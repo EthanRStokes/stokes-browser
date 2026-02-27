@@ -49,7 +49,7 @@ impl Dom {
                     target_node_id,
                     event.page_x(),
                     event.page_y(),
-                    event.mods.0,
+                    event.mods,
                     &mut dispatch_event,
                 );
             }

@@ -51,17 +51,17 @@ pub(crate) fn winit_key_event_to_blitz(
     mods: WinitModifiers,
 ) -> BlitzKeyEvent {
     BlitzKeyEvent {
-        key: Compat(winit_key_to_kbt_key(&event.logical_key)),
-        code: Compat(winit_physical_key_to_kbt_code(&event.physical_key)),
-        modifiers: Compat(winit_modifiers_to_kbt_modifiers(mods)),
-        location: Compat(winit_key_location_to_kbt_location(event.location)),
+        key: winit_key_to_kbt_key(&event.logical_key),
+        code: winit_physical_key_to_kbt_code(&event.physical_key),
+        modifiers: winit_modifiers_to_kbt_modifiers(mods),
+        location: winit_key_location_to_kbt_location(event.location),
         is_auto_repeating: event.repeat,
         is_composing: false,
         state: match event.state {
             ElementState::Pressed => KeyState::Pressed,
             ElementState::Released => KeyState::Released,
         },
-        text: Compat(event.text.clone()),
+        text: event.text.clone(),
     }
 }
 

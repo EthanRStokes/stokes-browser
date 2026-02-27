@@ -4,7 +4,6 @@
 //! Types to represent UI and DOM events
 
 use bincode_next::serde::Compat;
-use bincode_next::{Decode, Encode};
 use bitflags::bitflags;
 use keyboard_types::{Code, Key, Location, Modifiers};
 use serde::{Deserialize, Serialize};
@@ -58,7 +57,7 @@ impl EventState {
     }
 }
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum UiEvent {
     PointerMove(BlitzPointerEvent),
@@ -405,14 +404,14 @@ pub struct HitResult {
     pub y: f32,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlitzPointerId {
     Mouse,
     Pen,
     Finger(u64),
 }
 
-#[derive(Copy, Clone, Debug, Encode, Decode)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub struct PointerCoords {
     pub page_x: f32,
     pub page_y: f32,
@@ -422,7 +421,7 @@ pub struct PointerCoords {
     pub client_y: f32,
 }
 
-#[derive(Copy, Clone, Debug, Default, Encode, Decode)]
+#[derive(Copy, Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PointerDetails {
     pub pressure: f64, // default 0.5 if buttons pressed else 0.0
     pub tangential_pressure: f32,
@@ -433,14 +432,14 @@ pub struct PointerDetails {
     pub azimuth: f64,
 }
 
-#[derive(Clone, Debug, Encode, Decode)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BlitzPointerEvent {
     pub id: BlitzPointerId,
     pub is_primary: bool,
     pub coords: PointerCoords,
     pub button: MouseEventButton,
-    pub buttons: Compat<MouseEventButtons>,
-    pub mods: Compat<Modifiers>,
+    pub buttons: MouseEventButtons,
+    pub mods: Modifiers,
     pub details: PointerDetails,
 }
 
@@ -484,18 +483,18 @@ impl BlitzPointerEvent {
     }
 }
 
-#[derive(Clone, Debug, Encode, Decode)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum BlitzWheelDelta {
     Lines(f64, f64),
     Pixels(f64, f64),
 }
 
-#[derive(Clone, Debug, Encode, Decode)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BlitzWheelEvent {
     pub delta: BlitzWheelDelta,
     pub coords: PointerCoords,
-    pub buttons: Compat<MouseEventButtons>,
-    pub mods: Compat<Modifiers>,
+    pub buttons: MouseEventButtons,
+    pub mods: Modifiers,
 }
 
 impl BlitzWheelEvent {
@@ -525,7 +524,7 @@ impl BlitzWheelEvent {
     }
 }
 
-#[derive(Clone, Debug, Encode, Decode)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BlitzScrollEvent {
     pub scroll_top: f64,
     pub scroll_left: f64,
@@ -593,7 +592,7 @@ impl From<MouseEventButton> for MouseEventButtons {
 /// on the mouse to trigger the event.
 ///
 /// [MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MouseEvent/button)
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MouseEventButton {
     /// Main button pressed, usually the left button or the un-initialized state
     #[default]
@@ -608,7 +607,7 @@ pub enum MouseEventButton {
     Fifth = 4,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KeyState {
     Pressed,
     Released,
@@ -620,28 +619,28 @@ impl KeyState {
     }
 }
 
-#[derive(Clone, Debug, Encode, Decode)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BlitzKeyEvent {
-    pub key: Compat<Key>,
-    pub code: Compat<Code>,
-    pub modifiers: Compat<Modifiers>,
-    pub location: Compat<Location>,
+    pub key: Key,
+    pub code: Code,
+    pub modifiers: Modifiers,
+    pub location: Location,
     pub is_auto_repeating: bool,
     pub is_composing: bool,
     pub state: KeyState,
-    pub text: Compat<Option<SmolStr>>,
+    pub text: Option<SmolStr>,
 }
 
-#[derive(Clone, Debug, Encode, Decode)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BlitzInputEvent {
     pub value: String,
 }
 
-#[derive(Clone, Debug, Encode, Decode)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BlitzFocusEvent;
 
 /// Copy of Winit IME event to avoid lower-level Blitz crates depending on winit
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BlitzImeEvent {
     /// Notifies when the IME was enabled.
     ///
