@@ -56,7 +56,6 @@ pub(crate) fn build_table_context(
     let mut rows: Vec<TableRow> = Vec::new();
     let mut row = 0u16;
     let mut col = 0u16;
-    println!("table is actually used");
 
     let root_node = &mut dom.nodes[table_root_node_id];
 
