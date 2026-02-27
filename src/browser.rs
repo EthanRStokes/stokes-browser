@@ -41,7 +41,6 @@ enum TabCloseResult {
 pub(crate) struct BrowserApp {
     env: Option<Env>,
     modifiers: Modifiers,
-    previous_frame_start: Instant,
     tab_manager: TabManager,
     active_tab_index: usize,
     ui: Option<BrowserUI>,
@@ -66,7 +65,6 @@ impl BrowserApp {
         Self {
             env: None,
             modifiers: Modifiers::default(),
-            previous_frame_start: Instant::now(),
             tab_manager,
             active_tab_index: 0,
             ui: None,
@@ -428,7 +426,7 @@ impl BrowserApp {
                     }
                 },
                 TabToParentMessage::UpdateButtons(buttons) => {
-                    self.buttons = buttons.0;
+                    self.buttons = buttons;
                 }
                 _ => {}
             }
@@ -701,8 +699,8 @@ impl ApplicationHandler for BrowserApp {
                             is_primary: primary,
                             coords,
                             button: Default::default(),
-                            buttons: Compat(self.buttons),
-                            mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                            buttons: self.buttons,
+                            mods: winit_modifiers_to_kbt_modifiers(self.modifiers.state()),
                             details: PointerDetails::default()
                         });
                         let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
@@ -713,8 +711,8 @@ impl ApplicationHandler for BrowserApp {
                         is_primary: primary,
                         coords,
                         button,
-                        buttons: Compat(self.buttons),
-                        mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                        buttons: self.buttons,
+                        mods: winit_modifiers_to_kbt_modifiers(self.modifiers.state()),
                         // TODO: details for pointer up/down events
                         details: PointerDetails::default(),
                     };
@@ -782,8 +780,8 @@ impl ApplicationHandler for BrowserApp {
                         is_primary: primary,
                         coords,
                         button: Default::default(),
-                        buttons: Compat(self.buttons),
-                        mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                        buttons: self.buttons,
+                        mods: winit_modifiers_to_kbt_modifiers(self.modifiers.state()),
                         details: PointerDetails::default()
                     });
                     let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
@@ -794,8 +792,8 @@ impl ApplicationHandler for BrowserApp {
                     is_primary: primary,
                     coords,
                     button,
-                    buttons: Compat(self.buttons),
-                    mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                    buttons: self.buttons,
+                    mods: winit_modifiers_to_kbt_modifiers(self.modifiers.state()),
                     // TODO: details for pointer up/down events
                     details: PointerDetails::default(),
                 };
@@ -825,8 +823,8 @@ impl ApplicationHandler for BrowserApp {
                         is_primary: primary,
                         coords,
                         button: Default::default(),
-                        buttons: Compat(self.buttons),
-                        mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                        buttons: self.buttons,
+                        mods: winit_modifiers_to_kbt_modifiers(self.modifiers.state()),
                         details: PointerDetails::default()
                     });
                     let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
@@ -837,8 +835,8 @@ impl ApplicationHandler for BrowserApp {
                     is_primary: primary,
                     coords,
                     button,
-                    buttons: Compat(self.buttons),
-                    mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                    buttons: self.buttons,
+                    mods: winit_modifiers_to_kbt_modifiers(self.modifiers.state()),
                     // TODO: details for pointer up/down events
                     details: PointerDetails::default(),
                 };
@@ -865,8 +863,8 @@ impl ApplicationHandler for BrowserApp {
                         is_primary: primary,
                         coords,
                         button: Default::default(),
-                        buttons: Compat(self.buttons),
-                        mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                        buttons: self.buttons,
+                        mods: winit_modifiers_to_kbt_modifiers(self.modifiers.state()),
                         details: PointerDetails::default()
                     });
                     let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
@@ -877,8 +875,8 @@ impl ApplicationHandler for BrowserApp {
                     is_primary: primary,
                     coords,
                     button,
-                    buttons: Compat(self.buttons),
-                    mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                    buttons: self.buttons,
+                    mods: winit_modifiers_to_kbt_modifiers(self.modifiers.state()),
                     // TODO: details for pointer up/down events
                     details: PointerDetails::default(),
                 };
@@ -906,8 +904,8 @@ impl ApplicationHandler for BrowserApp {
                             is_primary: primary,
                             coords: self.pointer_coords(position),
                             button: Default::default(),
-                            buttons: Compat(self.buttons),
-                            mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                            buttons: self.buttons,
+                            mods: winit_modifiers_to_kbt_modifiers(self.modifiers.state()),
                             details: pointer_source_to_blitz_details(&source)
                         });
                         let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
@@ -927,8 +925,8 @@ impl ApplicationHandler for BrowserApp {
                     let event = BlitzWheelEvent {
                         delta: blitz_delta,
                         coords: self.pointer_coords(PhysicalPosition::from(self.pointer_position)),
-                        buttons: Compat(self.buttons),
-                        mods: Compat(winit_modifiers_to_kbt_modifiers(self.modifiers.state())),
+                        buttons: self.buttons,
+                        mods: winit_modifiers_to_kbt_modifiers(self.modifiers.state()),
                     };
 
                     let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(UiEvent::Wheel(event)));
@@ -1013,17 +1011,5 @@ impl ApplicationHandler for BrowserApp {
             }
             _ => {}
         }
-
-        let expected_frame_length_seconds = 1.0 / 60.0;
-        let frame_duration = Duration::from_secs_f32(expected_frame_length_seconds);
-        let frame_start = Instant::now();
-
-        if frame_start - self.previous_frame_start > frame_duration {
-            self.previous_frame_start = frame_start;
-            self.env.as_ref().unwrap().window.request_redraw();
-        }
-
-        let next_frame_time = self.previous_frame_start + frame_duration;
-        event_loop.set_control_flow(ControlFlow::WaitUntil(next_frame_time));
     }
 }

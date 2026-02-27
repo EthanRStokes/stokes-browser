@@ -1173,7 +1173,7 @@ impl DomNode {
                 client_x: x,
                 client_y: y,
             },
-            mods: Compat(mods),
+            mods,
             button: Default::default(),
             buttons: Default::default(),
             details: Default::default(),

@@ -1,61 +1,55 @@
 // Inter-Process Communication module for browser processes
-use bincode_next::{Decode, Encode};
-use std::io::{self, Read, Write};
-use std::path::PathBuf;
+//
+// Uses the `ipc-channel` crate which is built on OS-native IPC primitives
+// (Unix domain sockets with SCM_RIGHTS fd-passing on Linux/macOS, named pipes
+// on Windows).  Compared to the previous length-prefixed bincode-over-
+// UnixStream approach this gives us:
+//
+//   • Zero nonblocking-mode toggling – `IpcReceiver::try_recv` never calls
+//     fcntl; the kernel notifies readiness through the OS IPC mechanism.
+//   • Efficient large-message handling – the OS can use kernel buffers and
+//     avoids user-space copies for messages that fit in the socket buffer.
+//   • A clean `IpcReceiverSet` API for polling *many* tab receivers at once
+//     without spawning per-tab threads.
+
+use std::io;
+use ipc_channel::ipc::{
+    self, IpcOneShotServer, IpcReceiver, IpcSender,
+};
+use ipc_channel::TryRecvError;
+use serde::{Deserialize, Serialize};
 use crate::events::{MouseEventButtons, UiEvent};
 
-#[cfg(unix)]
-use std::os::unix::net::{UnixListener, UnixStream};
-use bincode_next::serde::Compat;
-#[cfg(target_os = "windows")]
-use uds_windows::{UnixListener, UnixStream};
+// ── Wire message types ────────────────────────────────────────────────────────
 
 /// Messages sent from parent (browser UI) to child (tab process)
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ParentToTabMessage {
-    /// Navigate to a URL
     Navigate(String),
-    /// Reload the current page
     Reload,
-    /// Go back in history
     GoBack,
-    /// Go forward in history
     GoForward,
-    /// Resize the rendering area
     Resize { width: f32, height: f32 },
-    /// Scroll the page
     Scroll { delta_x: f32, delta_y: f32 },
-    /// Click at position
     Click { x: f32, y: f32, modifiers: KeyModifiers },
     UI(UiEvent),
-    /// Keyboard input (character or named key)
-    KeyboardInput {
-        key_type: KeyInputType,
-        modifiers: KeyModifiers
-    },
-    /// Request a frame render
+    KeyboardInput { key_type: KeyInputType, modifiers: KeyModifiers },
     RequestFrame,
-    /// Update scale factor
     SetScaleFactor(f32),
-    /// Set the zoom level (1.0 = 100%)
     SetZoom(f32),
-    /// Shutdown the tab process
     Shutdown,
 }
 
 /// Type of keyboard input
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum KeyInputType {
-    /// Regular character input
     Character(String),
-    /// Named key (Enter, Escape, Tab, etc.)
     Named(String),
-    /// Scroll command from keyboard
     Scroll { direction: ScrollDirection, amount: f32 },
 }
 
 /// Scroll direction for keyboard scrolling
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ScrollDirection {
     Up,
     Down,
@@ -64,44 +58,25 @@ pub enum ScrollDirection {
 }
 
 /// Messages sent from child (tab process) to parent (browser UI)
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TabToParentMessage {
-    Navigate {
-        url: String,
-        retain_scroll_position: bool,
-        is_md: bool,
-    },
-    /// Navigation started
+    Navigate { url: String, retain_scroll_position: bool, is_md: bool },
     NavigationStarted(String),
-    /// Navigation completed
     NavigationCompleted { url: String, title: String },
-    /// Navigation failed
     NavigationFailed(String),
-    /// Page title changed
     TitleChanged(String),
-    /// Loading state changed
     LoadingStateChanged(bool),
-    /// Frame rendered (contains shared memory key)
-    FrameRendered {
-        shmem_name: String,
-        width: u32,
-        height: u32,
-    },
-    /// Tab process is ready
+    FrameRendered { shmem_name: String, width: u32, height: u32 },
     Ready,
-    /// Request navigation to a URL (e.g., from clicking a link)
     NavigateRequest(String),
-    /// Request navigation to a URL in a new tab (e.g., from Ctrl+clicking a link)
     NavigateRequestInNewTab(String),
-    /// Show an alert dialog
     Alert(String),
-    /// Shell provider message (for shell operations like cursor changes, redraws, etc.)
     ShellProvider(crate::shell_provider::ShellProviderMessage),
-    /// Update buttons
-    UpdateButtons(Compat<MouseEventButtons>)
+    UpdateButtons(MouseEventButtons),
 }
 
-#[derive(Debug, Clone, Encode, Decode)]
+/// Keyboard modifier key state
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyModifiers {
     pub ctrl: bool,
     pub alt: bool,
@@ -109,111 +84,144 @@ pub struct KeyModifiers {
     pub meta: bool,
 }
 
-/// IPC channel for bidirectional communication
+// ── Bootstrap handshake ───────────────────────────────────────────────────────
+//
+// The parent creates an `IpcOneShotServer` and passes its opaque name string
+// to the child via a CLI argument.  The child connects and sends back a
+// `ChannelBootstrap` so the parent gets both halves of the bidirectional pair.
+//
+// The child creates both channel pairs and sends the parent's halves:
+//   - tab_to_parent_rx: the parent's receiver for messages from the tab
+//   - parent_to_tab_tx: the parent's sender for messages to the tab
+
+/// Sent once by the child over the one-shot bootstrap channel.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChannelBootstrap {
+    /// The parent's receiver for tab→parent messages
+    pub tab_to_parent_rx: IpcReceiver<TabToParentMessage>,
+    /// The parent's sender for parent→tab messages
+    pub parent_to_tab_tx: IpcSender<ParentToTabMessage>,
+}
+
+// ── IpcChannel (tab/child side) ───────────────────────────────────────────────
+
 pub struct IpcChannel {
-    stream: UnixStream,
-    config: bincode_next::config::Configuration,
+    sender: IpcSender<TabToParentMessage>,
+    receiver: IpcReceiver<ParentToTabMessage>,
 }
 
 impl IpcChannel {
-    /// Create a new IPC channel from a Unix stream
-    pub fn new(stream: UnixStream) -> Self {
-        Self {
-            stream,
-            config: bincode_next::config::standard(),
+    pub fn send(&self, message: &TabToParentMessage) -> io::Result<()> {
+        self.sender
+            .send(message.clone())
+            .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e))
+    }
+
+    pub fn try_receive(&self) -> io::Result<Option<ParentToTabMessage>> {
+        match self.receiver.try_recv() {
+            Ok(msg) => Ok(Some(msg)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(e) => Err(io::Error::new(io::ErrorKind::BrokenPipe, e)),
         }
     }
 
-    /// Send a message through the channel
-    pub fn send<T: Encode>(&mut self, message: &T) -> io::Result<()> {
-        let encoded = bincode_next::encode_to_vec(message, self.config)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    pub fn receive(&self) -> io::Result<ParentToTabMessage> {
+        self.receiver
+            .recv()
+            .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e))
+    }
+}
 
-        // Send length prefix (4 bytes)
-        let len = encoded.len() as u32;
-        self.stream.write_all(&len.to_le_bytes())?;
+// ── ParentIpcChannel (parent side) ────────────────────────────────────────────
 
-        // Send the actual message
-        self.stream.write_all(&encoded)?;
-        self.stream.flush()?;
-        Ok(())
+pub struct ParentIpcChannel {
+    pub sender: IpcSender<ParentToTabMessage>,
+    pub receiver: IpcReceiver<TabToParentMessage>,
+}
+
+impl ParentIpcChannel {
+    pub fn send(&self, message: &ParentToTabMessage) -> io::Result<()> {
+        self.sender
+            .send(message.clone())
+            .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e))
     }
 
-    /// Receive a message from the channel
-    pub fn receive<T>(&mut self) -> io::Result<T>
-    where
-        T: bincode_next::Decode<()>,
-    {
-        // Read length prefix
-        let mut len_bytes = [0u8; 4];
-        self.stream.read_exact(&mut len_bytes)?;
-        let len = u32::from_le_bytes(len_bytes) as usize;
-
-        // Read the message
-        let mut buffer = vec![0u8; len];
-        self.stream.read_exact(&mut buffer)?;
-
-        let (decoded, _) = bincode_next::decode_from_slice(&buffer, self.config)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        Ok(decoded)
-    }
-
-    /// Try to receive a message without blocking
-    pub fn try_receive<T: for<'de> Encode + bincode_next::Decode<()>>(&mut self) -> io::Result<Option<T>> {
-        self.stream.set_nonblocking(true)?;
-        let result = self.receive();
-        self.stream.set_nonblocking(false)?;
-
-        match result {
+    pub fn try_receive(&self) -> io::Result<Option<TabToParentMessage>> {
+        match self.receiver.try_recv() {
             Ok(msg) => Ok(Some(msg)),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
-            Err(e) => Err(e),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(e) => Err(io::Error::new(io::ErrorKind::BrokenPipe, e)),
         }
     }
 }
 
-/// IPC server for the parent process to accept connections from tab processes
+// ── IpcServer (parent side) ───────────────────────────────────────────────────
+
+/// Listens for a single incoming bootstrap connection from a tab process.
 pub struct IpcServer {
-    listener: UnixListener,
-    socket_path: PathBuf,
+    server: IpcOneShotServer<ChannelBootstrap>,
+    server_name: String,
 }
 
 impl IpcServer {
-    /// Create a new IPC server
     pub fn new() -> io::Result<Self> {
-        let socket_path = std::env::temp_dir().join(format!("stokes_browser_{}.sock", std::process::id()));
+        let (server, server_name) = IpcOneShotServer::<ChannelBootstrap>::new()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        Ok(Self { server, server_name })
+    }
 
-        // Remove the socket file if it already exists
-        let _ = std::fs::remove_file(&socket_path);
+    /// The opaque name to pass to the child process as a CLI argument.
+    pub fn server_name(&self) -> &str {
+        &self.server_name
+    }
 
-        let listener = UnixListener::bind(&socket_path)?;
-        Ok(Self {
-            listener,
-            socket_path,
+    /// Also expose as socket_path() for compatibility with existing call sites.
+    pub fn socket_path(&self) -> &str {
+        &self.server_name
+    }
+
+    /// Block until the tab process connects and completes the handshake.
+    /// Consumes `self` because the one-shot server can only be used once.
+    pub fn accept(self) -> io::Result<ParentIpcChannel> {
+        let (_, bootstrap) = self.server
+            .accept()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        Ok(ParentIpcChannel {
+            sender: bootstrap.parent_to_tab_tx,
+            receiver: bootstrap.tab_to_parent_rx,
         })
     }
-
-    /// Get the socket path
-    #[inline]
-    pub fn socket_path(&self) -> &PathBuf {
-        &self.socket_path
-    }
-
-    /// Accept a new connection
-    pub fn accept(&self) -> io::Result<IpcChannel> {
-        let (stream, _) = self.listener.accept()?;
-        Ok(IpcChannel::new(stream))
-    }
 }
 
-impl Drop for IpcServer {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.socket_path);
-    }
-}
+// ── connect (child/tab side) ──────────────────────────────────────────────────
 
-/// Connect to an IPC server
-pub fn connect(socket_path: &PathBuf) -> io::Result<IpcChannel> {
-    let stream = UnixStream::connect(socket_path)?;
-    Ok(IpcChannel::new(stream))
+/// Called from the tab process.  Connects to the parent's bootstrap server,
+/// creates the bidirectional channel pair and returns the child's end.
+pub fn connect(server_name: &str) -> io::Result<IpcChannel> {
+    // Channel for tab → parent messages: child keeps tx, sends rx to parent.
+    let (tab_to_parent_tx, tab_to_parent_rx) =
+        ipc::channel::<TabToParentMessage>()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    // Channel for parent → tab messages: child keeps rx, sends tx to parent.
+    let (parent_to_tab_tx, parent_to_tab_rx) =
+        ipc::channel::<ParentToTabMessage>()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    // Send the parent's halves over the one-shot bootstrap channel.
+    let bootstrap_tx = IpcSender::<ChannelBootstrap>::connect(server_name.to_string())
+        .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
+
+    bootstrap_tx
+        .send(ChannelBootstrap {
+            tab_to_parent_rx,
+            parent_to_tab_tx,
+        })
+        .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e))?;
+
+    Ok(IpcChannel {
+        sender: tab_to_parent_tx,
+        receiver: parent_to_tab_rx,
+    })
 }

@@ -19,6 +19,7 @@ mod default_browser;
 
 use crate::browser::BrowserApp;
 use winit::event_loop::EventLoop;
+use winit_core::event_loop::ControlFlow;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -26,8 +27,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 4 && args[1] == "--tab-process" {
         let tab_id = args[2].clone();
-        let socket_path = std::path::PathBuf::from(&args[3]);
-        return tab_process::tab_process_main(tab_id, socket_path).await.map_err(|e| e.into());
+        let server_name = args[3].clone();
+        return tab_process::tab_process_main(tab_id, server_name).await.map_err(|e| e.into());
     }
 
     // Main browser process
@@ -42,6 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let event_loop = EventLoop::new()?;
+    event_loop.set_control_flow(ControlFlow::Wait);
     let app = BrowserApp::new(&event_loop, startup_url).await;
 
     event_loop.run_app(app)?;

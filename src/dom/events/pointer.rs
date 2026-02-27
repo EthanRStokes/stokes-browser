@@ -143,7 +143,7 @@ pub(crate) fn handle_pointermove<F: FnMut(DomEvent)>(
 ) -> bool {
     let x = event.page_x();
     let y = event.page_y();
-    let buttons = event.buttons.0;
+    let buttons = event.buttons;
 
     let mut changed = doc.set_hover(x, y);
 
@@ -491,7 +491,7 @@ pub(crate) fn handle_click(
                     {
                         // Apply default click event action for target node
                         let target_node = doc.get_node_mut(target_node_id).unwrap();
-                        let syn_event = target_node.synthetic_click_event_data(event.mods.0);
+                        let syn_event = target_node.synthetic_click_event_data(event.mods);
                         handle_click(doc, target_node_id, &syn_event, dispatch_event);
                         break 'matched true;
                     }
