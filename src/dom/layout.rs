@@ -428,7 +428,7 @@ fn flush_pseudo_elements(dom: &mut Dom, node_id: usize) {
             let mut element_data = style::data::ElementData::default();
             element_data.styles.primary = Some(pe_style.clone());
             element_data.set_restyled();
-            element_data.damage = RestyleDamage::all();
+            element_data.damage = ALL_DAMAGE;
             *dom.nodes[new_node_id].stylo_data.borrow_mut() = Some(element_data);
 
             let node = &mut dom.nodes[node_id];
