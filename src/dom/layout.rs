@@ -123,18 +123,11 @@ pub(crate) fn collect_layout_children(
 
             match parse_svg(outer_html.as_bytes()) {
                 Ok(svg) => {
-                    let special_data = &mut dom.get_node_mut(node_id)
+                    dom.get_node_mut(node_id)
                         .unwrap()
                         .element_data_mut()
                         .unwrap()
-                        .special_data;
-
-                    match special_data {
-                        SpecialElementData::Image(data) => *data = Box::new(svg.into()),
-                        _ => {
-                            log::error!("SVG element does not have image special data");
-                        }
-                    }
+                        .special_data = SpecialElementData::Image(Box::new(svg.into()));
                 }
                 Err(e) => {
                     println!("{node_id} SVG parse failed");
