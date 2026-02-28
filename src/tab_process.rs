@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
@@ -58,7 +59,12 @@ impl TabProcess {
             ..Default::default()
         };
 
-        let mut engine = Engine::new(config, Viewport::default(), Arc::new(shell_provider), Arc::new(navigation_provider));
+        let mut engine = Engine::new(
+            config,
+            Viewport::default(),
+            Arc::new(shell_provider),
+            Arc::new(navigation_provider),
+        );
 
         // Set the engine reference in the thread-local storage
         ENGINE_REF.with(|engine_ref| {

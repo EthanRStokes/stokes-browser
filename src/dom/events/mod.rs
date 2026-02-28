@@ -132,6 +132,8 @@ impl Dom {
     }
 }
 
+// EVERYTHING UNDER THIS IS OLD AND PROBABLY NEEDS TO BE REWRITTEN
+
 /// Event types supported by the browser
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EventType {

@@ -82,6 +82,7 @@ use style::values::computed::font::{GenericFontFamily, QueryFontMetricsFlags};
 use style::values::computed::{Au, CSSPixelLength, Length, Overflow};
 use stylo_atoms::Atom;
 use taffy::Point;
+use crate::engine::js_provider::StokesJsProvider;
 
 const ZERO: Point<f64> = Point { x: 0.0, y: 0.0 };
 
@@ -141,6 +142,7 @@ pub struct Dom {
     pub net_provider: Arc<StokesNetProvider>,
     pub shell_provider: Arc<StokesShellProvider>,
     pub nav_provider: Arc<StokesNavigationProvider>,
+    pub js_provider: Arc<StokesJsProvider>,
 }
 
 pub enum DomEvent {
@@ -304,6 +306,7 @@ impl Dom {
         let net_provider = config.net_provider.unwrap();
         let shell_provider = config.shell_provider.unwrap();
         let nav_provider = config.nav_provider.unwrap();
+        let js_provider = config.js_provider.unwrap();
 
         let (tx, rx) = channel();
 
@@ -344,6 +347,7 @@ impl Dom {
             net_provider,
             shell_provider,
             nav_provider,
+            js_provider,
         };
 
         // Create the root document node
@@ -439,6 +443,7 @@ impl Dom {
         viewport: Viewport,
         shell_provider: Arc<StokesShellProvider>,
         nav_provider: Arc<StokesNavigationProvider>,
+        js_provider: Arc<StokesJsProvider>,
     ) -> Self {
         let parser = HtmlParser::new();
         parser.parse(html, DomConfig {
@@ -447,6 +452,7 @@ impl Dom {
             net_provider: Some(Arc::new(StokesNetProvider::new(user_agent))),
             shell_provider: Some(shell_provider),
             nav_provider: Some(nav_provider),
+            js_provider: Some(js_provider),
             ..Default::default()
         })
     }

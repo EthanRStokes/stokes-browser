@@ -2,6 +2,8 @@
 mod config;
 pub mod net_provider;
 pub mod nav_provider;
+pub mod resolve;
+pub mod js_provider;
 
 pub use self::config::EngineConfig;
 use crate::dom::node::SpecialElementData;
@@ -10,7 +12,7 @@ use crate::dom::{EventDispatcher, EventType};
 use crate::engine::nav_provider::StokesNavigationProvider;
 use crate::js::JsRuntime;
 use crate::networking;
-use crate::networking::{resolve_url, NetworkError, HttpClient};
+use crate::networking::{NetworkError, HttpClient};
 use crate::renderer::painter::ScenePainter;
 use crate::renderer::HtmlRenderer;
 use crate::shell_provider::StokesShellProvider;
@@ -19,8 +21,11 @@ use markup5ever::local_name;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::mpsc::{channel, Receiver};
+use blitz_traits::net::{NetProvider, Request};
 use style::dom::TNode;
 use style::thread_state::ThreadState;
+use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
 
 thread_local! {
     pub(crate) static ENGINE_REF: RefCell<Option<*mut Engine>> = RefCell::new(None);
@@ -48,10 +53,15 @@ pub struct Engine {
     history_index: Option<usize>,
     shell_provider: Arc<StokesShellProvider>,
     pub(crate) navigation_provider: Arc<StokesNavigationProvider>,
+    pub(crate) js_rx: Option<Receiver<JsProviderMessage>>,
+    pub js_provider: Arc<StokesJsProvider>,
 }
 
 impl Engine {
     pub fn new(config: EngineConfig, viewport: Viewport, shell_provider: Arc<StokesShellProvider>, navigation_provider: Arc<StokesNavigationProvider>) -> Self {
+        let (js_tx, js_rx) = channel();
+        let js_provider = Arc::new(StokesJsProvider::new(js_tx));
+
         Self {
             config,
             new_http_client: None,
@@ -70,6 +80,8 @@ impl Engine {
             history_index: None,
             shell_provider,
             navigation_provider,
+            js_rx: Some(js_rx),
+            js_provider,
         }
     }
 
@@ -98,7 +110,8 @@ impl Engine {
                 self.config.user_agent.clone(),
                 self.viewport.clone(),
                 self.shell_provider.clone(),
-                self.navigation_provider.clone()
+                self.navigation_provider.clone(),
+                self.js_provider.clone(),
             );
 
             // Extract page title
@@ -134,11 +147,7 @@ impl Engine {
                 style::thread_state::exit(ThreadState::SCRIPT);
             }
 
-            {
-                let dom = self.dom.as_mut().unwrap();
-
-                dom.resolve(0.0);
-            }
+            self.resolve(0.0);
 
             // Calculate layout with CSS styles applied
             self.update_content_dimensions();
@@ -155,29 +164,6 @@ impl Engine {
         }
 
         result
-    }
-
-    /// Fetch a single image from a URL
-    async fn fetch_image(&self, url: &str) -> Result<Vec<u8>, NetworkError> {
-        // Resolve relative URLs against the current page URL
-        let absolute_url = self.resolve_url(url)?;
-
-        println!("Fetching image: {}", absolute_url);
-
-        // Use the HTTP client to fetch the image data
-        let image_bytes = networking::fetch_resource(&absolute_url, &self.config.user_agent).await?;
-
-        // Validate that we got some data
-        if image_bytes.is_empty() {
-            return Err(NetworkError::Empty);
-        }
-
-        Ok(image_bytes)
-    }
-
-    /// Resolve a potentially relative URL against the current page URL
-    pub fn resolve_url(&self, url: &str) -> Result<String, NetworkError> {
-        resolve_url(&self.current_url, url)
     }
 
     /// Force reload images (useful for debugging or refresh)
@@ -247,11 +233,7 @@ impl Engine {
 
     /// Render the current page to a canvas
     pub fn render(&mut self, painter: &mut ScenePainter, now: f64) {
-        {
-            let dom = self.dom.as_mut().unwrap();
-
-            dom.resolve(now);
-        }
+        self.resolve(now);
 
         let dom = self.dom.as_ref().unwrap();
         let node = dom.root_node();
@@ -285,16 +267,6 @@ impl Engine {
     /// Add an author CSS stylesheet (from <style> or <link> tags) to the engine
     pub fn add_author_stylesheet(&mut self, css_content: &str) {
         self.dom_mut().add_author_stylesheet(css_content);
-    }
-
-    /// Add a CSS stylesheet from a URL
-    #[inline]
-    pub async fn load_external_stylesheet(&mut self, css_url: &str) -> Result<(), NetworkError> {
-        let absolute_url = self.resolve_url(css_url)?;
-        let css_content = networking::fetch_resource(&absolute_url, &self.config.user_agent).await?;
-        let css_content = String::from_utf8(css_content).expect("Failed to decode CSS content as UTF-8");
-        self.add_author_stylesheet(&css_content);
-        Ok(())
     }
 
     /// Extract and parse CSS from <style> tags and <link> tags in the current DOM
@@ -450,9 +422,6 @@ impl Engine {
             self.initialize_js_runtime();
         }
 
-        // Collect script contents and external URLs first to avoid borrow issues
-        let mut script_items: Vec<(bool, String)> = Vec::new();
-
         let dom = self.dom();
         let script_elements = dom.query_selector("script");
 
@@ -461,100 +430,24 @@ impl Engine {
                 // Check for external scripts
                 if let Some(src) = element_data.attr(local_name!("src")) {
                     println!("Found external script: {}", src);
-                    script_items.push((true, src.to_string()));
+                    let net_provider = dom.net_provider.clone();
+                    let js_provider = self.js_provider.clone();
+                    let url = dom.resolve_url(src);
+                    net_provider.fetch_with_callback(
+                        Request::get(url),
+                        Box::new(move |result| {
+                            js_provider.execute_script(String::from_utf8(Vec::from(result.unwrap().1)).unwrap());
+                        })
+                    );
                 } else {
                     // Get inline script content
                     let script_content = script_element.text_content();
                     if !script_content.trim().is_empty() {
-                        script_items.push((false, script_content));
+                        self.js_provider.execute_script(script_content);
                     }
                 }
             }
         }
-
-        // Execute scripts in order (inline and external)
-        for (is_external, content) in script_items {
-            if is_external {
-                // Fetch external script
-                match self.load_external_script(&content).await {
-                    Ok(script_content) => {
-                        println!("Executing external script from {} ({} bytes)", content, script_content.len());
-                        self.execute_javascript(&script_content);
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to load external script {}: {}", content, e);
-                    }
-                }
-            } else {
-                // Execute inline script
-                println!("Executing inline script ({} bytes)", content.len());
-
-                // Save the script to a local file in debug_js/
-                #[cfg(debug_assertions)]
-                {
-                    use std::fs;
-                    use std::path::Path;
-
-                    let debug_dir = Path::new("debug_js");
-                    if !debug_dir.exists() {
-                        if let Err(e) = fs::create_dir_all(debug_dir) {
-                            eprintln!("Failed to create debug_js directory: {}", e);
-                        }
-                    }
-
-                    // Use a unique filename for each inline script
-                    // Here we just use a timestamp for simplicity
-                    use std::time::{SystemTime, UNIX_EPOCH};
-                    let start = SystemTime::now();
-                    let since_the_epoch = start.duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards");
-                    let filename = format!("inline_script_{}.js", since_the_epoch.as_millis());
-                    let filepath = debug_dir.join(filename);
-                    if let Err(e) = fs::write(&filepath, &content) {
-                        eprintln!("Failed to write inline script to {}: {}", filepath.display(), e);
-                    } else {
-                        println!("Saved inline script to {}", filepath.display());
-                    }
-                }
-
-                self.execute_javascript(&content);
-            }
-        }
-    }
-
-    /// Load an external JavaScript file from a URL
-    async fn load_external_script(&self, script_url: &str) -> Result<String, NetworkError> {
-        if script_url.contains("cloudflare") {
-            return Err(NetworkError::Utf8("Blocked Cloudflare script".to_string()));
-        }
-
-        let absolute_url = self.resolve_url(script_url)?;
-        let script_bytes = networking::fetch_resource(&absolute_url, &self.config.user_agent).await?;
-        let script_content = String::from_utf8(script_bytes)
-            .map_err(|_| NetworkError::Utf8("Failed to decode script as UTF-8".to_string()))?;
-
-        // Save the script to a local file in debug_js/
-        #[cfg(debug_assertions)]
-        {
-            use std::fs;
-            use std::path::Path;
-
-            let debug_dir = Path::new("debug_js");
-            if !debug_dir.exists() {
-                if let Err(e) = fs::create_dir_all(debug_dir) {
-                    eprintln!("Failed to create debug_js directory: {}", e);
-                }
-            }
-
-            let filename = script_url.split('/').last().unwrap_or("script.js");
-            let filepath = debug_dir.join(filename);
-            if let Err(e) = fs::write(&filepath, &script_content) {
-                eprintln!("Failed to write script to {}: {}", filepath.display(), e);
-            } else {
-                println!("Saved external script to {}", filepath.display());
-            }
-        }
-        Ok(script_content)
     }
 
     /// Handle a click at the given position (viewport coordinates)
