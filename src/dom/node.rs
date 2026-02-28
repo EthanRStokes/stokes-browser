@@ -387,8 +387,6 @@ impl ElementData {
             &context,
             &mut parser,
         ) else {
-            #[cfg(feature = "tracing")]
-            tracing::warn!(property = name, value, "Invalid property value");
             return false;
         };
 
@@ -537,6 +535,20 @@ impl ElementData {
     pub fn checkbox_input_checked_mut(&mut self) -> Option<&mut bool> {
         match self.special_data {
             SpecialElementData::CheckboxInput(ref mut checked) => Some(checked),
+            _ => None,
+        }
+    }
+
+    pub fn file_data(&self) -> Option<&FileData> {
+        match &self.special_data {
+            SpecialElementData::FileInput(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    pub fn file_data_mut(&mut self) -> Option<&mut FileData> {
+        match self.special_data {
+            SpecialElementData::FileInput(ref mut data) => Some(data),
             _ => None,
         }
     }

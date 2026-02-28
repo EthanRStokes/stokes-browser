@@ -389,56 +389,65 @@ pub(crate) fn fetch_font_face(
             CssRule::FontFace(font_face) => font_face.read_with(read_guard).sources.as_ref(),
             _ => None,
         })
-        .flat_map(|source_list| &source_list.0)
-        .filter_map(|source| match source {
-            Source::Url(url_source) => Some(url_source),
-            _ => None,
-        })
-        .for_each(|url_source| {
-            let mut format = match &url_source.format_hint {
-                Some(FontFaceSourceFormat::Keyword(fmt)) => *fmt,
-                Some(FontFaceSourceFormat::String(str)) => match str.as_str() {
-                    "woff2" => FontFaceSourceFormatKeyword::Woff2,
-                    "ttf" => FontFaceSourceFormatKeyword::Truetype,
-                    "otf" => FontFaceSourceFormatKeyword::Opentype,
-                    _ => FontFaceSourceFormatKeyword::None,
-                },
-                _ => FontFaceSourceFormatKeyword::None,
-            };
-            if format == FontFaceSourceFormatKeyword::None {
-                let Some((_, end)) = url_source.url.as_str().rsplit_once('.') else {
-                    return;
-                };
-                format = match end {
-                    "woff2" => FontFaceSourceFormatKeyword::Woff2,
-                    "woff" => FontFaceSourceFormatKeyword::Woff,
-                    "ttf" => FontFaceSourceFormatKeyword::Truetype,
-                    "otf" => FontFaceSourceFormatKeyword::Opentype,
-                    "svg" => FontFaceSourceFormatKeyword::Svg,
-                    "eot" => FontFaceSourceFormatKeyword::EmbeddedOpentype,
-                    _ => FontFaceSourceFormatKeyword::None,
-                }
-            }
-            if let _font_format @ (FontFaceSourceFormatKeyword::Svg
-            | FontFaceSourceFormatKeyword::EmbeddedOpentype
-            | FontFaceSourceFormatKeyword::Woff) = format
-            {
-                tracing::warn!("Skipping unsupported font of type {:?}", _font_format);
-                return;
-            }
-            let url = url_source.url.url().unwrap().as_ref().clone();
-            network_provider.fetch(
-                doc_id,
-                Request::get(url),
-                ResourceHandler::boxed(
-                    tx.clone(),
+        .for_each(|source_list| {
+            let preferred_source = source_list
+                .0
+                .iter()
+                .filter_map(|source| match source {
+                    Source::Url(url_source) => Some(url_source),
+                    // TODO: support local fonts in @font-face
+                    Source::Local(_) => None,
+                })
+                .find_map(|url_source| {
+                    let mut format = match &url_source.format_hint {
+                        Some(FontFaceSourceFormat::Keyword(fmt)) => *fmt,
+                        Some(FontFaceSourceFormat::String(str)) => match str.as_str() {
+                            "woff2" => FontFaceSourceFormatKeyword::Woff2,
+                            "ttf" => FontFaceSourceFormatKeyword::Truetype,
+                            "otf" => FontFaceSourceFormatKeyword::Opentype,
+                            _ => FontFaceSourceFormatKeyword::None,
+                        },
+                        _ => FontFaceSourceFormatKeyword::None,
+                    };
+                    if format == FontFaceSourceFormatKeyword::None {
+                        let (_, end) = url_source.url.as_str().rsplit_once('.')?;
+                        format = match end {
+                            "woff2" => FontFaceSourceFormatKeyword::Woff2,
+                            "woff" => FontFaceSourceFormatKeyword::Woff,
+                            "ttf" => FontFaceSourceFormatKeyword::Truetype,
+                            "otf" => FontFaceSourceFormatKeyword::Opentype,
+                            "svg" => FontFaceSourceFormatKeyword::Svg,
+                            "eot" => FontFaceSourceFormatKeyword::EmbeddedOpentype,
+                            _ => FontFaceSourceFormatKeyword::None,
+                        }
+                    }
+
+                    if matches!(
+                        format,
+                        FontFaceSourceFormatKeyword::Svg
+                            | FontFaceSourceFormatKeyword::EmbeddedOpentype
+                    ) {
+                        return None;
+                    }
+
+                    let url = url_source.url.url().unwrap().as_ref().clone();
+                    Some((url, format))
+                });
+
+            if let Some((url, format)) = preferred_source {
+                network_provider.fetch(
                     doc_id,
-                    node_id,
-                    shell_provider.clone(),
-                    FontFaceHandler(format),
-                ),
-            );
-        });
+                    Request::get(url),
+                    ResourceHandler::boxed(
+                        tx.clone(),
+                        doc_id,
+                        node_id,
+                        shell_provider.clone(),
+                        FontFaceHandler(format),
+                    ),
+                );
+            }
+        })
 }
 
 pub struct ImageHandler {
