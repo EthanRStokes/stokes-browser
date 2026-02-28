@@ -10,20 +10,17 @@ use crate::dom::{EventDispatcher, EventType};
 use crate::engine::nav_provider::StokesNavigationProvider;
 use crate::js::JsRuntime;
 use crate::networking;
-use crate::networking::{resolve_url, NetworkError, NewHttpClient};
+use crate::networking::{resolve_url, NetworkError, HttpClient};
 use crate::renderer::painter::ScenePainter;
 use crate::renderer::HtmlRenderer;
 use crate::shell_provider::StokesShellProvider;
-use blitz_traits::shell::{ShellProvider, Viewport};
+use blitz_traits::shell::Viewport;
 use markup5ever::local_name;
-use selectors::Element;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
-use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters};
-use style::dom::{TDocument, TNode};
+use style::dom::TNode;
 use style::thread_state::ThreadState;
-use style::traversal::DomTraversal;
 
 thread_local! {
     pub(crate) static ENGINE_REF: RefCell<Option<*mut Engine>> = RefCell::new(None);
@@ -33,7 +30,7 @@ thread_local! {
 /// The core browser engine that coordinates all browser activities
 pub struct Engine {
     pub config: EngineConfig,
-    new_http_client: Option<NewHttpClient>,
+    new_http_client: Option<HttpClient>,
     current_url: String,
     page_title: String,
     is_loading: bool,
@@ -108,7 +105,7 @@ impl Engine {
             self.page_title = dom.get_title();
 
             // set http client
-            self.new_http_client = Some(NewHttpClient {
+            self.new_http_client = Some(HttpClient {
                 tx: dom.tx.clone(),
                 dom_id: dom.id,
                 net_provider: dom.net_provider.clone(),

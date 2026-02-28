@@ -16,11 +16,10 @@ use mozjs::jsapi::{CallArgs, JSContext as ApiJSContext};
 use mozjs::jsapi::{Compile1, Handle, Heap, JSAutoRealm, JSContext as RawJSContext, JSObject, JSScript, JS_ClearPendingException, JS_ExecuteScript, JS_GetPendingException, JS_IsExceptionPending, MutableHandleValue, OnNewGlobalHookOption, SetScriptPrivate};
 // JavaScript runtime management using Mozilla's SpiderMonkey (mozjs)
 use mozjs::jsval::{PrivateValue, UndefinedValue};
-use mozjs::panic::{maybe_resume_unwind, wrap_panic};
+use mozjs::panic::{maybe_resume_unwind};
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{JS_GetScriptPrivate, JS_NewGlobalObject, JS_ValueToSource};
 use mozjs::rust::{transform_str_to_source_text, CompileOptionsWrapper, JSEngine, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS};
-use skia_safe::wrapper::NativeTransmutableWrapper;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::os::raw::c_void;

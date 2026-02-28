@@ -20,9 +20,10 @@
 ///     produce a `skia_safe::Image` that can be drawn directly onto the swapchain canvas.
 
 use ash::vk::{self, Handle};
+use skia_safe::gpu::vk::AllocFlag;
 use skia_safe::gpu::{self, DirectContext};
 use skia_safe::{ColorType, Image};
-use skia_safe::gpu::vk::AllocFlag;
+
 
 // ── Platform-specific external semaphore handle type ───────────────────────
 

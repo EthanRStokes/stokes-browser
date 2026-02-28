@@ -6,7 +6,7 @@ use crate::renderer::painter::ToColorColor;
 use crate::renderer::Element;
 use anyrender::PaintScene;
 use color::AlphaColor;
-use kurbo::{Affine, BezPath, Point, Rect, Shape, Size, Vec2};
+use kurbo::{BezPath, Point, Rect, Shape, Size, Vec2};
 use peniko::{Fill, ImageAlphaType, ImageFormat, ImageSampler};
 use std::io::Cursor;
 use style::values::specified::ImageRendering;
@@ -818,36 +818,6 @@ fn extend(offset: f64, length: f64) -> f64 {
         length - extend_length
     } else {
         -extend_length
-    }
-}
-
-
-/// Load an image from a file path
-fn load_image_from_path(path: &str) -> Option<RasterImageData> {
-    use std::fs;
-
-    // Try to read the file
-    match fs::read(path) {
-        Ok(data) => {
-            if let Ok(image) = image::ImageReader::new(Cursor::new(data))
-                .with_guessed_format()
-                .expect("Failed to guess image format")
-                .decode()
-            {
-                let rgba_image = image.to_rgba8();
-                let (width, height) = rgba_image.dimensions();
-                let rgba_data = rgba_image.into_raw();
-
-                return Some(RasterImageData::new(
-                    width,
-                    height,
-                    std::sync::Arc::new(rgba_data)
-                ));
-            }
-
-            None
-        }
-        Err(err) => None,
     }
 }
 

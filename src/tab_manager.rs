@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::io;
 use std::process::{Child, Command};
 use std::thread;
-use ipc_channel::ipc::IpcSender;
 use taffy::Point;
 
 /// Represents a managed tab process

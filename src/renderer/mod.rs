@@ -1,7 +1,6 @@
 pub(crate) mod text;
 mod image;
 pub(crate) mod background;
-mod decorations;
 mod cache;
 mod kurbo_css;
 mod layers;

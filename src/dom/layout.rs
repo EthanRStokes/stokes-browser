@@ -4,11 +4,9 @@ use crate::dom::{stylo_to_parley, AttributeMap, Dom, DomNode, ElementData, NodeD
 use crate::layout::list::collect_list_item_children;
 use crate::layout::table::build_table_context;
 use crate::networking::{parse_svg, ImageHandler, ImageType, ResourceHandler};
-use crate::qual_name;
 use crate::ui::TextBrush;
 use blitz_traits::net::{NetProvider, Request};
 use html5ever::local_name;
-use log::log;
 use markup5ever::{ns, QualName};
 use parley::{FontContext, FontWeight, GenericFamily, InlineBox, InlineBoxKind, LayoutContext, LineHeight, StyleProperty, TextStyle, TreeBuilder, WhiteSpaceCollapse};
 use slab::Slab;
@@ -16,16 +14,11 @@ use std::cell::RefCell;
 use std::sync::Arc;
 use style::data::ElementData as StyloElementData;
 use style::properties::generated::longhands::position::computed_value::T as Position;
-use style::properties::longhands;
 use style::selector_parser::RestyleDamage;
 use style::servo::url::ComputedUrl;
 use style::shared_lock::StylesheetGuards;
-use style::values::computed::font::GenericFontFamily;
-use style::values::computed::font::SingleFontFamily;
 use style::values::computed::{Content, ContentItem, Display, Float, PositionProperty};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
-use style::values::specified::text::TextTransformCase;
-use style::values::specified::TextDecorationLine;
 use taffy::{compute_root_layout, round_layout, AvailableSpace, NodeId};
 
 thread_local! {
