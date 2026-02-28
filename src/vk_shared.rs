@@ -584,6 +584,274 @@ pub unsafe fn import_skia_image(
     Ok((skia_image, guard))
 }
 
+/// Import a cross-process memory handle into the parent's Vulkan device as a
+/// raw `ImportedVkImage` (no Skia wrapping).  Use this when the frame will be
+/// composited via a direct `vkCmdBlitImage` rather than through Skia.
+///
+/// # Safety
+/// The caller must not use `handle` after this call; ownership is transferred to
+/// the Vulkan driver.
+pub unsafe fn import_vk_image_raw(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    device: &ash::Device,
+    handle: u64,
+    width: u32,
+    height: u32,
+    format: vk::Format,
+    alloc_size: u64,
+) -> Result<ImportedVkImage, String> {
+    let handle_type = external_handle_type();
+
+    let mut ext_image_ci = vk::ExternalMemoryImageCreateInfo::default()
+        .handle_types(handle_type);
+
+    let image_ci = vk::ImageCreateInfo::default()
+        .push_next(&mut ext_image_ci)
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(format)
+        .extent(vk::Extent3D { width, height, depth: 1 })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .usage(
+            vk::ImageUsageFlags::TRANSFER_SRC
+                | vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::SAMPLED,
+        )
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+
+    let image = device
+        .create_image(&image_ci, None)
+        .map_err(|e| format!("vkCreateImage (raw import) failed: {:?}", e))?;
+
+    let mem_reqs = device.get_image_memory_requirements(image);
+
+    let imported_memory =
+        import_memory(instance, physical_device, device, image, handle, alloc_size, &mem_reqs)?;
+
+    device.bind_image_memory(image, imported_memory, 0).map_err(|e| {
+        device.free_memory(imported_memory, None);
+        device.destroy_image(image, None);
+        format!("vkBindImageMemory (raw import) failed: {:?}", e)
+    })?;
+
+    Ok(ImportedVkImage {
+        device: device.clone(),
+        image,
+        memory: imported_memory,
+    })
+}
+
+/// Blit a tab's imported VkImage directly onto a swapchain image using
+/// `vkCmdBlitImage`, bypassing Skia for the tab-content compositing step.
+///
+/// * `src_image`      – The imported tab frame (`GENERAL` layout, produced by
+///                      the tab after `signal_and_export_semaphore`).
+/// * `src_size`       – `(width, height)` of the source image in pixels.
+/// * `dst_image`      – The swapchain image (must be in
+///                      `COLOR_ATTACHMENT_OPTIMAL` or `GENERAL` layout; this
+///                      function transitions it to `TRANSFER_DST_OPTIMAL`
+///                      first and back to `COLOR_ATTACHMENT_OPTIMAL` after).
+/// * `dst_rect`       – Destination rectangle on the swapchain image
+///                      `(x, y, width, height)` in pixels.  Typically the
+///                      area below the browser chrome.
+/// * `wait_semaphore` – Optional imported VkSemaphore to wait on before the
+///                      blit (GPU-side synchronisation with the tab's render).
+///                      Pass `vk::Semaphore::null()` to skip.
+///
+/// A transient command pool + buffer is created for each call; suitable for
+/// once-per-frame use.
+///
+/// # Safety
+/// All handles must be valid for the given device.
+pub unsafe fn blit_to_swapchain_image(
+    device: &ash::Device,
+    queue: vk::Queue,
+    queue_family_index: u32,
+    src_image: vk::Image,
+    src_size: (u32, u32),
+    dst_image: vk::Image,
+    dst_rect: (i32, i32, i32, i32), // x, y, w, h
+    wait_semaphore: vk::Semaphore,
+) -> Result<(), String> {
+    // Transient command pool + one-shot command buffer.
+    let cmd_pool = {
+        let pool_ci = vk::CommandPoolCreateInfo::default()
+            .queue_family_index(queue_family_index)
+            .flags(vk::CommandPoolCreateFlags::TRANSIENT);
+        device
+            .create_command_pool(&pool_ci, None)
+            .map_err(|e| format!("vkCreateCommandPool (blit) failed: {:?}", e))?
+    };
+
+    let cmd_buf = {
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(cmd_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        let bufs = device.allocate_command_buffers(&alloc_info).map_err(|e| {
+            device.destroy_command_pool(cmd_pool, None);
+            format!("vkAllocateCommandBuffers (blit) failed: {:?}", e)
+        })?;
+        bufs[0]
+    };
+
+    let begin_info = vk::CommandBufferBeginInfo::default()
+        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+    device.begin_command_buffer(cmd_buf, &begin_info).map_err(|e| {
+        device.destroy_command_pool(cmd_pool, None);
+        format!("vkBeginCommandBuffer (blit) failed: {:?}", e)
+    })?;
+
+    let subresource = vk::ImageSubresourceRange {
+        aspect_mask: vk::ImageAspectFlags::COLOR,
+        base_mip_level: 0,
+        level_count: 1,
+        base_array_layer: 0,
+        layer_count: 1,
+    };
+
+    // Barrier 1: src GENERAL → TRANSFER_SRC_OPTIMAL
+    //            dst UNDEFINED/COLOR_ATTACHMENT → TRANSFER_DST_OPTIMAL
+    let barriers = [
+        vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(src_image)
+            .subresource_range(subresource),
+        vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(dst_image)
+            .subresource_range(subresource),
+    ];
+
+    device.cmd_pipeline_barrier(
+        cmd_buf,
+        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::TRANSFER,
+        vk::PipelineStageFlags::TRANSFER,
+        vk::DependencyFlags::empty(),
+        &[],
+        &[],
+        &barriers,
+    );
+
+    // vkCmdBlitImage: tab frame → swapchain region
+    let src_subresource = vk::ImageSubresourceLayers {
+        aspect_mask: vk::ImageAspectFlags::COLOR,
+        mip_level: 0,
+        base_array_layer: 0,
+        layer_count: 1,
+    };
+    let (dst_x, dst_y, dst_w, dst_h) = dst_rect;
+    let blit = vk::ImageBlit::default()
+        .src_subresource(src_subresource)
+        .src_offsets([
+            vk::Offset3D { x: 0, y: 0, z: 0 },
+            vk::Offset3D { x: src_size.0 as i32, y: src_size.1 as i32, z: 1 },
+        ])
+        .dst_subresource(src_subresource)
+        .dst_offsets([
+            vk::Offset3D { x: dst_x, y: dst_y, z: 0 },
+            vk::Offset3D { x: dst_x + dst_w, y: dst_y + dst_h, z: 1 },
+        ]);
+
+    device.cmd_blit_image(
+        cmd_buf,
+        src_image,
+        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        dst_image,
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        &[blit],
+        vk::Filter::LINEAR,
+    );
+
+    // Barrier 2: dst TRANSFER_DST_OPTIMAL → COLOR_ATTACHMENT_OPTIMAL
+    //             (Skia will draw the chrome on top next)
+    //            src TRANSFER_SRC_OPTIMAL → GENERAL (restore for next frame)
+    let barriers_after = [
+        vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+            .dst_access_mask(vk::AccessFlags::empty())
+            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(src_image)
+            .subresource_range(subresource),
+        vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(dst_image)
+            .subresource_range(subresource),
+    ];
+
+    device.cmd_pipeline_barrier(
+        cmd_buf,
+        vk::PipelineStageFlags::TRANSFER,
+        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        vk::DependencyFlags::empty(),
+        &[],
+        &[],
+        &barriers_after,
+    );
+
+    device
+        .end_command_buffer(cmd_buf)
+        .map_err(|e| format!("vkEndCommandBuffer (blit) failed: {:?}", e))?;
+
+    // Submit — wait on the tab's render semaphore if provided.
+    let fence = device
+        .create_fence(&vk::FenceCreateInfo::default(), None)
+        .map_err(|e| format!("vkCreateFence (blit) failed: {:?}", e))?;
+
+    let cmd_bufs = [cmd_buf];
+    // Keep these alive for the duration of the submit_info borrow.
+    let wait_sems = [wait_semaphore];
+    let wait_stages = [vk::PipelineStageFlags::TRANSFER];
+    let submit_info = if wait_semaphore != vk::Semaphore::null() {
+        vk::SubmitInfo::default()
+            .wait_semaphores(&wait_sems)
+            .wait_dst_stage_mask(&wait_stages)
+            .command_buffers(&cmd_bufs)
+    } else {
+        vk::SubmitInfo::default().command_buffers(&cmd_bufs)
+    };
+
+    device
+        .queue_submit(queue, &[submit_info], fence)
+        .map_err(|e| {
+            device.destroy_fence(fence, None);
+            device.destroy_command_pool(cmd_pool, None);
+            format!("vkQueueSubmit (blit) failed: {:?}", e)
+        })?;
+
+    // Wait for the blit to finish so the command pool can be freed safely.
+    device
+        .wait_for_fences(&[fence], true, 5_000_000_000)
+        .map_err(|e| format!("wait_for_fences (blit) failed: {:?}", e))?;
+
+    device.destroy_fence(fence, None);
+    device.destroy_command_pool(cmd_pool, None);
+
+    Ok(())
+}
+
 // ── Platform-specific memory import helpers ─────────────────────────────────
 
 #[cfg(windows)]

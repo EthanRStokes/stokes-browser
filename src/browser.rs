@@ -1,6 +1,5 @@
 use anyrender::PaintScene;
 use blitz_traits::shell::Viewport;
-use kurbo::Affine;
 use parley::{FontContext, LayoutContext};
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -343,8 +342,7 @@ impl BrowserApp {
 
         for (tab_id, message) in messages {
             {
-                let gr_context = &mut self.env.as_mut().unwrap().gr_context;
-                self.tab_manager.process_tab_message(&tab_id, message.clone(), gr_context);
+                self.tab_manager.process_tab_message(&tab_id, message.clone());
             }
 
             let env = self.env.as_ref().unwrap();
@@ -465,11 +463,9 @@ impl BrowserApp {
         self.process_tab_messages();
 
         let active_tab_id = self.active_tab_id().cloned();
-        let env = self.env.as_mut().unwrap();
-        let ui = self.ui.as_mut().unwrap();
 
-        // Check tooltip timeouts and request redraw if any tooltip should now be visible
-        if ui.update_tooltip_visibility(Instant::now()) {
+        // Check tooltip timeouts
+        if self.ui.as_mut().unwrap().update_tooltip_visibility(Instant::now()) {
             self.env.as_ref().unwrap().window.request_redraw();
         }
 
@@ -490,42 +486,39 @@ impl BrowserApp {
             self.env.as_ref().unwrap().window.request_redraw();
         }
 
-        // Get the rendered frame before borrowing canvas
-        let frame_to_render = active_tab_id.as_ref()
-            .and_then(|id| self.tab_manager.get_tab(id))
-            .and_then(|tab| tab.rendered_frame.as_ref())
-            .map(|frame| &frame.image);
-
-        let canvas = self.env.as_mut().unwrap().surface.canvas();
-
-        let mut painter = ScenePainter {
-            inner: canvas,
-            cache: &mut Default::default(),
-        };
-
-        painter.reset();
-
-        // Render the active tab's frame from shared memory
-        if let Some(image) = frame_to_render {
-            // Offset the page content so it renders below the chrome
-            let chrome_offset = BrowserUI::CHROME_HEIGHT * self.viewport.as_ref().unwrap().hidpi_scale;
-            painter.set_matrix(Affine::translate((0.0, 0.0)));
-
-            canvas.draw_image(image, (0.0, chrome_offset), None);
+        if !self.env.as_mut().unwrap().acquire_frame()? {
+            return Ok(());
         }
 
-        // Render UI on top
-        ui.render(canvas, &mut self.font_ctx, &mut self.layout_ctx, &mut painter);
-        ui.render_loading_indicator(&mut painter, is_loading, self.loading_spinner_angle);
+        {
+            let canvas = self.env.as_mut().unwrap().surface.canvas();
+            let mut painter = ScenePainter {
+                inner: canvas,
+                cache: &mut Default::default(),
+            };
+            painter.reset();
+
+            let ui = self.ui.as_mut().unwrap();
+            ui.render(canvas, &mut self.font_ctx, &mut self.layout_ctx, &mut painter);
+            ui.render_loading_indicator(&mut painter, is_loading, self.loading_spinner_angle);
+        }
 
         self.env.as_mut().unwrap().gr_context.flush_and_submit();
-        {
-            let env = self.env.as_mut().unwrap();
-            env.present()?;
-        }
+
+        let chrome_px = (BrowserUI::CHROME_HEIGHT
+            * self.viewport.as_ref().unwrap().hidpi_scale)
+            .round() as i32;
+
+        let tab_frame = active_tab_id.as_ref()
+            .and_then(|id| self.tab_manager.get_tab(id))
+            .and_then(|tab| tab.rendered_frame.as_ref())
+            .map(|f| (&f.vk_guard, f.width, f.height));
+
+        self.env.as_mut().unwrap().blit_tab_then_present(tab_frame, chrome_px)?;
 
         Ok(())
     }
+
 
     /// Show an alert dialog with the given message
     fn show_alert(&self, message: &str) {

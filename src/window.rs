@@ -9,6 +9,7 @@ use winit::window::{Window, WindowAttributes};
 use winit_core::event_loop::ActiveEventLoop;
 use winit_core::icon::{Icon, RgbaIcon};
 use crate::vk_shared::VulkanDeviceInfo;
+use crate::vk_shared::ImportedVkImage;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -31,6 +32,40 @@ impl Env {
         if !self.vk.skia_surfaces.is_empty() {
             self.surface = self.vk.skia_surfaces[0].clone();
         }
+    }
+
+    /// Acquire the next swapchain image and point the Skia surface at it.
+    /// Must be called at the start of each frame, before any Skia drawing.
+    /// Returns `false` if the swapchain was out-of-date and the frame should be
+    /// skipped.
+    pub fn acquire_frame(&mut self) -> Result<bool, String> {
+        vk_acquire(&mut self.vk, &**self.window, &mut self.surface, &mut self.gr_context)
+    }
+
+    /// Blit an imported tab VkImage directly to the page region of the current
+    /// swapchain image using `vkCmdBlitImage`, **after** Skia has already
+    /// flushed the chrome.
+    ///
+    /// Call order per frame:
+    ///   1. `acquire_frame()`          — acquires swapchain image, redirects Skia surface
+    ///   2. Skia draws chrome UI       — via `surface.canvas()` + `painter.render()`
+    ///   3. `gr_context.flush_and_submit()` — Skia submits GPU work; image → PRESENT_SRC_KHR
+    ///   4. `blit_tab_then_present()`  — blits tab, waits image_available, signals render_finished, presents
+    ///
+    /// If `tab_frame` is `None` the function skips the blit and just does the
+    /// semaphore hand-off + present.
+    pub fn blit_tab_then_present(
+        &mut self,
+        tab_frame: Option<(&ImportedVkImage, u32, u32)>,
+        chrome_px: i32,
+    ) -> Result<(), String> {
+        vk_blit_tab_then_present(&mut self.vk, &**self.window, tab_frame, chrome_px)
+    }
+
+    /// Flush Skia GPU work and present the current swapchain image.
+    /// Must be called after all Skia drawing for the frame is done.
+    pub fn flush_and_present(&mut self) -> Result<(), String> {
+        vk_flush_and_present(&mut self.vk, &**self.window, &mut self.gr_context)
     }
 
     /// Present the rendered frame: acquires the next swapchain image, re-targets the
@@ -63,6 +98,10 @@ pub(crate) struct VkState {
     /// One pre-built Skia `Surface` per swapchain image — created once, reused every frame.
     pub(crate) skia_surfaces: Vec<Surface>,
     pub(crate) swapchain_valid: bool,
+
+    /// Index of the swapchain image acquired for the current frame.
+    /// Set by `vk_acquire`, consumed by `vk_flush_and_present`.
+    pub(crate) current_image_index: u32,
 
     /// Skia color type matching the swapchain format.
     pub(crate) color_type: ColorType,
@@ -279,6 +318,289 @@ fn vk_build_surfaces(
         .iter()
         .map(|&img| vk_surface_for_image(gr_context, img, extent, vk_format, color_type))
         .collect()
+}
+
+/// Acquire the next swapchain image and redirect the Skia surface to it.
+/// Returns `Ok(false)` if the frame should be skipped (out-of-date swapchain).
+fn vk_acquire(
+    vk: &mut VkState,
+    window: &dyn Window,
+    current_surface: &mut Surface,
+    gr_context: &mut DirectContext,
+) -> Result<bool, String> {
+    if !vk.swapchain_valid {
+        vk_prepare_swapchain(vk, window, gr_context);
+    }
+
+    unsafe {
+        vk.device
+            .wait_for_fences(&[vk.in_flight_fence], true, u64::MAX)
+            .map_err(|e| format!("wait_for_fences: {:?}", e))?;
+        vk.device
+            .reset_fences(&[vk.in_flight_fence])
+            .map_err(|e| format!("reset_fences: {:?}", e))?;
+
+        let (image_index, suboptimal) = match vk.swapchain_fn.acquire_next_image(
+            vk.swapchain,
+            u64::MAX,
+            vk.image_available_semaphore,
+            vk::Fence::null(),
+        ) {
+            Ok(result) => result,
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                vk.swapchain_valid = false;
+                return Ok(false);
+            }
+            Err(e) => return Err(format!("acquire_next_image: {:?}", e)),
+        };
+
+        if suboptimal {
+            vk.swapchain_valid = false;
+        }
+
+        vk.current_image_index = image_index;
+        *current_surface = vk.skia_surfaces[image_index as usize].clone();
+    }
+
+    Ok(true)
+}
+
+/// Flush Skia GPU work, optionally blit a tab frame into the page region of the
+/// swapchain image, then present.
+///
+/// This is the zero-copy present path.  Ordering:
+///   1. `gr_context.flush_and_submit()` — Skia finishes; swapchain image is now
+///      in `PRESENT_SRC_KHR` layout.
+///   2. A single command buffer is submitted that:
+///        a. Waits on `image_available_semaphore` (WSI acquire guarantee).
+///        b. If a tab frame is supplied: transitions the swapchain image
+///           `PRESENT_SRC_KHR → TRANSFER_DST_OPTIMAL`, blits only the page
+///           region (below chrome), then transitions back to `PRESENT_SRC_KHR`.
+///        c. Signals `render_finished_semaphore`.
+///   3. Present waits on `render_finished_semaphore`.
+fn vk_blit_tab_then_present(
+    vk: &mut VkState,
+    window: &dyn Window,
+    tab_frame: Option<(&ImportedVkImage, u32, u32)>,
+    chrome_px: i32,
+) -> Result<(), String> {
+    unsafe {
+        let device = &vk.device;
+        let swapchain_image = vk.swapchain_images[vk.current_image_index as usize];
+
+        // ── Command pool + buffer ────────────────────────────────────────────
+        let cmd_pool = {
+            let ci = vk::CommandPoolCreateInfo::default()
+                .queue_family_index(vk.queue_family_index)
+                .flags(vk::CommandPoolCreateFlags::TRANSIENT);
+            device.create_command_pool(&ci, None)
+                .map_err(|e| format!("vkCreateCommandPool (blit-present): {:?}", e))?
+        };
+        let cmd_buf = {
+            let ai = vk::CommandBufferAllocateInfo::default()
+                .command_pool(cmd_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1);
+            let bufs = device.allocate_command_buffers(&ai).map_err(|e| {
+                device.destroy_command_pool(cmd_pool, None);
+                format!("vkAllocateCommandBuffers (blit-present): {:?}", e)
+            })?;
+            bufs[0]
+        };
+
+        let begin_info = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        device.begin_command_buffer(cmd_buf, &begin_info).map_err(|e| {
+            device.destroy_command_pool(cmd_pool, None);
+            format!("vkBeginCommandBuffer (blit-present): {:?}", e)
+        })?;
+
+        let subresource = vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+        let sublayers = vk::ImageSubresourceLayers {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+
+        if let Some((tab, tab_w, tab_h)) = tab_frame {
+            let sw = vk.swapchain_extent.width as i32;
+            let sh = vk.swapchain_extent.height as i32;
+            let dst_h = (sh - chrome_px).max(0);
+
+            // Transition swapchain image: PRESENT_SRC_KHR → TRANSFER_DST_OPTIMAL
+            // Transition tab image:       GENERAL          → TRANSFER_SRC_OPTIMAL
+            let barriers_pre = [
+                vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .old_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                    .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(swapchain_image)
+                    .subresource_range(subresource),
+                vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                    .old_layout(vk::ImageLayout::GENERAL)
+                    .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(tab.image())
+                    .subresource_range(subresource),
+            ];
+            device.cmd_pipeline_barrier(
+                cmd_buf,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[], &[], &barriers_pre,
+            );
+
+            // Blit tab → swapchain page region
+            let blit = vk::ImageBlit::default()
+                .src_subresource(sublayers)
+                .src_offsets([
+                    vk::Offset3D { x: 0, y: 0, z: 0 },
+                    vk::Offset3D { x: tab_w as i32, y: tab_h as i32, z: 1 },
+                ])
+                .dst_subresource(sublayers)
+                .dst_offsets([
+                    vk::Offset3D { x: 0, y: chrome_px, z: 0 },
+                    vk::Offset3D { x: sw, y: chrome_px + dst_h, z: 1 },
+                ]);
+            device.cmd_blit_image(
+                cmd_buf,
+                tab.image(), vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                swapchain_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[blit],
+                vk::Filter::LINEAR,
+            );
+
+            // Transition back:
+            //   swapchain: TRANSFER_DST → PRESENT_SRC_KHR
+            //   tab image: TRANSFER_SRC → GENERAL (ready for next frame)
+            let barriers_post = [
+                vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::empty())
+                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(swapchain_image)
+                    .subresource_range(subresource),
+                vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+                    .dst_access_mask(vk::AccessFlags::empty())
+                    .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(tab.image())
+                    .subresource_range(subresource),
+            ];
+            device.cmd_pipeline_barrier(
+                cmd_buf,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                vk::DependencyFlags::empty(),
+                &[], &[], &barriers_post,
+            );
+        }
+
+        device.end_command_buffer(cmd_buf)
+            .map_err(|e| format!("vkEndCommandBuffer (blit-present): {:?}", e))?;
+
+        // Submit: wait image_available, execute blit (or no-op), signal render_finished
+        let wait_sems = [vk.image_available_semaphore];
+        let wait_stages = [vk::PipelineStageFlags::TRANSFER];
+        let signal_sems = [vk.render_finished_semaphore];
+        let cmd_bufs = [cmd_buf];
+        let submit_info = vk::SubmitInfo::default()
+            .wait_semaphores(&wait_sems)
+            .wait_dst_stage_mask(&wait_stages)
+            .command_buffers(&cmd_bufs)
+            .signal_semaphores(&signal_sems);
+
+        device.queue_submit(vk.queue, &[submit_info], vk.in_flight_fence)
+            .map_err(|e| format!("vkQueueSubmit (blit-present): {:?}", e))?;
+
+        // Present
+        let swapchains = [vk.swapchain];
+        let image_indices = [vk.current_image_index];
+        let present_info = vk::PresentInfoKHR::default()
+            .wait_semaphores(&signal_sems)
+            .swapchains(&swapchains)
+            .image_indices(&image_indices);
+
+        match vk.swapchain_fn.queue_present(vk.queue, &present_info) {
+            Ok(false) => {}
+            Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                vk.swapchain_valid = false;
+            }
+            Err(e) => return Err(format!("queue_present: {:?}", e)),
+        }
+
+        // Free the transient command pool.
+        // We wait on in_flight_fence so we know the GPU is done with cmd_pool
+        // before destroying it. The fence stays signaled — vk_acquire resets it
+        // at the top of the next frame (after its own wait_for_fences).
+        device.wait_for_fences(&[vk.in_flight_fence], true, 5_000_000_000)
+            .map_err(|e| format!("wait_for_fences (blit-present cleanup): {:?}", e))?;
+        device.destroy_command_pool(cmd_pool, None);
+        // Leave in_flight_fence SIGNALED — vk_acquire will reset it.
+    }
+    Ok(())
+}
+
+/// Flush Skia GPU work, submit semaphore sync, and present the current image.
+/// Must be called after `vk_acquire` and all Skia drawing for the frame.
+fn vk_flush_and_present(
+    vk: &mut VkState,
+    window: &dyn Window,
+    gr_context: &mut DirectContext,
+) -> Result<(), String> {
+    unsafe {
+        gr_context.flush_and_submit();
+
+        let wait_semaphores = [vk.image_available_semaphore];
+        let signal_semaphores = [vk.render_finished_semaphore];
+        let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+
+        let submit_info = vk::SubmitInfo::default()
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&wait_stages)
+            .signal_semaphores(&signal_semaphores);
+
+        vk.device
+            .queue_submit(vk.queue, &[submit_info], vk.in_flight_fence)
+            .map_err(|e| format!("queue_submit: {:?}", e))?;
+
+        let swapchains = [vk.swapchain];
+        let image_indices = [vk.current_image_index];
+        let present_info = vk::PresentInfoKHR::default()
+            .wait_semaphores(&signal_semaphores)
+            .swapchains(&swapchains)
+            .image_indices(&image_indices);
+
+        match vk.swapchain_fn.queue_present(vk.queue, &present_info) {
+            Ok(false) => {}
+            Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                vk.swapchain_valid = false;
+            }
+            Err(e) => return Err(format!("queue_present: {:?}", e)),
+        }
+    }
+
+    Ok(())
 }
 
 /// Acquire the next swapchain image, redirect the Skia surface to it, flush, and present.
@@ -620,6 +942,7 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         swapchain_extent: extent,
         skia_surfaces,
         swapchain_valid: true,
+        current_image_index: 0,
         color_type,
         vk_format: skia_vk_format,
         image_available_semaphore,

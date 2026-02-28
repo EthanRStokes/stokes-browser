@@ -1,9 +1,7 @@
 // Tab Manager - manages tab processes from the parent process
 use crate::ipc::{IpcServer, ParentIpcChannel, ParentToTabMessage, TabToParentMessage};
-use crate::vk_shared::{VulkanDeviceInfo, ImportedVkImage, import_skia_image, import_semaphore_and_submit_wait};
+use crate::vk_shared::{VulkanDeviceInfo, ImportedVkImage, import_vk_image_raw, import_semaphore_and_submit_wait};
 use ash::vk::{self, Handle};
-use skia_safe::gpu::DirectContext;
-use skia_safe::Image;
 use std::collections::HashMap;
 use std::io;
 use std::process::{Child, Command};
@@ -23,12 +21,13 @@ pub struct ManagedTab {
 
 /// A rendered frame from a tab process
 pub struct RenderedFrame {
-    pub image: Image,
+    /// The raw VkImage imported from the tab process.  Blitted directly to the
+    /// swapchain via `vkCmdBlitImage` — no Skia texture wrapping needed.
     pub width: u32,
     pub height: u32,
     /// RAII guard that owns the imported VkImage + VkDeviceMemory.
     /// Dropped automatically when replaced by a newer frame.
-    _vk_guard: ImportedVkImage,
+    pub vk_guard: ImportedVkImage,
 }
 
 /// Manages all tab processes
@@ -161,7 +160,6 @@ impl TabManager {
         &mut self,
         tab_id: &str,
         message: TabToParentMessage,
-        gr_context: &mut DirectContext,
     ) {
         if let Some(tab) = self.tabs.get_mut(tab_id) {
             match message {
@@ -230,9 +228,6 @@ impl TabManager {
                         let local_handle = mem_handle;
 
                         // Similarly duplicate the semaphore fd from the child process.
-                        // On Linux, SYNC_FD semaphores are exported as regular fds —
-                        // we must use pidfd_getfd to pull them into our fd table.
-                        // On Windows the handle was already duplicated by the tab.
                         #[cfg(not(windows))]
                         let local_sem_handle: i64 = if sem_handle != -1 {
                             let child_pid = tab.process.id() as libc::pid_t;
@@ -262,11 +257,10 @@ impl TabManager {
                         let local_sem_handle: i64 = sem_handle;
 
                         match unsafe {
-                            import_skia_image(
+                            import_vk_image_raw(
                                 inst,
                                 *phys,
                                 dev,
-                                gr_context,
                                 local_handle,
                                 width,
                                 height,
@@ -274,9 +268,14 @@ impl TabManager {
                                 alloc_size,
                             )
                         } {
-                            Ok((image, vk_guard)) => {
+                            Ok(vk_guard) => {
                                 // GPU-side synchronization: wait on the tab's render
-                                // semaphore before Skia reads the imported image.
+                                // semaphore before reading the imported image.
+                                // Store the semaphore handle on the frame so the
+                                // blit path in the browser can wait on it at
+                                // draw time via blit_to_swapchain_image().
+                                // For now, do the wait eagerly here (same as before)
+                                // so the frame is ready when polled.
                                 if let (Some(queue), Some(inst)) = (self.ash_queue, self.ash_instance.as_ref()) {
                                     if let Err(e) = unsafe {
                                         import_semaphore_and_submit_wait(
@@ -289,12 +288,11 @@ impl TabManager {
                                         )
                                     } {
                                         eprintln!("[TabManager] Semaphore wait failed (falling back to CPU sync): {}", e);
-                                        // CPU fallback: device_wait_idle ensures GPU is done.
                                         unsafe { dev.device_wait_idle().ok() };
                                     }
                                 }
 
-                                tab.rendered_frame = Some(RenderedFrame { image, width, height, _vk_guard: vk_guard });
+                                tab.rendered_frame = Some(RenderedFrame { width, height, vk_guard });
                             }
                             Err(e) => {
                                 eprintln!("[TabManager] Failed to import VkImage: {}", e);
