@@ -891,7 +891,7 @@ impl Element<'_> {
 
         let transform = self
             .transform
-            .pre_scale_non_uniform(x_scale * 50.0, y_scale * 50.0)
+            .pre_scale_non_uniform(x_scale, y_scale)
             .then_translate(Vec2 { x, y });
 
         anyrender_svg::render_svg_tree(scene, svg, transform);
