@@ -82,6 +82,18 @@ pub enum TabToParentMessage {
         vk_format: i32,
         /// Exact allocation size in bytes from the tab's vkAllocateMemory
         alloc_size: u64,
+        /// Exportable semaphore handle that is signaled when the tab's GPU
+        /// rendering into this image is complete.
+        ///
+        ///   • Linux   – a sync_fd (SYNC_FD handle type) from vkGetSemaphoreFdKHR.
+        ///               The parent imports and waits on it before reading the image.
+        ///               The fd is consumed by the import; do not close it manually.
+        ///   • Windows – a Win32 HANDLE from vkGetSemaphoreWin32HandleKHR, already
+        ///               duplicated into the parent process.
+        ///
+        /// A value of -1 (Linux) or 0 (Windows) means no semaphore is available
+        /// and the parent must fall back to a CPU-side wait.
+        sem_handle: i64,
     },
     Ready,
     NavigateRequest(String),

@@ -1,6 +1,6 @@
 // Tab Manager - manages tab processes from the parent process
 use crate::ipc::{IpcServer, ParentIpcChannel, ParentToTabMessage, TabToParentMessage};
-use crate::vk_shared::{VulkanDeviceInfo, ImportedVkImage, import_skia_image};
+use crate::vk_shared::{VulkanDeviceInfo, ImportedVkImage, import_skia_image, import_semaphore_and_submit_wait};
 use ash::vk::{self, Handle};
 use skia_safe::gpu::DirectContext;
 use skia_safe::Image;
@@ -40,6 +40,9 @@ pub struct TabManager {
     ash_instance: Option<ash::Instance>,
     ash_physical_device: Option<vk::PhysicalDevice>,
     ash_device: Option<ash::Device>,
+    /// Queue used for semaphore-wait submits and image layout transitions.
+    ash_queue: Option<vk::Queue>,
+    ash_queue_family_index: u32,
 }
 
 impl TabManager {
@@ -52,6 +55,8 @@ impl TabManager {
             ash_instance: None,
             ash_physical_device: None,
             ash_device: None,
+            ash_queue: None,
+            ash_queue_family_index: 0,
         })
     }
 
@@ -63,11 +68,15 @@ impl TabManager {
         ash_instance: ash::Instance,
         ash_physical_device: vk::PhysicalDevice,
         ash_device: ash::Device,
+        ash_queue: vk::Queue,
+        ash_queue_family_index: u32,
     ) {
         self.vk_device_info = Some(device_info);
         self.ash_instance = Some(ash_instance);
         self.ash_physical_device = Some(ash_physical_device);
         self.ash_device = Some(ash_device);
+        self.ash_queue = Some(ash_queue);
+        self.ash_queue_family_index = ash_queue_family_index;
     }
 
     /// Create a new tab process
@@ -175,7 +184,7 @@ impl TabManager {
                 TabToParentMessage::LoadingStateChanged(is_loading) => {
                     tab.is_loading = is_loading;
                 }
-                TabToParentMessage::FrameRendered { mem_handle, width, height, vk_format, alloc_size } => {
+                TabToParentMessage::FrameRendered { mem_handle, width, height, vk_format, alloc_size, sem_handle } => {
                     let format = vk::Format::from_raw(vk_format);
                     if let (Some(inst), Some(phys), Some(dev)) = (
                         self.ash_instance.as_ref(),
@@ -191,9 +200,6 @@ impl TabManager {
                             let child_pid = tab.process.id() as libc::pid_t;
                             let target_fd = mem_handle as libc::c_int;
 
-                            // Syscall numbers for x86_64:
-                            //   pidfd_open  = 434 (Linux 5.3+)
-                            //   pidfd_getfd = 438 (Linux 5.6+)
                             const SYS_PIDFD_OPEN: libc::c_long = 434;
                             const SYS_PIDFD_GETFD: libc::c_long = 438;
 
@@ -223,6 +229,38 @@ impl TabManager {
                         #[cfg(windows)]
                         let local_handle = mem_handle;
 
+                        // Similarly duplicate the semaphore fd from the child process.
+                        // On Linux, SYNC_FD semaphores are exported as regular fds —
+                        // we must use pidfd_getfd to pull them into our fd table.
+                        // On Windows the handle was already duplicated by the tab.
+                        #[cfg(not(windows))]
+                        let local_sem_handle: i64 = if sem_handle != -1 {
+                            let child_pid = tab.process.id() as libc::pid_t;
+                            let target_fd = sem_handle as libc::c_int;
+
+                            const SYS_PIDFD_OPEN: libc::c_long = 434;
+                            const SYS_PIDFD_GETFD: libc::c_long = 438;
+
+                            let pidfd = unsafe { libc::syscall(SYS_PIDFD_OPEN, child_pid, 0 as libc::c_uint) } as libc::c_int;
+                            if pidfd < 0 {
+                                eprintln!("[TabManager] pidfd_open for semaphore fd failed");
+                                -1
+                            } else {
+                                let local_fd = unsafe { libc::syscall(SYS_PIDFD_GETFD, pidfd, target_fd, 0 as libc::c_uint) } as libc::c_int;
+                                unsafe { libc::close(pidfd) };
+                                if local_fd < 0 {
+                                    eprintln!("[TabManager] pidfd_getfd for semaphore fd failed");
+                                    -1
+                                } else {
+                                    local_fd as i64
+                                }
+                            }
+                        } else {
+                            -1
+                        };
+                        #[cfg(windows)]
+                        let local_sem_handle: i64 = sem_handle;
+
                         match unsafe {
                             import_skia_image(
                                 inst,
@@ -237,6 +275,25 @@ impl TabManager {
                             )
                         } {
                             Ok((image, vk_guard)) => {
+                                // GPU-side synchronization: wait on the tab's render
+                                // semaphore before Skia reads the imported image.
+                                if let (Some(queue), Some(inst)) = (self.ash_queue, self.ash_instance.as_ref()) {
+                                    if let Err(e) = unsafe {
+                                        import_semaphore_and_submit_wait(
+                                            inst,
+                                            dev,
+                                            queue,
+                                            self.ash_queue_family_index,
+                                            vk_guard.image(),
+                                            local_sem_handle,
+                                        )
+                                    } {
+                                        eprintln!("[TabManager] Semaphore wait failed (falling back to CPU sync): {}", e);
+                                        // CPU fallback: device_wait_idle ensures GPU is done.
+                                        unsafe { dev.device_wait_idle().ok() };
+                                    }
+                                }
+
                                 tab.rendered_frame = Some(RenderedFrame { image, width, height, _vk_guard: vk_guard });
                             }
                             Err(e) => {

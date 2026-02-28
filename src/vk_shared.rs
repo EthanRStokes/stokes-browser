@@ -23,6 +23,18 @@ use ash::vk::{self, Handle};
 use skia_safe::gpu::{self, DirectContext};
 use skia_safe::{ColorType, Image};
 use skia_safe::gpu::vk::AllocFlag;
+
+// ── Platform-specific external semaphore handle type ───────────────────────
+
+#[cfg(windows)]
+fn external_semaphore_handle_type() -> vk::ExternalSemaphoreHandleTypeFlags {
+    vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32
+}
+
+#[cfg(not(windows))]
+fn external_semaphore_handle_type() -> vk::ExternalSemaphoreHandleTypeFlags {
+    vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD
+}
 // ── VkFormat ↔ Skia mappings ────────────────────────────────────────────────
 
 pub fn vk_format_to_skia(fmt: vk::Format) -> Option<(skia_safe::gpu::vk::Format, ColorType)> {
@@ -62,6 +74,14 @@ pub struct TabVkImage {
     /// Exact allocation size (bytes) — must be sent to the parent for import.
     pub alloc_size: u64,
     skia_surface: Option<skia_safe::Surface>,
+    /// Exportable semaphore signaled after each render to synchronize the parent.
+    pub render_semaphore: Option<TabVkSemaphore>,
+    /// Command pool for the layout-transition submit done after each render.
+    cmd_pool: vk::CommandPool,
+    /// Pre-recorded command buffer: COLOR_ATTACHMENT_OPTIMAL → GENERAL barrier.
+    cmd_buf: vk::CommandBuffer,
+    pub queue: vk::Queue,
+    pub queue_family_index: u32,
 
     #[cfg(windows)]
     ext_mem_win32: ash::khr::external_memory_win32::Device,
@@ -82,6 +102,7 @@ impl TabVkImage {
         height: u32,
         format: vk::Format,
         queue_family_index: u32,
+        queue: vk::Queue,
     ) -> Result<Self, String> {
         let (skia_format, color_type) = vk_format_to_skia(format)
             .ok_or_else(|| format!("Unsupported format {:?}", format))?;
@@ -196,6 +217,42 @@ impl TabVkImage {
             "Failed to wrap Vulkan image as Skia surface".to_string()
         })?;
 
+        // -- Command pool + buffer for the post-render layout transition ------
+        let cmd_pool = {
+            let pool_ci = vk::CommandPoolCreateInfo::default()
+                .queue_family_index(queue_family_index)
+                .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+            device.create_command_pool(&pool_ci, None).map_err(|e| {
+                device.free_memory(memory, None);
+                device.destroy_image(image, None);
+                format!("vkCreateCommandPool (tab) failed: {:?}", e)
+            })?
+        };
+
+        let cmd_buf = {
+            let alloc_info = vk::CommandBufferAllocateInfo::default()
+                .command_pool(cmd_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1);
+            let bufs = device.allocate_command_buffers(&alloc_info).map_err(|e| {
+                device.destroy_command_pool(cmd_pool, None);
+                device.free_memory(memory, None);
+                device.destroy_image(image, None);
+                format!("vkAllocateCommandBuffers (tab) failed: {:?}", e)
+            })?;
+            bufs[0]
+        };
+
+        // -- Exportable render-complete semaphore -----------------------------
+        let render_semaphore = TabVkSemaphore::new(instance, device)
+            .map_err(|e| {
+                device.destroy_command_pool(cmd_pool, None);
+                device.free_memory(memory, None);
+                device.destroy_image(image, None);
+                e
+            })
+            .ok();
+
         #[cfg(windows)]
         let ext_mem_win32 = ash::khr::external_memory_win32::Device::new(instance, device);
         #[cfg(not(windows))]
@@ -210,6 +267,11 @@ impl TabVkImage {
             format,
             alloc_size: mem_reqs.size,
             skia_surface: Some(skia_surface),
+            render_semaphore,
+            cmd_pool,
+            cmd_buf,
+            queue,
+            queue_family_index,
             #[cfg(windows)]
             ext_mem_win32,
             #[cfg(not(windows))]
@@ -292,6 +354,74 @@ impl TabVkImage {
                 .map_err(|e| format!("vkGetMemoryFdKHR failed: {:?}", e))
         }
     }
+
+    /// Submit a queue command that:
+    ///   1. Inserts a pipeline barrier transitioning the image from
+    ///      `COLOR_ATTACHMENT_OPTIMAL` → `GENERAL` (readable cross-process).
+    ///   2. Signals `render_semaphore`.
+    ///
+    /// Returns the exported semaphore handle to embed in the IPC message, or
+    /// -1/0 if the semaphore is unavailable.
+    ///
+    /// Must be called *after* `gr_context.flush_and_submit()`.
+    pub unsafe fn signal_and_export_semaphore(&self, parent_pid: u32) -> i64 {
+        let sem = match &self.render_semaphore {
+            Some(s) => s,
+            None => return -1,
+        };
+
+        // Re-record the command buffer each frame (pool has RESET_COMMAND_BUFFER).
+        let begin_info = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        if self.device.begin_command_buffer(self.cmd_buf, &begin_info).is_err() {
+            return -1;
+        }
+
+        // Transition: COLOR_ATTACHMENT_OPTIMAL → GENERAL
+        // (GENERAL is the safe layout for cross-process export; the parent will
+        //  then transition it to SHADER_READ_ONLY_OPTIMAL before sampling.)
+        let barrier = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+            .dst_access_mask(vk::AccessFlags::empty())
+            .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(self.image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+
+        self.device.cmd_pipeline_barrier(
+            self.cmd_buf,
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            vk::DependencyFlags::empty(),
+            &[], &[], &[barrier],
+        );
+
+        if self.device.end_command_buffer(self.cmd_buf).is_err() {
+            return -1;
+        }
+
+        // Submit: execute barrier, then signal the semaphore.
+        let signal_semaphores = [sem.semaphore];
+        let cmd_bufs = [self.cmd_buf];
+        let submit_info = vk::SubmitInfo::default()
+            .command_buffers(&cmd_bufs)
+            .signal_semaphores(&signal_semaphores);
+
+        if self.device.queue_submit(self.queue, &[submit_info], vk::Fence::null()).is_err() {
+            return -1;
+        }
+
+        // Export the (now-signaled) semaphore handle.
+        sem.export(parent_pid)
+    }
 }
 
 impl Drop for TabVkImage {
@@ -299,6 +429,9 @@ impl Drop for TabVkImage {
         // Drop Skia surface first (holds GPU references)
         self.skia_surface = None;
         unsafe {
+            self.device.device_wait_idle().ok();
+            self.render_semaphore = None;
+            self.device.destroy_command_pool(self.cmd_pool, None);
             self.device.free_memory(self.memory, None);
             self.device.destroy_image(self.image, None);
         }
@@ -313,6 +446,14 @@ pub struct ImportedVkImage {
     device: ash::Device,
     image: vk::Image,
     memory: vk::DeviceMemory,
+}
+
+impl ImportedVkImage {
+    /// The raw `VkImage` handle, needed for pipeline barriers.
+    #[inline]
+    pub fn image(&self) -> vk::Image {
+        self.image
+    }
 }
 
 impl Drop for ImportedVkImage {
@@ -591,6 +732,262 @@ pub fn find_memory_type(
         }
     }
     None
+}
+
+// ── TabVkSemaphore (child/tab side) ─────────────────────────────────────────
+
+/// An exportable binary `VkSemaphore` owned by the tab process.
+///
+/// The tab submits GPU work that *signals* this semaphore, then exports it as
+/// a platform handle sent to the parent alongside the memory handle.  The
+/// parent imports and *waits* on it so the GPU pipeline stalls until the tab's
+/// render is complete before reading the shared image.
+pub struct TabVkSemaphore {
+    device: ash::Device,
+    pub semaphore: vk::Semaphore,
+    #[cfg(windows)]
+    ext_sem_win32: ash::khr::external_semaphore_win32::Device,
+    #[cfg(not(windows))]
+    ext_sem_fd: ash::khr::external_semaphore_fd::Device,
+}
+
+impl TabVkSemaphore {
+    /// Create a new exportable binary semaphore.
+    pub unsafe fn new(instance: &ash::Instance, device: &ash::Device) -> Result<Self, String> {
+        let handle_type = external_semaphore_handle_type();
+
+        let mut export_info = vk::ExportSemaphoreCreateInfo::default()
+            .handle_types(handle_type);
+
+        let sem_ci = vk::SemaphoreCreateInfo::default()
+            .push_next(&mut export_info);
+
+        let semaphore = device
+            .create_semaphore(&sem_ci, None)
+            .map_err(|e| format!("vkCreateSemaphore (exportable) failed: {:?}", e))?;
+
+        #[cfg(windows)]
+        let ext_sem_win32 = ash::khr::external_semaphore_win32::Device::new(instance, device);
+        #[cfg(not(windows))]
+        let ext_sem_fd = ash::khr::external_semaphore_fd::Device::new(instance, device);
+
+        Ok(Self {
+            device: device.clone(),
+            semaphore,
+            #[cfg(windows)]
+            ext_sem_win32,
+            #[cfg(not(windows))]
+            ext_sem_fd,
+        })
+    }
+
+    /// Export the semaphore as a platform handle to send to the parent.
+    ///
+    /// * Linux   – returns a `sync_fd` (i32 cast to i64). SYNC_FD semaphores
+    ///             are one-shot: the fd is consumed on import and the semaphore
+    ///             automatically resets to unsignaled afterward.
+    /// * Windows – returns a Win32 HANDLE already duplicated into `parent_pid`.
+    ///
+    /// Returns -1 / 0 on failure (non-fatal; parent falls back to CPU wait).
+    pub unsafe fn export(&self, parent_pid: u32) -> i64 {
+        let handle_type = external_semaphore_handle_type();
+
+        #[cfg(not(windows))]
+        {
+            let _ = parent_pid;
+            let get_info = vk::SemaphoreGetFdInfoKHR::default()
+                .semaphore(self.semaphore)
+                .handle_type(handle_type);
+            match self.ext_sem_fd.get_semaphore_fd(&get_info) {
+                Ok(fd) => fd as i64,
+                Err(e) => {
+                    eprintln!("[TabVkSemaphore] vkGetSemaphoreFdKHR failed: {:?}", e);
+                    -1
+                }
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::{CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, INVALID_HANDLE_VALUE};
+            use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE};
+
+            let get_info = vk::SemaphoreGetWin32HandleInfoKHR::default()
+                .semaphore(self.semaphore)
+                .handle_type(handle_type);
+            let local_handle = match self.ext_sem_win32.get_semaphore_win32_handle(&get_info) {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("[TabVkSemaphore] vkGetSemaphoreWin32HandleKHR failed: {:?}", e);
+                    return 0;
+                }
+            };
+
+            let parent_proc = OpenProcess(PROCESS_DUP_HANDLE, 0, parent_pid) as vk::HANDLE;
+            if parent_proc == 0 || parent_proc == INVALID_HANDLE_VALUE as vk::HANDLE {
+                CloseHandle(local_handle as _);
+                return 0;
+            }
+            let mut dup: windows_sys::Win32::Foundation::HANDLE = 0;
+            let ok = DuplicateHandle(
+                GetCurrentProcess(), local_handle as _, parent_proc as _, &mut dup,
+                0, 0, DUPLICATE_SAME_ACCESS,
+            );
+            CloseHandle(parent_proc as _);
+            CloseHandle(local_handle as _);
+            if ok == 0 { 0 } else { dup as i64 }
+        }
+    }
+}
+
+impl Drop for TabVkSemaphore {
+    fn drop(&mut self) {
+        unsafe { self.device.destroy_semaphore(self.semaphore, None); }
+    }
+}
+
+// ── Parent-side semaphore import + GPU wait ──────────────────────────────────
+
+/// Import a cross-process semaphore handle and submit a GPU wait on it so the
+/// parent's pipeline stalls until the tab's render is complete.
+///
+/// A command buffer is submitted to `queue` that:
+///   1. Waits on the imported semaphore at `FRAGMENT_SHADER` stage.
+///   2. Executes a pipeline barrier that transitions `image` from
+///      `GENERAL` → `SHADER_READ_ONLY_OPTIMAL`.
+///
+/// On success returns the temporary `VkSemaphore` (which will be auto-reset
+/// after the wait on Linux SYNC_FD, or must be destroyed after the submit
+/// completes on Windows).  The caller should `device_wait_idle` or use a fence
+/// before dropping the returned semaphore if on Windows.
+///
+/// Falls back silently (no barrier submitted) when `sem_handle` is -1/0.
+pub unsafe fn import_semaphore_and_submit_wait(
+    instance: &ash::Instance,
+    device: &ash::Device,
+    queue: vk::Queue,
+    queue_family_index: u32,
+    image: vk::Image,
+    sem_handle: i64,
+) -> Result<Option<vk::Semaphore>, String> {
+    // -1 (Linux) / 0 (Windows) → no semaphore was sent, fall through.
+    #[cfg(not(windows))]
+    if sem_handle == -1 { return Ok(None); }
+    #[cfg(windows)]
+    if sem_handle == 0 { return Ok(None); }
+
+    // -- Import the semaphore ------------------------------------------------
+    let semaphore = {
+        let sem_ci = vk::SemaphoreCreateInfo::default();
+        device.create_semaphore(&sem_ci, None)
+            .map_err(|e| format!("vkCreateSemaphore (import) failed: {:?}", e))?
+    };
+
+    #[cfg(not(windows))]
+    {
+        let ext_fd = ash::khr::external_semaphore_fd::Device::new(instance, device);
+        let import_info = vk::ImportSemaphoreFdInfoKHR::default()
+            .semaphore(semaphore)
+            .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD)
+            // TEMPORARY: semaphore auto-resets to unsignaled after the wait.
+            .flags(vk::SemaphoreImportFlags::TEMPORARY)
+            .fd(sem_handle as i32);
+        ext_fd.import_semaphore_fd(&import_info)
+            .map_err(|e| { device.destroy_semaphore(semaphore, None); format!("vkImportSemaphoreFdKHR failed: {:?}", e) })?;
+    }
+
+    #[cfg(windows)]
+    {
+        let ext_win32 = ash::khr::external_semaphore_win32::Device::new(instance, device);
+        let import_info = vk::ImportSemaphoreWin32HandleInfoKHR::default()
+            .semaphore(semaphore)
+            .handle_type(vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32)
+            .flags(vk::SemaphoreImportFlags::TEMPORARY)
+            .handle(sem_handle as vk::HANDLE);
+        ext_win32.import_semaphore_win32_handle(&import_info)
+            .map_err(|e| { device.destroy_semaphore(semaphore, None); format!("vkImportSemaphoreWin32HandleKHR failed: {:?}", e) })?;
+    }
+
+    // -- Allocate a one-shot command buffer ----------------------------------
+    let cmd_pool = {
+        let pool_ci = vk::CommandPoolCreateInfo::default()
+            .queue_family_index(queue_family_index)
+            .flags(vk::CommandPoolCreateFlags::TRANSIENT);
+        device.create_command_pool(&pool_ci, None)
+            .map_err(|e| { device.destroy_semaphore(semaphore, None); format!("vkCreateCommandPool (sem wait) failed: {:?}", e) })?
+    };
+
+    let cmd_buf = {
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(cmd_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        let bufs = device.allocate_command_buffers(&alloc_info)
+            .map_err(|e| { device.destroy_command_pool(cmd_pool, None); device.destroy_semaphore(semaphore, None); format!("vkAllocateCommandBuffers failed: {:?}", e) })?;
+        bufs[0]
+    };
+
+    // -- Record: image layout transition GENERAL → SHADER_READ_ONLY_OPTIMAL -
+    let begin_info = vk::CommandBufferBeginInfo::default()
+        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+    device.begin_command_buffer(cmd_buf, &begin_info)
+        .map_err(|e| format!("vkBeginCommandBuffer failed: {:?}", e))?;
+
+    let barrier = vk::ImageMemoryBarrier::default()
+        .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::TRANSFER_WRITE)
+        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+        .old_layout(vk::ImageLayout::GENERAL)
+        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        });
+
+    device.cmd_pipeline_barrier(
+        cmd_buf,
+        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::TRANSFER,
+        vk::PipelineStageFlags::FRAGMENT_SHADER,
+        vk::DependencyFlags::empty(),
+        &[],
+        &[],
+        &[barrier],
+    );
+
+    device.end_command_buffer(cmd_buf)
+        .map_err(|e| format!("vkEndCommandBuffer failed: {:?}", e))?;
+
+    // -- Submit: wait on imported semaphore, execute barrier -----------------
+    let wait_semaphores = [semaphore];
+    let wait_stages = [vk::PipelineStageFlags::FRAGMENT_SHADER];
+    let cmd_bufs = [cmd_buf];
+
+    let submit_info = vk::SubmitInfo::default()
+        .wait_semaphores(&wait_semaphores)
+        .wait_dst_stage_mask(&wait_stages)
+        .command_buffers(&cmd_bufs);
+
+    // Use a fence so we can clean up the pool when done.
+    let fence = device.create_fence(&vk::FenceCreateInfo::default(), None)
+        .map_err(|e| format!("vkCreateFence (sem wait) failed: {:?}", e))?;
+
+    device.queue_submit(queue, &[submit_info], fence)
+        .map_err(|e| { device.destroy_fence(fence, None); format!("vkQueueSubmit (sem wait) failed: {:?}", e) })?;
+
+    // Wait for the barrier submit to complete so we can free the command pool.
+    // This is a one-time cost per frame; the GPU does the heavy waiting async.
+    device.wait_for_fences(&[fence], true, 5_000_000_000 /* 5 s */)
+        .map_err(|e| format!("wait_for_fences (sem wait) failed: {:?}", e))?;
+
+    device.destroy_fence(fence, None);
+    device.destroy_command_pool(cmd_pool, None);
+
+    Ok(Some(semaphore))
 }
 
 // ── VulkanDeviceInfo: serialisable info the parent passes to child via env ──

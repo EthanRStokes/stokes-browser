@@ -589,7 +589,9 @@ impl ApplicationHandler for BrowserApp {
             let ash_instance = vk.instance.clone();
             let ash_physical_device = vk.physical_device;
             let ash_device = vk.device.clone();
-            self.tab_manager.set_vulkan_context(device_info, ash_instance, ash_physical_device, ash_device);
+            let ash_queue = vk.queue;
+            let ash_queue_family_index = vk.queue_family_index;
+            self.tab_manager.set_vulkan_context(device_info, ash_instance, ash_physical_device, ash_device, ash_queue, ash_queue_family_index);
         }
 
         // Create initial tab, navigating to the startup URL if one was provided

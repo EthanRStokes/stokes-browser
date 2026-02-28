@@ -162,12 +162,16 @@ impl TabProcess {
         let ext_names: Vec<*const std::ffi::c_char> = vec![
             ash::khr::external_memory::NAME.as_ptr(),
             ash::khr::external_memory_win32::NAME.as_ptr(),
+            ash::khr::external_semaphore::NAME.as_ptr(),
+            ash::khr::external_semaphore_win32::NAME.as_ptr(),
         ];
         #[cfg(not(windows))]
         let ext_names: Vec<*const std::ffi::c_char> = vec![
             ash::khr::external_memory::NAME.as_ptr(),
             ash::khr::external_memory_fd::NAME.as_ptr(),
             ash::vk::EXT_EXTERNAL_MEMORY_DMA_BUF_NAME.as_ptr(),
+            ash::khr::external_semaphore::NAME.as_ptr(),
+            ash::khr::external_semaphore_fd::NAME.as_ptr(),
         ];
 
         let device_ci = vk::DeviceCreateInfo::default()
@@ -248,6 +252,8 @@ impl TabProcess {
             }
         };
 
+        let queue = unsafe { dev.get_device_queue(self.queue_family_index, 0) };
+
         let img = unsafe {
             TabVkImage::new(
                 inst,
@@ -258,6 +264,7 @@ impl TabProcess {
                 height,
                 self.vk_format,
                 self.queue_family_index,
+                queue,
             )
         }.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
@@ -578,11 +585,27 @@ impl TabProcess {
             ctx.flush_and_submit();
         }
 
-        // Wait for all GPU work to complete before exporting the handle.
-        // This ensures the parent won't read an incomplete frame.
-        if let Some(device) = self.ash_device.as_ref() {
-            let queue = unsafe { device.get_device_queue(self.queue_family_index, 0) };
-            unsafe { device.queue_wait_idle(queue).ok() };
+        // After Skia flush, submit a barrier (COLOR_ATTACHMENT_OPTIMAL → GENERAL)
+        // and signal the exportable semaphore.  The parent will import that
+        // semaphore and wait on it before reading the image, giving us a
+        // true GPU-side synchronization fence across the process boundary.
+        // Falls back to a CPU queue_wait_idle when semaphores are unavailable.
+        let parent_pid = std::env::var("STOKES_VK_DEVICE_INFO")
+            .ok()
+            .and_then(|s| serde_json::from_str::<crate::vk_shared::VulkanDeviceInfo>(&s).ok())
+            .map(|info| info.parent_pid)
+            .unwrap_or(0);
+
+        let vk_image = self.vk_image.as_ref().unwrap();
+        let sem_handle: i64 = unsafe { vk_image.signal_and_export_semaphore(parent_pid) };
+
+        // If we couldn't get a semaphore, fall back to a CPU wait so the
+        // parent still sees a complete frame.
+        if sem_handle == -1 || sem_handle == 0 {
+            if let Some(device) = self.ash_device.as_ref() {
+                let queue = unsafe { device.get_device_queue(self.queue_family_index, 0) };
+                unsafe { device.queue_wait_idle(queue).ok() };
+            }
         }
 
         let vk_image = self.vk_image.as_ref().unwrap();
@@ -614,6 +637,7 @@ impl TabProcess {
             height,
             vk_format,
             alloc_size,
+            sem_handle,
         })?;
 
         Ok(())
