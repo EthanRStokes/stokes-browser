@@ -1,23 +1,25 @@
+use crate::dom::Dom;
+use crate::engine::nav_provider::{NavigationProviderMessage, StokesNavigationProvider};
 // Tab process module - runs the browser engine in a separate process
 use crate::engine::{Engine, EngineConfig, ENGINE_REF, USER_AGENT_REF};
 use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage};
-use crate::{js, networking};
-use crate::renderer::painter::ScenePainter;
+use crate::networking;
+use crate::renderer::painter::{ScenePainter, SkiaCache};
+use crate::shell_provider::{ShellProviderMessage, StokesShellProvider};
 use crate::vk_shared::{TabVkImage, VulkanDeviceInfo};
 use ash::vk::{self, Handle};
 use blitz_traits::shell::{ShellProvider, Viewport};
+use skia_safe::gpu::{self as sk_gpu, DirectContext};
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use crate::shell_provider::{StokesShellProvider, ShellProviderMessage};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
-use crate::dom::Dom;
-use crate::engine::nav_provider::{NavigationProviderMessage, StokesNavigationProvider};
-use skia_safe::gpu::{self as sk_gpu, DirectContext};
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
     pub(crate) engine: Engine,
+    scene_cache: SkiaCache,
     animation_time: Option<Instant>,
     channel: IpcChannel,
     tab_id: String,
@@ -36,6 +38,7 @@ pub struct TabProcess {
     vk_format: vk::Format,
     shell_receiver: UnboundedReceiver<ShellProviderMessage>,
     nav_receiver: UnboundedReceiver<NavigationProviderMessage>,
+    redraw_request: AtomicBool,
 }
 
 impl TabProcess {
@@ -90,6 +93,7 @@ impl TabProcess {
 
         Ok(Self {
             engine,
+            scene_cache: SkiaCache::default(),
             animation_time: None,
             channel,
             tab_id,
@@ -103,6 +107,7 @@ impl TabProcess {
             vk_format,
             shell_receiver: shell_rx,
             nav_receiver: nav_rx,
+            redraw_request: AtomicBool::new(false),
         })
     }
 
@@ -344,13 +349,18 @@ impl TabProcess {
 
             // Process all pending messages from parent (non-blocking)
             let mut has_messages = true;
+            let mut should_render_after_messages = false;
             while has_messages {
                 let msg_option = self.channel.try_receive()?;
                 match msg_option {
                     Some(msg) => {
-                        if !self.handle_message(msg).await? {
+                        let (should_render, should_continue) = self.handle_message(msg).await?;
+                        if !should_continue {
                             println!("Shutting down");
                             return Ok(()); // Shutdown requested
+                        }
+                        if should_render {
+                            should_render_after_messages = true;
                         }
                     }
                     None => {
@@ -358,9 +368,17 @@ impl TabProcess {
                     }
                 }
             }
+            if self.redraw_request.load(Ordering::Relaxed) {
+                should_render_after_messages = true;
+                self.redraw_request.store(false, Ordering::Relaxed);
+            }
+
+            if should_render_after_messages {
+                self.render_frame()?;
+            }
 
             // Small sleep to prevent CPU spinning
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            //tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
     }
 
@@ -373,7 +391,8 @@ impl TabProcess {
     }
 
     /// Handle a message from the parent process
-    async fn handle_message(&mut self, message: ParentToTabMessage) -> io::Result<bool> {
+    async fn handle_message(&mut self, message: ParentToTabMessage) -> io::Result<(bool, bool)> {
+        let mut should_render: bool = false;
         match message {
             ParentToTabMessage::Navigate(url) => {
                 let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
@@ -391,7 +410,7 @@ impl TabProcess {
                         });
                         let _ = self.channel.send(&TabToParentMessage::TitleChanged(title));
                         let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
-                        self.render_frame()?;
+                        should_render = true;
                     }
                     Err(e) => {
                         let _ = self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()));
@@ -412,7 +431,7 @@ impl TabProcess {
                             let title = self.engine.page_title().to_string();
                             let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
                             let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
-                            self.render_frame()?;
+                            should_render = true;
                         }
                         Err(e) => {
                             let _ = self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()));
@@ -432,7 +451,7 @@ impl TabProcess {
                             let url = self.engine.current_url().to_string();
                             let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
                             let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
-                            self.render_frame()?;
+                            should_render = true;
                         }
                         Err(e) => {
                             eprintln!("Go back failed: {}", e);
@@ -452,7 +471,7 @@ impl TabProcess {
                             let url = self.engine.current_url().to_string();
                             let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
                             let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
-                            self.render_frame()?;
+                            should_render = true;
                         }
                         Err(e) => {
                             eprintln!("Go forward failed: {}", e);
@@ -465,42 +484,16 @@ impl TabProcess {
                 self.engine.resize(width, height);
                 // (Re)create the VkImage at the new size; non-fatal if Vulkan unavailable
                 let _ = self.ensure_vk_image(width as u32, height as u32);
-                self.render_frame()?;
+                should_render = true;
             }
-            ParentToTabMessage::Scroll { delta_x, delta_y } => {
-                if self.engine.dom.is_some() {
-                    self.engine.scroll(delta_x, delta_y);
-                    self.render_frame()?;
-                }
-            }
-            ParentToTabMessage::Click { x, y, modifiers } => {
-                if let Some(href) = self.engine.handle_click(x, y) {
-                    match self.engine.resolve_url(&href) {
-                        Ok(resolved_url) => {
-                            if modifiers.ctrl {
-                                let _ = self.channel.send(&TabToParentMessage::NavigateRequestInNewTab(resolved_url));
-                            } else {
-                                let _ = self.channel.send(&TabToParentMessage::NavigateRequest(resolved_url));
-                            }
-                        }
-                        Err(_) => {
-                            if modifiers.ctrl {
-                                let _ = self.channel.send(&TabToParentMessage::NavigateRequestInNewTab(href));
-                            } else {
-                                let _ = self.channel.send(&TabToParentMessage::NavigateRequest(href));
-                            }
-                        }
-                    }
-                }
-                self.render_frame()?;
-            }
+            // todo ctrl+click nav new tab, middle click, Home + End keys, keyboard scrolling
             ParentToTabMessage::UI(event) => {
                 if let Some(dom) = self.dom_mut() {
                     dom.handle_ui_event(event);
                 }
             }
-            ParentToTabMessage::KeyboardInput { key_type, modifiers } => {
-                use crate::ipc::{KeyInputType, ScrollDirection};
+            /*ParentToTabMessage::KeyboardInput { key_type, modifiers } => {
+                use crate::ipc::KeyInputType;
                 match key_type {
                     KeyInputType::Scroll { direction, amount } => {}
                     KeyInputType::Named(key_name) => {
@@ -518,10 +511,10 @@ impl TabProcess {
                         }
                     }
                 }
-                self.render_frame()?;
-            }
+                should_render = true;
+            }*/
             ParentToTabMessage::RequestFrame => {
-                self.render_frame()?;
+                should_render = true;
             }
             ParentToTabMessage::SetScaleFactor(scale) => {
                 self.engine.set_viewport(Viewport {
@@ -534,19 +527,19 @@ impl TabProcess {
                     zoom,
                     ..self.engine.viewport
                 });
-                self.render_frame()?;
+                should_render = true;
             }
             ParentToTabMessage::Shutdown => {
-                return Ok(false);
+                return Ok((false, false));
             }
         }
-        Ok(true)
+        Ok((should_render, true))
     }
 
     async fn handle_shell_provider_message(&mut self, message: &ShellProviderMessage) -> io::Result<()> {
         match message {
             ShellProviderMessage::RequestRedraw => {
-                self.render_frame()?;
+                self.redraw_request.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             _ => {}
         }
@@ -563,11 +556,12 @@ impl TabProcess {
         };
 
         let canvas = vk_image.surface_mut().canvas();
+        canvas.restore_to_count(1);
         canvas.clear(skia_safe::Color::WHITE);
 
         let mut painter = ScenePainter {
             inner: canvas,
-            cache: &mut Default::default(),
+            cache: &mut self.scene_cache,
         };
 
         let engine = &mut self.engine;
@@ -584,6 +578,8 @@ impl TabProcess {
         if let Some(ctx) = self.gr_context.as_mut() {
             ctx.flush_and_submit();
         }
+
+        self.scene_cache.next_gen();
 
         // After Skia flush, submit a barrier (COLOR_ATTACHMENT_OPTIMAL → GENERAL)
         // and signal the exportable semaphore.  The parent will import that
@@ -617,7 +613,7 @@ impl TabProcess {
         // Retrieve the parent PID from VulkanDeviceInfo (set via env at startup).
         let parent_pid = std::env::var("STOKES_VK_DEVICE_INFO")
             .ok()
-            .and_then(|s| serde_json::from_str::<crate::vk_shared::VulkanDeviceInfo>(&s).ok())
+            .and_then(|s| serde_json::from_str::<VulkanDeviceInfo>(&s).ok())
             .map(|info| info.parent_pid)
             .unwrap_or(0);
 

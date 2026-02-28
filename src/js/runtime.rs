@@ -1,5 +1,6 @@
 use super::JsResult;
 use crate::dom::Dom;
+use crate::js::bindings::initialize_bindings;
 use crate::js::bindings::timers::TimerManager;
 use crate::js::jsapi::define_native_function::define_native_function;
 use crate::js::jsapi::objects::get_obj_prop_val_as_string;
@@ -28,7 +29,6 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::Duration;
 use url::Url;
-use crate::js::bindings::initialize_bindings;
 
 lazy_static! {
     static ref ENGINE_HANDLER_PRODUCER: EventLoop = EventLoop::new();

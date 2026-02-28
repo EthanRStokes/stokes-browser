@@ -1,13 +1,13 @@
-use crate::dom::ns;
-use std::collections::HashSet;
 use crate::dom::damage::ALL_DAMAGE;
+use crate::dom::node::{Attribute, SpecialElementData};
+use crate::dom::ns;
 use crate::dom::{Dom, ElementData, NodeData};
+use crate::qual_name;
 use html5ever::local_name;
 use markup5ever::QualName;
+use std::collections::HashSet;
 use style::invalidation::element::restyle_hints::RestyleHint;
 use stylo_atoms::Atom;
-use crate::dom::node::{Attribute, SpecialElementData};
-use crate::qual_name;
 
 macro_rules! tag_attr {
     ($tag:tt, $attr:tt) => {

@@ -1,11 +1,11 @@
 use crate::dom::Dom;
+use crate::renderer::painter::ToColorColor;
 use crate::ui::TextBrush;
 use anyrender::PaintScene;
 use kurbo::{Affine, Shape, Stroke};
 use parley::{Affinity, Cursor, Layout, Line, PositionedLayoutItem, Selection};
 use peniko::{Color, Fill};
 use style::values::specified::TextDecorationLine;
-use crate::renderer::painter::ToColorColor;
 
 pub fn stroke_text<'a>(
     painter: &mut impl PaintScene,

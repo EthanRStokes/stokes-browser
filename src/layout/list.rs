@@ -1,9 +1,9 @@
 // Copyright DioxusLabs
 // Licensed under the Apache License, Version 2.0 or the MIT license.
 
-use markup5ever::local_name;
-use crate::dom::{stylo_to_parley, Dom};
 use crate::dom::node::{ListItemLayout, ListItemLayoutPosition, Marker};
+use crate::dom::{stylo_to_parley, Dom};
+use markup5ever::local_name;
 use parley::FontFamily;
 use style::properties::generated::longhands::list_style_position::computed_value::T as ListStylePosition;
 use style::properties::generated::longhands::list_style_type::computed_value::T as ListStyleType;

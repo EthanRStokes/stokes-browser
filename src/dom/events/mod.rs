@@ -3,18 +3,18 @@ pub mod focus;
 pub mod keyboard;
 mod ime;
 
+use crate::dom::events::ime::handle_ime_event;
+use crate::dom::events::keyboard::handle_keypress;
+use crate::dom::events::pointer::{handle_click, handle_pointerdown, handle_pointermove, handle_pointerup, handle_wheel};
 // Event system for DOM nodes using mozjs
 use crate::dom::{Dom, DomNode};
+use crate::events::{BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData, EventState, UiEvent};
+use blitz_traits::shell::ShellProvider;
 use mozjs::context::JSContext;
 use mozjs::jsapi::{JSObject, JS_DefineProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JSPROP_ENUMERATE};
 use mozjs::jsval::{BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, StringValue};
 use mozjs::rooted;
 use std::collections::{HashMap, VecDeque};
-use blitz_traits::shell::ShellProvider;
-use crate::dom::events::ime::handle_ime_event;
-use crate::dom::events::keyboard::handle_keypress;
-use crate::dom::events::pointer::{handle_click, handle_pointerdown, handle_pointermove, handle_pointerup, handle_wheel};
-use crate::events::{BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, DomEvent, DomEventData, EventState, UiEvent};
 
 impl Dom {
     pub(crate) fn handle_ui_event(&mut self, event: UiEvent) {

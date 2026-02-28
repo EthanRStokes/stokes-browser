@@ -1,12 +1,12 @@
-use std::ptr;
-use std::rc::Rc;
-use mozjs::glue::CreateJobQueue;
-use mozjs::jsapi::SetJobQueue;
 use crate::dom::Dom;
 use crate::js::bindings::timers::TimerManager;
-use crate::js::{JsResult, JsRuntime};
 use crate::js::jsapi::promise::init_rejection_tracker;
 use crate::js::runtime::JOB_QUEUE_TRAPS;
+use crate::js::{JsResult, JsRuntime};
+use mozjs::glue::CreateJobQueue;
+use mozjs::jsapi::SetJobQueue;
+use std::ptr;
+use std::rc::Rc;
 
 pub(crate) mod cookies;
 pub(crate) mod dom_bindings;

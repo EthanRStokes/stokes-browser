@@ -1,11 +1,13 @@
 // Tab Manager - manages tab processes from the parent process
 use crate::ipc::{IpcServer, ParentIpcChannel, ParentToTabMessage, TabToParentMessage};
-use crate::vk_shared::{VulkanDeviceInfo, ImportedVkImage, import_vk_image_raw, import_semaphore_and_submit_wait};
+use crate::vk_shared::{import_vk_image_raw, ImportedVkImage, VulkanDeviceInfo};
 use ash::vk::{self, Handle};
 use std::collections::HashMap;
 use std::io;
 use std::process::{Child, Command};
 use std::thread;
+use ipc_channel::ipc::IpcSender;
+use taffy::Point;
 
 /// Represents a managed tab process
 pub struct ManagedTab {
@@ -14,6 +16,7 @@ pub struct ManagedTab {
     pub url: String,
     pub is_loading: bool,
     pub zoom: f32,
+    pub viewport_scroll: Point<f64>,
     process: Child,
     channel: ParentIpcChannel,
     pub rendered_frame: Option<RenderedFrame>,
@@ -113,6 +116,7 @@ impl TabManager {
             url: String::new(),
             is_loading: false,
             zoom: 1.0,
+            viewport_scroll: Point { x: 0.0, y: 0.0 },
             process: child,
             channel,
             rendered_frame: None,
@@ -142,7 +146,6 @@ impl TabManager {
         Ok(())
     }
 
-    /// Poll messages from all tabs (non-blocking)
     pub fn poll_messages(&mut self) -> Vec<(String, TabToParentMessage)> {
         let mut messages = Vec::new();
 
@@ -171,6 +174,9 @@ impl TabManager {
                     tab.is_loading = false;
                     tab.url = url;
                     tab.title = title;
+
+                    // todo conditional reset scroll
+                    tab.viewport_scroll = Point::default();
                 }
                 TabToParentMessage::NavigationFailed(error) => {
                     tab.is_loading = false;
@@ -227,32 +233,6 @@ impl TabManager {
                         #[cfg(windows)]
                         let local_handle = mem_handle;
 
-                        // Similarly duplicate the semaphore fd from the child process.
-                        #[cfg(not(windows))]
-                        let local_sem_handle: i64 = if sem_handle != -1 {
-                            let child_pid = tab.process.id() as libc::pid_t;
-                            let target_fd = sem_handle as libc::c_int;
-
-                            const SYS_PIDFD_OPEN: libc::c_long = 434;
-                            const SYS_PIDFD_GETFD: libc::c_long = 438;
-
-                            let pidfd = unsafe { libc::syscall(SYS_PIDFD_OPEN, child_pid, 0 as libc::c_uint) } as libc::c_int;
-                            if pidfd < 0 {
-                                eprintln!("[TabManager] pidfd_open for semaphore fd failed");
-                                -1
-                            } else {
-                                let local_fd = unsafe { libc::syscall(SYS_PIDFD_GETFD, pidfd, target_fd, 0 as libc::c_uint) } as libc::c_int;
-                                unsafe { libc::close(pidfd) };
-                                if local_fd < 0 {
-                                    eprintln!("[TabManager] pidfd_getfd for semaphore fd failed");
-                                    -1
-                                } else {
-                                    local_fd as i64
-                                }
-                            }
-                        } else {
-                            -1
-                        };
                         #[cfg(windows)]
                         let local_sem_handle: i64 = sem_handle;
 
@@ -269,30 +249,13 @@ impl TabManager {
                             )
                         } {
                             Ok(vk_guard) => {
-                                // GPU-side synchronization: wait on the tab's render
-                                // semaphore before reading the imported image.
-                                // Store the semaphore handle on the frame so the
-                                // blit path in the browser can wait on it at
-                                // draw time via blit_to_swapchain_image().
-                                // For now, do the wait eagerly here (same as before)
-                                // so the frame is ready when polled.
-                                if let (Some(queue), Some(inst)) = (self.ash_queue, self.ash_instance.as_ref()) {
-                                    if let Err(e) = unsafe {
-                                        import_semaphore_and_submit_wait(
-                                            inst,
-                                            dev,
-                                            queue,
-                                            self.ash_queue_family_index,
-                                            vk_guard.image(),
-                                            local_sem_handle,
-                                        )
-                                    } {
-                                        eprintln!("[TabManager] Semaphore wait failed (falling back to CPU sync): {}", e);
-                                        unsafe { dev.device_wait_idle().ok() };
-                                    }
-                                }
-
-                                tab.rendered_frame = Some(RenderedFrame { width, height, vk_guard });
+                                // The semaphore is intentionally NOT waited on here.
+                                // It is stored on the frame and consumed by the blit
+                                // path (vk_blit_tab_then_present) as an extra wait
+                                // semaphore on the same vkQueueSubmit that does the
+                                // blit — so the GPU handles synchronization without
+                                // any CPU stall on the main thread.
+                                tab.rendered_frame = Some(RenderedFrame { width, height, vk_guard, });
                             }
                             Err(e) => {
                                 eprintln!("[TabManager] Failed to import VkImage: {}", e);

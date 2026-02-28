@@ -1,3 +1,4 @@
+use crate::renderer::painter::{ScenePainter, ToColorColor};
 use anyrender::PaintScene;
 use kurbo::Rect;
 // Text decorations, borders, shadows, and outlines
@@ -5,7 +6,6 @@ use style::computed_values::box_shadow::ComputedList;
 use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::servo_arc::Arc;
 use style::values::computed::{BorderStyle, OutlineStyle};
-use crate::renderer::painter::{ScenePainter, ToColorColor};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Edge {

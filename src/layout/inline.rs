@@ -1,6 +1,8 @@
 use crate::dom::Dom;
 use crate::layout::taffy::resolve_calc_value;
-use parley::{AlignmentOptions, YieldData};
+use parley::{AlignmentOptions, IndentOptions, YieldData};
+use style::values::computed::{CSSPixelLength, LengthPercentage};
+use style::values::generics::text::GenericTextIndent;
 use taffy::prelude::TaffyMaxContent;
 use taffy::{AvailableSpace, BlockContext, BlockFormattingContext, BoxSizing, Clear, CollapsibleMarginSet, CoreStyle, Float, LayoutInput, LayoutOutput, LayoutPartialTree, MaybeMath, MaybeResolve, NodeId, Point, Position, ResolveOrZero, RunMode, Size, SizingMode};
 
@@ -162,6 +164,15 @@ impl Dom {
             Size::ZERO
         };
 
+        let text_indent = self.nodes[node_id]
+            .primary_styles()
+            .map(|s| s.clone_text_indent())
+            .unwrap_or(GenericTextIndent {
+                length: LengthPercentage::new_length(CSSPixelLength::new(0.0)),
+                hanging: false,
+                each_line: false,
+            });
+
         // Scrollbar gutters are reserved when the `overflow` property is set to `Overflow::Scroll`.
         // However, the axis are switched (transposed) because a node that scrolls vertically needs
         // *horizontal* space to be reserved for a scrollbar
@@ -291,6 +302,22 @@ impl Dom {
                 ibox.height = (margin.top + margin.bottom + output.size.height) * scale;
             }
         }
+
+        // TODO: Resolve against style widths as well as known dimensions
+        let resolved_text_indent = text_indent
+            .length
+            .resolve(CSSPixelLength::new(known_dimensions.width.unwrap_or(0.0)))
+            .px();
+        inline_layout.layout.set_text_indent(
+            resolved_text_indent,
+            // NOTE: hanging and each_line don't current work because parsing them is cfg'd out in Stylo
+            // due to Servo not yet supporting those features. They should start to "just work" in Blitz
+            // once support is enabled in Stylo.
+            IndentOptions {
+                each_line: text_indent.each_line,
+                hanging: text_indent.hanging,
+            },
+        );
 
         let pbw = container_pb.horizontal_components().sum() * scale;
         let width = known_dimensions

@@ -1,30 +1,27 @@
+use crate::convert_events::{button_source_to_blitz, pointer_source_to_blitz, pointer_source_to_blitz_details, winit_ime_to_blitz, winit_key_event_to_blitz, winit_modifiers_to_kbt_modifiers};
+use crate::events::{BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent};
+use crate::ipc::{ParentToTabMessage, TabToParentMessage};
+use crate::renderer::painter::ScenePainter;
+use crate::shell_provider::ShellProviderMessage;
+use crate::tab_manager::{ManagedTab, TabManager};
+use crate::ui::{BrowserUI, TextBrush};
+use crate::window::Env;
+use crate::{input, ipc};
 use anyrender::PaintScene;
 use blitz_traits::shell::Viewport;
+use cursor_icon::CursorIcon;
 use parley::{FontContext, LayoutContext};
 use std::str::FromStr;
-use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
-use bincode_next::serde::Compat;
-use cursor_icon::CursorIcon;
+use std::time::Instant;
 use taffy::Point;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::WindowId;
 use winit_core::cursor::Cursor;
 use winit_core::event::ButtonSource;
-use winit_core::keyboard::{KeyCode, PhysicalKey};
 use winit_core::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
-use crate::ipc::{ParentToTabMessage, TabToParentMessage};
-use crate::renderer::painter::ScenePainter;
-use crate::tab_manager::TabManager;
-use crate::ui::{BrowserUI, TextBrush};
-use crate::window::Env;
-use crate::{input, ipc};
-use crate::convert_events::{button_source_to_blitz, pointer_source_to_blitz, pointer_source_to_blitz_details, winit_ime_to_blitz, winit_key_event_to_blitz, winit_modifiers_to_kbt_modifiers};
-use crate::events::{BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent};
-use crate::shell_provider::ShellProviderMessage;
 
 /// Result of closing a tab
 #[derive(Debug, PartialEq)]
@@ -50,7 +47,6 @@ pub(crate) struct BrowserApp {
     font_ctx: FontContext,
     layout_ctx: LayoutContext<TextBrush>,
     startup_url: Option<String>,
-    viewport_scroll: Point<f64>,
     buttons: MouseEventButtons,
 }
 
@@ -74,7 +70,6 @@ impl BrowserApp {
             font_ctx: FontContext::new(),
             layout_ctx: LayoutContext::new(),
             startup_url,
-            viewport_scroll: Point::default(),
             buttons: MouseEventButtons::None,
         }
     }
@@ -338,6 +333,11 @@ impl BrowserApp {
     }
 
     fn process_tab_messages(&mut self) {
+        // Don't process messages before the window/UI is ready.
+        if self.env.is_none() || self.ui.is_none() {
+            return;
+        }
+
         let messages = self.tab_manager.poll_messages();
 
         for (tab_id, message) in messages {
@@ -420,7 +420,8 @@ impl BrowserApp {
                             ));
                         },
                         ShellProviderMessage::ViewportScroll((x, y)) => {
-                            self.viewport_scroll = Point { x, y }
+                            let tab = self.tab_mut();
+                            tab.viewport_scroll = Point { x, y }
                         }
                     }
                 },
@@ -432,6 +433,16 @@ impl BrowserApp {
         }
     }
 
+    fn tab(&self) -> &ManagedTab {
+        let active_tab_id = self.active_tab_id().cloned().expect("No active tab");
+        self.tab_manager.get_tab(&active_tab_id).expect("Active tab not found")
+    }
+
+    fn tab_mut(&mut self) -> &mut ManagedTab {
+        let active_tab_id = self.active_tab_id().cloned().expect("No active tab");
+        self.tab_manager.get_tab_mut(&active_tab_id).expect("Active tab not found")
+    }
+
     pub fn pointer_coords(&self, position: PhysicalPosition<f64>) -> PointerCoords {
         let scale = self.viewport.as_ref().unwrap().scale_f64();
         let chrome_offset = BrowserUI::CHROME_HEIGHT;
@@ -440,7 +451,7 @@ impl BrowserApp {
             y: mut screen_y,
         } = position.to_logical(scale);
         screen_y = screen_y - chrome_offset;
-        let viewport_scroll_offset = self.viewport_scroll;
+        let viewport_scroll_offset = self.tab().viewport_scroll;
 
 
         let client_x = screen_x;
@@ -459,9 +470,6 @@ impl BrowserApp {
     }
 
     fn render(&mut self) -> Result<(), String> {
-        // Process messages from tab processes
-        self.process_tab_messages();
-
         let active_tab_id = self.active_tab_id().cloned();
 
         // Check tooltip timeouts
@@ -601,7 +609,15 @@ impl ApplicationHandler for BrowserApp {
     }
 
     fn about_to_wait(&mut self, _event_loop: &dyn ActiveEventLoop) {
-        self.env.as_ref().unwrap().window.request_redraw();
+        // Drain all pending tab messages every loop iteration so the main
+        // process never falls behind the tab processes.  Doing this here
+        // (rather than only inside render()) means we don't have to wait for
+        // a GPU frame to finish before we notice a new FrameRendered / title
+        // change / navigation event from a tab.
+        self.process_tab_messages();
+        if let Some(env) = self.env.as_ref() {
+            env.window.request_redraw();
+        }
     }
 
     fn window_event(&mut self, event_loop: &dyn ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
@@ -684,21 +700,6 @@ impl ApplicationHandler for BrowserApp {
                         return;
                     };
 
-                    // Forward the click to the tab process so the engine can detect link clicks.
-                    // Subtract the chrome height so coordinates are relative to the page canvas.
-                    let chrome_offset = BrowserUI::CHROME_HEIGHT as f32 * self.viewport.as_ref().unwrap().hidpi_scale;
-                    let page_y = (y - chrome_offset).max(0.0);
-                    let click_modifiers = ipc::KeyModifiers {
-                        ctrl: self.modifiers.state().control_key(),
-                        alt: self.modifiers.state().alt_key(),
-                        shift: self.modifiers.state().shift_key(),
-                        meta: self.modifiers.state().meta_key(),
-                    };
-                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Click {
-                        x,
-                        y: page_y,
-                        modifiers: click_modifiers,
-                    });
                     let id = button_source_to_blitz(&ButtonSource::Mouse(MouseButton::Left));
                     let coords = self.pointer_coords(position);
                     self.pointer_position = <(f64, f64)>::from(position);
@@ -969,42 +970,6 @@ impl ApplicationHandler for BrowserApp {
                     input::InputAction::ForwardToTab(keyboard_input) => {
                         // Forward keyboard input to active tab process
                         if let Some(tab_id) = self.active_tab_id().cloned() {
-                            let key_modifiers = ipc::KeyModifiers {
-                                ctrl: self.modifiers.state().control_key(),
-                                alt: self.modifiers.state().alt_key(),
-                                shift: self.modifiers.state().shift_key(),
-                                meta: self.modifiers.state().meta_key(),
-                            };
-
-                            let key_type = match keyboard_input {
-                                input::KeyboardInput::Character(s) => {
-                                    ipc::KeyInputType::Character(s.clone())
-                                }
-                                input::KeyboardInput::Named(s) => {
-                                    ipc::KeyInputType::Named(s.clone())
-                                }
-                                input::KeyboardInput::Scroll { direction, amount } => {
-                                    let ipc_direction = match direction {
-                                        input::ScrollDirection::Up => ipc::ScrollDirection::Up,
-                                        input::ScrollDirection::Down => ipc::ScrollDirection::Down,
-                                        input::ScrollDirection::Left => ipc::ScrollDirection::Left,
-                                        input::ScrollDirection::Right => ipc::ScrollDirection::Right,
-                                    };
-                                    ipc::KeyInputType::Scroll {
-                                        direction: ipc_direction,
-                                        amount: *amount,
-                                    }
-                                }
-                            };
-
-                            let _ = self.tab_manager.send_to_tab(
-                                &tab_id,
-                                ParentToTabMessage::KeyboardInput {
-                                    key_type,
-                                    modifiers: key_modifiers,
-                                },
-                            );
-
                             let key_event_data = winit_key_event_to_blitz(&event, self.modifiers.state());
                             let event = if event.state.is_pressed() {
                                 UiEvent::KeyDown(key_event_data)

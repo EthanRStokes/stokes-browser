@@ -1,4 +1,6 @@
 use crate::dom::DomEvent;
+use crate::engine::net_provider::StokesNetProvider;
+use crate::shell_provider::StokesShellProvider;
 use blitz_traits::net::{NetHandler, NetProvider, Request};
 use blitz_traits::shell::ShellProvider;
 use bytes::Bytes;
@@ -22,8 +24,6 @@ use style::stylesheets::{ImportRule, StylesheetLoader as StyloStylesheetLoader};
 use style::values::{CssUrl, SourceLocation};
 use url::Url;
 use usvg::fontdb;
-use crate::engine::net_provider::StokesNetProvider;
-use crate::shell_provider::StokesShellProvider;
 
 #[derive(Debug)]
 pub enum NetworkError {

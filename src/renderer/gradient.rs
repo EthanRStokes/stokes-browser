@@ -1,33 +1,33 @@
 // Copyright DioxusLabs
 // Licensed under the Apache License, Version 2.0 or the MIT license.
 
+use crate::renderer::painter::ToColorColor;
 use color::{AlphaColor, DynamicColor, Srgb};
 use kurbo::{self, Affine, Point, Rect, Vec2};
 use peniko::{self, ColorStop, Gradient, LinearGradientPosition, SweepGradientPosition};
 use style::color::AbsoluteColor;
 use style::{
-    OwnedSlice,
     values::{
         computed::{
             Angle, AngleOrPercentage, CSSPixelLength, Gradient as StyloGradient, LengthPercentage,
             LineDirection, Percentage,
         },
         generics::{
-            NonNegative,
             color::GenericColor,
             image::{
                 EndingShape, GenericCircle, GenericEllipse, GenericEndingShape, GenericGradient,
                 GenericGradientItem, GradientFlags, ShapeExtent,
             },
             position::GenericPosition,
+            NonNegative,
         },
         specified::{
             percentage::ToPercentage,
             position::{HorizontalPositionKeyword, VerticalPositionKeyword},
         },
     },
+    OwnedSlice,
 };
-use crate::renderer::painter::ToColorColor;
 
 type GradientItem<T> = GenericGradientItem<GenericColor<Percentage>, T>;
 type LinearGradient<'a> = (

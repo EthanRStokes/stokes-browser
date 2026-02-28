@@ -1,11 +1,11 @@
+use crate::dom::node::TextInputData;
+use crate::dom::Dom;
+use crate::events::{BlitzInputEvent, BlitzKeyEvent, DomEvent, DomEventData};
+use crate::ui::TextBrush;
 use blitz_traits::shell::ShellProvider;
 use keyboard_types::{Key, Modifiers};
 use markup5ever::local_name;
 use parley::{FontContext, LayoutContext};
-use crate::dom::Dom;
-use crate::dom::node::TextInputData;
-use crate::events::{BlitzInputEvent, BlitzKeyEvent, DomEvent, DomEventData};
-use crate::ui::TextBrush;
 
 // TODO: support keypress events
 enum GeneratedEvent {

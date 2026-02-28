@@ -10,13 +10,13 @@
 //
 // This avoids the need for any out-of-band SCM_RIGHTS socket infrastructure.
 
-use std::io;
+use crate::events::{MouseEventButtons, UiEvent};
 use ipc_channel::ipc::{
     self, IpcOneShotServer, IpcReceiver, IpcSender,
 };
 use ipc_channel::TryRecvError;
 use serde::{Deserialize, Serialize};
-use crate::events::{MouseEventButtons, UiEvent};
+use std::io;
 
 
 // ── Wire message types ────────────────────────────────────────────────────────
@@ -29,10 +29,7 @@ pub enum ParentToTabMessage {
     GoBack,
     GoForward,
     Resize { width: f32, height: f32 },
-    Scroll { delta_x: f32, delta_y: f32 },
-    Click { x: f32, y: f32, modifiers: KeyModifiers },
     UI(UiEvent),
-    KeyboardInput { key_type: KeyInputType, modifiers: KeyModifiers },
     RequestFrame,
     SetScaleFactor(f32),
     SetZoom(f32),

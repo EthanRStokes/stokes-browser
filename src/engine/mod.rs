@@ -4,29 +4,26 @@ pub mod net_provider;
 pub mod nav_provider;
 
 pub use self::config::EngineConfig;
-use crate::dom::node::{RasterImageData, SpecialElementData};
-use crate::dom::{Dom, ImageData, NodeData};
+use crate::dom::node::SpecialElementData;
+use crate::dom::{Dom, NodeData};
 use crate::dom::{EventDispatcher, EventType};
+use crate::engine::nav_provider::StokesNavigationProvider;
 use crate::js::JsRuntime;
-use crate::networking::{resolve_url, NetworkError, NewHttpClient, Resource};
+use crate::networking;
+use crate::networking::{resolve_url, NetworkError, NewHttpClient};
 use crate::renderer::painter::ScenePainter;
 use crate::renderer::HtmlRenderer;
+use crate::shell_provider::StokesShellProvider;
 use blitz_traits::shell::{ShellProvider, Viewport};
 use markup5ever::local_name;
 use selectors::Element;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::Cursor;
-use std::rc::Rc;
 use std::sync::Arc;
 use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters};
 use style::dom::{TDocument, TNode};
 use style::thread_state::ThreadState;
 use style::traversal::DomTraversal;
-use url::Url;
-use crate::engine::nav_provider::StokesNavigationProvider;
-use crate::networking;
-use crate::shell_provider::StokesShellProvider;
 
 thread_local! {
     pub(crate) static ENGINE_REF: RefCell<Option<*mut Engine>> = RefCell::new(None);

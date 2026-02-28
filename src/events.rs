@@ -3,7 +3,6 @@
 
 //! Types to represent UI and DOM events
 
-use bincode_next::serde::Compat;
 use bitflags::bitflags;
 use keyboard_types::{Code, Key, Location, Modifiers};
 use serde::{Deserialize, Serialize};

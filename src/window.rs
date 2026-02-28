@@ -1,15 +1,15 @@
-use std::ptr;
-use std::sync::Arc;
+use crate::vk_shared::ImportedVkImage;
+use crate::vk_shared::VulkanDeviceInfo;
 use ash::vk::{self, Handle};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use skia_safe::gpu::{self, DirectContext};
 use skia_safe::{ColorType, Surface};
+use std::ptr;
+use std::sync::Arc;
 use winit::dpi::LogicalSize;
 use winit::window::{Window, WindowAttributes};
 use winit_core::event_loop::ActiveEventLoop;
 use winit_core::icon::{Icon, RgbaIcon};
-use crate::vk_shared::VulkanDeviceInfo;
-use crate::vk_shared::ImportedVkImage;
 
 // ---------------------------------------------------------------------------
 // Public types

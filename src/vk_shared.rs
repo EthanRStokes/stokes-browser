@@ -37,12 +37,12 @@ fn external_semaphore_handle_type() -> vk::ExternalSemaphoreHandleTypeFlags {
 }
 // ── VkFormat ↔ Skia mappings ────────────────────────────────────────────────
 
-pub fn vk_format_to_skia(fmt: vk::Format) -> Option<(skia_safe::gpu::vk::Format, ColorType)> {
+pub fn vk_format_to_skia(fmt: vk::Format) -> Option<(gpu::vk::Format, ColorType)> {
     match fmt {
-        vk::Format::B8G8R8A8_UNORM => Some((skia_safe::gpu::vk::Format::B8G8R8A8_UNORM, ColorType::BGRA8888)),
-        vk::Format::R8G8B8A8_UNORM => Some((skia_safe::gpu::vk::Format::R8G8B8A8_UNORM, ColorType::RGBA8888)),
-        vk::Format::B8G8R8A8_SRGB  => Some((skia_safe::gpu::vk::Format::B8G8R8A8_SRGB,  ColorType::BGRA8888)),
-        vk::Format::R8G8B8A8_SRGB  => Some((skia_safe::gpu::vk::Format::R8G8B8A8_SRGB,  ColorType::RGBA8888)),
+        vk::Format::B8G8R8A8_UNORM => Some((gpu::vk::Format::B8G8R8A8_UNORM, ColorType::BGRA8888)),
+        vk::Format::R8G8B8A8_UNORM => Some((gpu::vk::Format::R8G8B8A8_UNORM, ColorType::RGBA8888)),
+        vk::Format::B8G8R8A8_SRGB  => Some((gpu::vk::Format::B8G8R8A8_SRGB,  ColorType::BGRA8888)),
+        vk::Format::R8G8B8A8_SRGB  => Some((gpu::vk::Format::R8G8B8A8_SRGB,  ColorType::RGBA8888)),
         _ => None,
     }
 }
@@ -81,7 +81,6 @@ pub struct TabVkImage {
     /// Pre-recorded command buffer: COLOR_ATTACHMENT_OPTIMAL → GENERAL barrier.
     cmd_buf: vk::CommandBuffer,
     pub queue: vk::Queue,
-    pub queue_family_index: u32,
 
     #[cfg(windows)]
     ext_mem_win32: ash::khr::external_memory_win32::Device,
@@ -271,7 +270,6 @@ impl TabVkImage {
             cmd_pool,
             cmd_buf,
             queue,
-            queue_family_index,
             #[cfg(windows)]
             ext_mem_win32,
             #[cfg(not(windows))]

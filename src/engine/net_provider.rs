@@ -1,13 +1,13 @@
-use std::marker::PhantomData;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::Poll;
 use blitz_net::ProviderError;
 use blitz_traits::net::{AbortSignal, NetHandler, NetProvider, Request};
 use bytes::Bytes;
 use curl::easy::{Easy2, Handler, WriteError};
 use data_url::DataUrl;
 use log::warn;
+use std::marker::PhantomData;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::Poll;
 use tokio::runtime::Handle;
 
 pub struct StokesNetProvider {

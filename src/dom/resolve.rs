@@ -1,9 +1,9 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::dom::events::pointer::ScrollAnimationState;
+use crate::dom::{Dom, DomEvent};
 use selectors::Element;
+use std::time::{SystemTime, UNIX_EPOCH};
 use style::dom::TDocument;
 use style::selector_parser::RestyleDamage;
-use crate::dom::{Dom, DomEvent};
-use crate::dom::events::pointer::ScrollAnimationState;
 
 impl Dom {
     pub(crate) fn resolve(&mut self, now: f64) {
