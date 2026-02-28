@@ -3,7 +3,7 @@ use blitz_traits::net::{NetHandler, NetProvider, Request};
 use blitz_traits::shell::ShellProvider;
 use bytes::Bytes;
 // Networking module for handling HTTP requests
-use curl::easy::{Easy, List};
+use curl::easy::Easy;
 use selectors::context::QuirksMode;
 use std::io::Cursor;
 use std::path::Path;
@@ -490,88 +490,6 @@ impl ImageHandler {
     }
 }
 
-/// Resolve a potentially relative URL against the current page URL
-pub fn resolve_url(current_url: &str, url: &str) -> Result<String, NetworkError> {
-    // If the URL is already absolute, return it as-is
-    if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://") {
-        return Ok(url.to_string());
-    }
-
-    // Handle protocol-relative URLs
-    if url.starts_with("//") {
-        // Use the same protocol as the current page
-        let protocol = if current_url.starts_with("https://") {
-            "https:"
-        } else {
-            "http:"
-        };
-        return Ok(format!("{}{}", protocol, url));
-    }
-
-    // For relative URLs, we need to resolve them against the current page URL
-    if current_url.is_empty() {
-        return Err(NetworkError::Curl("Cannot resolve relative URL: no current page URL".to_string()));
-    }
-
-    // Handle local file paths
-    if current_url.starts_with("file://") || current_url.starts_with('/') ||
-        (current_url.len() >= 3 && current_url.chars().nth(1) == Some(':')) {
-        // Current URL is a local file path
-        use std::path::Path;
-
-        let current_path = if current_url.starts_with("file://") {
-            &current_url[7..]
-        } else {
-            &current_url
-        };
-
-        // Get the directory of the current file
-        let base_path = Path::new(current_path);
-        let base_dir = base_path.parent().unwrap_or(Path::new("."));
-
-        // Resolve the relative path
-        let resolved_path = if url.starts_with('/') {
-            // Absolute path on the file system
-            Path::new(url).to_path_buf()
-        } else {
-            // Relative path
-            base_dir.join(url)
-        };
-
-        // Convert to string and normalize
-        return resolved_path.to_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| NetworkError::FileRead("Invalid path encoding".to_string()));
-    }
-
-    // Parse the current URL to get the base domain
-    // Find the domain part by looking for the third slash (after protocol://)
-    let base_url = if current_url.starts_with("http://") || current_url.starts_with("https://") {
-        // Find the end of the domain part
-        let protocol_end = if current_url.starts_with("https://") { 8 } else { 7 }; // Length of "https://" or "http://"
-
-        if let Some(path_start) = current_url[protocol_end..].find('/') {
-            // Domain ends at the first slash after the protocol
-            &current_url[..protocol_end + path_start]
-        } else {
-            // No path, use the entire URL as the domain
-            &current_url
-        }
-    } else {
-        &current_url
-    };
-
-    // Handle different types of relative URLs
-    if url.starts_with('/') {
-        // Absolute path relative to domain root
-        Ok(format!("{}{}", base_url, url))
-    } else {
-        // Relative path - for simplicity, treat as relative to domain root
-        // In a real browser, this would be relative to the current page's path
-        Ok(format!("{}/{}", base_url, url))
-    }
-}
-
 pub struct HttpClient {
     pub(crate) tx: Sender<DomEvent>,
     pub(crate) dom_id: usize,
@@ -649,26 +567,6 @@ fn read_local_file(path: &str) -> Result<String, NetworkError> {
         .map_err(|e| NetworkError::FileRead(e.to_string()))
 }
 
-/// Read a local resource file (for images, etc.)
-async fn read_local_resource(path: &str) -> Result<Vec<u8>, NetworkError> {
-    println!("Reading local resource: {}", path);
-
-    let path = path.to_string();
-    tokio::task::spawn_blocking(move || {
-        // Check if file exists
-        let file_path = Path::new(&path);
-        if !file_path.exists() {
-            return Err(NetworkError::FileNotFound(path.clone()));
-        }
-
-        // Read the file as bytes
-        std::fs::read(file_path)
-            .map_err(|e| NetworkError::FileRead(e.to_string()))
-    })
-    .await
-    .map_err(|e| NetworkError::FileRead(e.to_string()))?
-}
-
 /// Fetch HTML content from a URL or local file
 pub fn fetch(url: &str, user_agent: &str) -> Result<String, NetworkError> {
     println!("Fetching: {}", url);
@@ -740,117 +638,4 @@ pub fn fetch(url: &str, user_agent: &str) -> Result<String, NetworkError> {
         .map_err(|_| NetworkError::Utf8("Response contains invalid UTF-8".to_string()))?;
 
     Ok::<String, NetworkError>(html).map_err(|e| NetworkError::Curl(e.to_string()))
-}
-
-/// Fetch an image or other resource
-pub async fn fetch_resource(url: &str, user_agent: &str) -> Result<Vec<u8>, NetworkError> {
-    println!("Fetching resource: {}", url);
-
-    let url = match Url::parse(url) {
-        Ok(u) => u,
-        Err(err) => {
-            return Err(NetworkError::Curl(err.to_string()))
-        }
-    };
-
-    // Check if it's a local file
-    if url.scheme() == "file" {
-        let file_path = url_to_file_path(url.as_str());
-        return read_local_resource(&file_path).await;
-    }
-
-    // Run curl operation in a blocking task
-    let user_agent = user_agent.to_string();
-    let result = tokio::task::spawn_blocking(move || {
-        let mut easy = Easy::new();
-        let mut data = Vec::new();
-        let mut headers = Vec::new();
-
-        // Configure curl
-        easy.url(&url.as_str()).map_err(|e| NetworkError::Curl(e.to_string()))?;
-        easy.useragent(&user_agent).map_err(|e| NetworkError::Curl(e.to_string()))?;
-        easy.timeout(Duration::from_secs(30)).map_err(|e| NetworkError::Curl(e.to_string()))?;
-        easy.follow_location(true).map_err(|e| NetworkError::Curl(e.to_string()))?;
-        easy.max_redirections(5).map_err(|e| NetworkError::Curl(e.to_string()))?;
-
-        // Set Accept header for resources
-        let mut header_list = List::new();
-        header_list.append("Accept: image/*, */*").map_err(|e| NetworkError::Curl(e.to_string()))?;
-        easy.http_headers(header_list).map_err(|e| NetworkError::Curl(e.to_string()))?;
-
-        // Set up data collection
-        {
-            let mut transfer = easy.transfer();
-            transfer.write_function(|new_data| {
-                data.extend_from_slice(new_data);
-                Ok(new_data.len())
-            }).map_err(|e| NetworkError::Curl(e.to_string()))?;
-
-            transfer.header_function(|header| {
-                headers.push(String::from_utf8_lossy(header).to_string());
-                true
-            }).map_err(|e| NetworkError::Curl(e.to_string()))?;
-
-            transfer.perform().map_err(|e| NetworkError::Curl(e.to_string()))?;
-        }
-
-        // Check response code
-        let response_code = easy.response_code().map_err(|e| NetworkError::Curl(e.to_string()))?;
-        if response_code >= 400 {
-            return Err(NetworkError::Http(response_code));
-        }
-
-        // Check content type
-        if let Some(content_type_header) = headers.iter()
-            .find(|h| h.to_lowercase().starts_with("content-type:")) {
-            if let Some(content_type) = content_type_header.split(':').nth(1) {
-                let content_type = content_type.trim();
-                //println!("Resource content type: {}", content_type);
-
-                if !content_type.starts_with("image/") && !content_type.contains("svg") {
-                    println!("Warning: Expected image content type, got: {}", content_type);
-                }
-            }
-        }
-
-        // Validate we got some data
-        if data.is_empty() {
-            return Err(NetworkError::Empty);
-        }
-
-        //println!("Successfully fetched resource: {} bytes", data.len());
-        Ok::<Vec<u8>, NetworkError>(data)
-    }).await.map_err(|e| NetworkError::Curl(e.to_string()))?;
-
-    result
-}
-
-/// Check if a URL is valid and reachable (for validation)
-pub async fn head(url: &str, user_agent: &str) -> Result<bool, NetworkError> {
-    let url = match Url::parse(url) {
-        Ok(u) => u,
-        Err(e) => return Err(NetworkError::Curl(e.to_string())),
-    };
-
-    let user_agent = user_agent.to_string();
-    let result = tokio::task::spawn_blocking(move || {
-        let mut easy = Easy::new();
-
-        // Configure curl for HEAD request
-        easy.url(&url.as_str()).map_err(|e| NetworkError::Curl(e.to_string()))?;
-        easy.useragent(&user_agent).map_err(|e| NetworkError::Curl(e.to_string()))?;
-        easy.timeout(Duration::from_secs(10)).map_err(|e| NetworkError::Curl(e.to_string()))?;
-        easy.nobody(true).map_err(|e| NetworkError::Curl(e.to_string()))?; // This makes it a HEAD request
-        easy.follow_location(true).map_err(|e| NetworkError::Curl(e.to_string()))?;
-        easy.max_redirections(5).map_err(|e| NetworkError::Curl(e.to_string()))?;
-
-        // Perform the request
-        easy.perform().map_err(|e| NetworkError::Curl(e.to_string()))?;
-
-        // Check response code
-        let response_code = easy.response_code().map_err(|e| NetworkError::Curl(e.to_string()))?;
-        Ok::<bool, NetworkError>(response_code < 400)
-    }).await.map_err(|e| NetworkError::Curl(e.to_string()))?;
-
-    result
 }

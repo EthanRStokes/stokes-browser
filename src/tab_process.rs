@@ -14,6 +14,7 @@ use crate::shell_provider::{StokesShellProvider, ShellProviderMessage};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use crate::dom::Dom;
 use crate::engine::nav_provider::{NavigationProviderMessage, StokesNavigationProvider};
+use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
@@ -55,7 +56,12 @@ impl TabProcess {
             ..Default::default()
         };
 
-        let mut engine = Engine::new(config, Viewport::default(), Arc::new(shell_provider), Arc::new(navigation_provider)); // Default viewport, will be resized later
+        let mut engine = Engine::new(
+            config,
+            Viewport::default(),
+            Arc::new(shell_provider),
+            Arc::new(navigation_provider),
+        );
 
         // Set the engine reference in the thread-local storage
         ENGINE_REF.with(|engine_ref| {
