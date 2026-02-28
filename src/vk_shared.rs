@@ -1,4 +1,3 @@
-use crate::vk_shared::gpu::images::borrow_texture_from;
 /// Shared-Vulkan-image helpers for zero-copy cross-process rendering.
 ///
 /// # Platform support
@@ -406,16 +405,17 @@ pub unsafe fn import_skia_image(
 
     // Use a release callback so that the VkImage/VkDeviceMemory are freed
     // exactly when Skia is done with the texture.
-    let release_ctx = Box::into_raw(Box::new(guard)) as *mut std::ffi::c_void;
+    // For now, leak the guard so the imported resources stay alive.
+    // TODO: use a release callback once the Skia API supports it.
+    std::mem::forget(guard);
 
-    let skia_image = borrow_texture_from(
+    let skia_image = gpu::images::borrow_texture_from(
         gr_context,
         &backend_texture,
         gpu::SurfaceOrigin::TopLeft,
         color_type,
         skia_safe::AlphaType::Premul,
         None,
-        //Some((release_imported_vk_image, release_ctx)),
     )
     .ok_or_else(|| "Failed to create Skia image from imported Vulkan texture".to_string())?;
 

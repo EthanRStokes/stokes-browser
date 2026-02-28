@@ -586,9 +586,9 @@ impl ApplicationHandler for BrowserApp {
             let vk = &env.vk;
             let device_info = vk.device_info();
             // ash::Instance and ash::Device implement Clone.
-            let ash_instance = vk.ash_instance.clone();
-            let ash_physical_device = vk.ash_physical_device;
-            let ash_device = vk.ash_device.clone();
+            let ash_instance = vk.instance.clone();
+            let ash_physical_device = vk.physical_device;
+            let ash_device = vk.device.clone();
             self.tab_manager.set_vulkan_context(device_info, ash_instance, ash_physical_device, ash_device);
         }
 
