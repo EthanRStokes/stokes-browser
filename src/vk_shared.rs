@@ -2,7 +2,7 @@
 ///
 /// # Platform support
 /// * **Windows** – uses `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT` + `DuplicateHandle`.
-/// * **Linux**   – uses `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT`.
+/// * **Linux**   – uses `VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT` (via `VK_EXT_external_memory_dma_buf`).
 ///
 /// # How it works
 ///
@@ -22,7 +22,7 @@
 use ash::vk::{self, Handle};
 use skia_safe::gpu::{self, DirectContext};
 use skia_safe::{ColorType, Image};
-
+use skia_safe::gpu::vk::AllocFlag;
 // ── VkFormat ↔ Skia mappings ────────────────────────────────────────────────
 
 pub fn vk_format_to_skia(fmt: vk::Format) -> Option<(skia_safe::gpu::vk::Format, ColorType)> {
@@ -44,7 +44,7 @@ fn external_handle_type() -> vk::ExternalMemoryHandleTypeFlags {
 
 #[cfg(not(windows))]
 fn external_handle_type() -> vk::ExternalMemoryHandleTypeFlags {
-    vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD
+    vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT
 }
 
 // ── TabVkImage (child/tab side) ─────────────────────────────────────────────
@@ -59,6 +59,8 @@ pub struct TabVkImage {
     pub width: u32,
     pub height: u32,
     pub format: vk::Format,
+    /// Exact allocation size (bytes) — must be sent to the parent for import.
+    pub alloc_size: u64,
     skia_surface: Option<skia_safe::Surface>,
 
     #[cfg(windows)]
@@ -91,6 +93,7 @@ impl TabVkImage {
             .handle_types(handle_type);
 
         let family_indices = [queue_family_index];
+
         let image_ci = vk::ImageCreateInfo::default()
             .push_next(&mut ext_image_ci)
             .image_type(vk::ImageType::TYPE_2D)
@@ -131,8 +134,12 @@ impl TabVkImage {
         let mut export_alloc_info = vk::ExportMemoryAllocateInfo::default()
             .handle_types(handle_type);
 
+        let mut dedicated_alloc_info = vk::MemoryDedicatedAllocateInfo::default()
+            .image(image);
+
         let alloc_info = vk::MemoryAllocateInfo::default()
             .push_next(&mut export_alloc_info)
+            .push_next(&mut dedicated_alloc_info)
             .allocation_size(mem_reqs.size)
             .memory_type_index(mem_type_index);
 
@@ -148,7 +155,13 @@ impl TabVkImage {
         })?;
 
         // -- Build Skia surface -----------------------------------------------
-        let alloc = skia_safe::gpu::vk::Alloc::default();
+        let alloc = skia_safe::gpu::vk::Alloc::from_device_memory(
+            memory.as_raw() as _,
+            0,                 // offset
+            mem_reqs.size,     // size
+            AllocFlag::empty(),                 // flags
+        );
+
         let sk_image_info = skia_safe::gpu::vk::ImageInfo::new(
             image.as_raw() as _,
             alloc,
@@ -195,6 +208,7 @@ impl TabVkImage {
             width,
             height,
             format,
+            alloc_size: mem_reqs.size,
             skia_surface: Some(skia_surface),
             #[cfg(windows)]
             ext_mem_win32,
@@ -270,7 +284,7 @@ impl TabVkImage {
             let _ = parent_pid; // unused
             let get_fd_info = vk::MemoryGetFdInfoKHR::default()
                 .memory(self.memory)
-                .handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
+                .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
 
             self.ext_mem_fd
                 .get_memory_fd(&get_fd_info)
@@ -295,7 +309,7 @@ impl Drop for TabVkImage {
 
 /// Owns a VkImage + VkDeviceMemory imported from a tab process.
 /// Cleaned up when dropped.
-struct ImportedVkImage {
+pub struct ImportedVkImage {
     device: ash::Device,
     image: vk::Image,
     memory: vk::DeviceMemory,
@@ -333,7 +347,8 @@ pub unsafe fn import_skia_image(
     width: u32,
     height: u32,
     format: vk::Format,
-) -> Result<Image, String> {
+    alloc_size: u64,
+) -> Result<(Image, ImportedVkImage), String> {
     let (skia_format, color_type) = vk_format_to_skia(format)
         .ok_or_else(|| format!("Unsupported format {:?}", format))?;
 
@@ -342,6 +357,7 @@ pub unsafe fn import_skia_image(
     // -- Create the parent-side VkImage with external memory chain -----------
     let mut ext_image_ci = vk::ExternalMemoryImageCreateInfo::default()
         .handle_types(handle_type);
+
     let image_ci = vk::ImageCreateInfo::default()
         .push_next(&mut ext_image_ci)
         .image_type(vk::ImageType::TYPE_2D)
@@ -367,7 +383,9 @@ pub unsafe fn import_skia_image(
     let mem_reqs = device.get_image_memory_requirements(image);
 
     // -- Import handle into VkDeviceMemory -----------------------------------
-    let imported_memory = import_memory(instance, physical_device, device, image, handle, &mem_reqs)?;
+    // Use the original allocation size from the tab process, not the parent's
+    // mem_reqs.size, which may differ due to alignment/padding differences.
+    let imported_memory = import_memory(instance, physical_device, device, image, handle, alloc_size, &mem_reqs)?;
 
     device.bind_image_memory(image, imported_memory, 0).map_err(|e| {
         device.free_memory(imported_memory, None);
@@ -383,12 +401,18 @@ pub unsafe fn import_skia_image(
     };
 
     // -- Build a Skia texture from the parent's VkImage ----------------------
-    let alloc = skia_safe::gpu::vk::Alloc::default();
+    let alloc = skia_safe::gpu::vk::Alloc::from_device_memory(
+        imported_memory.as_raw() as _,
+        0,                 // offset
+        alloc_size,        // size
+        AllocFlag::empty(),                 // flags
+    );
+
     let sk_image_info = skia_safe::gpu::vk::ImageInfo::new(
         image.as_raw() as _,
         alloc,
         skia_safe::gpu::vk::ImageTiling::OPTIMAL,
-        skia_safe::gpu::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        skia_safe::gpu::vk::ImageLayout::UNDEFINED,
         skia_format,
         1,
         None,
@@ -403,11 +427,8 @@ pub unsafe fn import_skia_image(
         "tab_frame",
     );
 
-    // Use a release callback so that the VkImage/VkDeviceMemory are freed
-    // exactly when Skia is done with the texture.
-    // For now, leak the guard so the imported resources stay alive.
-    // TODO: use a release callback once the Skia API supports it.
-    std::mem::forget(guard);
+    // The ImportedVkImage guard is returned to the caller so it stays alive
+    // as long as the Skia image is in use, and gets cleaned up when dropped.
 
     let skia_image = gpu::images::borrow_texture_from(
         gr_context,
@@ -419,20 +440,8 @@ pub unsafe fn import_skia_image(
     )
     .ok_or_else(|| "Failed to create Skia image from imported Vulkan texture".to_string())?;
 
-    Ok(skia_image)
+    Ok((skia_image, guard))
 }
-
-/// Release callback invoked by Skia when it is done with the imported texture.
-/*unsafe extern "C" fn release_imported_vk_image(
-    _texture: skia_safe::gpu::BackendTexture,
-    _release: skia_safe::gpu::SurfaceReleaseProc,
-    context: *mut std::ffi::c_void,
-) {
-    if !context.is_null() {
-        // Re-take ownership and drop, which frees the VkImage + VkDeviceMemory.
-        let _ = Box::from_raw(context as *mut ImportedVkImage);
-    }
-}*/
 
 // ── Platform-specific memory import helpers ─────────────────────────────────
 
@@ -443,6 +452,7 @@ unsafe fn import_memory(
     device: &ash::Device,
     image: vk::Image,
     handle: u64,
+    alloc_size: u64,
     mem_reqs: &vk::MemoryRequirements,
 ) -> Result<vk::DeviceMemory, String> {
     use ash::khr::external_memory_win32;
@@ -474,9 +484,13 @@ unsafe fn import_memory(
         .handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32)
         .handle(handle as vk::HANDLE);
 
+    let mut dedicated_alloc_info = vk::MemoryDedicatedAllocateInfo::default()
+        .image(image);
+
     let alloc_info = vk::MemoryAllocateInfo::default()
         .push_next(&mut import_info)
-        .allocation_size(mem_reqs.size)
+        .push_next(&mut dedicated_alloc_info)
+        .allocation_size(alloc_size)
         .memory_type_index(mem_type_index);
 
     device
@@ -494,42 +508,70 @@ unsafe fn import_memory(
     device: &ash::Device,
     image: vk::Image,
     handle: u64,
+    alloc_size: u64,
     mem_reqs: &vk::MemoryRequirements,
 ) -> Result<vk::DeviceMemory, String> {
     let fd = handle as std::os::unix::io::RawFd;
-    let ext_mem_fd = ash::khr::external_memory_fd::Device::new(instance, device);
 
+    let ext_fd = ash::khr::external_memory_fd::Device::new(instance, device);
+
+    // DMA_BUF handles support vkGetMemoryFdPropertiesKHR (unlike OPAQUE_FD),
+    // which tells us which memory types are compatible with this imported fd.
     let mut fd_props = vk::MemoryFdPropertiesKHR::default();
-    ext_mem_fd
-        .get_memory_fd_properties(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD, fd, &mut fd_props)
-        .map_err(|e| format!("vkGetMemoryFdPropertiesKHR failed: {:?}", e))?;
+    ext_fd
+        .get_memory_fd_properties(
+            vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT,
+            fd,
+            &mut fd_props,
+        )
+        .map_err(|e| {
+            unsafe { device.destroy_image(image, None) };
+            format!("vkGetMemoryFdPropertiesKHR failed: {:?}", e)
+        })?;
 
+    // Prefer the intersection of image-required and fd-compatible types, but
+    // fall back to fd-only bits if the intersection is empty (common on AMD/Intel
+    // where DMA-BUF memory lives in a GTT/system heap the image doesn't list).
     let combined_bits = mem_reqs.memory_type_bits & fd_props.memory_type_bits;
+    let candidate_bits = if combined_bits != 0 { combined_bits } else { fd_props.memory_type_bits };
+
     let mem_type_index = find_memory_type(
         instance,
         physical_device,
-        combined_bits,
+        candidate_bits,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
     )
+    .or_else(|| {
+        // Fallback: try without DEVICE_LOCAL requirement
+        find_memory_type(instance, physical_device, candidate_bits, vk::MemoryPropertyFlags::empty())
+    })
     .ok_or_else(|| {
         unsafe { device.destroy_image(image, None) };
-        "No compatible memory type for import (fd)".to_string()
+        format!(
+            "No compatible memory type for import (dma-buf fd): \
+             image bits=0x{:x}, fd bits=0x{:x}",
+            mem_reqs.memory_type_bits, fd_props.memory_type_bits
+        )
     })?;
 
     let mut import_info = vk::ImportMemoryFdInfoKHR::default()
-        .handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD)
+        .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
         .fd(fd);
+
+    let mut dedicated_alloc_info = vk::MemoryDedicatedAllocateInfo::default()
+        .image(image);
 
     let alloc_info = vk::MemoryAllocateInfo::default()
         .push_next(&mut import_info)
-        .allocation_size(mem_reqs.size)
+        .push_next(&mut dedicated_alloc_info)
+        .allocation_size(alloc_size)
         .memory_type_index(mem_type_index);
 
     device
         .allocate_memory(&alloc_info, None)
         .map_err(|e| {
             unsafe { device.destroy_image(image, None) };
-            format!("vkAllocateMemory (fd import) failed: {:?}", e)
+            format!("vkAllocateMemory (dma-buf fd import) failed: {:?}", e)
         })
 }
 
@@ -553,14 +595,12 @@ pub fn find_memory_type(
 
 // ── VulkanDeviceInfo: serialisable info the parent passes to child via env ──
 
-/// The minimal Vulkan handles the parent passes to each tab process so they can
+/// The minimal Vulkan info the parent passes to each tab process so they can
 /// connect to the same physical device.
-///
-/// All u64 values are raw Vulkan opaque handles transmitted as integers.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VulkanDeviceInfo {
-    /// Raw `VkPhysicalDevice` handle — used to select the same GPU in the child.
-    pub physical_device_handle: u64,
+    /// VkPhysicalDeviceIDProperties::deviceUUID — stable across processes.
+    pub device_uuid: [u8; 16],
     /// Queue family index used by the parent.
     pub queue_family_index: u32,
     /// Swapchain image format (as raw `VkFormat` integer).
@@ -568,3 +608,15 @@ pub struct VulkanDeviceInfo {
     /// PID of the parent process (needed on Windows for `DuplicateHandle`).
     pub parent_pid: u32,
 }
+
+/// Query the `deviceUUID` for a physical device (requires Vulkan 1.1+).
+pub unsafe fn physical_device_uuid(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+) -> [u8; 16] {
+    let mut id_props = vk::PhysicalDeviceIDProperties::default();
+    let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut id_props);
+    instance.get_physical_device_properties2(physical_device, &mut props2);
+    id_props.device_uuid
+}
+

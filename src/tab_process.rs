@@ -25,6 +25,8 @@ pub struct TabProcess {
     gr_context: Option<DirectContext>,
     /// Current Vulkan image + Skia surface used for rendering
     vk_image: Option<TabVkImage>,
+    /// ash Entry – must outlive Instance/Device to keep libvulkan loaded
+    ash_entry: Option<ash::Entry>,
     /// ash handles for our private Vulkan device
     ash_instance: Option<ash::Instance>,
     ash_physical_device: Option<vk::PhysicalDevice>,
@@ -74,15 +76,15 @@ impl TabProcess {
             .unwrap_or(vk::Format::R8G8B8A8_UNORM);
 
         // Initialise our private Vulkan device so we can create exportable VkImages.
-        let (ash_instance, ash_physical_device, ash_device, queue_family_index, gr_context) =
+        let (ash_entry, ash_instance, ash_physical_device, ash_device, queue_family_index, gr_context) =
             match unsafe { Self::init_vulkan(vk_device_info.as_ref()) } {
                 Ok(handles) => {
-                    let (inst, phys, dev, qfi, ctx) = handles;
-                    (Some(inst), Some(phys), Some(dev), qfi, Some(ctx))
+                    let (entry, inst, phys, dev, qfi, ctx) = handles;
+                    (Some(entry), Some(inst), Some(phys), Some(dev), qfi, Some(ctx))
                 }
                 Err(e) => {
                     eprintln!("[Tab {}] Vulkan init failed (will use CPU fallback): {}", tab_id, e);
-                    (None, None, None, 0, None)
+                    (None, None, None, None, 0, None)
                 }
             };
 
@@ -93,6 +95,7 @@ impl TabProcess {
             tab_id,
             gr_context,
             vk_image: None,
+            ash_entry,
             ash_instance,
             ash_physical_device,
             ash_device,
@@ -108,7 +111,7 @@ impl TabProcess {
     /// `VulkanDeviceInfo`), falling back to the first GPU if not found.
     unsafe fn init_vulkan(
         parent_info: Option<&VulkanDeviceInfo>,
-    ) -> Result<(ash::Instance, vk::PhysicalDevice, ash::Device, u32, DirectContext), String> {
+    ) -> Result<(ash::Entry, ash::Instance, vk::PhysicalDevice, ash::Device, u32, DirectContext), String> {
         let entry = ash::Entry::load().map_err(|e| format!("ash Entry::load: {:?}", e))?;
 
         let app_info = vk::ApplicationInfo::default()
@@ -128,9 +131,14 @@ impl TabProcess {
             return Err("No Vulkan physical devices found".into());
         }
 
-        // Try to match the parent's physical device handle; fall back to first device.
+        // Try to match the parent's physical device by UUID; fall back to first device.
         let physical_device = parent_info
-            .and_then(|info| physical_devices.iter().find(|&&d| d.as_raw() == info.physical_device_handle).copied())
+            .and_then(|info| {
+                physical_devices.iter().find(|&&d| {
+                    let uuid = crate::vk_shared::physical_device_uuid(&instance, d);
+                    uuid == info.device_uuid
+                }).copied()
+            })
             .unwrap_or(physical_devices[0]);
 
         // Use the parent's queue family index if provided, otherwise find a graphics family.
@@ -159,6 +167,7 @@ impl TabProcess {
         let ext_names: Vec<*const std::ffi::c_char> = vec![
             ash::khr::external_memory::NAME.as_ptr(),
             ash::khr::external_memory_fd::NAME.as_ptr(),
+            ash::vk::EXT_EXTERNAL_MEMORY_DMA_BUF_NAME.as_ptr(),
         ];
 
         let device_ci = vk::DeviceCreateInfo::default()
@@ -197,7 +206,7 @@ impl TabProcess {
             None,
         ).ok_or_else(|| "Failed to create Skia Vulkan DirectContext in tab".to_string())?;
 
-        Ok((instance, physical_device, device, queue_family_index, gr_context))
+        Ok((entry, instance, physical_device, device, queue_family_index, gr_context))
     }
 
     fn animation_time(&mut self) -> f64 {
@@ -328,7 +337,6 @@ impl TabProcess {
 
             // Process all pending messages from parent (non-blocking)
             let mut has_messages = true;
-            println!("Yo");
             while has_messages {
                 let msg_option = self.channel.try_receive()?;
                 match msg_option {
@@ -343,7 +351,6 @@ impl TabProcess {
                     }
                 }
             }
-            println!("loop");
 
             // Small sleep to prevent CPU spinning
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -360,7 +367,6 @@ impl TabProcess {
 
     /// Handle a message from the parent process
     async fn handle_message(&mut self, message: ParentToTabMessage) -> io::Result<bool> {
-        println!("Handling message from parent: {:?}", message);
         match message {
             ParentToTabMessage::Navigate(url) => {
                 let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
@@ -572,10 +578,18 @@ impl TabProcess {
             ctx.flush_and_submit();
         }
 
+        // Wait for all GPU work to complete before exporting the handle.
+        // This ensures the parent won't read an incomplete frame.
+        if let Some(device) = self.ash_device.as_ref() {
+            let queue = unsafe { device.get_device_queue(self.queue_family_index, 0) };
+            unsafe { device.queue_wait_idle(queue).ok() };
+        }
+
         let vk_image = self.vk_image.as_ref().unwrap();
         let width = vk_image.width;
         let height = vk_image.height;
         let vk_format = vk_image.format.as_raw();
+        let alloc_size = vk_image.alloc_size;
 
         // Retrieve the parent PID from VulkanDeviceInfo (set via env at startup).
         let parent_pid = std::env::var("STOKES_VK_DEVICE_INFO")
@@ -599,6 +613,7 @@ impl TabProcess {
             width,
             height,
             vk_format,
+            alloc_size,
         })?;
 
         Ok(())

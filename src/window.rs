@@ -79,8 +79,11 @@ impl VkState {
     /// Build a `VulkanDeviceInfo` that tab processes can use to attach to the
     /// same physical device and share VkImages with the parent.
     pub(crate) fn device_info(&self) -> VulkanDeviceInfo {
+        let device_uuid = unsafe {
+            crate::vk_shared::physical_device_uuid(&self.instance, self.physical_device)
+        };
         VulkanDeviceInfo {
-            physical_device_handle: self.physical_device.as_raw(),
+            device_uuid,
             queue_family_index: self.queue_family_index,
             image_format: self.swapchain_format.as_raw(),
             parent_pid: std::process::id(),
@@ -380,7 +383,7 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
 
     let win_attrs = WindowAttributes::default()
         .with_title("Stokes Browser")
-        .with_min_surface_size(LogicalSize::new(1280u32, 800u32))
+        .with_min_surface_size(LogicalSize::new(500, crate::ui::BrowserUI::CHROME_HEIGHT as i32 + 1))
         .with_window_icon(icon);
 
     let window: Arc<Box<dyn winit_core::window::Window>> = Arc::new(
@@ -462,7 +465,16 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         .queue_family_index(queue_family_index)
         .queue_priorities(&queue_priority);
 
-    let device_extensions = [ash::khr::swapchain::NAME.as_ptr()];
+    let device_extensions = [
+        ash::khr::swapchain::NAME.as_ptr(),
+        ash::khr::external_memory::NAME.as_ptr(),
+        #[cfg(windows)]
+        ash::khr::external_memory_win32::NAME.as_ptr(),
+        #[cfg(not(windows))]
+        ash::khr::external_memory_fd::NAME.as_ptr(),
+        #[cfg(not(windows))]
+        ash::vk::EXT_EXTERNAL_MEMORY_DMA_BUF_NAME.as_ptr(),
+    ];
 
     let device_ci = vk::DeviceCreateInfo::default()
         .queue_create_infos(std::slice::from_ref(&queue_ci))

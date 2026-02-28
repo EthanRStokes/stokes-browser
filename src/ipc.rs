@@ -80,6 +80,8 @@ pub enum TabToParentMessage {
         height: u32,
         /// VkFormat as raw integer (ash::vk::Format::as_raw())
         vk_format: i32,
+        /// Exact allocation size in bytes from the tab's vkAllocateMemory
+        alloc_size: u64,
     },
     Ready,
     NavigateRequest(String),

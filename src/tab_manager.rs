@@ -1,6 +1,6 @@
 // Tab Manager - manages tab processes from the parent process
 use crate::ipc::{IpcServer, ParentIpcChannel, ParentToTabMessage, TabToParentMessage};
-use crate::vk_shared::{VulkanDeviceInfo, import_skia_image};
+use crate::vk_shared::{VulkanDeviceInfo, ImportedVkImage, import_skia_image};
 use ash::vk::{self, Handle};
 use skia_safe::gpu::DirectContext;
 use skia_safe::Image;
@@ -26,6 +26,9 @@ pub struct RenderedFrame {
     pub image: Image,
     pub width: u32,
     pub height: u32,
+    /// RAII guard that owns the imported VkImage + VkDeviceMemory.
+    /// Dropped automatically when replaced by a newer frame.
+    _vk_guard: ImportedVkImage,
 }
 
 /// Manages all tab processes
@@ -126,7 +129,6 @@ impl TabManager {
     /// Send a message to a tab
     pub fn send_to_tab(&mut self, tab_id: &str, message: ParentToTabMessage) -> io::Result<()> {
         if let Some(tab) = self.tabs.get(tab_id) {
-            println!("Sending message to tab {}: {:?}", tab_id, message);
             tab.channel.send(&message)?;
         }
         Ok(())
@@ -173,27 +175,69 @@ impl TabManager {
                 TabToParentMessage::LoadingStateChanged(is_loading) => {
                     tab.is_loading = is_loading;
                 }
-                TabToParentMessage::FrameRendered { mem_handle, width, height, vk_format } => {
+                TabToParentMessage::FrameRendered { mem_handle, width, height, vk_format, alloc_size } => {
                     let format = vk::Format::from_raw(vk_format);
                     if let (Some(inst), Some(phys), Some(dev)) = (
                         self.ash_instance.as_ref(),
                         self.ash_physical_device.as_ref(),
                         self.ash_device.as_ref(),
                     ) {
+                        // On Linux, the mem_handle is a raw fd number from the
+                        // child process — it's not valid in our fd table.  Use
+                        // pidfd_getfd() (Linux 5.6+) to duplicate the child's
+                        // DMA-BUF fd into our process.
+                        #[cfg(not(windows))]
+                        let local_handle = {
+                            let child_pid = tab.process.id() as libc::pid_t;
+                            let target_fd = mem_handle as libc::c_int;
+
+                            // Syscall numbers for x86_64:
+                            //   pidfd_open  = 434 (Linux 5.3+)
+                            //   pidfd_getfd = 438 (Linux 5.6+)
+                            const SYS_PIDFD_OPEN: libc::c_long = 434;
+                            const SYS_PIDFD_GETFD: libc::c_long = 438;
+
+                            // pidfd_open(pid, flags) → pidfd
+                            let pidfd = unsafe { libc::syscall(SYS_PIDFD_OPEN, child_pid, 0 as libc::c_uint) } as libc::c_int;
+                            if pidfd < 0 {
+                                let err = std::io::Error::last_os_error();
+                                eprintln!("[TabManager] pidfd_open({}) failed: {}", child_pid, err);
+                                return;
+                            }
+
+                            // pidfd_getfd(pidfd, targetfd, flags) → local fd
+                            let local_fd = unsafe { libc::syscall(SYS_PIDFD_GETFD, pidfd, target_fd, 0 as libc::c_uint) } as libc::c_int;
+                            unsafe { libc::close(pidfd) };
+
+                            if local_fd < 0 {
+                                let err = std::io::Error::last_os_error();
+                                eprintln!(
+                                    "[TabManager] pidfd_getfd(pid={}, fd={}) failed: {}",
+                                    child_pid, target_fd, err
+                                );
+                                return;
+                            }
+
+                            local_fd as u64
+                        };
+                        #[cfg(windows)]
+                        let local_handle = mem_handle;
+
                         match unsafe {
                             import_skia_image(
                                 inst,
                                 *phys,
                                 dev,
                                 gr_context,
-                                mem_handle,
+                                local_handle,
                                 width,
                                 height,
                                 format,
+                                alloc_size,
                             )
                         } {
-                            Ok(image) => {
-                                tab.rendered_frame = Some(RenderedFrame { image, width, height });
+                            Ok((image, vk_guard)) => {
+                                tab.rendered_frame = Some(RenderedFrame { image, width, height, _vk_guard: vk_guard });
                             }
                             Err(e) => {
                                 eprintln!("[TabManager] Failed to import VkImage: {}", e);
