@@ -17,7 +17,7 @@ use winit_core::cursor::Cursor;
 use winit_core::event::ButtonSource;
 use winit_core::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
 use crate::ipc::{ParentToTabMessage, TabToParentMessage};
-use crate::renderer::painter::ScenePainter;
+use crate::renderer::painter::{ScenePainter, SkiaCache};
 use crate::tab_manager::TabManager;
 use crate::ui::{BrowserUI, TextBrush};
 use crate::window::{create_surface, Env};
@@ -37,6 +37,7 @@ enum TabCloseResult {
 /// The main browser application (parent process)
 pub(crate) struct BrowserApp {
     env: Option<Env>,
+    skia_cache: SkiaCache,
     modifiers: Modifiers,
     tab_manager: TabManager,
     active_tab_index: usize,
@@ -60,6 +61,7 @@ impl BrowserApp {
 
         Self {
             env: None,
+            skia_cache: Default::default(),
             modifiers: Modifiers::default(),
             tab_manager,
             active_tab_index: 0,
@@ -507,7 +509,7 @@ impl BrowserApp {
 
         let mut painter = ScenePainter {
             inner: canvas,
-            cache: &mut Default::default(),
+            cache: &mut self.skia_cache,
         };
 
         painter.reset();
