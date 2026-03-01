@@ -1,7 +1,7 @@
 use crate::convert_events::{button_source_to_blitz, pointer_source_to_blitz, pointer_source_to_blitz_details, winit_ime_to_blitz, winit_key_event_to_blitz, winit_modifiers_to_kbt_modifiers};
 use crate::events::{BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent};
 use crate::ipc::{ParentToTabMessage, TabToParentMessage};
-use crate::renderer::painter::ScenePainter;
+use crate::renderer::painter::{ScenePainter, SkiaCache};
 use crate::shell_provider::ShellProviderMessage;
 use crate::tab_manager::{ManagedTab, TabManager};
 use crate::ui::{BrowserUI, TextBrush};
@@ -34,6 +34,7 @@ enum TabCloseResult {
 /// The main browser application (parent process)
 pub(crate) struct BrowserApp {
     env: Option<Env>,
+    skia_cache: SkiaCache,
     modifiers: Modifiers,
     tab_manager: TabManager,
     active_tab_index: usize,
@@ -57,6 +58,7 @@ impl BrowserApp {
 
         Self {
             env: None,
+            skia_cache: Default::default(),
             modifiers: Modifiers::default(),
             tab_manager,
             active_tab_index: 0,
@@ -502,7 +504,7 @@ impl BrowserApp {
             let canvas = self.env.as_mut().unwrap().surface.canvas();
             let mut painter = ScenePainter {
                 inner: canvas,
-                cache: &mut Default::default(),
+                cache: &mut self.skia_cache,
             };
             painter.reset();
 
