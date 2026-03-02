@@ -10,12 +10,14 @@ use crate::vk_shared::{TabVkImage, VulkanDeviceInfo};
 use ash::vk::{self, Handle};
 use blitz_traits::shell::{ShellProvider, Viewport};
 use skia_safe::gpu::{self as sk_gpu, DirectContext};
+use std::ffi::CStr;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
+use std::collections::HashSet;
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
@@ -125,12 +127,38 @@ impl TabProcess {
     ) -> Result<(ash::Entry, ash::Instance, vk::PhysicalDevice, ash::Device, u32, DirectContext), String> {
         let entry = ash::Entry::load().map_err(|e| format!("ash Entry::load: {:?}", e))?;
 
+        let api_version = entry
+            .try_enumerate_instance_version()
+            .ok()
+            .flatten()
+            .unwrap_or(vk::API_VERSION_1_0);
+        let api_version = if api_version >= vk::API_VERSION_1_1 {
+            vk::API_VERSION_1_1
+        } else {
+            vk::API_VERSION_1_0
+        };
+
         let app_info = vk::ApplicationInfo::default()
             .application_name(c"stokes-tab")
-            .api_version(vk::API_VERSION_1_1);
+            .api_version(api_version);
+
+        let mut instance_extensions: Vec<*const std::ffi::c_char> = Vec::new();
+        if api_version < vk::API_VERSION_1_1 {
+            let props2 = ash::khr::get_physical_device_properties2::NAME;
+            let supports_props2 = entry
+                .enumerate_instance_extension_properties(None)
+                .map(|exts| {
+                    exts.iter().any(|ext| unsafe { CStr::from_ptr(ext.extension_name.as_ptr()) } == props2)
+                })
+                .unwrap_or(false);
+            if supports_props2 {
+                instance_extensions.push(props2.as_ptr());
+            }
+        }
 
         let instance_ci = vk::InstanceCreateInfo::default()
-            .application_info(&app_info);
+            .application_info(&app_info)
+            .enabled_extension_names(&instance_extensions);
 
         let instance = entry.create_instance(&instance_ci, None)
             .map_err(|e| format!("vkCreateInstance: {:?}", e))?;
@@ -170,14 +198,14 @@ impl TabProcess {
 
         // Enable the correct external memory extension for the platform.
         #[cfg(windows)]
-        let ext_names: Vec<*const std::ffi::c_char> = vec![
+        let mut ext_names: Vec<*const std::ffi::c_char> = vec![
             ash::khr::external_memory::NAME.as_ptr(),
             ash::khr::external_memory_win32::NAME.as_ptr(),
             ash::khr::external_semaphore::NAME.as_ptr(),
             ash::khr::external_semaphore_win32::NAME.as_ptr(),
         ];
         #[cfg(not(windows))]
-        let ext_names: Vec<*const std::ffi::c_char> = vec![
+        let mut ext_names: Vec<*const std::ffi::c_char> = vec![
             ash::khr::external_memory::NAME.as_ptr(),
             ash::khr::external_memory_fd::NAME.as_ptr(),
             ash::vk::EXT_EXTERNAL_MEMORY_DMA_BUF_NAME.as_ptr(),
@@ -185,9 +213,40 @@ impl TabProcess {
             ash::khr::external_semaphore_fd::NAME.as_ptr(),
         ];
 
+        let optional_skia_exts = [
+            ash::khr::get_memory_requirements2::NAME,
+            ash::khr::dedicated_allocation::NAME,
+            ash::khr::bind_memory2::NAME,
+            ash::khr::maintenance1::NAME,
+            ash::khr::maintenance2::NAME,
+            ash::khr::maintenance3::NAME,
+            ash::khr::create_renderpass2::NAME,
+            ash::khr::image_format_list::NAME,
+            ash::khr::sampler_ycbcr_conversion::NAME,
+        ];
+
+        for ext in optional_skia_exts {
+            if device_supports_extension(&instance, physical_device, ext)
+                && !ext_names.contains(&ext.as_ptr())
+            {
+                ext_names.push(ext.as_ptr());
+            }
+        }
+
+        if std::env::var("STOKES_VK_DEBUG").ok().as_deref() == Some("1") {
+            let dev_exts = ext_names.iter()
+                .map(|&ptr| unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            let avail_dev_exts = collect_device_extension_names(&instance, physical_device);
+            eprintln!("[Tab Vulkan] device_extensions={:?}", dev_exts);
+            eprintln!("[Tab Vulkan] available_device_extensions={} entries", avail_dev_exts.len());
+        }
+
+        let features = instance.get_physical_device_features(physical_device);
         let device_ci = vk::DeviceCreateInfo::default()
             .queue_create_infos(std::slice::from_ref(&queue_ci))
-            .enabled_extension_names(&ext_names);
+            .enabled_extension_names(&ext_names)
+            .enabled_features(&features);
 
         let device = instance.create_device(physical_device, &device_ci, None)
             .map_err(|e| format!("vkCreateDevice: {:?}", e))?;

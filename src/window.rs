@@ -4,6 +4,8 @@ use ash::vk::{self, Handle};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use skia_safe::gpu::{self, DirectContext};
 use skia_safe::{ColorType, Surface};
+use std::collections::HashSet;
+use std::ffi::CStr;
 use std::ptr;
 use std::sync::Arc;
 use winit::dpi::LogicalSize;
@@ -56,7 +58,7 @@ impl Env {
     /// semaphore hand-off + present.
     pub fn blit_tab_then_present(
         &mut self,
-        tab_frame: Option<(&ImportedVkImage, u32, u32)>,
+        tab_frame: Option<(&ImportedVkImage, u32, u32, Option<i64>)>,
         chrome_px: i32,
     ) -> Result<(), String> {
         vk_blit_tab_then_present(&mut self.vk, &**self.window, tab_frame, chrome_px)
@@ -381,12 +383,20 @@ fn vk_acquire(
 fn vk_blit_tab_then_present(
     vk: &mut VkState,
     window: &dyn Window,
-    tab_frame: Option<(&ImportedVkImage, u32, u32)>,
+    tab_frame: Option<(&ImportedVkImage, u32, u32, Option<i64>)>,
     chrome_px: i32,
 ) -> Result<(), String> {
     unsafe {
         let device = &vk.device;
         let swapchain_image = vk.swapchain_images[vk.current_image_index as usize];
+
+        let mut imported_sem: Option<vk::Semaphore> = None;
+        let mut wait_on_tab_sem = false;
+        if let Some((_, _, _, Some(sem_handle))) = tab_frame {
+            let sem = import_tab_semaphore(vk, sem_handle)?;
+            imported_sem = Some(sem);
+            wait_on_tab_sem = true;
+        }
 
         // ── Command pool + buffer ────────────────────────────────────────────
         let cmd_pool = {
@@ -429,7 +439,7 @@ fn vk_blit_tab_then_present(
             layer_count: 1,
         };
 
-        if let Some((tab, tab_w, tab_h)) = tab_frame {
+        if let Some((tab, tab_w, tab_h, _)) = tab_frame {
             let sw = vk.swapchain_extent.width as i32;
             let sh = vk.swapchain_extent.height as i32;
             let dst_h = (sh - chrome_px).max(0);
@@ -519,14 +529,20 @@ fn vk_blit_tab_then_present(
         device.end_command_buffer(cmd_buf)
             .map_err(|e| format!("vkEndCommandBuffer (blit-present): {:?}", e))?;
 
-        // Submit: wait image_available, execute blit (or no-op), signal render_finished
-        let wait_sems = [vk.image_available_semaphore];
-        let wait_stages = [vk::PipelineStageFlags::TRANSFER];
+        // Submit: wait image_available (+ tab semaphore if available), execute blit, signal render_finished
+        let wait_sems = if wait_on_tab_sem {
+            [vk.image_available_semaphore, imported_sem.unwrap_or(vk::Semaphore::null())]
+        } else {
+            [vk.image_available_semaphore, vk::Semaphore::null()]
+        };
+        let wait_stages = [vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::TRANSFER];
+        let wait_count = if wait_on_tab_sem { 2 } else { 1 };
+
         let signal_sems = [vk.render_finished_semaphore];
         let cmd_bufs = [cmd_buf];
         let submit_info = vk::SubmitInfo::default()
-            .wait_semaphores(&wait_sems)
-            .wait_dst_stage_mask(&wait_stages)
+            .wait_semaphores(&wait_sems[..wait_count])
+            .wait_dst_stage_mask(&wait_stages[..wait_count])
             .command_buffers(&cmd_bufs)
             .signal_semaphores(&signal_sems);
 
@@ -555,14 +571,15 @@ fn vk_blit_tab_then_present(
         // at the top of the next frame (after its own wait_for_fences).
         device.wait_for_fences(&[vk.in_flight_fence], true, 5_000_000_000)
             .map_err(|e| format!("wait_for_fences (blit-present cleanup): {:?}", e))?;
+        if let Some(sem) = imported_sem {
+            device.destroy_semaphore(sem, None);
+        }
         device.destroy_command_pool(cmd_pool, None);
         // Leave in_flight_fence SIGNALED — vk_acquire will reset it.
     }
     Ok(())
 }
 
-/// Flush Skia GPU work, submit semaphore sync, and present the current image.
-/// Must be called after `vk_acquire` and all Skia drawing for the frame.
 fn vk_flush_and_present(
     vk: &mut VkState,
     window: &dyn Window,
@@ -600,6 +617,7 @@ fn vk_flush_and_present(
         }
     }
 
+    let _ = window;
     Ok(())
 }
 
@@ -649,7 +667,6 @@ fn vk_present(
         gr_context.flush_and_submit();
 
         // Submit a dummy command buffer that waits on image_available and signals render_finished.
-        // (Skia already recorded commands via the DirectContext; we just need the semaphore sync.)
         let wait_semaphores = [vk.image_available_semaphore];
         let signal_semaphores = [vk.render_finished_semaphore];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -683,12 +700,78 @@ fn vk_present(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Public window constructor
-// ---------------------------------------------------------------------------
+#[cfg(windows)]
+fn import_tab_semaphore(vk: &VkState, sem_handle: i64) -> Result<vk::Semaphore, String> {
+    use ash::khr::external_semaphore_win32;
+
+    let device = &vk.device;
+    let semaphore = unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None) }
+        .map_err(|e| format!("vkCreateSemaphore (tab import): {:?}", e))?;
+
+    let ext = external_semaphore_win32::Device::new(&vk.instance, device);
+    let import_info = vk::ImportSemaphoreWin32HandleInfoKHR::default()
+        .semaphore(semaphore)
+        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32)
+        .flags(vk::SemaphoreImportFlags::TEMPORARY)
+        .handle(sem_handle as vk::HANDLE);
+
+    unsafe { ext.import_semaphore_win32_handle(&import_info) }
+        .map_err(|e| {
+            unsafe { device.destroy_semaphore(semaphore, None); }
+            format!("vkImportSemaphoreWin32HandleKHR failed: {:?}", e)
+        })?;
+
+    Ok(semaphore)
+}
+
+#[cfg(not(windows))]
+fn import_tab_semaphore(vk: &VkState, sem_handle: i64) -> Result<vk::Semaphore, String> {
+    use ash::khr::external_semaphore_fd;
+
+    let device = &vk.device;
+    let semaphore = unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None) }
+        .map_err(|e| format!("vkCreateSemaphore (tab import): {:?}", e))?;
+
+    let ext = external_semaphore_fd::Device::new(&vk.instance, device);
+    let import_info = vk::ImportSemaphoreFdInfoKHR::default()
+        .semaphore(semaphore)
+        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD)
+        .flags(vk::SemaphoreImportFlags::TEMPORARY)
+        .fd(sem_handle as i32);
+
+    unsafe { ext.import_semaphore_fd(&import_info) }
+        .map_err(|e| {
+            unsafe { device.destroy_semaphore(semaphore, None); }
+            format!("vkImportSemaphoreFdKHR failed: {:?}", e)
+        })?;
+
+    Ok(semaphore)
+}
+
+unsafe fn instance_supports_extension(entry: &ash::Entry, name: &CStr) -> bool {
+    entry
+        .enumerate_instance_extension_properties(None)
+        .map(|exts| {
+            exts.iter().any(|ext| unsafe { CStr::from_ptr(ext.extension_name.as_ptr()) } == name)
+        })
+        .unwrap_or(false)
+}
+
+unsafe fn select_instance_api_version(entry: &ash::Entry) -> u32 {
+    let version = entry
+        .try_enumerate_instance_version()
+        .ok()
+        .flatten()
+        .unwrap_or(vk::API_VERSION_1_0);
+    if version >= vk::API_VERSION_1_1 {
+        vk::API_VERSION_1_1
+    } else {
+        vk::API_VERSION_1_0
+    }
+}
 
 /// Create the main window using the Vulkan backend (pure ash, no vulkano).
-pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
+pub(crate) unsafe fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
     // ── 1. Create winit window ───────────────────────────────────────────────
     let icon: Option<Icon> = {
         let icon_bytes = include_bytes!("../assets/com.ethanstokes.stokes-browser.png");
@@ -714,16 +797,24 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
 
     // ── 2. ash Entry + Instance ──────────────────────────────────────────────
     let entry = unsafe { ash::Entry::load().expect("Failed to load Vulkan library") };
+    let api_version = select_instance_api_version(&entry);
 
     // Collect required instance extensions for surface creation.
     let display_handle = el.as_ref().display_handle().expect("Failed to get display handle");
-    let required_extensions = ash_window::enumerate_required_extensions(display_handle.as_raw())
+    let mut required_extensions = ash_window::enumerate_required_extensions(display_handle.as_raw())
         .expect("Failed to enumerate required Vulkan extensions")
         .to_vec();
 
+    if api_version < vk::API_VERSION_1_1 {
+        let props2 = ash::khr::get_physical_device_properties2::NAME;
+        if instance_supports_extension(&entry, props2) && !required_extensions.contains(&props2.as_ptr()) {
+            required_extensions.push(props2.as_ptr());
+        }
+    }
+
     let app_info = vk::ApplicationInfo::default()
         .application_name(c"stokes-browser")
-        .api_version(vk::API_VERSION_1_1);
+        .api_version(api_version);
 
     let instance_ci = vk::InstanceCreateInfo::default()
         .application_info(&app_info)
@@ -787,7 +878,7 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         .queue_family_index(queue_family_index)
         .queue_priorities(&queue_priority);
 
-    let device_extensions = [
+    let mut device_extensions: Vec<*const std::ffi::c_char> = vec![
         ash::khr::swapchain::NAME.as_ptr(),
         ash::khr::external_memory::NAME.as_ptr(),
         ash::khr::external_semaphore::NAME.as_ptr(),
@@ -803,9 +894,46 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         ash::khr::external_semaphore_fd::NAME.as_ptr(),
     ];
 
+    let optional_skia_exts = [
+        ash::khr::get_memory_requirements2::NAME,
+        ash::khr::dedicated_allocation::NAME,
+        ash::khr::bind_memory2::NAME,
+        ash::khr::maintenance1::NAME,
+        ash::khr::maintenance2::NAME,
+        ash::khr::maintenance3::NAME,
+        ash::khr::create_renderpass2::NAME,
+        ash::khr::image_format_list::NAME,
+        ash::khr::sampler_ycbcr_conversion::NAME,
+    ];
+
+    for ext in optional_skia_exts {
+        if device_supports_extension(&instance, physical_device, ext)
+            && !device_extensions.contains(&ext.as_ptr())
+        {
+            device_extensions.push(ext.as_ptr());
+        }
+    }
+
+    if std::env::var("STOKES_VK_DEBUG").ok().as_deref() == Some("1") {
+        let api = api_version;
+        let inst_exts = required_extensions.iter()
+            .map(|&ptr| unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let dev_exts = device_extensions.iter()
+            .map(|&ptr| unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let avail_dev_exts = collect_device_extension_names(&instance, physical_device);
+        eprintln!("[Vulkan] api_version=0x{api:x}");
+        eprintln!("[Vulkan] instance_extensions={:?}", inst_exts);
+        eprintln!("[Vulkan] device_extensions={:?}", dev_exts);
+        eprintln!("[Vulkan] available_device_extensions={} entries", avail_dev_exts.len());
+    }
+
+    let features = unsafe { instance.get_physical_device_features(physical_device) };
     let device_ci = vk::DeviceCreateInfo::default()
         .queue_create_infos(std::slice::from_ref(&queue_ci))
-        .enabled_extension_names(&device_extensions);
+        .enabled_extension_names(&device_extensions)
+        .enabled_features(&features);
 
     let device = unsafe {
         instance.create_device(physical_device, &device_ci, None)
@@ -882,24 +1010,23 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
     };
 
     // ── 8. Skia DirectContext via ash raw handles ────────────────────────────
-    // Extract the raw function pointers *before* the closure so `entry` is not
-    // captured and can still be moved into VkState afterwards.
+    // Extract both raw function pointers before building the closure so neither
+    // `entry` nor `instance` is borrowed, allowing them to be moved into VkState.
     let get_instance_proc_addr = entry.static_fn().get_instance_proc_addr;
     let get_device_proc_addr = instance.fp_v1_0().get_device_proc_addr;
 
-    let get_proc = |of: skia_safe::gpu::vk::GetProcOf| unsafe {
-        match of {
+    let get_proc = |of: gpu::vk::GetProcOf| {
+        let fp: Option<unsafe extern "system" fn()> = match of {
             skia_safe::gpu::vk::GetProcOf::Instance(inst_raw, name) => {
-                let vk_inst = vk::Instance::from_raw(inst_raw as usize as u64);
-                (get_instance_proc_addr)(vk_inst, name)
+                let vk_inst = vk::Instance::from_raw(inst_raw as _);
+                unsafe { get_instance_proc_addr(vk_inst, name) }
             }
             skia_safe::gpu::vk::GetProcOf::Device(dev_raw, name) => {
-                let vk_dev = vk::Device::from_raw(dev_raw as usize as u64);
-                (get_device_proc_addr)(vk_dev, name)
+                let vk_dev = vk::Device::from_raw(dev_raw as _);
+                unsafe { get_device_proc_addr(vk_dev, name) }
             }
-        }
-        .map(|f| std::mem::transmute(f))
-        .unwrap_or(ptr::null())
+        };
+        fp.map(|f| f as _).unwrap_or(ptr::null())
     };
 
     let backend_context = unsafe {
@@ -958,3 +1085,29 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
     }
 }
 
+unsafe fn device_supports_extension(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    name: &CStr,
+) -> bool {
+    instance
+        .enumerate_device_extension_properties(physical_device)
+        .map(|exts| {
+            exts.iter().any(|ext| unsafe { CStr::from_ptr(ext.extension_name.as_ptr()) } == name)
+        })
+        .unwrap_or(false)
+}
+
+unsafe fn collect_device_extension_names(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+) -> HashSet<String> {
+    instance
+        .enumerate_device_extension_properties(physical_device)
+        .map(|exts| {
+            exts.iter()
+                .map(|ext| unsafe { CStr::from_ptr(ext.extension_name.as_ptr()) }.to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}

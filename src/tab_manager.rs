@@ -30,6 +30,8 @@ pub struct RenderedFrame {
     /// RAII guard that owns the imported VkImage + VkDeviceMemory.
     /// Dropped automatically when replaced by a newer frame.
     pub vk_guard: ImportedVkImage,
+    /// One-shot semaphore handle for this frame (consumed on present).
+    pub sem_handle: Option<i64>,
 }
 
 /// Manages all tab processes
@@ -188,16 +190,10 @@ impl TabManager {
                     tab.is_loading = is_loading;
                 }
                 TabToParentMessage::FrameRendered { mem_handle, width, height, vk_format, alloc_size, sem_handle } => {
-                    let format = vk::Format::from_raw(vk_format);
-                    if let (Some(inst), Some(phys), Some(dev)) = (
-                        self.ash_instance.as_ref(),
-                        self.ash_physical_device.as_ref(),
-                        self.ash_device.as_ref(),
-                    ) {
-                        // On Linux, the mem_handle is a raw fd number from the
-                        // child process — it's not valid in our fd table.  Use
-                        // pidfd_getfd() (Linux 5.6+) to duplicate the child's
-                        // DMA-BUF fd into our process.
+                    if let (Some(inst), Some(phys), Some(dev)) = (&self.ash_instance, self.ash_physical_device, &self.ash_device) {
+                        let format = vk::Format::from_raw(vk_format);
+
+                        // Duplicate the DMA-BUF fd into our process.
                         #[cfg(not(windows))]
                         let local_handle = {
                             let child_pid = tab.process.id() as libc::pid_t;
@@ -232,13 +228,43 @@ impl TabManager {
                         #[cfg(windows)]
                         let local_handle = mem_handle;
 
+                        #[cfg(not(windows))]
+                        let local_sem_handle: Option<i64> = if sem_handle == -1 {
+                            None
+                        } else {
+                            let child_pid = tab.process.id() as libc::pid_t;
+                            let target_fd = sem_handle as libc::c_int;
+
+                            const SYS_PIDFD_OPEN: libc::c_long = 434;
+                            const SYS_PIDFD_GETFD: libc::c_long = 438;
+
+                            let pidfd = unsafe { libc::syscall(SYS_PIDFD_OPEN, child_pid, 0 as libc::c_uint) } as libc::c_int;
+                            if pidfd < 0 {
+                                let err = std::io::Error::last_os_error();
+                                eprintln!("[TabManager] pidfd_open({}) for sem failed: {}", child_pid, err);
+                                None
+                            } else {
+                                let local_fd = unsafe { libc::syscall(SYS_PIDFD_GETFD, pidfd, target_fd, 0 as libc::c_uint) } as libc::c_int;
+                                unsafe { libc::close(pidfd) };
+                                if local_fd < 0 {
+                                    let err = std::io::Error::last_os_error();
+                                    eprintln!(
+                                        "[TabManager] pidfd_getfd(pid={}, sem_fd={}) failed: {}",
+                                        child_pid, target_fd, err
+                                    );
+                                    None
+                                } else {
+                                    Some(local_fd as i64)
+                                }
+                            }
+                        };
                         #[cfg(windows)]
-                        let local_sem_handle: i64 = sem_handle;
+                        let local_sem_handle: Option<i64> = if sem_handle == 0 { None } else { Some(sem_handle) };
 
                         match unsafe {
                             import_vk_image_raw(
                                 inst,
-                                *phys,
+                                phys,
                                 dev,
                                 local_handle,
                                 width,
@@ -254,7 +280,7 @@ impl TabManager {
                                 // semaphore on the same vkQueueSubmit that does the
                                 // blit — so the GPU handles synchronization without
                                 // any CPU stall on the main thread.
-                                tab.rendered_frame = Some(RenderedFrame { width, height, vk_guard, });
+                                tab.rendered_frame = Some(RenderedFrame { width, height, vk_guard, sem_handle: local_sem_handle });
                             }
                             Err(e) => {
                                 eprintln!("[TabManager] Failed to import VkImage: {}", e);
@@ -304,6 +330,17 @@ impl TabManager {
     #[inline]
     pub fn tab_count(&self) -> usize {
         self.tabs.len()
+    }
+
+    /// Borrow the latest frame for presentation and consume its one-shot semaphore.
+    pub fn take_tab_frame_for_present(
+        &mut self,
+        tab_id: &str,
+    ) -> Option<(&ImportedVkImage, u32, u32, Option<i64>)> {
+        let tab = self.tabs.get_mut(tab_id)?;
+        let frame = tab.rendered_frame.as_mut()?;
+        let sem_handle = frame.sem_handle.take();
+        Some((&frame.vk_guard, frame.width, frame.height, sem_handle))
     }
 }
 

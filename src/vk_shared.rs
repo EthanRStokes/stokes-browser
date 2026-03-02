@@ -1095,7 +1095,7 @@ impl TabVkSemaphore {
                 CloseHandle(local_handle as _);
                 return 0;
             }
-            let mut dup: windows_sys::Win32::Foundation::HANDLE = 0;
+            let mut dup: windows_sys::Win32::Foundation::HANDLE = 0 as _;
             let ok = DuplicateHandle(
                 GetCurrentProcess(), local_handle as _, parent_proc as _, &mut dup,
                 0, 0, DUPLICATE_SAME_ACCESS,

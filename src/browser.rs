@@ -520,9 +520,7 @@ impl BrowserApp {
             .round() as i32;
 
         let tab_frame = active_tab_id.as_ref()
-            .and_then(|id| self.tab_manager.get_tab(id))
-            .and_then(|tab| tab.rendered_frame.as_ref())
-            .map(|f| (&f.vk_guard, f.width, f.height));
+            .and_then(|id| self.tab_manager.take_tab_frame_for_present(id));
 
         self.env.as_mut().unwrap().blit_tab_then_present(tab_frame, chrome_px)?;
 
@@ -553,7 +551,7 @@ impl BrowserApp {
 impl ApplicationHandler for BrowserApp {
     fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         let event_loop = Box::new(event_loop);
-        self.env = Some(crate::window::create_window_vk(&event_loop));
+        unsafe { self.env = Some(crate::window::create_window_vk(&event_loop)); }
 
         let env = self.env.as_ref().unwrap();
         let viewport = Viewport {
