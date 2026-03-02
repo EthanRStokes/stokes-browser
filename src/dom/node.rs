@@ -1,6 +1,6 @@
 use crate::dom::damage::{HoistedPaintChildren, ALL_DAMAGE};
 use crate::dom::events::EventListenerRegistry;
-use crate::dom::ZERO;
+use crate::dom::{AbstractDom, ZERO};
 use crate::events::{BlitzPointerEvent, BlitzPointerId, DomEventData, PointerCoords};
 use crate::layout::table::TableContext;
 use crate::ui::TextBrush;
@@ -261,8 +261,9 @@ impl TextInputData {
 }
 
 /// Heterogeneous data that depends on the element's type.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub enum SpecialElementData {
+    SubDom(Box<dyn AbstractDom>),
     Stylesheet(DocumentStyleSheet),
     /// An \<img\> element's image data
     Image(Box<ImageData>),
@@ -277,6 +278,22 @@ pub enum SpecialElementData {
     /// No data (for nodes that don't need any node-specific data)
     #[default]
     None,
+}
+
+impl Clone for SpecialElementData {
+    fn clone(&self) -> Self {
+        match self {
+            SpecialElementData::SubDom(_) => SpecialElementData::None, // TODO
+            SpecialElementData::Stylesheet(stylesheet) => SpecialElementData::Stylesheet(stylesheet.clone()),
+            SpecialElementData::Image(image_data) => SpecialElementData::Image(Box::new(image_data.as_ref().clone())),
+            SpecialElementData::Canvas(canvas_data) => SpecialElementData::Canvas(canvas_data.clone()),
+            SpecialElementData::TableRoot(table_context) => SpecialElementData::TableRoot(table_context.clone()),
+            SpecialElementData::TextInput(text_input_data) => SpecialElementData::TextInput(text_input_data.clone()),
+            SpecialElementData::CheckboxInput(checked) => SpecialElementData::CheckboxInput(*checked),
+            SpecialElementData::FileInput(file_data) => SpecialElementData::FileInput(file_data.clone()),
+            SpecialElementData::None => SpecialElementData::None,
+        }
+    }
 }
 
 impl SpecialElementData {
@@ -504,6 +521,20 @@ impl ElementData {
         }
     }
 
+    pub fn sub_dom_data(&self) -> Option<&dyn AbstractDom> {
+        match &self.special_data {
+            SpecialElementData::SubDom(data) => Some(data.as_ref()),
+            _ => None,
+        }
+    }
+
+    pub fn sub_dom_data_mut(&mut self) -> Option<&mut dyn AbstractDom> {
+        match &mut self.special_data {
+            SpecialElementData::SubDom(data) => Some(data.as_mut()),
+            _ => None,
+        }
+    }
+
     pub fn svg_data(&self) -> Option<&usvg::Tree> {
         match self.image_data()? {
             ImageData::Svg(data) => Some(data),
@@ -551,6 +582,14 @@ impl ElementData {
             SpecialElementData::FileInput(ref mut data) => Some(data),
             _ => None,
         }
+    }
+
+    pub fn set_sub_dom(&mut self, sub_dom: Box<dyn AbstractDom>) {
+        self.special_data = SpecialElementData::SubDom(sub_dom);
+    }
+
+    pub fn remove_sub_dom(&mut self) {
+        self.special_data = SpecialElementData::None;
     }
 
     pub fn take_inline_layout(&mut self) -> Option<Box<TextLayout>> {

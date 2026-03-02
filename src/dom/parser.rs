@@ -21,6 +21,19 @@ fn html5ever_to_stokes(attribute: html5ever::Attribute) -> Attribute {
     }
 }
 
+pub struct HtmlProvider;
+
+impl HtmlProvider {
+    pub fn parse_inner_html<'m>(
+        &self,
+        dom: &'m mut Dom,
+        element_id: usize,
+        html: &str
+    ) {
+        DomHtmlParser::parse_inner_html(dom, element_id, html);
+    }
+}
+
 impl HtmlParser {
     pub fn new() -> Self {
         Self {}
@@ -87,6 +100,36 @@ impl<'m> DomHtmlParser<'m> {
                 .read_from(&mut html.as_bytes())
                 .unwrap();
         }
+    }
+
+    pub fn parse_inner_html(
+        mutr: &mut Dom,
+        element_id: usize,
+        html: &str,
+    ) {
+        let sink = DomHtmlParser::new(mutr);
+
+        let opts = ParseOpts {
+            tokenizer: TokenizerOpts::default(),
+            tree_builder: TreeBuilderOpts {
+                exact_errors: false,
+                scripting_enabled: false, // Enables parsing of <noscript> tags
+                iframe_srcdoc: false,
+                drop_doctype: true,
+                quirks_mode: QuirksMode::NoQuirks,
+            },
+        };
+        html5ever::driver::parse_fragment_for_element(sink, opts, element_id, false, None)
+            .from_utf8()
+            .read_from(&mut html.as_bytes())
+            .unwrap();
+
+        // html5ever creates a new fragment root node under the document node and parses the nodes into that fragment root.
+        // So here we move the children of the fragment root to element_id and then remove the fragment root
+        let fragment_root_id = mutr.last_child_id(0).unwrap();
+        let child_ids = mutr.child_ids(fragment_root_id);
+        mutr.append_children(element_id, &child_ids);
+        mutr.remove_node(fragment_root_id);
     }
 
     #[track_caller]

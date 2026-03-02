@@ -16,7 +16,10 @@ mod resolve;
 mod state;
 mod selection;
 pub(crate) mod form;
+mod sub_dom;
 
+use std::any::Any;
+use std::cell::RefCell;
 pub use self::node::{AttributeMap, DomNode, ElementData, ImageData, NodeData};
 pub use self::parser::HtmlParser;
 use crate::css::stylo::RecalcStyle;
@@ -31,7 +34,7 @@ use crate::dom::traverse::TreeTraverser;
 use crate::dom::url::DocUrl;
 use crate::engine::nav_provider::StokesNavigationProvider;
 use crate::engine::net_provider::StokesNetProvider;
-use crate::events::{BlitzScrollEvent, DomEventData};
+use crate::events::{BlitzScrollEvent, DomEventData, UiEvent};
 use crate::networking::{ImageType, ResourceLoadResponse, StylesheetLoader};
 use crate::qual_name;
 use crate::shell_provider::{ShellProviderMessage, StokesShellProvider};
@@ -52,12 +55,16 @@ use skrifa::instance::{LocationRef, Size};
 use skrifa::metrics::{GlyphMetrics, Metrics};
 use skrifa::{MetadataProvider, Tag};
 use slab::Slab;
-use std::collections::{BTreeMap, Bound, HashMap};
+use std::collections::{BTreeMap, Bound, HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
+use std::mem;
+use std::ops::{Deref, DerefMut};
+use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, RwLockReadGuard, RwLockWriteGuard};
+use std::task::Context;
 use std::time::Instant;
 use style::animation::{AnimationState, DocumentAnimationSet};
 use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters, SharedStyleContext};
@@ -82,9 +89,116 @@ use style::values::computed::font::{GenericFontFamily, QueryFontMetricsFlags};
 use style::values::computed::{Au, CSSPixelLength, Length, Overflow};
 use stylo_atoms::Atom;
 use taffy::Point;
+use crate::dom::events::{EventDriver, NoopEventHandler};
+use crate::dom::parser::HtmlProvider;
 use crate::engine::js_provider::StokesJsProvider;
 
 const ZERO: Point<f64> = Point { x: 0.0, y: 0.0 };
+
+pub enum DomGuard<'a> {
+    Ref(&'a Dom),
+    RefCell(std::cell::Ref<'a, Dom>),
+    RwLock(RwLockReadGuard<'a, Dom>),
+    Mutex(MutexGuard<'a, Dom>),
+}
+
+impl Deref for DomGuard<'_> {
+    type Target = Dom;
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Ref(base_document) => base_document,
+            Self::RefCell(refcell_guard) => refcell_guard,
+            Self::RwLock(rw_lock_read_guard) => rw_lock_read_guard,
+            Self::Mutex(mutex_guard) => mutex_guard,
+        }
+    }
+}
+
+pub enum DomGuardMut<'a> {
+    Ref(&'a mut Dom),
+    RefCell(std::cell::RefMut<'a, Dom>),
+    RwLock(RwLockWriteGuard<'a, Dom>),
+    Mutex(MutexGuard<'a, Dom>),
+}
+
+impl Deref for DomGuardMut<'_> {
+    type Target = Dom;
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Ref(base_document) => base_document,
+            Self::RefCell(refcell_guard) => refcell_guard,
+            Self::RwLock(rw_lock_read_guard) => rw_lock_read_guard,
+            Self::Mutex(mutex_guard) => mutex_guard,
+        }
+    }
+}
+
+impl DerefMut for DomGuardMut<'_> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Ref(base_document) => base_document,
+            Self::RefCell(refcell_guard) => &mut *refcell_guard,
+            Self::RwLock(rw_lock_read_guard) => &mut *rw_lock_read_guard,
+            Self::Mutex(mutex_guard) => &mut *mutex_guard,
+        }
+    }
+}
+
+pub trait AbstractDom: Any + 'static {
+    fn inner(&self) -> DomGuard<'_>;
+    fn inner_mut(&mut self) -> DomGuardMut<'_>;
+
+    /// Update the [`Document`] in response to a [`UiEvent`] (click, keypress, etc)
+    fn handle_ui_event(&mut self, event: UiEvent) {
+        let mut doc = self.inner_mut();
+        let mut driver = EventDriver::new(&mut *doc, NoopEventHandler);
+        driver.handle_ui_event(event);
+    }
+
+    /// Poll any pending async operations, and flush changes to the underlying [`BaseDocument`]
+    fn poll(&mut self, task_context: Option<Context>) -> bool {
+        // Default implementation does nothing
+        let _ = task_context;
+        false
+    }
+
+    /// Get the [`Document`]'s id
+    fn id(&self) -> usize {
+        self.inner().id
+    }
+}
+
+pub struct PlainDom(pub Dom);
+impl AbstractDom for PlainDom {
+    fn inner(&self) -> DomGuard<'_> {
+        DomGuard::Ref(&self.0)
+    }
+    fn inner_mut(&mut self) -> DomGuardMut<'_> {
+        DomGuardMut::Ref(&mut self.0)
+    }
+}
+
+impl AbstractDom for Dom {
+    fn inner(&self) -> DomGuard<'_> {
+        DomGuard::Ref(self)
+    }
+    fn inner_mut(&mut self) -> DomGuardMut<'_> {
+        DomGuardMut::Ref(self)
+    }
+}
+
+impl AbstractDom for Rc<RefCell<Dom>> {
+    fn inner(&self) -> DomGuard<'_> {
+        DomGuard::RefCell(self.borrow())
+    }
+
+    fn inner_mut(&mut self) -> DomGuardMut<'_> {
+        DomGuardMut::RefCell(self.borrow_mut())
+    }
+}
 
 /// Represents a DOM tree
 pub struct Dom {
@@ -130,11 +244,13 @@ pub struct Dom {
 
     pub(crate) has_active_animations: bool,
     pub(crate) has_canvas: bool,
+    pub(crate) subdom_is_animating: bool,
 
     pub(crate) nodes_to_id: HashMap<String, usize>,
     pub(crate) nodes_to_stylesheet: BTreeMap<usize, DocumentStyleSheet>,
     pub(crate) stylesheets: HashMap<String, DocumentStyleSheet>,
     pub(crate) controls_to_form: HashMap<usize, usize>,
+    pub(crate) sub_dom_nodes: HashSet<usize>,
 
     pub(crate) image_cache: HashMap<String, ImageData>,
     pub(crate) pending_images: HashMap<String, Vec<(usize, ImageType)>>,
@@ -142,6 +258,7 @@ pub struct Dom {
     pub net_provider: Arc<StokesNetProvider>,
     pub shell_provider: Arc<StokesShellProvider>,
     pub nav_provider: Arc<StokesNavigationProvider>,
+    pub html_provider: Arc<HtmlProvider>,
     pub js_provider: Arc<StokesJsProvider>,
 }
 
@@ -338,15 +455,18 @@ impl Dom {
             text_selection: TextSelection::default(),
             has_active_animations: false,
             has_canvas: false,
+            subdom_is_animating: false,
             nodes_to_id: Default::default(),
             nodes_to_stylesheet: Default::default(),
             stylesheets: Default::default(),
             controls_to_form: HashMap::new(),
+            sub_dom_nodes: HashSet::new(),
             image_cache: HashMap::new(),
             pending_images: HashMap::new(),
             net_provider,
             shell_provider,
             nav_provider,
+            html_provider: Arc::new(HtmlProvider),
             js_provider,
         };
 
@@ -762,6 +882,7 @@ impl Dom {
     pub fn animating(&self) -> bool {
         self.has_canvas
             | self.has_active_animations
+            | self.subdom_is_animating
             | (self.scroll_animation != ScrollAnimationState::None)
     }
 
@@ -1780,6 +1901,49 @@ impl Dom {
         }
     }
 
+    pub(crate) fn drop_node_ignoring_parent(&mut self, node_id: usize) -> Option<DomNode> {
+        let mut node = self.nodes.try_remove(node_id);
+        if let Some(node) = &mut node {
+            if let Some(before) = node.before {
+                self.drop_node_ignoring_parent(before);
+            }
+            if let Some(after) = node.after {
+                self.drop_node_ignoring_parent(after);
+            }
+
+            for &child in &node.children {
+                self.drop_node_ignoring_parent(child);
+            }
+        }
+        node
+    }
+
+    pub fn remove_and_drop_all_children(&mut self, node_id: usize) {
+        let parent = &mut self.nodes[node_id];
+        let parent_is_in_doc = parent.flags.is_in_document();
+
+        // TODO: make this fine grained / conditional based on ElementSelectorFlags
+        if parent_is_in_doc {
+            if let Some(data) = &mut *parent.stylo_data.borrow_mut() {
+                data.hint |= RestyleHint::restyle_subtree();
+            }
+            // Mark ancestors dirty so the style traversal visits this subtree.
+            parent.mark_ancestors_dirty();
+        }
+
+        let children = mem::take(&mut parent.children);
+        for child_id in children {
+            self.process_removed_subtree(child_id);
+            let _ = self.drop_node_ignoring_parent(child_id);
+        }
+        self.maybe_record_node(node_id);
+    }
+
+    pub fn set_inner_html(&mut self, node_id: usize, html: &str) {
+        self.remove_and_drop_all_children(node_id);
+        self.html_provider.clone().parse_inner_html(self, node_id, html);
+    }
+
     fn process_removed_subtree(&mut self, node_id: usize) {
         let mut compute_canvas: bool = false;
         let mut stylesheets_to_unload = Vec::new();
@@ -1818,7 +1982,7 @@ impl Dom {
             };
 
             match &element.special_data {
-                //todo sub document
+                SpecialElementData::SubDom(_) => {}
                 SpecialElementData::Stylesheet(_) => {
                     stylesheets_to_unload.push(node_id);
                 }
@@ -1883,6 +2047,16 @@ impl Dom {
             self.append_children(label_id, &[text_id]);
             self.append_children(button_id, &[button_text_id]);
         }
+    }
+
+    pub fn set_sub_dom(&mut self, node_id: usize, sub_dom: Box<dyn AbstractDom>) {
+        self.nodes[node_id].element_data_mut().unwrap().set_sub_dom(sub_dom);
+        self.sub_dom_nodes.insert(node_id);
+    }
+
+    pub fn remove_sub_dom(&mut self, node_id: usize) {
+        self.nodes[node_id].element_data_mut().unwrap().remove_sub_dom();
+        self.sub_dom_nodes.remove(&node_id);
     }
 
     pub(crate) fn root_node(&self) -> &DomNode {

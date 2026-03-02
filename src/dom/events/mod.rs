@@ -17,12 +17,6 @@ use mozjs::rooted;
 use std::collections::{HashMap, VecDeque};
 
 impl Dom {
-    pub(crate) fn handle_ui_event(&mut self, event: UiEvent) {
-        let handler = NoopEventHandler;
-        let mut driver = EventDriver::new(self, handler);
-        driver.handle_ui_event(event);
-    }
-
     pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
         &mut self,
         event: &mut DomEvent,
