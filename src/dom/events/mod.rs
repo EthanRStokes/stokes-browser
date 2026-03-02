@@ -17,12 +17,6 @@ use crate::dom::events::pointer::{handle_click, handle_pointerdown, handle_point
 use crate::events::{BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, DomEvent, DomEventData, EventState, UiEvent};
 
 impl Dom {
-    pub(crate) fn handle_ui_event(&mut self, event: UiEvent) {
-        let handler = NoopEventHandler;
-        let mut driver = EventDriver::new(self, handler);
-        driver.handle_ui_event(event);
-    }
-
     pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
         &mut self,
         event: &mut DomEvent,

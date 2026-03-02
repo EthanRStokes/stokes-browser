@@ -58,7 +58,9 @@ rustc-hash = "2.1.1"
 dioxus-core = "0.7.3"
 percent-encoding = "2.3.2"
 cssparser = "0.36.0"
-ipc-channel = "0.21.0"
+ipc-channel = { version = "0.21.0", features = ["async"] }
+raw-window-handle = "0.6.2"
+webdriver = "0.53.0"
 
 # Stylo
 stylo = "0.12.0"
