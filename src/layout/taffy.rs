@@ -392,7 +392,8 @@ impl PrintTree for Dom {
             NodeData::Text { .. } => "TEXT",
             NodeData::Comment => "COMMENT",
             NodeData::Element(_) => "ELEMENT",
-            NodeData::AnonymousBlock(_) => "ANONYMOUS BLOCK"
+            NodeData::AnonymousBlock(_) => "ANONYMOUS BLOCK",
+            NodeData::ShadowRoot(_) => "SHADOW ROOT",
         }
     }
 

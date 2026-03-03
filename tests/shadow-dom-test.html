@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Shadow DOM Test</title>
+  </head>
+  <body>
+    <div id="host"></div>
+    <div id="closed-host"></div>
+    <script>
+      (function () {
+        var out = [];
+        function log(msg) {
+          out.push(msg);
+          var p = document.createElement("p");
+          p.textContent = msg;
+          document.body.appendChild(p);
+        }
+
+        var host = document.getElementById("host");
+        var sr = host.attachShadow({ mode: "open" });
+        var span = document.createElement("span");
+        span.id = "inside-open";
+        span.textContent = "open-shadow";
+        sr.appendChild(span);
+
+        log("open shadowRoot visible: " + (host.shadowRoot !== null));
+        log("query inside shadow root: " + (sr.querySelector("#inside-open") !== null));
+        log("host query can see shadow descendants: " + (host.querySelector("#inside-open") !== null));
+
+        var host2 = document.getElementById("closed-host");
+        var sr2 = host2.attachShadow({ mode: "closed" });
+        var strong = document.createElement("strong");
+        strong.id = "inside-closed";
+        strong.textContent = "closed-shadow";
+        sr2.appendChild(strong);
+
+        log("closed shadowRoot hidden: " + (host2.shadowRoot === null));
+        log("closed root internal query: " + (sr2.querySelector("#inside-closed") !== null));
+      })();
+    </script>
+  </body>
+</html>
+

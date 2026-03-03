@@ -26,6 +26,11 @@ impl Iterator for TreeTraverser<'_> {
     fn next(&mut self) -> Option<Self::Item> {
         let id = self.stack.pop()?;
         let node = self.dom.get_node(id)?;
+
+        if let Some(shadow_root_id) = node.shadow_root {
+            self.stack.push(shadow_root_id);
+        }
+
         self.stack.extend(node.children.iter().rev());
         Some(id)
     }
@@ -49,7 +54,9 @@ impl Iterator for AncestorTraverser<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let current_node = self.doc.get_node(self.current)?;
-        self.current = current_node.parent?;
+        self.current = current_node
+            .parent
+            .or(current_node.shadow_host)?;
         Some(self.current)
     }
 }
@@ -122,6 +129,12 @@ impl Dom {
         node_id: usize,
         mut cb: impl FnMut(usize, &mut Dom),
     ) {
+        let shadow_root = self.nodes[node_id].shadow_root.take();
+        if let Some(shadow_root_id) = shadow_root {
+            cb(shadow_root_id, self);
+        }
+        self.nodes[node_id].shadow_root = shadow_root;
+
         let children = std::mem::take(&mut self.nodes[node_id].children);
         for child_id in children.iter().cloned() {
             cb(child_id, self);
@@ -141,6 +154,13 @@ impl Dom {
             node_id: usize,
             cb: &mut impl FnMut(usize, &mut Dom),
         ) {
+            let shadow_root = doc.nodes[node_id].shadow_root.take();
+            if let Some(shadow_root_id) = shadow_root {
+                cb(shadow_root_id, doc);
+                iter_subtree_mut_inner(doc, shadow_root_id, cb);
+            }
+            doc.nodes[node_id].shadow_root = shadow_root;
+
             let children = std::mem::take(&mut doc.nodes[node_id].children);
             for child_id in children.iter().cloned() {
                 cb(child_id, doc);
