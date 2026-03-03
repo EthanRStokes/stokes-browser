@@ -55,19 +55,33 @@ impl Dom {
 
         self.nodes[node_id].mark_ancestors_dirty();
 
+        let mut old_id = None;
+        let mut tag_local = None;
+
         let node = &mut self.nodes[node_id];
 
         let NodeData::Element(ref mut element) = node.data else {
             return;
         };
 
+        if name.local == local_name!("id") {
+            old_id = element.attr(local_name!("id")).map(ToOwned::to_owned);
+        }
+
         element.attributes.set(name.clone(), value);
 
         let tag = &element.name.local;
         let attr = &name.local;
+        tag_local = Some(tag.clone());
 
         if *attr == local_name!("id") {
-            element.id = Some(Atom::from(value))
+            element.id = Some(Atom::from(value));
+            if let Some(old_id) = old_id.as_deref() {
+                if old_id != value {
+                    self.nodes_to_id.remove(old_id);
+                }
+            }
+            self.nodes_to_id.insert(value.to_string(), node_id);
         }
 
         if *attr == local_name!("value") {
@@ -107,64 +121,106 @@ impl Dom {
         } else if (tag, attr) == tag_attr!("link", "href") {
             self.load_linked_stylesheet(node_id);
         }
+
+        let is_form_associated = matches!(
+            tag_local.as_ref().map(|tag| tag.as_ref()),
+            Some("button" | "fieldset" | "input" | "select" | "textarea" | "object" | "output")
+        );
+
+        if name.local == local_name!("form") && is_form_associated {
+            self.reset_form_owner(node_id);
+        }
+
+        if name.local == local_name!("id") && tag_local.as_ref().is_some_and(|tag| *tag == local_name!("form")) {
+            self.reset_all_form_owners();
+        }
     }
 
     pub fn clear_attribute(&mut self, node_id: usize, name: QualName) {
         self.snapshot(node_id);
 
-        let node = &mut self.nodes[node_id];
+        let mut should_recompute_canvas = false;
+        let mut should_unload_stylesheet = false;
+        let mut should_reset_form_owner = false;
+        let mut should_reset_all_form_owners = false;
 
-        let mut stylo_element_data = node.stylo_data.borrow_mut();
-        if let Some(data) = &mut *stylo_element_data {
-            data.hint |= RestyleHint::restyle_subtree();
-            data.damage.insert(ALL_DAMAGE);
-        }
-        drop(stylo_element_data);
+        {
+            let node = &mut self.nodes[node_id];
 
-        // Mark ancestors dirty so the style traversal visits this subtree.
-        // Without this, the traversal may skip nodes with pending RestyleHint/damage.
-        node.mark_ancestors_dirty();
-
-        let Some(element) = node.element_data_mut() else {
-            return;
-        };
-
-        let removed_attr = element.attributes.remove(&name);
-        let had_attr = removed_attr.is_some();
-        if !had_attr {
-            return;
-        }
-
-        if name.local == local_name!("id") {
-            element.id = None;
-        }
-
-        // Update text input value
-        if name.local == local_name!("value") {
-            if let Some(input_data) = element.text_input_data_mut() {
-                input_data.set_text(
-                    &mut self.font_ctx.lock().unwrap(),
-                    &mut self.layout_ctx,
-                    "",
-                );
+            let mut stylo_element_data = node.stylo_data.borrow_mut();
+            if let Some(data) = &mut *stylo_element_data {
+                data.hint |= RestyleHint::restyle_subtree();
+                data.damage.insert(ALL_DAMAGE);
             }
+            drop(stylo_element_data);
+
+            // Mark ancestors dirty so the style traversal visits this subtree.
+            // Without this, the traversal may skip nodes with pending RestyleHint/damage.
+            node.mark_ancestors_dirty();
+
+            let Some(element) = node.element_data_mut() else {
+                return;
+            };
+
+            let removed_attr = element.attributes.remove(&name);
+            let had_attr = removed_attr.is_some();
+            if !had_attr {
+                return;
+            }
+
+            if name.local == local_name!("id") {
+                element.id = None;
+                if let Some(id_attr) = removed_attr.as_ref() {
+                    self.nodes_to_id.remove(id_attr.value.as_str());
+                }
+            }
+
+            // Update text input value
+            if name.local == local_name!("value") {
+                if let Some(input_data) = element.text_input_data_mut() {
+                    input_data.set_text(
+                        &mut self.font_ctx.lock().unwrap(),
+                        &mut self.layout_ctx,
+                        "",
+                    );
+                }
+            }
+
+            let tag = element.name.local.clone();
+            let attr = name.local.clone();
+
+            if attr == local_name!("disabled") && element.can_be_disabled() {
+                node.enable();
+                return;
+            }
+
+            if attr == local_name!("style") {
+                element.flush_style_attribute(&self.lock, &self.url.url_extra_data());
+                node.mark_style_attr_updated();
+            }
+
+            should_recompute_canvas = tag == local_name!("canvas") && attr == local_name!("src");
+            should_unload_stylesheet = tag == local_name!("link") && attr == local_name!("href");
+
+            let is_form_associated = matches!(
+                tag.as_ref(),
+                "button" | "fieldset" | "input" | "select" | "textarea" | "object" | "output"
+            );
+            should_reset_form_owner = name.local == local_name!("form") && is_form_associated;
+            should_reset_all_form_owners = name.local == local_name!("id") && tag == local_name!("form");
         }
 
-        let tag = &element.name.local;
-        let attr = &name.local;
-
-        if *attr == local_name!("disabled") && element.can_be_disabled() {
-            node.enable();
-            return;
-        }
-
-        if *attr == local_name!("style") {
-            element.flush_style_attribute(&self.lock, &self.url.url_extra_data());
-            node.mark_style_attr_updated();
-        } else if (tag, attr) == tag_attr!("canvas", "src") {
+        if should_recompute_canvas {
             self.has_canvas = self.compute_has_canvas();
-        } else if (tag, attr) == tag_attr!("link", "href") {
+        }
+        if should_unload_stylesheet {
             self.unload_stylesheet(node_id);
+        }
+        if should_reset_form_owner {
+            self.reset_form_owner(node_id);
+        }
+        if should_reset_all_form_owners {
+            self.reset_all_form_owners();
         }
     }
 
