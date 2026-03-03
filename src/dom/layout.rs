@@ -735,6 +735,16 @@ pub(crate) fn find_inline_layout_embedded_boxes(
                     }
                 };
             }
+            NodeData::ShadowRoot(_) => {
+                for child_id in node.children.iter().copied() {
+                    find_inline_layout_embedded_boxes_recursive(
+                        nodes,
+                        parent_id,
+                        child_id,
+                        layout_children,
+                    );
+                }
+            }
             NodeData::Comment | NodeData::Text { .. } => {
                 node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
             }
@@ -992,6 +1002,18 @@ pub(crate) fn build_inline_layout(
                         });
                     }
                 };
+            }
+            NodeData::ShadowRoot(_) => {
+                for child_id in node.children.iter().copied() {
+                    build_inline_layout_recursive(
+                        builder,
+                        nodes,
+                        parent_id,
+                        child_id,
+                        collapse_mode,
+                        root_line_height,
+                    );
+                }
             }
             NodeData::Text(text) => {
                 // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);

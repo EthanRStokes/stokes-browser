@@ -1,6 +1,6 @@
 use super::super::helpers::{
     create_empty_array, create_js_string, define_function, js_value_to_string,
-    set_bool_property, set_int_property, set_string_property,
+    set_bool_property, set_int_property, set_string_property, get_node_id_from_value,
 };
 use super::cookies::{ensure_cookie_jar_initialized, set_document_url, Cookie, COOKIE_JAR, DOCUMENT_URL};
 use super::element_bindings;
@@ -9,13 +9,13 @@ use crate::dom::{AttributeMap, Dom};
 use crate::js::bindings::element_bindings::element_append_child;
 use crate::js::selectors::matches_selector;
 use crate::js::JsRuntime;
-use html5ever::Namespace;
+use html5ever::ns;
 use markup5ever::QualName;
 use mozjs::jsapi::{
     CallArgs, JSContext, JSObject, JS_DefineProperty, JS_NewPlainObject,
     JSPROP_ENUMERATE,
 };
-use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, UndefinedValue};
+use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use std::cell::RefCell;
 use std::os::raw::c_uint;
@@ -139,6 +139,30 @@ pub fn setup_head_property_deferred(runtime: &mut JsRuntime) -> Result<(), Strin
     Ok(())
 }
 
+/// Set up the document.body property with getter/setter
+/// This should be called from the runtime after initialization is complete
+pub fn setup_body_property_deferred(runtime: &mut JsRuntime) -> Result<(), String> {
+    let script = r#"
+        Object.defineProperty(document, 'body', {
+            get: function() {
+                return document.__getBody();
+            },
+            set: function(value) {
+                document.__setBody(value);
+            },
+            configurable: true,
+            enumerable: true
+        });
+    "#;
+
+    runtime.execute(script).map_err(|e| {
+        println!("[JS] Warning: Failed to set up document.body property: {}", e);
+        e
+    })?;
+
+    Ok(())
+}
+
 // ============================================================================
 // Setup functions
 // ============================================================================
@@ -183,6 +207,8 @@ unsafe fn setup_document(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
 
     // Add document.head getter function
     define_function(raw_cx, document.get(), "__getHead", Some(document_get_head), 0)?;
+    define_function(raw_cx, document.get(), "__getBody", Some(document_get_body), 0)?;
+    define_function(raw_cx, document.get(), "__setBody", Some(document_set_body), 1)?;
 
     // Create documentElement (represents <html>) using a proper element with methods
     let doc_elem_val = element_bindings::create_stub_element(raw_cx, "html")?;
@@ -754,6 +780,61 @@ unsafe extern "C" fn document_get_head(raw_cx: *mut JSContext, argc: c_uint, vp:
     true
 }
 
+/// document.body getter implementation
+unsafe extern "C" fn document_get_body(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let body_element = DOM_REF.with(|dom_ref| {
+        let dom_ptr = (*dom_ref.borrow())?;
+        let dom = unsafe { &*dom_ptr };
+        let node_id = dom.body_id()?;
+        let node = dom.get_node(node_id)?;
+        let elem_data = node.element_data()?;
+        Some((node_id, elem_data.name.local.to_string(), elem_data.attributes.clone()))
+    });
+
+    if let Some((node_id, tag_name, attributes)) = body_element {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, node_id, &tag_name, &attributes) {
+            args.rval().set(js_elem);
+            return true;
+        }
+    }
+
+    args.rval().set(NullValue());
+    true
+}
+
+/// document.body setter implementation
+unsafe extern "C" fn document_set_body(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    if argc == 0 {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let value = *args.get(0);
+    if value.is_null() || value.is_undefined() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let Some(new_body_id) = get_node_id_from_value(raw_cx, value) else {
+        args.rval().set(UndefinedValue());
+        return true;
+    };
+
+    DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = *dom_ref.borrow() {
+            let dom = unsafe { &mut *dom_ptr };
+            let _ = dom.set_document_body(new_body_id);
+        }
+    });
+
+    args.rval().set(UndefinedValue());
+    true
+}
+
 /// document.getElementById implementation
 unsafe extern "C" fn document_get_element_by_id(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -991,7 +1072,9 @@ unsafe extern "C" fn document_create_element(raw_cx: *mut JSContext, argc: c_uin
     DOM_REF.with(|dom| {
         if let Some(dom_ptr) = *dom.borrow() {
             let dom = unsafe { &mut *dom_ptr };
-            let node_id = dom.create_element(QualName::new(None, Namespace::from(""), tag_name.clone().into()), AttributeMap::empty());
+            // HTML documents should create elements in the HTML namespace.
+            let local = markup5ever::LocalName::from(tag_name.to_lowercase());
+            let node_id = dom.create_element(QualName::new(None, ns!(html), local), AttributeMap::empty());
             if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, node_id, &tag_name, dom.nodes[node_id].attrs().unwrap()) {
                 args.rval().set(js_elem);
                 println!("Successfully created element '{}'", tag_name);

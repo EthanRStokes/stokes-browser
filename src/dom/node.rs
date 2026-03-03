@@ -37,6 +37,7 @@ use style::selector_parser::{PseudoElement, RestyleDamage};
 use style::servo_arc::{Arc as ServoArc, Arc};
 use style::shared_lock::{Locked, SharedRwLock};
 use style::stylesheets::{CssRuleType, DocumentStyleSheet, Origin, UrlExtraData};
+use style::stylist::CascadeData;
 use style::values::computed::{Display, PositionProperty};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use style_traits::{ParsingMode, ToCss};
@@ -47,6 +48,18 @@ use url::Url;
 
 /// Callback type for layout invalidation
 pub type LayoutInvalidationCallback = Box<dyn Fn()>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShadowRootMode {
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShadowRootData {
+    pub mode: ShadowRootMode,
+    pub style_data: Option<Arc<CascadeData>>,
+}
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 pub struct Attribute {
@@ -108,6 +121,7 @@ pub enum NodeKind {
     Document,
     Element,
     AnonymousBlock,
+    ShadowRoot,
     Text,
     Comment,
 }
@@ -120,6 +134,8 @@ pub enum NodeData {
     Text(TextData),
     Comment,
     Element(ElementData),
+    /// Encapsulation boundary rooted at a host element.
+    ShadowRoot(ShadowRootData),
     // TODO better pseudo element support
     AnonymousBlock(ElementData),
 }
@@ -158,11 +174,26 @@ impl NodeData {
         *tag_name == element.name.local
     }
 
+    pub fn shadow_root(&self) -> Option<&ShadowRootData> {
+        match self {
+            NodeData::ShadowRoot(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    pub fn shadow_root_mut(&mut self) -> Option<&mut ShadowRootData> {
+        match self {
+            NodeData::ShadowRoot(data) => Some(data),
+            _ => None,
+        }
+    }
+
     pub fn kind(&self) -> NodeKind {
         match self {
             NodeData::Document => NodeKind::Document,
             NodeData::Element(_) => NodeKind::Element,
             NodeData::AnonymousBlock(_) => NodeKind::AnonymousBlock,
+            NodeData::ShadowRoot(_) => NodeKind::ShadowRoot,
             NodeData::Text { .. } => NodeKind::Text,
             NodeData::Comment => NodeKind::Comment,
         }
@@ -773,6 +804,10 @@ pub struct DomNode {
     pub parent: Option<usize>,
     /// Child nodes
     pub children: Vec<usize>,
+    /// Attached shadow root (if this is a host element).
+    pub shadow_root: Option<usize>,
+    /// Host element id (if this is a shadow root node).
+    pub shadow_host: Option<usize>,
     pub layout_parent: Cell<Option<usize>>,
     pub layout_children: RefCell<Option<Vec<usize>>>,
     pub paint_children: RefCell<Option<Vec<usize>>>,
@@ -837,6 +872,8 @@ impl DomNode {
             id,
             parent: None,
             children: Vec::new(),
+            shadow_root: None,
+            shadow_host: None,
             layout_parent: Cell::new(None),
             layout_children: RefCell::new(None),
             paint_children: RefCell::new(None),
@@ -873,6 +910,10 @@ impl DomNode {
 
     pub fn is_element(&self) -> bool {
         matches!(self.data, NodeData::Element(_))
+    }
+
+    pub fn is_shadow_root(&self) -> bool {
+        matches!(self.data, NodeData::ShadowRoot(_))
     }
 
     pub fn is_anonymous(&self) -> bool {
@@ -1528,6 +1569,14 @@ impl DomNode {
                 return true;
             }
         }
+
+        if let Some(shadow_root_id) = self.shadow_root {
+            let shadow_root = self.get_node(shadow_root_id);
+            if ptr::eq(shadow_root, other) || shadow_root.contains(other) {
+                return true;
+            }
+        }
+
         false
     }
 
@@ -1553,6 +1602,15 @@ impl DomNode {
             result.append(&mut child_matches);
         }
 
+        if let Some(shadow_root_id) = self.shadow_root {
+            let shadow_root = self.get_node(shadow_root_id);
+            if predicate(shadow_root) {
+                result.push(shadow_root.id);
+            }
+            let mut shadow_matches = shadow_root.find_nodes(predicate.clone());
+            result.append(&mut shadow_matches);
+        }
+
         result
     }
 
@@ -1576,6 +1634,15 @@ impl DomNode {
             // Recursively search in child's children
             let mut child_matches = child.find_nodes_mut(predicate.clone());
             result.append(&mut child_matches);
+        }
+
+        if let Some(shadow_root_id) = self.shadow_root {
+            let shadow_root = self.get_node_mut(shadow_root_id);
+            if predicate(shadow_root) {
+                result.push(shadow_root.id);
+            }
+            let mut shadow_matches = shadow_root.find_nodes_mut(predicate.clone());
+            result.append(&mut shadow_matches);
         }
 
         result
@@ -1718,6 +1785,11 @@ impl DomNode {
             NodeData::Document => {}
             NodeData::Comment => {}
             NodeData::AnonymousBlock(_) => {}
+            NodeData::ShadowRoot(_) => {
+                for &child_id in &self.children {
+                    self.tree()[child_id].write_outer_html(writer);
+                }
+            }
             // NodeData::Doctype { name, .. } => write!(s, "DOCTYPE {name}"),
             NodeData::Text(text) => {
                 writer.push_str(&text.content);
@@ -1785,6 +1857,14 @@ impl fmt::Debug for DomNode {
                     
                     write!(f, "</{}>", data.name.local)
                 }
+            },
+            NodeData::ShadowRoot(_) => {
+                write!(f, "#shadow-root(")?;
+                for child in &self.children {
+                    let child = self.get_node(*child);
+                    write!(f, "{:?}", child)?;
+                }
+                write!(f, ")")
             },
             NodeData::AnonymousBlock(data) => {
                 write!(f, "<#anonymous-block {}>", data.name.local)

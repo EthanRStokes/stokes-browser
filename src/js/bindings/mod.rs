@@ -47,5 +47,8 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
     // Set up document.head property (must be done after DOM bindings are set up)
     dom_bindings::setup_head_property_deferred(runtime)?;
 
+    // Set up document.body property (must be done after DOM bindings are set up)
+    dom_bindings::setup_body_property_deferred(runtime)?;
+
     Ok(())
 }

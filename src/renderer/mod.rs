@@ -456,6 +456,7 @@ impl HtmlRenderer<'_> {
                 unreachable!()
             }
             NodeData::Document => {}
+            NodeData::ShadowRoot(_) => {}
             // NodeData::Doctype => {}
             NodeData::Comment => {}
         }

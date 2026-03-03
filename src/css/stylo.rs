@@ -79,14 +79,22 @@ impl<'a> TShadowRoot for Node<'a> {
     }
 
     fn host(&self) -> <Self::ConcreteNode as TNode>::ConcreteElement {
-        todo!("Shadow DOM isn't implemented yet")
+        let host_id = self
+            .shadow_host
+            .expect("Shadow root is missing host linkage");
+        self.get_node(host_id)
+            .as_element()
+            .expect("Shadow root host must be an element")
     }
 
     fn style_data<'b>(&self) -> Option<&'b CascadeData>
     where
         Self: 'b
     {
-        todo!("Shadow DOM isn't implemented yet")
+        self
+            .data
+            .shadow_root()
+            .and_then(|shadow_root| shadow_root.style_data.as_deref())
     }
 }
 
@@ -151,7 +159,10 @@ impl<'a> TNode for Node<'a> {
     }
 
     fn as_shadow_root(&self) -> Option<Self::ConcreteShadowRoot> {
-        None
+        match self.data {
+            NodeData::ShadowRoot(_) => Some(self),
+            _ => None,
+        }
     }
 }
 
@@ -174,10 +185,21 @@ impl selectors::Element for Node<'_> {
     }
 
     fn parent_node_is_shadow_root(&self) -> bool {
-        false
+        self.parent
+            .and_then(|id| self.tree().get(id))
+            .is_some_and(|node| matches!(node.data, NodeData::ShadowRoot(_)))
     }
 
     fn containing_shadow_host(&self) -> Option<Self> {
+        let mut parent = self.parent;
+        while let Some(parent_id) = parent {
+            let node = self.get_node(parent_id);
+            if let NodeData::ShadowRoot(_) = node.data {
+                let host_id = node.shadow_host?;
+                return self.get_node(host_id).as_element();
+            }
+            parent = node.parent;
+        }
         None
     }
 
@@ -423,6 +445,7 @@ impl<'a> TElement for Node<'a> {
         LayoutIterator(NodeTraverser {
             parent: self,
             child_index: 0,
+            traversing_shadow_root: false,
         })
     }
 
@@ -603,10 +626,20 @@ impl<'a> TElement for Node<'a> {
     }
 
     fn shadow_root(&self) -> Option<<Self::ConcreteNode as TNode>::ConcreteShadowRoot> {
-        None
+        self.shadow_root
+            .and_then(|id| self.tree().get(id))
+            .and_then(|node| node.as_shadow_root())
     }
 
     fn containing_shadow(&self) -> Option<<Self::ConcreteNode as TNode>::ConcreteShadowRoot> {
+        let mut parent = self.parent;
+        while let Some(parent_id) = parent {
+            let node = self.get_node(parent_id);
+            if let NodeData::ShadowRoot(_) = node.data {
+                return Some(node);
+            }
+            parent = node.parent;
+        }
         None
     }
 
@@ -750,12 +783,20 @@ impl<'a> TElement for Node<'a> {
 pub struct NodeTraverser<'a> {
     parent: Node<'a>,
     child_index: usize,
+    traversing_shadow_root: bool,
 }
 
 impl<'a> Iterator for NodeTraverser<'a> {
     type Item = Node<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if !self.traversing_shadow_root {
+            self.traversing_shadow_root = true;
+            if let Some(shadow_root_id) = self.parent.shadow_root {
+                return Some(self.parent.get_node(shadow_root_id));
+            }
+        }
+
         let node_id = self.parent.children.get(self.child_index)?;
         let node = self.parent.get_node(*node_id);
         self.child_index += 1;

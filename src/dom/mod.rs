@@ -20,7 +20,15 @@ mod sub_dom;
 
 use std::any::Any;
 use std::cell::RefCell;
-pub use self::node::{AttributeMap, DomNode, ElementData, ImageData, NodeData};
+pub use self::node::{
+    AttributeMap,
+    DomNode,
+    ElementData,
+    ImageData,
+    NodeData,
+    ShadowRootData,
+    ShadowRootMode,
+};
 pub use self::parser::HtmlParser;
 use crate::css::stylo::RecalcStyle;
 use crate::dom::config::DomConfig;
@@ -526,33 +534,93 @@ impl Dom {
         self.create_node(data)
     }
 
-    pub fn append_text_to_node(&mut self, node_id: usize, text: &str) -> Result<(), AppendTextErr> {
-        let node = &mut self.nodes[node_id];
-        node.insert_damage(ALL_DAMAGE);
-        node.mark_ancestors_dirty();
-        match node.text_data_mut() {
-            Some(data) => {
-                data.content += text;
-                Ok(())
+    pub(crate) fn create_shadow_root_node(&mut self, mode: ShadowRootMode) -> usize {
+        self.create_node(NodeData::ShadowRoot(ShadowRootData {
+            mode,
+            style_data: None,
+        }))
+    }
+
+    pub fn attach_shadow(&mut self, host_id: usize, mode: ShadowRootMode) -> Result<usize, &'static str> {
+        let is_host_element = self
+            .nodes
+            .get(host_id)
+            .is_some_and(|node| node.is_element());
+        if !is_host_element {
+            return Err("Shadow host must be an element");
+        }
+
+        if let Some(existing) = self.nodes[host_id].shadow_root {
+            return Ok(existing);
+        }
+
+        let shadow_root_id = self.create_shadow_root_node(mode);
+        {
+            let host = &mut self.nodes[host_id];
+            host.shadow_root = Some(shadow_root_id);
+            host.insert_damage(ALL_DAMAGE);
+            host.mark_ancestors_dirty();
+            if let Some(data) = &mut *host.stylo_data.borrow_mut() {
+                data.hint |= RestyleHint::restyle_subtree();
             }
-            None => Err(AppendTextErr::NotTextNode),
+        }
+
+        let host_in_doc = self.nodes[host_id].flags.is_in_document();
+        {
+            let shadow_root = &mut self.nodes[shadow_root_id];
+            shadow_root.parent = None;
+            shadow_root.shadow_host = Some(host_id);
+            shadow_root.flags.set(DomNodeFlags::IS_IN_DOCUMENT, host_in_doc);
+            shadow_root.insert_damage(ALL_DAMAGE);
+        }
+
+        if host_in_doc {
+            self.process_added_subtree(shadow_root_id);
+        }
+
+        Ok(shadow_root_id)
+    }
+
+    pub fn shadow_root_id(&self, host_id: usize) -> Option<usize> {
+        self.nodes.get(host_id).and_then(|node| node.shadow_root)
+    }
+
+    pub fn open_shadow_root_id(&self, host_id: usize) -> Option<usize> {
+        let shadow_root_id = self.shadow_root_id(host_id)?;
+        match self.nodes.get(shadow_root_id)?.data.shadow_root()?.mode {
+            ShadowRootMode::Open => Some(shadow_root_id),
+            ShadowRootMode::Closed => None,
         }
     }
 
-    pub fn tree(&self) -> &Slab<DomNode> {
-        &self.nodes
+    pub fn shadow_host_id(&self, shadow_root_id: usize) -> Option<usize> {
+        self.nodes.get(shadow_root_id).and_then(|node| node.shadow_host)
     }
 
-    pub fn id(&self) -> usize {
-        self.id
+    pub fn shadow_root_style_data(
+        &self,
+        shadow_root_id: usize,
+    ) -> Option<&style::stylist::CascadeData> {
+        self
+            .nodes
+            .get(shadow_root_id)
+            .and_then(|node| node.data.shadow_root())
+            .and_then(|data| data.style_data.as_deref())
     }
 
-    pub fn get_node(&self, node_id: usize) -> Option<&DomNode> {
-        self.nodes.get(node_id)
-    }
-
-    pub fn get_node_mut(&mut self, node_id: usize) -> Option<&mut DomNode> {
-        self.nodes.get_mut(node_id)
+    pub fn set_shadow_root_style_data(
+        &mut self,
+        shadow_root_id: usize,
+        style_data: Option<style::servo_arc::Arc<style::stylist::CascadeData>>,
+    ) -> Result<(), &'static str> {
+        let Some(node) = self.nodes.get_mut(shadow_root_id) else {
+            return Err("Shadow root node not found");
+        };
+        let Some(shadow_root) = node.data.shadow_root_mut() else {
+            return Err("Node is not a shadow root");
+        };
+        shadow_root.style_data = style_data;
+        Ok(())
     }
 
     /// Parse HTML into a DOM
@@ -1367,6 +1435,62 @@ impl Dom {
         TDocument::as_node(&self.root_node()).first_element_child()
     }
 
+    pub fn document_element_id(&self) -> Option<usize> {
+        self.try_root_element().map(|node| node.id)
+    }
+
+    pub fn head_id(&self) -> Option<usize> {
+        let html_id = self.document_element_id()?;
+        self.nodes[html_id].children.iter().copied().find(|child_id| {
+            self.nodes
+                .get(*child_id)
+                .and_then(|node| node.element_data())
+                .is_some_and(|el| el.name.local == local_name!("head"))
+        })
+    }
+
+    pub fn body_id(&self) -> Option<usize> {
+        let html_id = self.document_element_id()?;
+        self.nodes[html_id].children.iter().copied().find(|child_id| {
+            self.nodes
+                .get(*child_id)
+                .and_then(|node| node.element_data())
+                .is_some_and(|el| {
+                    el.name.local == local_name!("body") || el.name.local == local_name!("frameset")
+                })
+        })
+    }
+
+    pub fn set_document_body(&mut self, new_body_id: usize) -> Result<(), &'static str> {
+        let Some(new_body_node) = self.nodes.get(new_body_id) else {
+            return Err("Body node not found");
+        };
+        let Some(new_body_el) = new_body_node.element_data() else {
+            return Err("document.body must be an element");
+        };
+        let is_body_like = new_body_el.name.local == local_name!("body")
+            || new_body_el.name.local == local_name!("frameset");
+        if !is_body_like {
+            return Err("document.body must be a <body> or <frameset> element");
+        }
+
+        let Some(html_id) = self.document_element_id() else {
+            return Err("Document element not found");
+        };
+
+        if self.body_id() == Some(new_body_id) {
+            return Ok(());
+        }
+
+        if let Some(existing_body_id) = self.body_id() {
+            self.replace_node_with(existing_body_id, &[new_body_id]);
+        } else {
+            self.append_children(html_id, &[new_body_id]);
+        }
+
+        Ok(())
+    }
+
     pub fn get_focused_node_id(&self) -> Option<usize> {
         self.focus_node_id
             .or(self.try_root_element().map(|el| el.id))
@@ -2059,6 +2183,35 @@ impl Dom {
         self.sub_dom_nodes.remove(&node_id);
     }
 
+    pub fn append_text_to_node(&mut self, node_id: usize, text: &str) -> Result<(), AppendTextErr> {
+        let node = &mut self.nodes[node_id];
+        node.insert_damage(ALL_DAMAGE);
+        node.mark_ancestors_dirty();
+        match node.text_data_mut() {
+            Some(data) => {
+                data.content += text;
+                Ok(())
+            }
+            None => Err(AppendTextErr::NotTextNode),
+        }
+    }
+
+    pub fn tree(&self) -> &Slab<DomNode> {
+        &self.nodes
+    }
+
+    pub fn id(&self) -> usize {
+        self.id
+    }
+
+    pub fn get_node(&self, node_id: usize) -> Option<&DomNode> {
+        self.nodes.get(node_id)
+    }
+
+    pub fn get_node_mut(&mut self, node_id: usize) -> Option<&mut DomNode> {
+        self.nodes.get_mut(node_id)
+    }
+
     pub(crate) fn root_node(&self) -> &DomNode {
         &self.nodes[0]
     }
@@ -2081,3 +2234,4 @@ pub enum AppendTextErr {
     /// The node is not a text node
     NotTextNode,
 }
+
