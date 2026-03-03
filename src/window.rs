@@ -4,6 +4,8 @@ use ash::vk::{self, Handle};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use skia_safe::gpu::{self, DirectContext};
 use skia_safe::{ColorType, Surface};
+use std::collections::HashSet;
+use std::ffi::CStr;
 use std::ptr;
 use std::sync::Arc;
 use winit::dpi::LogicalSize;
@@ -56,7 +58,7 @@ impl Env {
     /// semaphore hand-off + present.
     pub fn blit_tab_then_present(
         &mut self,
-        tab_frame: Option<(&ImportedVkImage, u32, u32)>,
+        tab_frame: Option<(&ImportedVkImage, u32, u32, i64)>,
         chrome_px: i32,
     ) -> Result<(), String> {
         vk_blit_tab_then_present(&mut self.vk, &**self.window, tab_frame, chrome_px)
@@ -381,12 +383,59 @@ fn vk_acquire(
 fn vk_blit_tab_then_present(
     vk: &mut VkState,
     window: &dyn Window,
-    tab_frame: Option<(&ImportedVkImage, u32, u32)>,
+    tab_frame: Option<(&ImportedVkImage, u32, u32, i64)>,
     chrome_px: i32,
 ) -> Result<(), String> {
     unsafe {
         let device = &vk.device;
         let swapchain_image = vk.swapchain_images[vk.current_image_index as usize];
+
+        let imported_tab_semaphore = if let Some((_, _, _, sem_handle)) = tab_frame {
+            #[cfg(not(windows))]
+            let no_semaphore = sem_handle == -1;
+            #[cfg(windows)]
+            let no_semaphore = sem_handle <= 0;
+
+            if no_semaphore {
+                None
+            } else {
+                let semaphore = device
+                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+                    .map_err(|e| format!("vkCreateSemaphore (tab wait import): {:?}", e))?;
+
+                #[cfg(not(windows))]
+                {
+                    let ext_fd = ash::khr::external_semaphore_fd::Device::new(&vk.instance, device);
+                    let import_info = vk::ImportSemaphoreFdInfoKHR::default()
+                        .semaphore(semaphore)
+                        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD)
+                        .flags(vk::SemaphoreImportFlags::TEMPORARY)
+                        .fd(sem_handle as i32);
+                    if let Err(e) = ext_fd.import_semaphore_fd(&import_info) {
+                        device.destroy_semaphore(semaphore, None);
+                        return Err(format!("vkImportSemaphoreFdKHR (tab wait import): {:?}", e));
+                    }
+                }
+
+                #[cfg(windows)]
+                {
+                    let ext_win32 = ash::khr::external_semaphore_win32::Device::new(&vk.instance, device);
+                    let import_info = vk::ImportSemaphoreWin32HandleInfoKHR::default()
+                        .semaphore(semaphore)
+                        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32)
+                        .flags(vk::SemaphoreImportFlags::TEMPORARY)
+                        .handle(sem_handle as vk::HANDLE);
+                    if let Err(e) = ext_win32.import_semaphore_win32_handle(&import_info) {
+                        device.destroy_semaphore(semaphore, None);
+                        return Err(format!("vkImportSemaphoreWin32HandleKHR (tab wait import): {:?}", e));
+                    }
+                }
+
+                Some(semaphore)
+            }
+        } else {
+            None
+        };
 
         // ── Command pool + buffer ────────────────────────────────────────────
         let cmd_pool = {
@@ -429,7 +478,7 @@ fn vk_blit_tab_then_present(
             layer_count: 1,
         };
 
-        if let Some((tab, tab_w, tab_h)) = tab_frame {
+        if let Some((tab, tab_w, tab_h, _)) = tab_frame {
             let sw = vk.swapchain_extent.width as i32;
             let sh = vk.swapchain_extent.height as i32;
             let dst_h = (sh - chrome_px).max(0);
@@ -519,9 +568,13 @@ fn vk_blit_tab_then_present(
         device.end_command_buffer(cmd_buf)
             .map_err(|e| format!("vkEndCommandBuffer (blit-present): {:?}", e))?;
 
-        // Submit: wait image_available, execute blit (or no-op), signal render_finished
-        let wait_sems = [vk.image_available_semaphore];
-        let wait_stages = [vk::PipelineStageFlags::TRANSFER];
+        // Submit: wait image_available (+ tab render-complete semaphore when available), then blit.
+        let mut wait_sems = vec![vk.image_available_semaphore];
+        let mut wait_stages = vec![vk::PipelineStageFlags::TRANSFER];
+        if let Some(tab_sem) = imported_tab_semaphore {
+            wait_sems.push(tab_sem);
+            wait_stages.push(vk::PipelineStageFlags::TRANSFER);
+        }
         let signal_sems = [vk.render_finished_semaphore];
         let cmd_bufs = [cmd_buf];
         let submit_info = vk::SubmitInfo::default()
@@ -531,7 +584,12 @@ fn vk_blit_tab_then_present(
             .signal_semaphores(&signal_sems);
 
         device.queue_submit(vk.queue, &[submit_info], vk.in_flight_fence)
-            .map_err(|e| format!("vkQueueSubmit (blit-present): {:?}", e))?;
+            .map_err(|e| {
+                if let Some(tab_sem) = imported_tab_semaphore {
+                    device.destroy_semaphore(tab_sem, None);
+                }
+                format!("vkQueueSubmit (blit-present): {:?}", e)
+            })?;
 
         // Present
         let swapchains = [vk.swapchain];
@@ -555,6 +613,9 @@ fn vk_blit_tab_then_present(
         // at the top of the next frame (after its own wait_for_fences).
         device.wait_for_fences(&[vk.in_flight_fence], true, 5_000_000_000)
             .map_err(|e| format!("wait_for_fences (blit-present cleanup): {:?}", e))?;
+        if let Some(tab_sem) = imported_tab_semaphore {
+            device.destroy_semaphore(tab_sem, None);
+        }
         device.destroy_command_pool(cmd_pool, None);
         // Leave in_flight_fence SIGNALED — vk_acquire will reset it.
     }
@@ -715,6 +776,15 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
     // ── 2. ash Entry + Instance ──────────────────────────────────────────────
     let entry = unsafe { ash::Entry::load().expect("Failed to load Vulkan library") };
 
+    // Query loader-supported Vulkan API version; fall back to 1.0 when unavailable.
+    let instance_api_version = unsafe {
+        entry
+            .try_enumerate_instance_version()
+            .ok()
+            .flatten()
+            .unwrap_or(vk::API_VERSION_1_0)
+    };
+
     // Collect required instance extensions for surface creation.
     let display_handle = el.as_ref().display_handle().expect("Failed to get display handle");
     let required_extensions = ash_window::enumerate_required_extensions(display_handle.as_raw())
@@ -723,7 +793,7 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
 
     let app_info = vk::ApplicationInfo::default()
         .application_name(c"stokes-browser")
-        .api_version(vk::API_VERSION_1_1);
+        .api_version(instance_api_version);
 
     let instance_ci = vk::InstanceCreateInfo::default()
         .application_info(&app_info)
@@ -781,6 +851,15 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         })
         .expect("No suitable Vulkan physical device found");
 
+    // Cap device API usage to what this GPU advertises to avoid asking Skia
+    // for Vulkan symbols the driver does not implement.
+    let device_api_version = unsafe {
+        instance
+            .get_physical_device_properties(physical_device)
+            .api_version
+    };
+    let negotiated_api_version = instance_api_version.min(device_api_version);
+
     // ── 5. Logical device + queue ────────────────────────────────────────────
     let queue_priority = [1.0f32];
     let queue_ci = vk::DeviceQueueCreateInfo::default()
@@ -788,6 +867,32 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         .queue_priorities(&queue_priority);
 
     let device_extensions = crate::vk_shared::parent_device_extension_names();
+
+    // Validate required device extensions up-front so setup failures are explicit.
+    let available_exts = unsafe {
+        instance
+            .enumerate_device_extension_properties(physical_device)
+            .expect("Failed to enumerate Vulkan device extensions")
+    };
+    let available_ext_names: HashSet<String> = available_exts
+        .iter()
+        .map(|p| unsafe { CStr::from_ptr(p.extension_name.as_ptr()) }.to_string_lossy().into_owned())
+        .collect();
+    let missing_exts: Vec<String> = device_extensions
+        .iter()
+        .map(|&name| unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned())
+        .filter(|name| !available_ext_names.contains(name))
+        .collect();
+    if !missing_exts.is_empty() {
+        let driver_name = unsafe { CStr::from_ptr(instance.get_physical_device_properties(physical_device).device_name.as_ptr()) }
+            .to_string_lossy()
+            .into_owned();
+        panic!(
+            "Selected GPU is missing required Vulkan device extensions: {:?}. GPU: {}",
+            missing_exts,
+            driver_name,
+        );
+    }
 
     let device_ci = vk::DeviceCreateInfo::default()
         .queue_create_infos(std::slice::from_ref(&queue_ci))
@@ -868,39 +973,117 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
     };
 
     // ── 8. Skia DirectContext via ash raw handles ────────────────────────────
-    // Extract the raw function pointers *before* the closure so `entry` is not
-    // captured and can still be moved into VkState afterwards.
-    let get_instance_proc_addr = entry.static_fn().get_instance_proc_addr;
-    let get_device_proc_addr = instance.fp_v1_0().get_device_proc_addr;
-
-    let get_proc = |of: skia_safe::gpu::vk::GetProcOf| unsafe {
-        match of {
-            skia_safe::gpu::vk::GetProcOf::Instance(inst_raw, name) => {
-                let vk_inst = vk::Instance::from_raw(inst_raw as usize as u64);
-                (get_instance_proc_addr)(vk_inst, name)
+    // Use the same proc-loader strategy as tab_process to keep platform behavior identical.
+    let mut gr_context = {
+        let get_device_proc_addr = instance.fp_v1_0().get_device_proc_addr;
+        let get_proc = |of: skia_safe::gpu::vk::GetProcOf| {
+            unsafe {
+                match of {
+                    skia_safe::gpu::vk::GetProcOf::Instance(raw_instance, name) => {
+                        // Skia may query global symbols with a null instance handle.
+                        let vk_instance = if raw_instance.addr() == 0 {
+                            vk::Instance::null()
+                        } else {
+                            vk::Instance::from_raw(raw_instance as _)
+                        };
+                        entry.get_instance_proc_addr(vk_instance, name)
+                    }
+                    skia_safe::gpu::vk::GetProcOf::Device(raw_device, name) => {
+                        if raw_device.addr() == 0 {
+                            // Some drivers/routes ask for core procs through a null device path.
+                            entry.get_instance_proc_addr(vk::Instance::null(), name)
+                        } else {
+                            let vk_device = vk::Device::from_raw(raw_device as _);
+                            get_device_proc_addr(vk_device, name)
+                        }
+                    }
+                }
+                .map(|f| f as _)
+                .unwrap_or(ptr::null())
             }
-            skia_safe::gpu::vk::GetProcOf::Device(dev_raw, name) => {
-                let vk_dev = vk::Device::from_raw(dev_raw as usize as u64);
-                (get_device_proc_addr)(vk_dev, name)
+        };
+
+        // Fail early with actionable diagnostics if the Vulkan loader cannot resolve
+        // core symbols Skia needs to create a Vulkan DirectContext.
+        let mut missing_procs = Vec::new();
+
+        let instance_required = [
+            c"vkGetPhysicalDeviceProperties",
+            c"vkGetPhysicalDeviceMemoryProperties",
+            c"vkGetPhysicalDeviceQueueFamilyProperties",
+        ];
+        for name in instance_required {
+            let addr: *const core::ffi::c_void = get_proc(skia_safe::gpu::vk::GetProcOf::Instance(
+                instance.handle().as_raw() as _,
+                name.as_ptr(),
+            ));
+            if addr.is_null() {
+                missing_procs.push(name.to_str().unwrap_or("<invalid-instance-proc>").to_string());
             }
         }
-        .map(|f| std::mem::transmute(f))
-        .unwrap_or(ptr::null())
-    };
 
-    let backend_context = unsafe {
-        skia_safe::gpu::vk::BackendContext::new(
-            instance.handle().as_raw() as _,
-            physical_device.as_raw() as _,
-            device.handle().as_raw() as _,
-            (queue.as_raw() as _, queue_family_index as usize),
-            &get_proc,
-        )
-    };
+        let device_required = [
+            c"vkGetDeviceQueue",
+            c"vkQueueSubmit",
+            c"vkCreateImage",
+            c"vkBindImageMemory",
+            c"vkGetImageMemoryRequirements",
+        ];
+        for name in device_required {
+            let addr: *const core::ffi::c_void = get_proc(skia_safe::gpu::vk::GetProcOf::Device(
+                device.handle().as_raw() as _,
+                name.as_ptr(),
+            ));
+            if addr.is_null() {
+                missing_procs.push(name.to_str().unwrap_or("<invalid-device-proc>").to_string());
+            }
+        }
 
-    let mut gr_context =
+        if !missing_procs.is_empty() {
+            let driver_name = unsafe { CStr::from_ptr(instance.get_physical_device_properties(physical_device).device_name.as_ptr()) }
+                .to_string_lossy()
+                .into_owned();
+            panic!(
+                "Vulkan proc resolution failed on this driver. Missing symbols: {:?}. GPU: {}",
+                missing_procs,
+                driver_name,
+            );
+        }
+
+        let mut backend_context = unsafe {
+            skia_safe::gpu::vk::BackendContext::new(
+                instance.handle().as_raw() as _,
+                physical_device.as_raw() as _,
+                device.handle().as_raw() as _,
+                (queue.as_raw() as _, queue_family_index as usize),
+                &get_proc,
+            )
+        };
+        backend_context.set_max_api_version(negotiated_api_version);
+
         skia_safe::gpu::direct_contexts::make_vulkan(&backend_context, None)
-            .expect("Failed to create Skia Vulkan DirectContext");
+            .unwrap_or_else(|| {
+                let props = unsafe { instance.get_physical_device_properties(physical_device) };
+                let driver_name = unsafe { CStr::from_ptr(props.device_name.as_ptr()) }
+                    .to_string_lossy()
+                    .into_owned();
+                panic!(
+                    "Failed to create Skia Vulkan DirectContext. GPU: {} (type {:?}), queue_family_index: {}, instance_api_version: {}, device_api_version: {}, negotiated_api_version: {}",
+                    driver_name,
+                    props.device_type,
+                    queue_family_index,
+                    vk::api_version_major(instance_api_version) * 1_000_000
+                        + vk::api_version_minor(instance_api_version) * 1_000
+                        + vk::api_version_patch(instance_api_version),
+                    vk::api_version_major(device_api_version) * 1_000_000
+                        + vk::api_version_minor(device_api_version) * 1_000
+                        + vk::api_version_patch(device_api_version),
+                    vk::api_version_major(negotiated_api_version) * 1_000_000
+                        + vk::api_version_minor(negotiated_api_version) * 1_000
+                        + vk::api_version_patch(negotiated_api_version),
+                )
+            })
+    };
 
     // ── 9. Skia surfaces (one per swapchain image) ───────────────────────────
     let skia_surfaces = vk_build_surfaces(
@@ -943,4 +1126,9 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         vk,
     }
 }
+
+
+
+
+
 

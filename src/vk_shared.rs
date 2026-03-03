@@ -300,8 +300,12 @@ impl TabVkImage {
     pub unsafe fn export_handle(&self, parent_pid: u32) -> Result<u64, String> {
         #[cfg(windows)]
         {
-            use windows_sys::Win32::Foundation::{CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, INVALID_HANDLE_VALUE};
-            use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE};
+            use windows_sys::Win32::Foundation::{
+                CloseHandle, DuplicateHandle, HANDLE, DUPLICATE_SAME_ACCESS, INVALID_HANDLE_VALUE,
+            };
+            use windows_sys::Win32::System::Threading::{
+                GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE,
+            };
 
             // Get our own handle from Vulkan
             let get_info = vk::MemoryGetWin32HandleInfoKHR::default()
@@ -312,26 +316,26 @@ impl TabVkImage {
                 .get_memory_win32_handle(&get_info)
                 .map_err(|e| format!("vkGetMemoryWin32HandleKHR failed: {:?}", e))?;
 
-            // Duplicate the handle into the parent process
-            let parent_proc = OpenProcess(PROCESS_DUP_HANDLE, 0, parent_pid) as vk::HANDLE;
-            if parent_proc == 0 || parent_proc == INVALID_HANDLE_VALUE as vk::HANDLE {
+            // Duplicate the handle into the parent process.
+            let parent_proc: HANDLE = OpenProcess(PROCESS_DUP_HANDLE, 0, parent_pid);
+            if parent_proc == 0 as HANDLE || parent_proc == INVALID_HANDLE_VALUE {
                 let err = std::io::Error::last_os_error();
-                CloseHandle(local_handle as _);
+                CloseHandle(local_handle as HANDLE);
                 return Err(format!("OpenProcess({}) failed: {}", parent_pid, err));
             }
 
-            let mut dup_handle: windows_sys::Win32::Foundation::HANDLE = 0 as _;
+            let mut dup_handle: HANDLE = 0 as HANDLE;
             let ok = DuplicateHandle(
                 GetCurrentProcess(),
-                local_handle as _,
-                parent_proc as _,
+                local_handle as HANDLE,
+                parent_proc,
                 &mut dup_handle,
                 0,
                 0,
                 DUPLICATE_SAME_ACCESS,
             );
-            CloseHandle(parent_proc as _);
-            CloseHandle(local_handle as _);
+            CloseHandle(parent_proc);
+            CloseHandle(local_handle as HANDLE);
 
             if ok == 0 {
                 let err = std::io::Error::last_os_error();
@@ -1077,8 +1081,12 @@ impl TabVkSemaphore {
 
         #[cfg(windows)]
         {
-            use windows_sys::Win32::Foundation::{CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, INVALID_HANDLE_VALUE};
-            use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE};
+            use windows_sys::Win32::Foundation::{
+                CloseHandle, DuplicateHandle, HANDLE, DUPLICATE_SAME_ACCESS, INVALID_HANDLE_VALUE,
+            };
+            use windows_sys::Win32::System::Threading::{
+                GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE,
+            };
 
             let get_info = vk::SemaphoreGetWin32HandleInfoKHR::default()
                 .semaphore(self.semaphore)
@@ -1091,18 +1099,24 @@ impl TabVkSemaphore {
                 }
             };
 
-            let parent_proc = OpenProcess(PROCESS_DUP_HANDLE, 0, parent_pid) as vk::HANDLE;
-            if parent_proc == 0 || parent_proc == INVALID_HANDLE_VALUE as vk::HANDLE {
-                CloseHandle(local_handle as _);
+            let parent_proc: HANDLE = OpenProcess(PROCESS_DUP_HANDLE, 0, parent_pid);
+            if parent_proc == 0 as HANDLE || parent_proc == INVALID_HANDLE_VALUE {
+                CloseHandle(local_handle as HANDLE);
                 return 0;
             }
-            let mut dup: windows_sys::Win32::Foundation::HANDLE = 0;
+
+            let mut dup: HANDLE = 0 as HANDLE;
             let ok = DuplicateHandle(
-                GetCurrentProcess(), local_handle as _, parent_proc as _, &mut dup,
-                0, 0, DUPLICATE_SAME_ACCESS,
+                GetCurrentProcess(),
+                local_handle as HANDLE,
+                parent_proc,
+                &mut dup,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
             );
-            CloseHandle(parent_proc as _);
-            CloseHandle(local_handle as _);
+            CloseHandle(parent_proc);
+            CloseHandle(local_handle as HANDLE);
             if ok == 0 { 0 } else { dup as i64 }
         }
     }
@@ -1138,11 +1152,11 @@ pub unsafe fn import_semaphore_and_submit_wait(
     image: vk::Image,
     sem_handle: i64,
 ) -> Result<Option<vk::Semaphore>, String> {
-    // -1 (Linux) / 0 (Windows) → no semaphore was sent, fall through.
+    // -1 (Linux) / <=0 (Windows) -> no semaphore was sent, fall through.
     #[cfg(not(windows))]
     if sem_handle == -1 { return Ok(None); }
     #[cfg(windows)]
-    if sem_handle == 0 { return Ok(None); }
+    if sem_handle <= 0 { return Ok(None); }
 
     // -- Import the semaphore ------------------------------------------------
     let semaphore = {
@@ -1288,6 +1302,18 @@ pub unsafe fn physical_device_uuid(
 /// Shared external-memory/semaphore extension set used by both parent and tab.
 ///
 /// This intentionally uses the same extension family on all platforms.
+#[cfg(windows)]
+fn shared_external_device_extensions() -> Vec<*const c_char> {
+    vec![
+        ash::khr::external_memory::NAME.as_ptr(),
+        ash::khr::external_memory_win32::NAME.as_ptr(),
+        ash::khr::external_semaphore::NAME.as_ptr(),
+        ash::khr::external_semaphore_win32::NAME.as_ptr(),
+    ]
+}
+
+/// Shared external-memory/semaphore extension set used by both parent and tab.
+#[cfg(not(windows))]
 fn shared_external_device_extensions() -> Vec<*const c_char> {
     vec![
         ash::khr::external_memory::NAME.as_ptr(),

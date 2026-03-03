@@ -522,7 +522,7 @@ impl BrowserApp {
         let tab_frame = active_tab_id.as_ref()
             .and_then(|id| self.tab_manager.get_tab(id))
             .and_then(|tab| tab.rendered_frame.as_ref())
-            .map(|f| (&f.vk_guard, f.width, f.height));
+            .map(|f| (&f.vk_guard, f.width, f.height, f.sem_handle));
 
         self.env.as_mut().unwrap().blit_tab_then_present(tab_frame, chrome_px)?;
 

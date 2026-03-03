@@ -10,6 +10,7 @@ use crate::vk_shared::{TabVkImage, VulkanDeviceInfo};
 use ash::vk::{self, Handle};
 use blitz_traits::shell::{ShellProvider, Viewport};
 use skia_safe::gpu::{self as sk_gpu, DirectContext};
+use std::ffi::CStr;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -127,9 +128,14 @@ impl TabProcess {
     ) -> Result<(ash::Entry, ash::Instance, vk::PhysicalDevice, ash::Device, u32, DirectContext), String> {
         let entry = ash::Entry::load().map_err(|e| format!("ash Entry::load: {:?}", e))?;
 
+        let instance_api_version = entry
+            .try_enumerate_instance_version()
+            .map_err(|e| format!("vkEnumerateInstanceVersion: {:?}", e))?
+            .unwrap_or(vk::API_VERSION_1_0);
+
         let app_info = vk::ApplicationInfo::default()
             .application_name(c"stokes-tab")
-            .api_version(vk::API_VERSION_1_1);
+            .api_version(instance_api_version);
 
         let instance_ci = vk::InstanceCreateInfo::default()
             .application_info(&app_info);
@@ -144,7 +150,7 @@ impl TabProcess {
             return Err("No Vulkan physical devices found".into());
         }
 
-        // Try to match the parent's physical device by UUID; fall back to first device.
+        let mut matched_parent_uuid = false;
         let physical_device = parent_info
             .and_then(|info| {
                 physical_devices.iter().find(|&&d| {
@@ -152,32 +158,69 @@ impl TabProcess {
                     uuid == info.device_uuid
                 }).copied()
             })
+            .inspect(|_| matched_parent_uuid = true)
             .unwrap_or(physical_devices[0]);
 
-        // Use the parent's queue family index if provided, otherwise find a graphics family.
-        let queue_family_index = parent_info
-            .map(|info| info.queue_family_index)
-            .unwrap_or_else(|| {
-                let queue_families = instance.get_physical_device_queue_family_properties(physical_device);
-                queue_families.iter().enumerate()
-                    .find(|(_, q)| q.queue_flags.contains(vk::QueueFlags::GRAPHICS))
-                    .map(|(i, _)| i as u32)
-                    .unwrap_or(0)
-            });
+        let queue_families = instance.get_physical_device_queue_family_properties(physical_device);
+        let fallback_qfi = queue_families
+            .iter()
+            .enumerate()
+            .find(|(_, q)| q.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+            .map(|(i, _)| i as u32)
+            .ok_or_else(|| "Selected Vulkan physical device has no graphics queue family".to_string())?;
+
+        // Only reuse parent's queue family index when we actually matched the same GPU and
+        // the index is valid for this physical device.
+        let queue_family_index = if matched_parent_uuid {
+            parent_info
+                .filter(|info| {
+                    queue_families
+                        .get(info.queue_family_index as usize)
+                        .is_some_and(|q| q.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+                })
+                .map(|info| info.queue_family_index)
+                .unwrap_or(fallback_qfi)
+        } else {
+            fallback_qfi
+        };
+
+        let ext_names = crate::vk_shared::tab_device_extension_names();
+        let available_exts = instance
+            .enumerate_device_extension_properties(physical_device)
+            .map_err(|e| format!("enumerate_device_extension_properties: {:?}", e))?;
+        let missing_exts: Vec<String> = ext_names
+            .iter()
+            .map(|&name| CStr::from_ptr(name).to_string_lossy().into_owned())
+            .filter(|name| {
+                !available_exts.iter().any(|ext| {
+                    CStr::from_ptr(ext.extension_name.as_ptr())
+                        .to_string_lossy()
+                        .as_ref()
+                        == name
+                })
+            })
+            .collect();
+        if !missing_exts.is_empty() {
+            let driver_name = CStr::from_ptr(instance.get_physical_device_properties(physical_device).device_name.as_ptr())
+                .to_string_lossy()
+                .into_owned();
+            return Err(format!(
+                "Selected GPU is missing required Vulkan tab extensions: {:?}. GPU: {}",
+                missing_exts, driver_name
+            ));
+        }
 
         let queue_priority = [1.0f32];
         let queue_ci = vk::DeviceQueueCreateInfo::default()
             .queue_family_index(queue_family_index)
             .queue_priorities(&queue_priority);
 
-        let ext_names = crate::vk_shared::tab_device_extension_names();
-
         let device_ci = vk::DeviceCreateInfo::default()
             .queue_create_infos(std::slice::from_ref(&queue_ci))
             .enabled_extension_names(&ext_names);
 
         let device = instance.create_device(physical_device, &device_ci, None)
-            .map_err(|e| format!("vkCreateDevice: {:?}", e))?;
+            .map_err(|e| format!("vkCreateDevice: {:?} (queue_family_index={})", e, queue_family_index))?;
 
         // Build a Skia DirectContext against this device
         let queue = device.get_device_queue(queue_family_index, 0);
@@ -185,12 +228,20 @@ impl TabProcess {
         let get_proc = |gpo: skia_safe::gpu::vk::GetProcOf| {
             match gpo {
                 skia_safe::gpu::vk::GetProcOf::Instance(raw_instance, name) => {
-                    let vk_instance = vk::Instance::from_raw(raw_instance as _);
+                    let vk_instance = if raw_instance.addr() == 0 {
+                        vk::Instance::null()
+                    } else {
+                        vk::Instance::from_raw(raw_instance as _)
+                    };
                     entry.get_instance_proc_addr(vk_instance, name)
                 }
                 skia_safe::gpu::vk::GetProcOf::Device(raw_device, name) => {
-                    let vk_device = vk::Device::from_raw(raw_device as _);
-                    get_device_proc_addr(vk_device, name)
+                    if raw_device.addr() == 0 {
+                        entry.get_instance_proc_addr(vk::Instance::null(), name)
+                    } else {
+                        let vk_device = vk::Device::from_raw(raw_device as _);
+                        get_device_proc_addr(vk_device, name)
+                    }
                 }
             }
             .map(|f| f as _)
