@@ -172,6 +172,23 @@ impl Engine {
             dom.set_viewport(viewport);
         }
 
+        if let Some(runtime) = &mut self.js_runtime {
+            let width = self.viewport.window_size.0;
+            let height = self.viewport.window_size.1;
+            let script = format!(
+                "if (typeof globalThis !== 'undefined') {{\
+                    globalThis.innerWidth = {width};\
+                    globalThis.outerWidth = {width};\
+                    globalThis.innerHeight = {height};\
+                    globalThis.outerHeight = {height};\
+                    if (typeof globalThis.__notifyMatchMediaListeners === 'function') {{\
+                        globalThis.__notifyMatchMediaListeners();\
+                    }}\
+                }}"
+            );
+            let _ = runtime.execute_script(&script);
+        }
+
         // Recalculate layout with new viewport
         style::thread_state::enter(ThreadState::LAYOUT);
         self.update_content_dimensions();
