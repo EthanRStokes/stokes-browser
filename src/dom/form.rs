@@ -28,8 +28,15 @@ impl Dom {
     pub fn reset_form_owner(&mut self, node_id: usize) {
         let node = &self.nodes[node_id];
         let Some(element) = node.element_data() else {
+            self.controls_to_form.remove(&node_id);
             return;
         };
+
+        // Only form-associated controls participate in ownership.
+        if !is_form_associated_control_tag(element.name.local.as_ref()) {
+            self.controls_to_form.remove(&node_id);
+            return;
+        }
 
         // First try explicit form attribute
         let final_owner_id = element
@@ -50,6 +57,24 @@ impl Dom {
 
         if let Some(final_owner_id) = final_owner_id {
             self.controls_to_form.insert(node_id, final_owner_id);
+        } else {
+            self.controls_to_form.remove(&node_id);
+        }
+    }
+
+    pub fn reset_all_form_owners(&mut self) {
+        let controls: Vec<usize> = self
+            .nodes
+            .iter()
+            .filter_map(|(node_id, node)| {
+                node.element_data()
+                    .filter(|element| is_form_associated_control_tag(element.name.local.as_ref()))
+                    .map(|_| node_id)
+            })
+            .collect();
+
+        for control_id in controls {
+            self.reset_form_owner(control_id);
         }
     }
 
@@ -451,4 +476,8 @@ fn encode_text_plain<T: AsRef<str>, U: AsRef<str>>(input: &[(T, U)]) -> String {
         out.push_str("\r\n");
     }
     out
+}
+
+fn is_form_associated_control_tag(tag: &str) -> bool {
+    matches!(tag, "button" | "fieldset" | "input" | "select" | "textarea" | "object" | "output")
 }

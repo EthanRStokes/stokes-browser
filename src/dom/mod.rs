@@ -2088,9 +2088,13 @@ impl Dom {
     fn process_removed_subtree(&mut self, node_id: usize) {
         let mut compute_canvas: bool = false;
         let mut stylesheets_to_unload = Vec::new();
+        let mut removed_form = false;
         self.iter_subtree_mut(node_id, |node_id, doc| {
             let node = &mut doc.nodes[node_id];
             node.flags.set(DomNodeFlags::IS_IN_DOCUMENT, false);
+
+            // Remove any form-owner mapping for removed nodes.
+            doc.controls_to_form.remove(&node_id);
 
             // Clear hover state if this node was being hovered.
             // This prevents stale hover_node_id references.
@@ -2122,6 +2126,10 @@ impl Dom {
                 return;
             };
 
+            if element.name.local == local_name!("form") {
+                removed_form = true;
+            }
+
             match &element.special_data {
                 SpecialElementData::SubDom(_) => {}
                 SpecialElementData::Stylesheet(_) => {
@@ -2138,6 +2146,10 @@ impl Dom {
                 SpecialElementData::None => {}
             }
         });
+
+        if removed_form {
+            self.reset_all_form_owners();
+        }
 
         if compute_canvas {
             self.has_canvas = self.compute_has_canvas();

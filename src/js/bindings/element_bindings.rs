@@ -1791,6 +1791,8 @@ unsafe fn setup_form_element_bindings(raw_cx: *mut JSContext, element: *mut JSOb
     define_property_accessor(raw_cx, element, "action", "__getFormAction", "__setFormAction")?;
     define_property_accessor(raw_cx, element, "method", "__getFormMethod", "__setFormMethod")?;
     define_property_accessor(raw_cx, element, "enctype", "__getFormEnctype", "__setFormEnctype")?;
+    // encoding is a legacy alias for enctype.
+    define_property_accessor(raw_cx, element, "encoding", "__getFormEnctype", "__setFormEnctype")?;
     define_property_accessor(raw_cx, element, "target", "__getFormTarget", "__setFormTarget")?;
     define_property_accessor(raw_cx, element, "name", "__getFormName", "__setFormName")?;
     define_property_accessor(raw_cx, element, "noValidate", "__getFormNoValidate", "__setFormNoValidate")?;
@@ -1838,6 +1840,22 @@ unsafe fn clear_attribute_for_node(node_id: usize, attr: &str) {
     });
 }
 
+fn normalize_form_method(value: &str) -> &'static str {
+    match value.to_ascii_lowercase().as_str() {
+        "post" => "post",
+        "dialog" => "dialog",
+        _ => "get",
+    }
+}
+
+fn normalize_form_enctype(value: &str) -> &'static str {
+    match value.to_ascii_lowercase().as_str() {
+        "multipart/form-data" => "multipart/form-data",
+        "text/plain" => "text/plain",
+        _ => "application/x-www-form-urlencoded",
+    }
+}
+
 unsafe fn form_node_id_from_this(raw_cx: *mut JSContext, args: &CallArgs) -> Option<usize> {
     let node_id = get_node_id_from_this(raw_cx, args)?;
     DOM_REF.with(|dom_ref| {
@@ -1855,14 +1873,86 @@ unsafe fn form_control_ids(form_id: usize) -> Vec<usize> {
     DOM_REF.with(|dom_ref| {
         if let Some(dom_ptr) = *dom_ref.borrow() {
             let dom = &*dom_ptr;
-            return dom
+            let mut ids: Vec<usize> = dom
                 .controls_to_form
                 .iter()
                 .filter_map(|(control_id, owner)| if *owner == form_id { Some(*control_id) } else { None })
                 .collect();
+            ids.sort_unstable();
+            return ids;
         }
         Vec::new()
     })
+}
+
+unsafe fn form_control_records(form_id: usize) -> Vec<(usize, String, AttributeMap, Option<String>, Option<String>)> {
+    DOM_REF.with(|dom_ref| {
+        let mut out = Vec::new();
+        if let Some(dom_ptr) = *dom_ref.borrow() {
+            let dom = &*dom_ptr;
+            for control_id in form_control_ids(form_id) {
+                let Some(node) = dom.get_node(control_id) else {
+                    continue;
+                };
+                let Some(element) = node.element_data() else {
+                    continue;
+                };
+
+                let name_attr = element.attr(local_name!("name")).map(ToOwned::to_owned);
+                let id_attr = element.attr(local_name!("id")).map(ToOwned::to_owned);
+                out.push((
+                    control_id,
+                    element.name.local.to_string(),
+                    element.attributes.clone(),
+                    name_attr,
+                    id_attr,
+                ));
+            }
+        }
+        out
+    })
+}
+
+unsafe fn form_controls_collection_form_id(raw_cx: *mut JSContext, args: &CallArgs) -> Option<usize> {
+    let this_val = args.thisv();
+    if !this_val.get().is_object() || this_val.get().is_null() {
+        return None;
+    }
+
+    rooted!(in(raw_cx) let this_obj = this_val.get().to_object());
+    rooted!(in(raw_cx) let mut form_id_val = UndefinedValue());
+
+    let cname = std::ffi::CString::new("__formNodeId").unwrap();
+    if !mozjs::jsapi::JS_GetProperty(
+        raw_cx,
+        this_obj.handle().into(),
+        cname.as_ptr(),
+        form_id_val.handle_mut().into(),
+    ) {
+        return None;
+    }
+
+    if form_id_val.get().is_double() {
+        Some(form_id_val.get().to_double() as usize)
+    } else if form_id_val.get().is_int32() {
+        Some(form_id_val.get().to_int32() as usize)
+    } else {
+        None
+    }
+}
+
+unsafe fn form_is_submit_button(dom: &crate::dom::Dom, submitter_id: usize) -> bool {
+    dom.get_node(submitter_id)
+        .and_then(|node| node.element_data())
+        .is_some_and(|element| {
+            if element.name.local == local_name!("button") {
+                element.is_submit_button()
+            } else if element.name.local == local_name!("input") {
+                matches!(element.attr(local_name!("type")), Some("submit" | "image"))
+            } else {
+                false
+            }
+        })
 }
 
 unsafe extern "C" fn form_submit(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
@@ -1883,19 +1973,16 @@ unsafe extern "C" fn form_request_submit(raw_cx: *mut JSContext, argc: c_uint, v
     let args = CallArgs::from_vp(vp, argc);
 
     if let Some(form_id) = form_node_id_from_this(raw_cx, &args) {
-        let submitter_id = if argc > 0 {
-            get_node_id_from_value(raw_cx, *args.get(0)).unwrap_or(form_id)
-        } else {
-            form_id
-        };
-
         DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &*dom_ptr;
-                let is_valid_submitter = submitter_id == form_id
-                    || dom.controls_to_form.get(&submitter_id).is_some_and(|owner| *owner == form_id);
-                if is_valid_submitter {
-                    dom.submit_form(form_id, submitter_id);
+                if argc > 0 {
+                    if let Some(submitter_id) = get_node_id_from_value(raw_cx, *args.get(0)) {
+                        let owns_submitter = dom.controls_to_form.get(&submitter_id).is_some_and(|owner| *owner == form_id);
+                        if owns_submitter && form_is_submit_button(dom, submitter_id) {
+                            dom.submit_form(form_id, submitter_id);
+                        }
+                    }
                 } else {
                     dom.submit_form(form_id, form_id);
                 }
@@ -1928,37 +2015,42 @@ unsafe extern "C" fn form_reset(raw_cx: *mut JSContext, argc: c_uint, vp: *mut J
                         continue;
                     };
 
-                    if tag != "input" {
-                        continue;
-                    }
-
-                    match input_type.as_str() {
-                        "checkbox" | "radio" => {
-                            if let Some(node) = dom.get_node_mut(control_id) {
-                                if let Some(element) = node.element_data_mut() {
-                                    if let Some(checked) = element.checkbox_input_checked_mut() {
-                                        *checked = checked_attr;
+                    if tag == "input" {
+                        match input_type.as_str() {
+                            "checkbox" | "radio" => {
+                                if let Some(node) = dom.get_node_mut(control_id) {
+                                    if let Some(element) = node.element_data_mut() {
+                                        if let Some(checked) = element.checkbox_input_checked_mut() {
+                                            *checked = checked_attr;
+                                        }
                                     }
                                 }
                             }
-                        }
-                        "file" => {
-                            if let Some(node) = dom.get_node_mut(control_id) {
-                                if let Some(element) = node.element_data_mut() {
-                                    if let Some(file_data) = element.file_data_mut() {
-                                        file_data.clear();
+                            "file" => {
+                                if let Some(node) = dom.get_node_mut(control_id) {
+                                    if let Some(element) = node.element_data_mut() {
+                                        if let Some(file_data) = element.file_data_mut() {
+                                            file_data.clear();
+                                        }
                                     }
                                 }
                             }
+                            _ => {
+                                let qname = QualName::new(
+                                    None,
+                                    markup5ever::ns!(),
+                                    markup5ever::LocalName::from("value"),
+                                );
+                                dom.set_attribute(control_id, qname, &value_attr);
+                            }
                         }
-                        _ => {
-                            let qname = QualName::new(
-                                None,
-                                markup5ever::ns!(),
-                                markup5ever::LocalName::from("value"),
-                            );
-                            dom.set_attribute(control_id, qname, &value_attr);
-                        }
+                    } else if tag == "textarea" {
+                        let qname = QualName::new(
+                            None,
+                            markup5ever::ns!(),
+                            markup5ever::LocalName::from("value"),
+                        );
+                        dom.set_attribute(control_id, qname, &value_attr);
                     }
                 }
             }
@@ -2017,8 +2109,8 @@ unsafe extern "C" fn form_get_method(raw_cx: *mut JSContext, argc: c_uint, vp: *
     let args = CallArgs::from_vp(vp, argc);
     let value = form_node_id_from_this(raw_cx, &args)
         .and_then(|id| get_attribute_for_node(id, "method"))
-        .unwrap_or_else(|| "get".to_string())
-        .to_ascii_lowercase();
+        .map(|v| normalize_form_method(&v).to_string())
+        .unwrap_or_else(|| "get".to_string());
     args.rval().set(create_js_string(raw_cx, &value));
     true
 }
@@ -2027,7 +2119,7 @@ unsafe extern "C" fn form_set_method(raw_cx: *mut JSContext, argc: c_uint, vp: *
     let args = CallArgs::from_vp(vp, argc);
     if let Some(form_id) = form_node_id_from_this(raw_cx, &args) {
         let value = if argc > 0 { js_value_to_string(raw_cx, *args.get(0)) } else { String::new() };
-        set_attribute_for_node(form_id, "method", &value.to_ascii_lowercase());
+        set_attribute_for_node(form_id, "method", normalize_form_method(&value));
     }
     args.rval().set(UndefinedValue());
     true
@@ -2037,6 +2129,7 @@ unsafe extern "C" fn form_get_enctype(raw_cx: *mut JSContext, argc: c_uint, vp: 
     let args = CallArgs::from_vp(vp, argc);
     let value = form_node_id_from_this(raw_cx, &args)
         .and_then(|id| get_attribute_for_node(id, "enctype"))
+        .map(|v| normalize_form_enctype(&v).to_string())
         .unwrap_or_else(|| "application/x-www-form-urlencoded".to_string());
     args.rval().set(create_js_string(raw_cx, &value));
     true
@@ -2046,7 +2139,7 @@ unsafe extern "C" fn form_set_enctype(raw_cx: *mut JSContext, argc: c_uint, vp: 
     let args = CallArgs::from_vp(vp, argc);
     if let Some(form_id) = form_node_id_from_this(raw_cx, &args) {
         let value = if argc > 0 { js_value_to_string(raw_cx, *args.get(0)) } else { String::new() };
-        set_attribute_for_node(form_id, "enctype", &value);
+        set_attribute_for_node(form_id, "enctype", normalize_form_enctype(&value));
     }
     args.rval().set(UndefinedValue());
     true
@@ -2090,9 +2183,9 @@ unsafe extern "C" fn form_set_name(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
     true
 }
 
-unsafe extern "C" fn form_get_no_validate(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn form_get_no_validate(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let no_validate = get_node_id_from_this(_raw_cx, &args)
+    let no_validate = form_node_id_from_this(raw_cx, &args)
         .and_then(|id| get_attribute_for_node(id, "novalidate"))
         .is_some();
     args.rval().set(BooleanValue(no_validate));
@@ -2113,36 +2206,132 @@ unsafe extern "C" fn form_set_no_validate(raw_cx: *mut JSContext, argc: c_uint, 
     true
 }
 
-unsafe extern "C" fn form_get_elements(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn form_elements_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
+    let Some(form_id) = form_controls_collection_form_id(raw_cx, &args) else {
+        args.rval().set(NullValue());
+        return true;
+    };
+
+    let index = if argc > 0 {
+        let idx_val = *args.get(0);
+        if idx_val.is_int32() {
+            Some(idx_val.to_int32() as i64)
+        } else if idx_val.is_double() {
+            Some(idx_val.to_double() as i64)
+        } else {
+            js_value_to_string(raw_cx, idx_val).parse::<i64>().ok()
+        }
+    } else {
+        None
+    };
+
+    let Some(index) = index else {
+        args.rval().set(NullValue());
+        return true;
+    };
+    if index < 0 {
+        args.rval().set(NullValue());
+        return true;
+    }
+
+    let controls = form_control_records(form_id);
+    if let Some((node_id, tag, attrs, _, _)) = controls.get(index as usize) {
+        if let Ok(elem) = create_js_element_by_id(raw_cx, *node_id, tag, attrs) {
+            args.rval().set(elem);
+            return true;
+        }
+    }
+
+    args.rval().set(NullValue());
+    true
+}
+
+unsafe extern "C" fn form_elements_named_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let Some(form_id) = form_controls_collection_form_id(raw_cx, &args) else {
+        args.rval().set(NullValue());
+        return true;
+    };
+
+    let key = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    if key.is_empty() {
+        args.rval().set(NullValue());
+        return true;
+    }
+
+    let controls = form_control_records(form_id);
+    if let Some((node_id, tag, attrs, _, _)) = controls
+        .iter()
+        .find(|(_, _, _, name_attr, id_attr)| {
+            name_attr.as_ref().is_some_and(|name| name == &key) || id_attr.as_ref().is_some_and(|id| id == &key)
+        })
+    {
+        if let Ok(elem) = create_js_element_by_id(raw_cx, *node_id, tag, attrs) {
+            args.rval().set(elem);
+            return true;
+        }
+    }
+
+    args.rval().set(NullValue());
+    true
+}
+
+unsafe extern "C" fn form_get_elements(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    use std::collections::HashSet;
+
+    let args = CallArgs::from_vp(vp, argc);
+    rooted!(in(raw_cx) let collection = create_empty_array(raw_cx));
 
     if let Some(form_id) = form_node_id_from_this(raw_cx, &args) {
-        let controls: Vec<(usize, String, AttributeMap)> = DOM_REF.with(|dom_ref| {
-            let mut out = Vec::new();
-            if let Some(dom_ptr) = *dom_ref.borrow() {
-                let dom = &*dom_ptr;
-                for control_id in form_control_ids(form_id) {
-                    if let Some(node) = dom.get_node(control_id) {
-                        if let NodeData::Element(ref element) = node.data {
-                            out.push((control_id, element.name.local.to_string(), element.attributes.clone()));
-                        }
-                    }
-                }
-            }
-            out
-        });
+        rooted!(in(raw_cx) let form_ptr_val = mozjs::jsval::DoubleValue(form_id as f64));
+        rooted!(in(raw_cx) let collection_rooted = collection.get());
+        let form_id_name = std::ffi::CString::new("__formNodeId").unwrap();
+        JS_DefineProperty(
+            raw_cx,
+            collection_rooted.handle().into(),
+            form_id_name.as_ptr(),
+            form_ptr_val.handle().into(),
+            0,
+        );
 
-        for (idx, (id, tag, attrs)) in controls.iter().enumerate() {
+        let _ = define_function(raw_cx, collection.get(), "item", Some(form_elements_item), 1);
+        let _ = define_function(raw_cx, collection.get(), "namedItem", Some(form_elements_named_item), 1);
+
+        let controls = form_control_records(form_id);
+        let mut seen_named = HashSet::new();
+
+        for (idx, (id, tag, attrs, name_attr, id_attr)) in controls.iter().enumerate() {
             if let Ok(elem) = create_js_element_by_id(raw_cx, *id, tag, attrs) {
                 rooted!(in(raw_cx) let elem_rooted = elem);
-                rooted!(in(raw_cx) let array_obj = array.get());
-                mozjs::rust::wrappers::JS_SetElement(raw_cx, array_obj.handle().into(), idx as u32, elem_rooted.handle().into());
+                rooted!(in(raw_cx) let collection_obj = collection.get());
+                mozjs::rust::wrappers::JS_SetElement(raw_cx, collection_obj.handle().into(), idx as u32, elem_rooted.handle().into());
+
+                // Add named property aliases for first matching id/name.
+                for key in [name_attr.as_ref(), id_attr.as_ref()].into_iter().flatten() {
+                    if key.is_empty() || !seen_named.insert(key.clone()) {
+                        continue;
+                    }
+                    if let Ok(cname) = std::ffi::CString::new(key.as_str()) {
+                        JS_DefineProperty(
+                            raw_cx,
+                            collection_obj.handle().into(),
+                            cname.as_ptr(),
+                            elem_rooted.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                    }
+                }
             }
         }
     }
 
-    args.rval().set(ObjectValue(array.get()));
+    args.rval().set(ObjectValue(collection.get()));
     true
 }
 

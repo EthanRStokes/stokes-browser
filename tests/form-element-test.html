@@ -7,8 +7,8 @@
     <h1>HTMLFormElement Test</h1>
     <pre id="output"></pre>
 
-    <form id="demo" action="/submit" method="post">
-        <input type="text" name="q" value="hello">
+    <form id="demo" action="/submit" method="post" enctype="multipart/form-data">
+        <input type="text" name="q" id="qId" value="hello">
         <input type="checkbox" name="opt" checked>
         <button id="submitBtn" type="submit">Go</button>
     </form>
@@ -30,8 +30,20 @@
         log('typeof HTMLFormElement', typeof HTMLFormElement);
         log('form.action', form.action);
         log('form.method', form.method);
+        log('form.enctype', form.enctype);
+        log('form.encoding', form.encoding);
         log('form.length', form.length);
         log('form.noValidate', form.noValidate);
+        log('elements.length', form.elements.length);
+        log('elements.item(0).id', form.elements.item(0)?.id || '');
+        log('elements.namedItem("q").id', form.elements.namedItem('q')?.id || '');
+        log('elements.namedItem("qId").id', form.elements.namedItem('qId')?.id || '');
+        log('elements["q"].id', form.elements['q']?.id || '');
+
+        form.method = 'NOT_A_METHOD';
+        form.enctype = 'invalid/content-type';
+        log('normalized method', form.method);
+        log('normalized enctype', form.enctype);
 
         text.setAttribute('value', 'changed');
         check.removeAttribute('checked');
