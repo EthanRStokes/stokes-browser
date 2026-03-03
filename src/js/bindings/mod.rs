@@ -17,6 +17,7 @@ pub(crate) mod alert_callback;
 pub mod console;
 pub mod fetch;
 pub mod performance;
+pub mod url;
 
 /// Initialize JavaScript bindings for the browser
 pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, user_agent: String, timer_manager: Rc<TimerManager>) -> JsResult<()> {
@@ -36,6 +37,9 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
 
     // Set up fetch API
     fetch::setup_fetch(runtime, user_agent.clone())?;
+
+    // Set up URL API
+    url::setup_url(runtime)?;
 
     // Set up DOM bindings
     dom_bindings::setup_dom_bindings(runtime, document_root, user_agent)?;

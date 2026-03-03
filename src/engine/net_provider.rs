@@ -1,12 +1,11 @@
 use blitz_net::ProviderError;
 use blitz_traits::net::{AbortSignal, Body, Entry, NetHandler, NetProvider, Request};
 use bytes::Bytes;
-use curl::easy::{Easy2, Handler, WriteError};
+use curl::easy::{Easy2, Handler, List, WriteError};
 use data_url::DataUrl;
 use log::warn;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::Poll;
 use tokio::runtime::Handle;
 
@@ -128,6 +127,13 @@ impl StokesNetProvider {
             _ => {
                 let mut easy = Easy2::new(Collector(Vec::new()));
                 easy.url(request.url.as_str()).unwrap();
+
+                let mut headers = List::new();
+                for (name, value) in &request.headers {
+                    headers.append(&format!("{}: {}", name.as_str(), value.to_str().unwrap())).unwrap();
+                }
+                easy.http_headers(headers);
+
                 easy.follow_location(true).unwrap();
                 easy.useragent(user_agent).unwrap();
                 Self::apply_request_method(&mut easy, &request);

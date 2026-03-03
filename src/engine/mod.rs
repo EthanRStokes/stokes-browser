@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::{channel, Receiver};
-use blitz_traits::net::{NetProvider, Request};
+use blitz_traits::net::Request;
 use style::dom::TNode;
 use style::thread_state::ThreadState;
 use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
@@ -40,7 +40,6 @@ pub struct Engine {
     page_title: String,
     is_loading: bool,
     pub(crate) dom: Option<Dom>,
-    style_map_dirty: bool,
     scroll_y: f32,
     scroll_x: f32,
     content_height: f32,
@@ -69,7 +68,6 @@ impl Engine {
             page_title: "New Tab".to_string(),
             is_loading: false,
             dom: None,
-            style_map_dirty: false,
             scroll_y: 0.0,
             scroll_x: 0.0,
             content_height: 0.0,
@@ -164,26 +162,6 @@ impl Engine {
         }
 
         result
-    }
-
-    /// Force reload images (useful for debugging or refresh)
-    pub async fn reload_images(&mut self) {
-        let dom = self.dom_mut();
-        // Find all image nodes and reset their loading state
-        let image_nodes = dom.find_node_ids(|node| node.data.element().is_some_and(|data| {
-            matches!(data.special_data, SpecialElementData::Image(_))
-        }));
-
-        for image_node in image_nodes {
-            let image_node = dom.get_node_mut(image_node).unwrap();
-            if let NodeData::Element(ref mut image_data) = image_node.data {
-                if let SpecialElementData::Image(image_data) = &mut image_data.special_data {
-                    // TODO
-                    //image_data.loading_state = ImageLoadingState::NotLoaded;
-                }
-            }
-        }
-        println!("ASDJOAJ")
     }
 
     /// Update the viewport size
@@ -448,24 +426,6 @@ impl Engine {
                 }
             }
         }
-    }
-
-    /// Handle a click at the given position (viewport coordinates)
-    /// Returns the href of the clicked link, if any
-    pub fn handle_click(&mut self, x: f32, y: f32) -> Option<String> {
-        // Find the element at this position starting from root
-        if let Some(dom) = &self.dom {
-            let root_id = dom.root_element().id;
-            if let Some(node_id) = dom.hover_node_id {
-                // Fire click event on the element
-                self.fire_click_event(node_id, x as f64, y as f64);
-
-                // Check if this element or any parent is an anchor tag
-                return self.find_link_href(node_id);
-            }
-        }
-
-        None
     }
 
     /// Fire a click event on a DOM node

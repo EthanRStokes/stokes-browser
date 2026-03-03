@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>HTMLFormElement Test</title>
+</head>
+<body>
+    <h1>HTMLFormElement Test</h1>
+    <pre id="output"></pre>
+
+    <form id="demo" action="/submit" method="post">
+        <input type="text" name="q" value="hello">
+        <input type="checkbox" name="opt" checked>
+        <button id="submitBtn" type="submit">Go</button>
+    </form>
+
+    <script>
+        const out = document.getElementById('output');
+        const form = document.getElementById('demo');
+        const text = form.elements[0];
+        const check = form.elements[1];
+        const submitBtn = document.getElementById('submitBtn');
+
+        const lines = [];
+        function log(label, value) {
+            const textLine = label + ': ' + value;
+            lines.push(textLine);
+            console.log(textLine);
+        }
+
+        log('typeof HTMLFormElement', typeof HTMLFormElement);
+        log('form.action', form.action);
+        log('form.method', form.method);
+        log('form.length', form.length);
+        log('form.noValidate', form.noValidate);
+
+        text.setAttribute('value', 'changed');
+        check.removeAttribute('checked');
+        form.reset();
+
+        log('after reset value attr', text.getAttribute('value'));
+        log('after reset checked attr', check.hasAttribute('checked'));
+
+        form.noValidate = true;
+        log('set noValidate', form.noValidate);
+
+        form.requestSubmit(submitBtn);
+
+        out.textContent = lines.join('\n');
+    </script>
+</body>
+</html>
+
