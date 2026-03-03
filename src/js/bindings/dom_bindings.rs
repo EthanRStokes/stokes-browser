@@ -166,6 +166,152 @@ pub fn setup_body_property_deferred(runtime: &mut JsRuntime) -> Result<(), Strin
     Ok(())
 }
 
+/// Set up window.matchMedia and MediaQueryList behavior.
+/// This must run after the window object exists
+pub fn setup_match_media_deferred(runtime: &mut JsRuntime) -> Result<(), String> {
+    let script = r#"
+        (function() {
+            const root = typeof globalThis !== 'undefined' ? globalThis : window;
+
+            function enrichChangeEvent(event, mql) {
+                try {
+                    Object.defineProperty(event, 'matches', {
+                        value: mql.matches,
+                        configurable: true,
+                        enumerable: true,
+                    });
+                } catch (_err) {
+                    event.matches = mql.matches;
+                }
+
+                try {
+                    Object.defineProperty(event, 'media', {
+                        value: mql.media,
+                        configurable: true,
+                        enumerable: true,
+                    });
+                } catch (_err) {
+                    event.media = mql.media;
+                }
+
+                return event;
+            }
+
+            function createChangeEvent(mql) {
+                let event;
+                if (typeof root.Event === 'function') {
+                    event = new root.Event('change');
+                } else {
+                    event = { type: 'change' };
+                }
+                return enrichChangeEvent(event, mql);
+            }
+
+            function assertDispatchEventArgument(event) {
+                if (event == null || typeof event !== 'object') {
+                    throw new TypeError("Failed to execute 'dispatchEvent' on 'MediaQueryList': parameter 1 is not of type 'Event'.");
+                }
+
+                if (typeof root.Event === 'function' && !(event instanceof root.Event)) {
+                    throw new TypeError("Failed to execute 'dispatchEvent' on 'MediaQueryList': parameter 1 is not of type 'Event'.");
+                }
+
+                if (typeof event.type !== 'string') {
+                    throw new TypeError("Failed to execute 'dispatchEvent' on 'MediaQueryList': parameter 1 is not of type 'Event'.");
+                }
+            }
+
+            if (!(root.__matchMediaRegistry instanceof Set)) {
+                root.__matchMediaRegistry = new Set();
+            }
+
+            root.matchMedia = function(query) {
+                const mediaText = String(query == null ? '' : query);
+                const listeners = new Set();
+                let onchangeHandler = null;
+
+                const mql = {
+                    get matches() {
+                        return !!root.__evaluateMediaQuery(mediaText);
+                    },
+                    media: mediaText,
+                    get onchange() {
+                        return onchangeHandler;
+                    },
+                    set onchange(handler) {
+                        onchangeHandler = (typeof handler === 'function') ? handler : null;
+                    },
+                    addListener(listener) {
+                        if (typeof listener === 'function') {
+                            listeners.add(listener);
+                        }
+                    },
+                    removeListener(listener) {
+                        listeners.delete(listener);
+                    },
+                    addEventListener(type, listener) {
+                        if (type === 'change' && typeof listener === 'function') {
+                            listeners.add(listener);
+                        }
+                    },
+                    removeEventListener(type, listener) {
+                        if (type === 'change') {
+                            listeners.delete(listener);
+                        }
+                    },
+                    dispatchEvent(event) {
+                        assertDispatchEventArgument(event);
+                        if (event.type !== 'change') {
+                            return true;
+                        }
+
+                        const enrichedEvent = enrichChangeEvent(event, mql);
+
+                        for (const listener of Array.from(listeners)) {
+                            try {
+                                listener.call(mql, enrichedEvent);
+                            } catch (_err) {}
+                        }
+
+                        if (typeof onchangeHandler === 'function') {
+                            try {
+                                onchangeHandler.call(mql, enrichedEvent);
+                            } catch (_err) {}
+                        }
+
+                        return true;
+                    },
+                };
+
+                mql.__lastMatches = mql.matches;
+                root.__matchMediaRegistry.add(mql);
+                return mql;
+            };
+
+            root.__notifyMatchMediaListeners = function() {
+                for (const mql of Array.from(root.__matchMediaRegistry)) {
+                    if (!mql) {
+                        continue;
+                    }
+
+                    const next = !!mql.matches;
+                    if (next !== mql.__lastMatches) {
+                        mql.__lastMatches = next;
+                        mql.dispatchEvent(createChangeEvent(mql));
+                    }
+                }
+            };
+        })();
+    "#;
+
+    runtime.execute(script).map_err(|e| {
+        println!("[JS] Warning: Failed to set up window.matchMedia: {}", e);
+        e
+    })?;
+
+    Ok(())
+}
+
 // ============================================================================
 // Setup functions
 // ============================================================================
@@ -292,6 +438,7 @@ unsafe fn setup_window(
     define_function(raw_cx, global, "removeEventListener", Some(window_remove_event_listener), 3)?;
     define_function(raw_cx, global, "scrollTo", Some(window_scroll_to), 2)?;
     define_function(raw_cx, global, "scrollBy", Some(window_scroll_by), 2)?;
+    define_function(raw_cx, global, "__evaluateMediaQuery", Some(window_evaluate_media_query), 1)?;
 
     // Set window dimension properties
     set_int_property(raw_cx, global, "innerWidth", get_window_width())?;
@@ -346,6 +493,16 @@ fn get_scroll_y() -> i32 {
             return dom.viewport_scroll.y as i32;
         }
         0
+    })
+}
+
+fn get_device_pixel_ratio() -> f32 {
+    DOM_REF.with(|dom| {
+        if let Some(ref dom) = *dom.borrow() {
+            let dom = unsafe { &**dom };
+            return dom.viewport.scale() as f32;
+        }
+        1.0
     })
 }
 
@@ -1369,6 +1526,243 @@ unsafe extern "C" fn window_btoa(raw_cx: *mut JSContext, argc: c_uint, vp: *mut 
     true
 }
 
+/// Internal media query evaluator used by window.matchMedia.
+unsafe extern "C" fn window_evaluate_media_query(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let query = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    let width = get_window_width() as f32;
+    let height = get_window_height() as f32;
+    let dpr = get_device_pixel_ratio();
+
+    let matches = evaluate_media_query(&query, width, height, dpr);
+    args.rval().set(BooleanValue(matches));
+    true
+}
+
+fn evaluate_media_query(query: &str, width: f32, height: f32, dpr: f32) -> bool {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    split_media_query_list(trimmed)
+        .into_iter()
+        .any(|part| evaluate_single_media_condition(part, width, height, dpr))
+}
+
+fn split_media_query_list(query: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+
+    for (idx, ch) in query.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                let part = query[start..idx].trim();
+                if !part.is_empty() {
+                    out.push(part);
+                }
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+
+    let tail = query[start..].trim();
+    if !tail.is_empty() {
+        out.push(tail);
+    }
+
+    out
+}
+
+fn evaluate_single_media_condition(input: &str, width: f32, height: f32, dpr: f32) -> bool {
+    let mut remaining = input.trim().to_ascii_lowercase();
+    if remaining.is_empty() {
+        return false;
+    }
+
+    let mut invert = false;
+    if let Some(rest) = consume_keyword(&remaining, "not") {
+        invert = true;
+        remaining = rest.to_string();
+    } else if let Some(rest) = consume_keyword(&remaining, "only") {
+        remaining = rest.to_string();
+    }
+
+    if remaining.is_empty() {
+        return false;
+    }
+
+    let mut media_type_matches = true;
+    if !remaining.starts_with('(') {
+        let mut split = remaining.splitn(2, char::is_whitespace);
+        let media_type = split.next().unwrap_or_default();
+        let rest = split.next().unwrap_or_default().trim_start();
+
+        media_type_matches = match media_type {
+            "all" | "screen" => true,
+            "print" => false,
+            _ => false,
+        };
+
+        remaining = rest.to_string();
+    }
+
+    let mut all_features_match = true;
+    while !remaining.trim_start().is_empty() {
+        remaining = remaining.trim_start().to_string();
+        if let Some(rest) = consume_keyword(&remaining, "and") {
+            remaining = rest.to_string();
+        }
+
+        remaining = remaining.trim_start().to_string();
+        if !remaining.starts_with('(') {
+            return false;
+        }
+
+        let closing = match find_matching_paren(&remaining) {
+            Some(i) => i,
+            None => return false,
+        };
+
+        let feature = &remaining[1..closing];
+        let matches = evaluate_media_feature(feature.trim(), width, height, dpr);
+        all_features_match &= matches;
+
+        remaining = remaining[closing + 1..].to_string();
+    }
+
+    let result = media_type_matches && all_features_match;
+    if invert { !result } else { result }
+}
+
+fn consume_keyword<'a>(input: &'a str, keyword: &str) -> Option<&'a str> {
+    if !input.starts_with(keyword) {
+        return None;
+    }
+
+    let remainder = &input[keyword.len()..];
+    let starts_with_ws = remainder.chars().next().map(|c| c.is_whitespace()).unwrap_or(false);
+    if remainder.is_empty() || starts_with_ws || remainder.starts_with('(') {
+        Some(remainder.trim_start())
+    } else {
+        None
+    }
+}
+
+fn find_matching_paren(input: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (idx, ch) in input.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn evaluate_media_feature(feature: &str, width: f32, height: f32, dpr: f32) -> bool {
+    if feature.is_empty() {
+        return false;
+    }
+
+    let mut parts = feature.splitn(2, ':');
+    let name = parts.next().unwrap_or_default().trim();
+    let value = parts.next().map(str::trim);
+
+    match (name, value) {
+        ("width", Some(v)) => parse_length_px(v, width, height).is_some_and(|px| approx_eq(width, px)),
+        ("min-width", Some(v)) => parse_length_px(v, width, height).is_some_and(|px| width >= px),
+        ("max-width", Some(v)) => parse_length_px(v, width, height).is_some_and(|px| width <= px),
+        ("height", Some(v)) => parse_length_px(v, width, height).is_some_and(|px| approx_eq(height, px)),
+        ("min-height", Some(v)) => parse_length_px(v, width, height).is_some_and(|px| height >= px),
+        ("max-height", Some(v)) => parse_length_px(v, width, height).is_some_and(|px| height <= px),
+        ("orientation", Some(v)) => {
+            let orientation = if width >= height { "landscape" } else { "portrait" };
+            orientation == v
+        }
+        ("prefers-color-scheme", Some(v)) => v == "light",
+        ("prefers-reduced-motion", Some(v)) => v == "no-preference",
+        ("resolution", Some(v)) => parse_resolution_dppx(v).is_some_and(|target| approx_eq(dpr, target)),
+        ("min-resolution", Some(v)) => parse_resolution_dppx(v).is_some_and(|target| dpr >= target),
+        ("max-resolution", Some(v)) => parse_resolution_dppx(v).is_some_and(|target| dpr <= target),
+        ("color", None) | ("monochrome", None) => true,
+        _ => false,
+    }
+}
+
+fn parse_length_px(value: &str, width: f32, height: f32) -> Option<f32> {
+    let s = value.trim().to_ascii_lowercase();
+    let (num, unit) = split_number_and_unit(&s)?;
+
+    let parsed = num.parse::<f32>().ok()?;
+    let px = match unit {
+        "" | "px" => parsed,
+        "em" | "rem" => parsed * 16.0,
+        "vw" => (parsed / 100.0) * width,
+        "vh" => (parsed / 100.0) * height,
+        _ => return None,
+    };
+
+    Some(px)
+}
+
+fn parse_resolution_dppx(value: &str) -> Option<f32> {
+    let s = value.trim().to_ascii_lowercase();
+    let (num, unit) = split_number_and_unit(&s)?;
+    let parsed = num.parse::<f32>().ok()?;
+
+    match unit {
+        "dppx" | "x" => Some(parsed),
+        "dpi" => Some(parsed / 96.0),
+        "dpcm" => Some(parsed * 2.54 / 96.0),
+        _ => None,
+    }
+}
+
+fn split_number_and_unit(input: &str) -> Option<(&str, &str)> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut split_idx = 0usize;
+    for (idx, ch) in trimmed.char_indices() {
+        if ch.is_ascii_digit() || ch == '.' || ch == '-' || ch == '+' {
+            split_idx = idx + ch.len_utf8();
+            continue;
+        }
+        split_idx = idx;
+        break;
+    }
+
+    if split_idx == 0 {
+        return None;
+    }
+
+    let (num, unit) = trimmed.split_at(split_idx);
+    Some((num.trim(), unit.trim()))
+}
+
+fn approx_eq(a: f32, b: f32) -> bool {
+    (a - b).abs() < 0.01
+}
+
 // ============================================================================
 // Location methods
 // ============================================================================
@@ -1639,10 +2033,7 @@ unsafe extern "C" fn session_storage_key(raw_cx: *mut JSContext, argc: c_uint, v
     true
 }
 
-// ============================================================================
-// Element methods (shared)
-// ============================================================================
-
+/// Element methods (shared)
 /// style.getPropertyValue implementation
 unsafe extern "C" fn style_get_property_value(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -1739,4 +2130,28 @@ unsafe extern "C" fn html_iframe_element_set_src(raw_cx: *mut JSContext, argc: c
     true
 }
 
+#[cfg(test)]
+mod tests {
+    use super::evaluate_media_query;
 
+    #[test]
+    fn width_queries_match_expected_ranges() {
+        assert!(evaluate_media_query("(min-width: 600px)", 800.0, 600.0, 1.0));
+        assert!(evaluate_media_query("(max-width: 1024px)", 800.0, 600.0, 1.0));
+        assert!(!evaluate_media_query("(min-width: 1200px)", 800.0, 600.0, 1.0));
+    }
+
+    #[test]
+    fn orientation_and_or_list_work() {
+        assert!(evaluate_media_query("screen and (orientation: landscape)", 900.0, 700.0, 1.0));
+        assert!(evaluate_media_query("(max-width: 500px), (orientation: landscape)", 900.0, 700.0, 1.0));
+        assert!(!evaluate_media_query("print and (min-width: 1px)", 900.0, 700.0, 1.0));
+    }
+
+    #[test]
+    fn resolution_units_are_supported() {
+        assert!(evaluate_media_query("(min-resolution: 96dpi)", 800.0, 600.0, 1.0));
+        assert!(evaluate_media_query("(resolution: 1dppx)", 800.0, 600.0, 1.0));
+        assert!(!evaluate_media_query("(min-resolution: 2dppx)", 800.0, 600.0, 1.0));
+    }
+}

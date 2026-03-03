@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>matchMedia Test</title>
+    <style>
+        body { font-family: sans-serif; margin: 24px; }
+        .ok { color: #157347; }
+        .fail { color: #b02a37; }
+        pre { background: #f6f8fa; padding: 12px; border-radius: 6px; }
+    </style>
+</head>
+<body>
+<h1>window.matchMedia Test</h1>
+<div id="results"></div>
+<pre id="log"></pre>
+<script>
+    const results = document.getElementById('results');
+    const log = document.getElementById('log');
+
+    function write(msg) {
+        log.textContent += msg + '\n';
+        console.log(msg);
+    }
+
+    function test(name, fn) {
+        const item = document.createElement('div');
+        try {
+            fn();
+            item.className = 'ok';
+            item.textContent = 'PASS: ' + name;
+        } catch (err) {
+            item.className = 'fail';
+            item.textContent = 'FAIL: ' + name + ' -> ' + String(err);
+        }
+        results.appendChild(item);
+    }
+
+    function createChangeEvent() {
+        if (typeof Event === 'function') {
+            return new Event('change');
+        }
+        return { type: 'change' };
+    }
+
+    test('matchMedia exists', () => {
+        if (typeof window.matchMedia !== 'function') {
+            throw new Error('window.matchMedia is not a function');
+        }
+    });
+
+    const mql = window.matchMedia('(min-width: 1px)');
+
+    test('returns object with core properties', () => {
+        if (typeof mql !== 'object' || mql === null) throw new Error('no object');
+        if (typeof mql.media !== 'string') throw new Error('media missing');
+        if (typeof mql.matches !== 'boolean') throw new Error('matches missing');
+    });
+
+    test('supports addListener/removeListener', () => {
+        let count = 0;
+        const listener = () => { count += 1; };
+        mql.addListener(listener);
+        mql.dispatchEvent(createChangeEvent());
+        mql.removeListener(listener);
+        mql.dispatchEvent(createChangeEvent());
+        if (count !== 1) throw new Error('listener count=' + count);
+    });
+
+    test('supports onchange handler', () => {
+        let hit = 0;
+        mql.onchange = () => { hit += 1; };
+        mql.dispatchEvent(createChangeEvent());
+        mql.onchange = null;
+        mql.dispatchEvent(createChangeEvent());
+        if (hit !== 1) throw new Error('onchange count=' + hit);
+    });
+
+    test('dispatchEvent rejects non-Event parameter when Event exists', () => {
+        if (typeof Event !== 'function') {
+            return;
+        }
+
+        let threw = false;
+        try {
+            mql.dispatchEvent({ type: 'change' });
+        } catch (_err) {
+            threw = true;
+        }
+        if (!threw) throw new Error('expected dispatchEvent to reject plain object');
+    });
+
+    test('handles comma-separated OR queries', () => {
+        const value = window.matchMedia('(min-width: 100000px), (min-width: 1px)').matches;
+        if (value !== true) throw new Error('OR query did not match');
+    });
+
+    write('Resize the window to exercise dynamic query updates.');
+    write('Current (orientation: landscape): ' + window.matchMedia('(orientation: landscape)').matches);
+</script>
+</body>
+</html>

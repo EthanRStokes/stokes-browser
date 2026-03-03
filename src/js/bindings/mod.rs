@@ -44,6 +44,9 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
     // Set up DOM bindings
     dom_bindings::setup_dom_bindings(runtime, document_root, user_agent)?;
 
+    // Set up window.matchMedia and MediaQueryList behavior
+    dom_bindings::setup_match_media_deferred(runtime)?;
+
     // Set up document.cookie property (must be done after DOM bindings are set up)
     // This uses Object.defineProperty which requires the document object to exist
     dom_bindings::setup_cookie_property_deferred(runtime)?;
