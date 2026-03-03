@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>URLSearchParams Test</title>
+</head>
+<body>
+    <h1>URLSearchParams Test</h1>
+    <pre id="output"></pre>
+
+    <script>
+        const out = document.getElementById('output');
+        const lines = [];
+
+        function log(label, value) {
+            const text = label + ': ' + value;
+            lines.push(text);
+            console.log(text);
+        }
+
+        const params = new URLSearchParams('?a=1&a=2&b=hello world');
+        log('get(a)', params.get('a'));
+        log('getAll(a)', JSON.stringify(params.getAll('a')));
+        log('has(b)', params.has('b'));
+
+        params.append('c', '3');
+        params.set('a', '4');
+        params.delete('b');
+
+        log('size', params.size);
+        log('toString()', params.toString());
+
+        const url = new URL('./page?x=1&x=2', location);
+        log('url.pathname', url.pathname);
+        log('url.searchParams.get(x)', url.searchParams.get('x'));
+        url.searchParams.append('y', '3');
+        log('url.searchParams.toString()', url.searchParams.toString());
+
+        out.textContent = lines.join('\n');
+    </script>
+</body>
+</html>
+

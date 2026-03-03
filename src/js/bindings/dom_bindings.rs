@@ -73,6 +73,9 @@ pub fn setup_dom_bindings(
         // Set up Element and HTMLElement constructors
         setup_element_constructors(cx, global_ptr)?;
 
+        // Set up HTMLFormElement constructor
+        setup_html_form_element_constructor(cx, global_ptr)?;
+
         // Set up HTMLIFrameElement constructor
         setup_html_iframe_element_constructor(cx, global_ptr)?;
 
@@ -390,19 +393,66 @@ unsafe fn setup_location(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
         return Err("Failed to create location object".to_string());
     }
 
-    set_string_property(raw_cx, location.get(), "href", "about:blank")?;
-    set_string_property(raw_cx, location.get(), "protocol", "about:")?;
-    set_string_property(raw_cx, location.get(), "host", "")?;
-    set_string_property(raw_cx, location.get(), "hostname", "")?;
-    set_string_property(raw_cx, location.get(), "port", "")?;
-    set_string_property(raw_cx, location.get(), "pathname", "blank")?;
-    set_string_property(raw_cx, location.get(), "search", "")?;
-    set_string_property(raw_cx, location.get(), "hash", "")?;
-    set_string_property(raw_cx, location.get(), "origin", "null")?;
+    let (href, protocol, host, hostname, port, pathname, search, hash, origin) = DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = dom_ref.borrow().as_ref() {
+            let dom = unsafe { &**dom_ptr };
+            let url: url::Url = (&dom.url).into();
+            let hostname = url.host_str().unwrap_or("").to_string();
+            let port = url.port().map(|p| p.to_string()).unwrap_or_default();
+            let host = if port.is_empty() {
+                hostname.clone()
+            } else {
+                format!("{}:{}", hostname, port)
+            };
+            let search = url
+                .query()
+                .map(|query| format!("?{}", query))
+                .unwrap_or_default();
+            let hash = url
+                .fragment()
+                .map(|fragment| format!("#{}", fragment))
+                .unwrap_or_default();
+
+            (
+                url.as_str().to_string(),
+                format!("{}:", url.scheme()),
+                host,
+                hostname,
+                port,
+                url.path().to_string(),
+                search,
+                hash,
+                url.origin().ascii_serialization(),
+            )
+        } else {
+            (
+                "about:blank".to_string(),
+                "about:".to_string(),
+                String::new(),
+                String::new(),
+                String::new(),
+                "blank".to_string(),
+                String::new(),
+                String::new(),
+                "null".to_string(),
+            )
+        }
+    });
+
+    set_string_property(raw_cx, location.get(), "href", &href)?;
+    set_string_property(raw_cx, location.get(), "protocol", &protocol)?;
+    set_string_property(raw_cx, location.get(), "host", &host)?;
+    set_string_property(raw_cx, location.get(), "hostname", &hostname)?;
+    set_string_property(raw_cx, location.get(), "port", &port)?;
+    set_string_property(raw_cx, location.get(), "pathname", &pathname)?;
+    set_string_property(raw_cx, location.get(), "search", &search)?;
+    set_string_property(raw_cx, location.get(), "hash", &hash)?;
+    set_string_property(raw_cx, location.get(), "origin", &origin)?;
 
     define_function(raw_cx, location.get(), "reload", Some(location_reload), 0)?;
     define_function(raw_cx, location.get(), "assign", Some(location_assign), 1)?;
     define_function(raw_cx, location.get(), "replace", Some(location_replace), 1)?;
+    define_function(raw_cx, location.get(), "toString", Some(location_to_string), 0)?;
 
     // Set location on global
     rooted!(in(raw_cx) let location_val = ObjectValue(location.get()));
@@ -533,6 +583,27 @@ unsafe fn setup_element_constructors(raw_cx: *mut JSContext, global: *mut JSObje
         global_rooted.handle().into(),
         name.as_ptr(),
         element_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    Ok(())
+}
+
+/// Set up HTMLFormElement constructor
+unsafe fn setup_html_form_element_constructor(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+    rooted!(in(raw_cx) let html_form_element = JS_NewPlainObject(raw_cx));
+    if html_form_element.get().is_null() {
+        return Err("Failed to create HTMLFormElement constructor".to_string());
+    }
+
+    rooted!(in(raw_cx) let html_form_element_val = ObjectValue(html_form_element.get()));
+    rooted!(in(raw_cx) let global_rooted = global);
+    let name = std::ffi::CString::new("HTMLFormElement").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        global_rooted.handle().into(),
+        name.as_ptr(),
+        html_form_element_val.handle().into(),
         JSPROP_ENUMERATE as u32,
     );
 
@@ -1337,6 +1408,24 @@ unsafe extern "C" fn location_replace(raw_cx: *mut JSContext, argc: c_uint, vp: 
 
     println!("[JS] location.replace('{}') called", url);
     args.rval().set(UndefinedValue());
+    true
+}
+
+/// location.toString implementation
+unsafe extern "C" fn location_to_string(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let href = DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = dom_ref.borrow().as_ref() {
+            let dom = unsafe { &**dom_ptr };
+            let url: url::Url = (&dom.url).into();
+            url.as_str().to_string()
+        } else {
+            "about:blank".to_string()
+        }
+    });
+
+    args.rval().set(create_js_string(raw_cx, &href));
     true
 }
 
