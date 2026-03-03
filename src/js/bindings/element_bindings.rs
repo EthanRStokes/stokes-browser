@@ -84,13 +84,12 @@ pub unsafe fn create_js_element_by_id(
     // Define internal getter/setter functions for textContent property
     define_function(raw_cx, element.get(), "__getTextContent", Some(element_get_text_content), 0)?;
     define_function(raw_cx, element.get(), "__setTextContent", Some(element_set_text_content), 1)?;
-    define_function(raw_cx, element.get(), "__getId", Some(element_get_id), 0)?;
-    define_function(raw_cx, element.get(), "__setId", Some(element_set_id), 1)?;
+    //define_function(raw_cx, element.get(), "__getId", Some(element_get_id), 0)?;
+    //define_function(raw_cx, element.get(), "__setId", Some(element_set_id), 1)?;
     define_function(raw_cx, element.get(), "__getShadowRoot", Some(element_get_shadow_root), 0)?;
     define_function(raw_cx, element.get(), "__setShadowRoot", Some(element_set_shadow_root_noop), 1)?;
 
     // Define textContent as a property with getter/setter
-    define_property_accessor(raw_cx, element.get(), "id", "__getId", "__setId")?;
     define_property_accessor(raw_cx, element.get(), "textContent", "__getTextContent", "__setTextContent")?;
     define_property_accessor(raw_cx, element.get(), "shadowRoot", "__getShadowRoot", "__setShadowRoot")?;
 
@@ -318,6 +317,121 @@ unsafe fn get_classlist_parent_node_id(raw_cx: *mut JSContext, args: &CallArgs) 
     }
     // classList doesn't have __nodeId directly - this is a limitation
     None
+}
+
+unsafe fn create_js_shadow_root_by_id(raw_cx: *mut JSContext, node_id: usize) -> Result<JSVal, String> {
+    rooted!(in(raw_cx) let shadow_root = JS_NewPlainObject(raw_cx));
+    if shadow_root.get().is_null() {
+        return Err("Failed to create shadow root object".to_string());
+    }
+
+    set_int_property(raw_cx, shadow_root.get(), "nodeType", 11)?; // DOCUMENT_FRAGMENT_NODE
+    set_string_property(raw_cx, shadow_root.get(), "nodeName", "#document-fragment")?;
+
+    rooted!(in(raw_cx) let node_id_val = mozjs::jsval::DoubleValue(node_id as f64));
+    rooted!(in(raw_cx) let shadow_root_rooted = shadow_root.get());
+    let cname = std::ffi::CString::new("__nodeId").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        shadow_root_rooted.handle().into(),
+        cname.as_ptr(),
+        node_id_val.handle().into(),
+        0,
+    );
+
+    define_function(raw_cx, shadow_root.get(), "appendChild", Some(element_append_child), 1)?;
+    define_function(raw_cx, shadow_root.get(), "querySelector", Some(element_query_selector), 1)?;
+    define_function(raw_cx, shadow_root.get(), "querySelectorAll", Some(element_query_selector_all), 1)?;
+
+    Ok(ObjectValue(shadow_root.get()))
+}
+
+unsafe fn parse_shadow_root_mode(raw_cx: *mut JSContext, args: &CallArgs, argc: c_uint) -> ShadowRootMode {
+    if argc == 0 {
+        return ShadowRootMode::Open;
+    }
+
+    let options = *args.get(0);
+    if !options.is_object() || options.is_null() {
+        return ShadowRootMode::Open;
+    }
+
+    rooted!(in(raw_cx) let options_obj = options.to_object());
+    rooted!(in(raw_cx) let mut mode_val = UndefinedValue());
+    let mode_name = std::ffi::CString::new("mode").unwrap();
+    if !mozjs::jsapi::JS_GetProperty(
+        raw_cx,
+        options_obj.handle().into(),
+        mode_name.as_ptr(),
+        mode_val.handle_mut().into(),
+    ) {
+        return ShadowRootMode::Open;
+    }
+
+    let mode = js_value_to_string(raw_cx, mode_val.get());
+    if mode == "closed" {
+        ShadowRootMode::Closed
+    } else {
+        ShadowRootMode::Open
+    }
+}
+
+unsafe extern "C" fn element_attach_shadow(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let Some(host_id) = get_node_id_from_this(raw_cx, &args) else {
+        args.rval().set(NullValue());
+        return true;
+    };
+
+    let mode = parse_shadow_root_mode(raw_cx, &args, argc);
+
+    let shadow_root_id = DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = *dom_ref.borrow() {
+            let dom = &mut *dom_ptr;
+            return dom.attach_shadow(host_id, mode).ok();
+        }
+        None
+    });
+
+    if let Some(shadow_root_id) = shadow_root_id {
+        if let Ok(shadow_root) = create_js_shadow_root_by_id(raw_cx, shadow_root_id) {
+            args.rval().set(shadow_root);
+            return true;
+        }
+    }
+
+    args.rval().set(NullValue());
+    true
+}
+
+unsafe extern "C" fn element_get_shadow_root(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let open_shadow_root_id = get_node_id_from_this(raw_cx, &args).and_then(|host_id| {
+        DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                return (*dom_ptr).open_shadow_root_id(host_id);
+            }
+            None
+        })
+    });
+
+    if let Some(shadow_root_id) = open_shadow_root_id {
+        if let Ok(shadow_root) = create_js_shadow_root_by_id(raw_cx, shadow_root_id) {
+            args.rval().set(shadow_root);
+            return true;
+        }
+    }
+
+    args.rval().set(NullValue());
+    true
+}
+
+unsafe extern "C" fn element_set_shadow_root_noop(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    args.rval().set(UndefinedValue());
+    true
 }
 
 // ============================================================================

@@ -527,8 +527,18 @@ impl Dom {
         tag_name: QualName,
         attributes: AttributeMap,
     ) -> usize {
-        let data = NodeData::Element(ElementData::new(tag_name, attributes));
-        self.create_node(data)
+        let mut data = ElementData::new(tag_name, attributes);
+        data.flush_style_attribute(&self.lock, &self.url.url_extra_data());
+
+        let id = self.create_node(NodeData::Element(data));
+        let node = self.get_node(id).unwrap();
+
+        *node.stylo_data.borrow_mut() = Some(style::data::ElementData {
+            damage: ALL_DAMAGE,
+            ..Default::default()
+        });
+
+        id
     }
 
     pub(crate) fn create_comment_node(&mut self) -> usize {
