@@ -5,6 +5,7 @@ use tokio::sync::mpsc::UnboundedSender;
 pub enum NavigationProviderMessage {
     NavigateTo(NavigationOptions),
     Navigate {
+        navigation_id: u64,
         url: String,
         contents: String,
         retain_scroll_position: bool,

@@ -40,6 +40,7 @@ pub struct TabProcess {
     shell_receiver: UnboundedReceiver<ShellProviderMessage>,
     nav_receiver: UnboundedReceiver<NavigationProviderMessage>,
     redraw_request: AtomicBool,
+    navigation_id: u64,
 }
 
 impl TabProcess {
@@ -114,6 +115,7 @@ impl TabProcess {
             shell_receiver: shell_rx,
             nav_receiver: nav_rx,
             redraw_request: AtomicBool::new(false),
+            navigation_id: 0,
         })
     }
 
@@ -304,6 +306,11 @@ impl TabProcess {
                             if self.engine.dom.is_none() {
                                 continue;
                             }
+
+                            // Only let the latest async navigation callback commit a document.
+                            self.navigation_id = self.navigation_id.wrapping_add(1);
+                            let navigation_id = self.navigation_id;
+
                             let nav_provider = self.engine.navigation_provider.clone();
                             let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(true));
                             let url = options.url.as_str().to_string();
@@ -319,6 +326,7 @@ impl TabProcess {
                                     };
                                     let contents = std::str::from_utf8(&bytes).unwrap().to_string();
                                     let _ = nav_provider.sender.send(NavigationProviderMessage::Navigate {
+                                        navigation_id,
                                         url,
                                         contents,
                                         is_md: false,
@@ -327,7 +335,16 @@ impl TabProcess {
                                 })
                             );
                         }
-                        NavigationProviderMessage::Navigate { url, contents, retain_scroll_position: _, is_md: _ } => {
+                        NavigationProviderMessage::Navigate {
+                            navigation_id,
+                            url,
+                            contents,
+                            retain_scroll_position: _,
+                            is_md: _,
+                        } => {
+                            if navigation_id != self.navigation_id {
+                                continue;
+                            }
                             self.engine.set_loading_state(true);
                             match self.engine.navigate(&url, contents, true, true).await {
                                 Ok(_) => {
@@ -346,7 +363,6 @@ impl TabProcess {
                                 }
                             }
                         }
-                        _ => {}
                     }
                 }
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {},
@@ -401,6 +417,8 @@ impl TabProcess {
         let mut should_render: bool = false;
         match message {
             ParentToTabMessage::Navigate(url) => {
+                // Invalidate any in-flight async navigation callback.
+                self.navigation_id = self.navigation_id.wrapping_add(1);
                 let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                 self.engine.set_loading_state(true);
 
@@ -425,6 +443,7 @@ impl TabProcess {
                 }
             }
             ParentToTabMessage::Reload => {
+                self.navigation_id = self.navigation_id.wrapping_add(1);
                 let url = self.engine.current_url().to_string();
                 if !url.is_empty() {
                     let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
@@ -447,6 +466,7 @@ impl TabProcess {
                 }
             }
             ParentToTabMessage::GoBack => {
+                self.navigation_id = self.navigation_id.wrapping_add(1);
                 if self.engine.can_go_back() {
                     let url = self.engine.current_url().to_string();
                     let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
@@ -467,6 +487,7 @@ impl TabProcess {
                 }
             }
             ParentToTabMessage::GoForward => {
+                self.navigation_id = self.navigation_id.wrapping_add(1);
                 if self.engine.can_go_forward() {
                     let url = self.engine.current_url().to_string();
                     let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));

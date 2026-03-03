@@ -1,5 +1,5 @@
 use blitz_net::ProviderError;
-use blitz_traits::net::{AbortSignal, NetHandler, NetProvider, Request};
+use blitz_traits::net::{AbortSignal, Body, Entry, NetHandler, NetProvider, Request};
 use bytes::Bytes;
 use curl::easy::{Easy2, Handler, WriteError};
 use data_url::DataUrl;
@@ -72,6 +72,48 @@ impl Handler for Collector {
 }
 
 impl StokesNetProvider {
+    fn apply_request_method(easy: &mut Easy2<Collector>, request: &Request) {
+        let body = Self::encode_request_body(request);
+
+        match request.method.as_str() {
+            "GET" => {
+                easy.get(true).unwrap();
+            }
+            "POST" => {
+                easy.post(true).unwrap();
+                if let Some(body) = body.as_deref() {
+                    easy.post_fields_copy(body).unwrap();
+                }
+            }
+            "HEAD" => {
+                easy.nobody(true).unwrap();
+                easy.custom_request("HEAD").unwrap();
+            }
+            method => {
+                easy.custom_request(method).unwrap();
+                if let Some(body) = body.as_deref() {
+                    easy.post_fields_copy(body).unwrap();
+                }
+            }
+        }
+    }
+
+    fn encode_request_body(request: &Request) -> Option<Vec<u8>> {
+        match &request.body {
+            Body::Empty => None,
+            Body::Form(form_data) => {
+                let mut encoded = String::new();
+                url::form_urlencoded::Serializer::new(&mut encoded).extend_pairs(
+                    form_data
+                        .iter()
+                        .map(|Entry { name, value }| (name.as_str(), value.as_ref())),
+                );
+                Some(encoded.into_bytes())
+            }
+            _ => None,
+        }
+    }
+
     async fn fetch_inner(request: Request, user_agent: &str) -> Result<(String, Bytes), ProviderError> {
         Ok(match request.url.scheme() {
             "data" => {
@@ -88,6 +130,7 @@ impl StokesNetProvider {
                 easy.url(request.url.as_str()).unwrap();
                 easy.follow_location(true).unwrap();
                 easy.useragent(user_agent).unwrap();
+                Self::apply_request_method(&mut easy, &request);
                 easy.perform().unwrap();
 
                 (request.url.to_string(), Bytes::from(easy.get_ref().0.clone()))
@@ -100,7 +143,6 @@ impl StokesNetProvider {
         request: Request,
         callback: Box<dyn FnOnce(Result<(String, Bytes), ProviderError>) + Send + Sync + 'static>,
     ) {
-        let url = request.url.to_string();
         let user_agent = self.user_agent.clone();
 
         self.rt.spawn(async move {
