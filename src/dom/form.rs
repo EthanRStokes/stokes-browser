@@ -217,8 +217,8 @@ fn construct_entry_list(doc: &Dom, form_id: usize, submitter_id: usize) -> FormD
             || (element.name.local == local_name!("button") && node.id != submitter_id)
             || element.name.local == local_name!("input")
             && ((matches!(element_type, Some("checkbox" | "radio"))
-            && !element.checkbox_input_checked().unwrap_or(false))
-            || matches!(element_type, Some("submit" | "button")))
+                && !element.checkbox_input_checked().unwrap_or(false))
+                || (matches!(element_type, Some("submit" | "button")) && node.id != submitter_id))
         {
             continue;
         }
@@ -324,9 +324,15 @@ fn get_submitter_attr(
     doc.get_node(submitter_id)
         .and_then(|node| node.element_data())
         .and_then(|element_data| {
-            if element_data.name.local == local_name!("button")
-                && element_data.attr(local_name!("type")) == Some("submit")
-            {
+            let is_submitter = if element_data.name.local == local_name!("button") {
+                element_data.is_submit_button()
+            } else if element_data.name.local == local_name!("input") {
+                matches!(element_data.attr(local_name!("type")), Some("submit" | "image"))
+            } else {
+                false
+            };
+
+            if is_submitter {
                 element_data.attr(local_name)
             } else {
                 None

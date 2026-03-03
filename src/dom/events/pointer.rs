@@ -509,13 +509,19 @@ pub(crate) fn handle_click(
                     } else {
                     }
                 }
-                local_name!("input")
-                if el.is_submit_button() || el.attr(local_name!("type")) == Some("submit") =>
-                    {
-                        if let Some(form_owner) = doc.controls_to_form.get(&node_id) {
-                            doc.submit_form(*form_owner, node_id);
-                        }
+                local_name!("button") if el.is_submit_button() => {
+                    if let Some(form_owner) = doc.controls_to_form.get(&node_id) {
+                        doc.submit_form(*form_owner, node_id);
                     }
+                    break 'matched true;
+                }
+                local_name!("input")
+                if matches!(el.attr(local_name!("type")), Some("submit" | "image")) => {
+                    if let Some(form_owner) = doc.controls_to_form.get(&node_id) {
+                        doc.submit_form(*form_owner, node_id);
+                    }
+                    break 'matched true;
+                }
                 local_name!("input") if el.attr(local_name!("type")) == Some("file") => {
                     use crate::qual_name;
                     //TODO: Handle accept attribute https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Attributes/accept by passing an appropriate filter
