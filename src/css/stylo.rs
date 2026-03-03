@@ -168,7 +168,7 @@ impl<'a> TNode for Node<'a> {
 
 impl AttributeProvider for Node<'_> {
     fn get_attr(&self, attr: &style::LocalName) -> Option<String> {
-        self.attr(LocalName::from(attr.0.to_string())).map(|attr| attr.to_string())
+        self.attr(attr.0.clone()).map(|attr| attr.to_string())
     }
 }
 

@@ -6,7 +6,7 @@ use markup5ever::local_name;
 use std::cell::Ref;
 use std::sync::Arc;
 use style::values::computed::length_percentage::CalcLengthPercentage;
-use style::values::computed::{CSSPixelLength, LineHeight};
+use style::values::computed::CSSPixelLength;
 use stylo_atoms::Atom;
 pub(crate) use taffy::{compute_block_layout, compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout, AvailableSpace, BlockContext, CacheTree, CollapsibleMarginSet, Display, Layout, LayoutBlockContainer, LayoutFlexboxContainer, LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, PrintTree, ResolveOrZero, RoundTree, RunMode, Size, Style, TraversePartialTree, TraverseTree};
 

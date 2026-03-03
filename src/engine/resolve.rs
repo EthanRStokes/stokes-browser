@@ -9,6 +9,8 @@ impl Engine {
 
         // TODO: Run JS tasks
         self.handle_messages();
+
+        self.process_timers();
     }
 
     fn handle_messages(&mut self) {

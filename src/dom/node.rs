@@ -1838,23 +1838,23 @@ impl fmt::Debug for DomNode {
             NodeData::Document => write!(f, "Document"),
             NodeData::Element(data) => {
                 write!(f, "<{}", data.name.local)?;
-                
+
                 // Write attributes
                 for attr in data.attributes.iter() {
                     write!(f, " {}=\"{}\"", attr.name.local, attr.value)?;
                 }
-                
+
                 if self.children.is_empty() {
                     write!(f, "/>")
                 } else {
                     write!(f, ">")?;
-                    
+
                     // Write children
                     for child in &self.children {
                         let child = self.get_node(*child);
                         write!(f, "{:?}", child)?;
                     }
-                    
+
                     write!(f, "</{}>", data.name.local)
                 }
             },
@@ -1883,3 +1883,4 @@ impl fmt::Debug for DomNode {
         }
     }
 }
+

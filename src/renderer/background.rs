@@ -8,7 +8,6 @@ use anyrender::PaintScene;
 use color::AlphaColor;
 use kurbo::{BezPath, Point, Rect, Shape, Size, Vec2};
 use peniko::{Fill, ImageAlphaType, ImageFormat, ImageSampler};
-use std::io::Cursor;
 use style::values::specified::ImageRendering;
 use style::{
     properties::{

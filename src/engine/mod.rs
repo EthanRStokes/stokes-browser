@@ -6,26 +6,25 @@ pub mod resolve;
 pub mod js_provider;
 
 pub use self::config::EngineConfig;
-use crate::dom::node::SpecialElementData;
 use crate::dom::{Dom, NodeData};
 use crate::dom::{EventDispatcher, EventType};
+use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
 use crate::engine::nav_provider::StokesNavigationProvider;
 use crate::js::JsRuntime;
 use crate::networking;
-use crate::networking::{NetworkError, HttpClient};
+use crate::networking::{HttpClient, NetworkError};
 use crate::renderer::painter::ScenePainter;
 use crate::renderer::HtmlRenderer;
 use crate::shell_provider::StokesShellProvider;
+use blitz_traits::net::Request;
 use blitz_traits::shell::Viewport;
 use markup5ever::local_name;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::mpsc::{channel, Receiver};
-use blitz_traits::net::Request;
+use std::sync::Arc;
 use style::dom::TNode;
 use style::thread_state::ThreadState;
-use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
 
 thread_local! {
     pub(crate) static ENGINE_REF: RefCell<Option<*mut Engine>> = RefCell::new(None);
@@ -683,8 +682,7 @@ impl Engine {
         None
     }
 
-    // TODO reimplement javascript
-    /*/// Process pending JavaScript timers (setTimeout/setInterval)
+    /// Process pending JavaScript timers (setTimeout/setInterval)
     /// Returns true if any timers were executed
     #[inline]
     pub fn process_timers(&mut self) -> bool {
@@ -712,7 +710,7 @@ impl Engine {
         } else {
             None
         }
-    }*/
+    }
 
     /// Add a URL to the navigation history
     fn add_to_history(&mut self, url: String) {

@@ -8,7 +8,7 @@ use crate::ui::TextBrush;
 use blitz_traits::net::{NetProvider, Request};
 use html5ever::local_name;
 use markup5ever::{ns, QualName};
-use parley::{FontContext, FontWeight, GenericFamily, InlineBox, InlineBoxKind, LayoutContext, LineHeight, StyleProperty, TextStyle, TreeBuilder, WhiteSpaceCollapse};
+use parley::{FontContext, InlineBox, InlineBoxKind, LayoutContext, LineHeight, StyleProperty, TextStyle, TreeBuilder, WhiteSpaceCollapse};
 use slab::Slab;
 use std::cell::RefCell;
 use std::sync::Arc;

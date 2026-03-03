@@ -127,12 +127,10 @@ impl JsRuntime {
         let raw_cx = unsafe { self.runtime.cx().raw_cx() };
         let global_ptr = self.global.get();
 
-        unsafe {
-            rooted!(in(raw_cx) let global_root = global_ptr);
-            let _realm = mozjs::jsapi::JSAutoRealm::new(raw_cx, global_root.get());
+        rooted!(in(raw_cx) let global_root = global_ptr);
+        let _realm = mozjs::jsapi::JSAutoRealm::new(raw_cx, global_root.get());
 
-            initialize_bindings(self, dom, user_agent, timer_manager)?;
-        }
+        initialize_bindings(self, dom, user_agent, timer_manager)?;
         Ok(())
     }
 
@@ -216,7 +214,7 @@ impl JsRuntime {
         filename: &str,
         line_number: u32,
     ) -> *mut JSScript {
-        let options = unsafe { CompileOptionsWrapper::new(&context, filename.parse().unwrap(), line_number) };
+        let options = CompileOptionsWrapper::new(&context, filename.parse().unwrap(), line_number);
 
         // First try to compile the script as-is
         let result = unsafe { Compile1(context.raw_cx(), options.ptr, &mut transform_str_to_source_text(text)) };
@@ -235,7 +233,7 @@ impl JsRuntime {
                 // Wrap as an assignment to window.__INLINE_DATA__ so other scripts can access it
                 // This mimics how browsers handle inline JSON configuration scripts
                 let wrapped = format!("(window.__INLINE_DATA__ = window.__INLINE_DATA__ || []).push({})", text);
-                let options = unsafe { CompileOptionsWrapper::new(&context, filename.parse().unwrap(), line_number) };
+                let options = CompileOptionsWrapper::new(&context, filename.parse().unwrap(), line_number);
                 return unsafe { Compile1(context.raw_cx(), options.ptr, &mut transform_str_to_source_text(&wrapped)) };
             }
         }
@@ -374,7 +372,7 @@ impl JsRuntime {
         let async_job = || {
             RUNTIME.with(|engine| unsafe {
                 let mut engine = engine.borrow_mut();
-                let engine = engine.as_mut().unwrap();;
+                let engine = engine.as_mut().unwrap();
                 job(&mut &**engine)
             });
         };
