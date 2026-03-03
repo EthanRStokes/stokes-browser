@@ -81,16 +81,20 @@ pub unsafe fn create_js_element_by_id(
     define_function(raw_cx, element.get(), "contains", Some(element_contains), 1)?;
     define_function(raw_cx, element.get(), "attachShadow", Some(element_attach_shadow), 1)?;
 
-    // Define internal getter/setter functions for textContent property
+    // Define internal getter/setter functions for reflected and dynamic properties
     define_function(raw_cx, element.get(), "__getTextContent", Some(element_get_text_content), 0)?;
     define_function(raw_cx, element.get(), "__setTextContent", Some(element_set_text_content), 1)?;
-    //define_function(raw_cx, element.get(), "__getId", Some(element_get_id), 0)?;
-    //define_function(raw_cx, element.get(), "__setId", Some(element_set_id), 1)?;
+    define_function(raw_cx, element.get(), "__getId", Some(element_get_id), 0)?;
+    define_function(raw_cx, element.get(), "__setId", Some(element_set_id), 1)?;
+    define_function(raw_cx, element.get(), "__getClassName", Some(element_get_class_name), 0)?;
+    define_function(raw_cx, element.get(), "__setClassName", Some(element_set_class_name), 1)?;
     define_function(raw_cx, element.get(), "__getShadowRoot", Some(element_get_shadow_root), 0)?;
     define_function(raw_cx, element.get(), "__setShadowRoot", Some(element_set_shadow_root_noop), 1)?;
 
-    // Define textContent as a property with getter/setter
+    // Define property accessors
     define_property_accessor(raw_cx, element.get(), "textContent", "__getTextContent", "__setTextContent")?;
+    define_property_accessor(raw_cx, element.get(), "id", "__getId", "__setId")?;
+    define_property_accessor(raw_cx, element.get(), "className", "__getClassName", "__setClassName")?;
     define_property_accessor(raw_cx, element.get(), "shadowRoot", "__getShadowRoot", "__setShadowRoot")?;
 
     // Create style object
@@ -780,11 +784,6 @@ unsafe extern "C" fn element_query_selector(raw_cx: *mut JSContext, argc: c_uint
                 // Traverse the subtree looking for a match
                 fn find_in_subtree(dom: &crate::dom::Dom, parent_id: usize, selector: &str) -> Option<(usize, String, crate::dom::AttributeMap)> {
                     if let Some(parent_node) = dom.get_node(parent_id) {
-                        if let Some(shadow_root_id) = parent_node.shadow_root {
-                            if let Some(result) = find_in_subtree(dom, shadow_root_id, selector) {
-                                return Some(result);
-                            }
-                        }
                         for child_id in &parent_node.children {
                             if let Some(child_node) = dom.get_node(*child_id) {
                                 if let crate::dom::NodeData::Element(ref elem_data) = child_node.data {
@@ -792,7 +791,7 @@ unsafe extern "C" fn element_query_selector(raw_cx: *mut JSContext, argc: c_uint
                                         return Some((*child_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
                                     }
                                 }
-                                // Recurse into children
+                                // Recurse into light-DOM descendants only.
                                 if let Some(result) = find_in_subtree(dom, *child_id, selector) {
                                     return Some(result);
                                 }
@@ -845,9 +844,6 @@ unsafe extern "C" fn element_query_selector_all(raw_cx: *mut JSContext, argc: c_
                     // Collect all matching descendants
                     fn collect_in_subtree(dom: &crate::dom::Dom, parent_id: usize, selector: &str, results: &mut Vec<(usize, String, crate::dom::AttributeMap)>) {
                         if let Some(parent_node) = dom.get_node(parent_id) {
-                            if let Some(shadow_root_id) = parent_node.shadow_root {
-                                collect_in_subtree(dom, shadow_root_id, selector, results);
-                            }
                             for child_id in &parent_node.children {
                                 if let Some(child_node) = dom.get_node(*child_id) {
                                     if let crate::dom::NodeData::Element(ref elem_data) = child_node.data {
@@ -855,7 +851,7 @@ unsafe extern "C" fn element_query_selector_all(raw_cx: *mut JSContext, argc: c_
                                             results.push((*child_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
                                         }
                                     }
-                                    // Recurse into children
+                                    // Recurse into light-DOM descendants only.
                                     collect_in_subtree(dom, *child_id, selector, results);
                                 }
                             }
@@ -1661,4 +1657,106 @@ unsafe extern "C" fn element_set_text_content(raw_cx: *mut JSContext, argc: c_ui
     true
 }
 
+/// element.__getId implementation (internal getter for id property)
+unsafe extern "C" fn element_get_id(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
 
+    if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
+        DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &*dom_ptr;
+                if let Some(node) = dom.get_node(node_id) {
+                    if let NodeData::Element(ref elem_data) = node.data {
+                        if let Some(attr) = elem_data.attributes.iter().find(|attr| attr.name.local.as_ref() == "id") {
+                            args.rval().set(create_js_string(raw_cx, attr.value.as_ref()));
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    args.rval().set(create_js_string(raw_cx, ""));
+    true
+}
+
+/// element.__setId implementation (internal setter for id property)
+unsafe extern "C" fn element_set_id(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let id_value = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
+        DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &mut *dom_ptr;
+                let qname = QualName::new(
+                    None,
+                    markup5ever::ns!(),
+                    markup5ever::LocalName::from("id"),
+                );
+                dom.set_attribute(node_id, qname, &id_value);
+            }
+        });
+    }
+
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// element.__getClassName implementation (internal getter for className property)
+unsafe extern "C" fn element_get_class_name(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
+        DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &*dom_ptr;
+                if let Some(node) = dom.get_node(node_id) {
+                    if let NodeData::Element(ref elem_data) = node.data {
+                        if let Some(attr) = elem_data.attributes.iter().find(|attr| attr.name.local.as_ref() == "class") {
+                            args.rval().set(create_js_string(raw_cx, attr.value.as_ref()));
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    args.rval().set(create_js_string(raw_cx, ""));
+    true
+}
+
+/// element.__setClassName implementation (internal setter for className property)
+unsafe extern "C" fn element_set_class_name(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let class_value = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
+        DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &mut *dom_ptr;
+                let qname = QualName::new(
+                    None,
+                    markup5ever::ns!(),
+                    markup5ever::LocalName::from("class"),
+                );
+                dom.set_attribute(node_id, qname, &class_value);
+            }
+        });
+    }
+
+    args.rval().set(UndefinedValue());
+    true
+}
