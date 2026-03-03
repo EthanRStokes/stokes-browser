@@ -170,22 +170,7 @@ impl TabProcess {
             .queue_family_index(queue_family_index)
             .queue_priorities(&queue_priority);
 
-        // Enable the correct external memory extension for the platform.
-        #[cfg(windows)]
-        let ext_names: Vec<*const std::ffi::c_char> = vec![
-            ash::khr::external_memory::NAME.as_ptr(),
-            ash::khr::external_memory_win32::NAME.as_ptr(),
-            ash::khr::external_semaphore::NAME.as_ptr(),
-            ash::khr::external_semaphore_win32::NAME.as_ptr(),
-        ];
-        #[cfg(not(windows))]
-        let ext_names: Vec<*const std::ffi::c_char> = vec![
-            ash::khr::external_memory::NAME.as_ptr(),
-            ash::khr::external_memory_fd::NAME.as_ptr(),
-            ash::vk::EXT_EXTERNAL_MEMORY_DMA_BUF_NAME.as_ptr(),
-            ash::khr::external_semaphore::NAME.as_ptr(),
-            ash::khr::external_semaphore_fd::NAME.as_ptr(),
-        ];
+        let ext_names = crate::vk_shared::tab_device_extension_names();
 
         let device_ci = vk::DeviceCreateInfo::default()
             .queue_create_infos(std::slice::from_ref(&queue_ci))

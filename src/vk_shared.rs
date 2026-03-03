@@ -23,6 +23,7 @@ use ash::vk::{self, Handle};
 use skia_safe::gpu::vk::AllocFlag;
 use skia_safe::gpu::{self, DirectContext};
 use skia_safe::{ColorType, Image};
+use std::ffi::c_char;
 
 
 // ── Platform-specific external semaphore handle type ───────────────────────
@@ -1284,3 +1285,27 @@ pub unsafe fn physical_device_uuid(
     id_props.device_uuid
 }
 
+/// Shared external-memory/semaphore extension set used by both parent and tab.
+///
+/// This intentionally uses the same extension family on all platforms.
+fn shared_external_device_extensions() -> Vec<*const c_char> {
+    vec![
+        ash::khr::external_memory::NAME.as_ptr(),
+        ash::khr::external_memory_fd::NAME.as_ptr(),
+        ash::vk::EXT_EXTERNAL_MEMORY_DMA_BUF_NAME.as_ptr(),
+        ash::khr::external_semaphore::NAME.as_ptr(),
+        ash::khr::external_semaphore_fd::NAME.as_ptr(),
+    ]
+}
+
+/// Device extension names for the browser (parent) Vulkan device.
+pub fn parent_device_extension_names() -> Vec<*const c_char> {
+    let mut exts = vec![ash::khr::swapchain::NAME.as_ptr()];
+    exts.extend(shared_external_device_extensions());
+    exts
+}
+
+/// Device extension names for the tab-process Vulkan device.
+pub fn tab_device_extension_names() -> Vec<*const c_char> {
+    shared_external_device_extensions()
+}
