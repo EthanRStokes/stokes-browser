@@ -44,6 +44,9 @@ fn push_children_and_pseudos(layout_children: &mut Vec<usize>, node: &DomNode) {
         layout_children.push(before);
     }
     layout_children.extend_from_slice(&node.children);
+    if let Some(shadow_root_id) = node.shadow_root {
+        layout_children.extend_from_slice(&node.get_node(shadow_root_id).children);
+    }
     if let Some(after) = node.after {
         layout_children.push(after);
     }
@@ -59,9 +62,26 @@ fn push_non_whitespace_children_and_pseudos(layout_children: &mut Vec<usize>, no
             .copied()
             .filter(|child_id| !node.get_node(*child_id).is_whitespace_node()),
     );
+    if let Some(shadow_root_id) = node.shadow_root {
+        layout_children.extend(
+            node.get_node(shadow_root_id)
+                .children
+                .iter()
+                .copied()
+                .filter(|child_id| !node.get_node(*child_id).is_whitespace_node()),
+        );
+    }
     if let Some(after) = node.after {
         layout_children.push(after);
     }
+}
+
+fn composed_child_ids(node: &DomNode) -> Vec<usize> {
+    let mut ids = node.children.clone();
+    if let Some(shadow_root_id) = node.shadow_root {
+        ids.extend_from_slice(&node.get_node(shadow_root_id).children);
+    }
+    ids
 }
 
 pub(crate) fn collect_layout_children(
@@ -149,7 +169,10 @@ pub(crate) fn collect_layout_children(
     // Skip further construction if the node has no children or pseudo-children
     {
         let node = &dom.nodes[node_id];
-        if node.children.is_empty() && node.before.is_none() && node.after.is_none() {
+        let has_shadow_children = node
+            .shadow_root
+            .is_some_and(|shadow_root_id| !node.get_node(shadow_root_id).children.is_empty());
+        if node.children.is_empty() && !has_shadow_children && node.before.is_none() && node.after.is_none() {
             return;
         }
     }
@@ -165,13 +188,11 @@ pub(crate) fn collect_layout_children(
         DisplayInside::None => {},
         DisplayInside::Contents => {
             dom.nodes[node_id].remove_damage(CONSTRUCT_BOX | CONSTRUCT_DESCENDENT | CONSTRUCT_FC);
-            let children = std::mem::take(&mut dom.nodes[node_id].children);
+            let children = composed_child_ids(&dom.nodes[node_id]);
 
-            for child_id in children.iter().copied() {
+            for child_id in children {
                 collect_layout_children(dom, child_id, layout_children, anonymous_block_id)
             }
-
-            dom.nodes[node_id].children = children;
         }
         DisplayInside::Flow | DisplayInside::FlowRoot | DisplayInside::TableCell => {
             // TODO: make "all_inline" detection work in the presence of display:contents nodes
@@ -179,10 +200,8 @@ pub(crate) fn collect_layout_children(
             let mut all_inline = true;
             let mut all_out_of_flow = true;
             let mut has_contents = false;
-            for child in dom.nodes[node_id]
-                .children
-                .iter()
-                .copied()
+            for child in composed_child_ids(&dom.nodes[node_id])
+                .into_iter()
                 .map(|child_id| &dom.nodes[child_id])
             {
                 // Unwraps on Text and SVG nodes
@@ -296,10 +315,8 @@ pub(crate) fn collect_layout_children(
             );
         }
         DisplayInside::Flex | DisplayInside::Grid => {
-            let has_text_node_or_contents = dom.nodes[node_id]
-                .children
-                .iter()
-                .copied()
+            let has_text_node_or_contents = composed_child_ids(&dom.nodes[node_id])
+                .into_iter()
                 .map(|child_id| &dom.nodes[child_id])
                 .any(|child| {
                     let display = child.display_style().unwrap_or(Display::inline());
@@ -633,6 +650,14 @@ pub(crate) fn find_inline_layout_embedded_boxes(
             layout_children,
         );
     }
+    if let Some(shadow_root_id) = root_node.shadow_root {
+        find_inline_layout_embedded_boxes_recursive(
+            &doc.nodes,
+            inline_context_root_node_id,
+            shadow_root_id,
+            layout_children,
+        );
+    }
 
     fn flush_inline_pseudos_recursive(doc: &mut Dom, node_id: usize) {
         doc.iter_children_mut(node_id, |child_id, doc| {
@@ -684,6 +709,15 @@ pub(crate) fn find_inline_layout_embedded_boxes(
                                 nodes,
                                 parent_id,
                                 child_id,
+                                layout_children,
+                            );
+                        }
+                        if let Some(shadow_root_id) = node.shadow_root {
+                            node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+                            find_inline_layout_embedded_boxes_recursive(
+                                nodes,
+                                parent_id,
+                                shadow_root_id,
                                 layout_children,
                             );
                         }
@@ -829,6 +863,16 @@ pub(crate) fn build_inline_layout(
             root_line_height,
         );
     }
+    if let Some(shadow_root_id) = root_node.shadow_root {
+        build_inline_layout_recursive(
+            &mut builder,
+            nodes,
+            inline_context_root_node_id,
+            shadow_root_id,
+            collapse_mode,
+            root_line_height,
+        );
+    }
     if let Some(after_id) = root_node.after {
         build_inline_layout_recursive(
             &mut builder,
@@ -900,6 +944,16 @@ pub(crate) fn build_inline_layout(
                                 nodes,
                                 parent_id,
                                 child_id,
+                                collapse_mode,
+                                root_line_height,
+                            );
+                        }
+                        if let Some(shadow_root_id) = node.shadow_root {
+                            build_inline_layout_recursive(
+                                builder,
+                                nodes,
+                                parent_id,
+                                shadow_root_id,
                                 collapse_mode,
                                 root_line_height,
                             );

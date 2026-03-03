@@ -25,6 +25,7 @@ use parley::PositionedLayoutItem;
 use peniko::Fill;
 use std::any::Any;
 use std::collections::HashMap;
+use style::dom::TElement;
 use style::properties::generated::longhands::border_collapse::computed_value::T as BorderCollapse;
 use style::properties::generated::longhands::visibility::computed_value::T as Visibility;
 use style::properties::style_structs::Font;
@@ -355,6 +356,10 @@ impl HtmlRenderer<'_> {
             return;
         };
 
+        if node.local_name() == "input" && node.attr(local_name!("type")) == Some("hidden") {
+            return;
+        }
+
         if styles.get_inherited_box().visibility != Visibility::Visible {
             return;
         }
@@ -368,7 +373,8 @@ impl HtmlRenderer<'_> {
         let overflow_x = styles.get_box().overflow_x;
         let overflow_y = styles.get_box().overflow_y;
         let is_image = node.element_data().and_then(|e| e.raster_image_data()).is_some();
-        let should_clip = is_image || !matches!(overflow_x, Overflow::Visible) || !matches!(overflow_y, Overflow::Visible);
+        let is_text_input = node.element_data().and_then(|e| e.text_input_data()).is_some();
+        let should_clip = is_image || is_text_input || !matches!(overflow_x, Overflow::Visible) || !matches!(overflow_y, Overflow::Visible);
 
         let (layout, position) = self.node_position(node_id, location);
         let taffy::Layout {
@@ -419,7 +425,11 @@ impl HtmlRenderer<'_> {
                 element.draw_border(painter);
 
                 //let wants_layer = should_clip | has_opacity;
-                let clip = &element.frame.padding_box_path(); // todo content_box_path for text input
+                let clip = if is_text_input {
+                    &element.frame.content_box_path()
+                } else {
+                    &element.frame.padding_box_path()
+                };
                 maybe_with_layer(painter, should_clip, 1.0, element.transform, clip, |painter| {
                     let position = Point {
                         x: position.x - node.scroll_offset.x,
