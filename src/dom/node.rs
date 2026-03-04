@@ -9,7 +9,9 @@ use bitflags::bitflags;
 use blitz_traits::events::HitResult;
 use blitz_traits::shell::ShellProvider;
 use cssparser::ParserInput;
+use euclid::Transform3D;
 use html5ever::{LocalName, QualName};
+use kurbo::{Affine, Point as KurboPoint, Vec2};
 use html_escape::encode_quoted_attribute_to_string;
 use keyboard_types::Modifiers;
 use markup5ever::local_name;
@@ -38,7 +40,7 @@ use style::servo_arc::{Arc as ServoArc, Arc};
 use style::shared_lock::{Locked, SharedRwLock};
 use style::stylesheets::{CssRuleType, DocumentStyleSheet, Origin, UrlExtraData};
 use style::stylist::CascadeData;
-use style::values::computed::{Display, PositionProperty};
+use style::values::computed::{CSSPixelLength, Display, PositionProperty};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use style_traits::{ParsingMode, ToCss};
 use stylo_atoms::Atom;
@@ -1648,6 +1650,48 @@ impl DomNode {
         result
     }
 
+    fn inverse_hit_transform_2d(&self) -> Option<Affine> {
+        let Some(style) = self.primary_styles() else {
+            return Some(Affine::IDENTITY);
+        };
+
+        let reference_box = euclid::Rect::new(
+            euclid::Point2D::new(CSSPixelLength::new(0.0), CSSPixelLength::new(0.0)),
+            euclid::Size2D::new(
+                CSSPixelLength::new(self.final_layout.size.width),
+                CSSPixelLength::new(self.final_layout.size.height),
+            ),
+        );
+
+        let (t, has_3d) = style
+            .get_box()
+            .transform
+            .to_transform_3d_matrix(Some(&reference_box))
+            .unwrap_or((Transform3D::default(), false));
+
+        // Keep behavior aligned with renderer: unsupported 3D transforms are ignored.
+        if has_3d {
+            return Some(Affine::IDENTITY);
+        }
+
+        let kurbo_transform = Affine::new([t.m11, t.m12, t.m21, t.m22, t.m41, t.m42].map(|v| v as f64));
+
+        let transform_origin = &style.get_box().transform_origin;
+        let origin_translation = Affine::translate(Vec2 {
+            x: transform_origin
+                .horizontal
+                .resolve(CSSPixelLength::new(self.final_layout.size.width))
+                .px() as f64,
+            y: transform_origin
+                .vertical
+                .resolve(CSSPixelLength::new(self.final_layout.size.height))
+                .px() as f64,
+        });
+
+        let transform = origin_translation * kurbo_transform * origin_translation.inverse();
+        Some(transform.inverse())
+    }
+
     pub fn hit(&self, x: f32, y: f32) -> Option<HitResult> {
         use style::computed_values::visibility::T as Visibility;
 
@@ -1661,8 +1705,14 @@ impl DomNode {
             }
         }
 
-        let mut x = x - self.final_layout.location.x + self.scroll_offset.x as f32;
-        let mut y = y - self.final_layout.location.y + self.scroll_offset.y as f32;
+        // Convert from parent space into this node's local box space before scroll handling.
+        let local_point = self.inverse_hit_transform_2d()? * KurboPoint::new(
+            (x - self.final_layout.location.x) as f64,
+            (y - self.final_layout.location.y) as f64,
+        );
+
+        let mut x = local_point.x as f32 + self.scroll_offset.x as f32;
+        let mut y = local_point.y as f32 + self.scroll_offset.y as f32;
 
         let size = self.final_layout.size;
         let matches_self = !(x < 0.0
