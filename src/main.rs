@@ -17,6 +17,7 @@ mod window;
 mod shell_provider;
 mod default_browser;
 mod vk_shared;
+mod vk_context;
 
 use crate::browser::BrowserApp;
 use winit::event_loop::EventLoop;

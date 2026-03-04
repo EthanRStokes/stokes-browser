@@ -5,6 +5,7 @@ use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage};
 use crate::networking;
 use crate::renderer::painter::{ScenePainter, SkiaCache};
 use crate::shell_provider::{ShellProviderMessage, StokesShellProvider};
+use crate::vk_context;
 use crate::vk_shared::{SkiaGetProc, TabVkImage, VulkanDeviceInfo};
 use ash::vk::{self, Handle};
 use blitz_traits::shell::{ShellProvider, Viewport};
@@ -29,6 +30,9 @@ struct TabVulkanState {
     device: ash::Device,
     queue_family_index: u32,
     gr_context: DirectContext,
+    _vk_instance_owner: Arc<vulkano::instance::Instance>,
+    _vk_device_owner: Arc<vulkano::device::Device>,
+    _vk_queue_owner: Arc<vulkano::device::Queue>,
     /// Parent PID, cached at init to avoid re-parsing the env var each frame.
     parent_pid: u32,
     /// Preferred image format (from the parent's swapchain).
@@ -138,113 +142,18 @@ impl TabProcess {
         parent_pid: u32,
         vk_format: vk::Format,
     ) -> Result<TabVulkanState, String> {
-        let entry = ash::Entry::load()
-            .map_err(|e| format!("ash Entry::load: {:?}", e))?;
+        let bootstrap = vk_context::create_tab_context(parent_info)?;
 
-        let instance_api_version = entry
-            .try_enumerate_instance_version()
-            .map_err(|e| format!("vkEnumerateInstanceVersion: {:?}", e))?
-            .unwrap_or(vk::API_VERSION_1_0);
-
-        let app_info = vk::ApplicationInfo::default()
-            .application_name(c"stokes-tab")
-            .api_version(instance_api_version);
-
-        let instance_ci = vk::InstanceCreateInfo::default()
-            .application_info(&app_info);
-
-        let instance = entry.create_instance(&instance_ci, None)
-            .map_err(|e| format!("vkCreateInstance: {:?}", e))?;
-
-        let physical_devices = instance.enumerate_physical_devices()
-            .map_err(|e| format!("enumerate_physical_devices: {:?}", e))?;
-
-        if physical_devices.is_empty() {
-            return Err("No Vulkan physical devices found".into());
-        }
-
-        // Try to match the same GPU the parent is using (by device UUID).
-        let physical_device = parent_info
-            .and_then(|info| {
-                physical_devices.iter().find(|&&d| {
-                    crate::vk_shared::physical_device_uuid(&instance, d) == info.device_uuid
-                }).copied()
-            })
-            .unwrap_or(physical_devices[0]);
-
-        let queue_families = instance.get_physical_device_queue_family_properties(physical_device);
-        let fallback_qfi = queue_families
-            .iter()
-            .enumerate()
-            .find(|(_, q)| q.queue_flags.contains(vk::QueueFlags::GRAPHICS))
-            .map(|(i, _)| i as u32)
-            .ok_or("No graphics queue family found")?;
-
-        // Reuse parent's queue family index when we matched the same GPU.
-        let matched_parent = parent_info
-            .is_some_and(|info| {
-                crate::vk_shared::physical_device_uuid(&instance, physical_device) == info.device_uuid
-            });
-        let queue_family_index = if matched_parent {
-            parent_info
-                .filter(|info| {
-                    queue_families
-                        .get(info.queue_family_index as usize)
-                        .is_some_and(|q| q.queue_flags.contains(vk::QueueFlags::GRAPHICS))
-                })
-                .map(|info| info.queue_family_index)
-                .unwrap_or(fallback_qfi)
-        } else {
-            fallback_qfi
-        };
-
-        // Validate required device extensions.
-        let ext_names = crate::vk_shared::tab_device_extension_names();
-        let available_exts = instance.enumerate_device_extension_properties(physical_device)
-            .map_err(|e| format!("enumerate_device_extension_properties: {:?}", e))?;
-        let missing_exts: Vec<String> = ext_names
-            .iter()
-            .map(|&name| CStr::from_ptr(name).to_string_lossy().into_owned())
-            .filter(|name| {
-                !available_exts.iter().any(|ext| {
-                    CStr::from_ptr(ext.extension_name.as_ptr())
-                        .to_string_lossy()
-                        .as_ref()
-                        == name
-                })
-            })
-            .collect();
-        if !missing_exts.is_empty() {
-            let driver_name = CStr::from_ptr(
-                instance.get_physical_device_properties(physical_device).device_name.as_ptr(),
-            )
-            .to_string_lossy()
-            .into_owned();
-            return Err(format!(
-                "Missing required Vulkan tab extensions: {:?}. GPU: {}",
-                missing_exts, driver_name
-            ));
-        }
-
-        let queue_priority = [1.0f32];
-        let queue_ci = vk::DeviceQueueCreateInfo::default()
-            .queue_family_index(queue_family_index)
-            .queue_priorities(&queue_priority);
-
-        let device_ci = vk::DeviceCreateInfo::default()
-            .queue_create_infos(std::slice::from_ref(&queue_ci))
-            .enabled_extension_names(&ext_names);
-
-        let device = instance.create_device(physical_device, &device_ci, None)
-            .map_err(|e| format!("vkCreateDevice: {:?}", e))?;
-
-        let queue = device.get_device_queue(queue_family_index, 0);
-
-        // Negotiate API version to match what window.rs does.
-        let device_api_version = instance
-            .get_physical_device_properties(physical_device)
-            .api_version;
-        let negotiated_api_version = instance_api_version.min(device_api_version);
+        let entry = bootstrap.ash_entry;
+        let instance = bootstrap.ash_instance;
+        let physical_device = bootstrap.physical_device;
+        let device = bootstrap.ash_device;
+        let queue_family_index = bootstrap.queue_family_index;
+        let queue = bootstrap.queue;
+        let negotiated_api_version = bootstrap.negotiated_api_version;
+        let vk_instance_owner = bootstrap.instance_owner;
+        let vk_device_owner = bootstrap.device_owner;
+        let vk_queue_owner = bootstrap.queue_owner;
 
         // Build Skia DirectContext using the shared proc loader.
         let get_proc = SkiaGetProc::new(&entry, &instance);
@@ -269,6 +178,9 @@ impl TabProcess {
             device,
             queue_family_index,
             gr_context,
+            _vk_instance_owner: vk_instance_owner,
+            _vk_device_owner: vk_device_owner,
+            _vk_queue_owner: vk_queue_owner,
             parent_pid,
             vk_format,
         })
@@ -698,7 +610,7 @@ impl TabProcess {
 
 /// Entry point for tab process executable
 pub async fn tab_process_main(tab_id: String, server_name: String) -> io::Result<()> {
-    tokio::time::sleep(Duration::from_millis(10000)).await;
+    //tokio::time::sleep(Duration::from_millis(10000)).await;
     let mut process = TabProcess::new(tab_id, server_name)?;
     process.run().await
 }

@@ -1,12 +1,12 @@
+use crate::vk_context;
 use crate::vk_shared::{self, ImportedVkImage, VulkanDeviceInfo, SkiaGetProc, COLOR_SUBRESOURCE_RANGE};
 use ash::vk::{self, Handle};
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use skia_safe::gpu::vk::GetProcOf;
 use skia_safe::gpu::{self, DirectContext};
 use skia_safe::{ColorType, Surface};
-use std::collections::HashSet;
 use std::ffi::CStr;
 use std::sync::Arc;
-use skia_safe::gpu::vk::GetProcOf;
+use vulkano::VulkanObject;
 use winit::dpi::LogicalSize;
 use winit::window::{Window, WindowAttributes};
 use winit_core::event_loop::ActiveEventLoop;
@@ -28,7 +28,7 @@ impl Env {
     /// Recreate the Skia surface after a window resize.
     pub fn recreate_surface(&mut self) {
         self.vk.swapchain_valid = false;
-        vk_prepare_swapchain(&mut self.vk, &**self.window, &mut self.gr_context);
+        vk_prepare_swapchain(&mut self.vk, self.window.clone(), &mut self.gr_context);
         if !self.vk.skia_surfaces.is_empty() {
             self.surface = self.vk.skia_surfaces[0].clone();
         }
@@ -38,7 +38,7 @@ impl Env {
     /// Returns `false` if the swapchain was out-of-date and the frame should be
     /// skipped.
     pub fn acquire_frame(&mut self) -> Result<bool, String> {
-        vk_acquire(&mut self.vk, &**self.window, &mut self.surface, &mut self.gr_context)
+        vk_acquire(&mut self.vk, self.window.clone(), &mut self.surface, &mut self.gr_context)
     }
 
     /// Blit an imported tab VkImage directly to the page region of the current
@@ -59,7 +59,7 @@ impl Env {
     }
 }
 
-/// Vulkan-specific state (pure ash, no vulkano).
+/// Vulkan-specific state.
 pub(crate) struct VkState {
     pub(crate) entry: ash::Entry,
     pub(crate) instance: ash::Instance,
@@ -67,6 +67,12 @@ pub(crate) struct VkState {
     pub(crate) device: ash::Device,
     pub(crate) queue: vk::Queue,
     pub(crate) queue_family_index: u32,
+
+    // Keep the vulkano objects alive while ash wrappers are used by the renderer.
+    vk_instance_owner: Arc<vulkano::instance::Instance>,
+    vk_device_owner: Arc<vulkano::device::Device>,
+    vk_queue_owner: Arc<vulkano::device::Queue>,
+    vk_surface_owner: Arc<vulkano::swapchain::Surface>,
 
     // Surface
     surface_khr: vk::SurfaceKHR,
@@ -133,9 +139,6 @@ impl Drop for VkState {
             self.device.destroy_semaphore(self.render_finished_semaphore, None);
             self.device.destroy_fence(self.in_flight_fence, None);
             self.swapchain_fn.destroy_swapchain(self.swapchain, None);
-            self.surface_fn.destroy_surface(self.surface_khr, None);
-            self.device.destroy_device(None);
-            self.instance.destroy_instance(None);
         }
     }
 }
@@ -177,7 +180,7 @@ fn vk_pick_format(
 }
 
 /// Recreate the swapchain after a resize (sets `swapchain_valid = true`).
-fn vk_prepare_swapchain(vk: &mut VkState, window: &dyn Window, gr_context: &mut DirectContext) {
+fn vk_prepare_swapchain(vk: &mut VkState, window: Arc<Box<dyn Window>>, gr_context: &mut DirectContext) {
     let sz = window.surface_size();
     if sz.width == 0 || sz.height == 0 || vk.swapchain_valid {
         return;
@@ -318,12 +321,12 @@ fn vk_build_surfaces(
 /// Returns `Ok(false)` if the frame should be skipped (out-of-date swapchain).
 fn vk_acquire(
     vk: &mut VkState,
-    window: &dyn Window,
+    window: Arc<Box<dyn Window>>,
     current_surface: &mut Surface,
     gr_context: &mut DirectContext,
 ) -> Result<bool, String> {
     if !vk.swapchain_valid {
-        vk_prepare_swapchain(vk, window, gr_context);
+        vk_prepare_swapchain(vk, window.clone(), gr_context);
     }
     if !vk.swapchain_valid || vk.skia_surfaces.is_empty() {
         return Ok(false);
@@ -609,7 +612,7 @@ fn vk_blit_tab_then_present(
 }
 
 /// Recreate the Vulkan surface from the current native window handles.
-fn vk_recreate_surface(vk: &mut VkState, window: &dyn Window) -> Result<(), String> {
+fn vk_recreate_surface(vk: &mut VkState, window: Arc<Box<dyn Window>>) -> Result<(), String> {
     unsafe {
         vk.device.device_wait_idle().ok();
 
@@ -620,27 +623,14 @@ fn vk_recreate_surface(vk: &mut VkState, window: &dyn Window) -> Result<(), Stri
         vk.swapchain_images.clear();
         vk.skia_surfaces.clear();
 
-        if vk.surface_khr != vk::SurfaceKHR::null() {
-            vk.surface_fn.destroy_surface(vk.surface_khr, None);
-            vk.surface_khr = vk::SurfaceKHR::null();
-        }
-
-        let display_handle = window
-            .display_handle()
-            .map_err(|e| format!("display_handle: {e}"))?;
-        let window_handle = window
-            .window_handle()
-            .map_err(|e| format!("window_handle: {e}"))?;
-
-        vk.surface_khr = ash_window::create_surface(
-            &vk.entry,
-            &vk.instance,
-            display_handle.as_raw(),
-            window_handle.as_raw(),
-            None,
+        let new_surface = vulkano::swapchain::Surface::from_window_ref(
+            vk.vk_instance_owner.clone(),
+            &*window,
         )
-        .map_err(|e| format!("create_surface (recreate): {e:?}"))?;
+        .map_err(|e| format!("Surface::from_window_ref (recreate): {e:?}"))?;
 
+        vk.surface_khr = new_surface.handle();
+        vk.vk_surface_owner = new_surface;
         vk.current_image_index = 0;
         vk.swapchain_valid = false;
     }
@@ -652,7 +642,7 @@ fn vk_recreate_surface(vk: &mut VkState, window: &dyn Window) -> Result<(), Stri
 // Public window constructor
 // ---------------------------------------------------------------------------
 
-/// Create the main window using the Vulkan backend (pure ash, no vulkano).
+/// Create the main window using the Vulkan backend.
 pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
     // ── 1. Create winit window ───────────────────────────────────────────────
     let icon: Option<Icon> = {
@@ -677,135 +667,29 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         el.create_window(win_attrs).expect("Failed to create window"),
     );
 
-    // ── 2. ash Entry + Instance ──────────────────────────────────────────────
-    let entry = unsafe { ash::Entry::load().expect("Failed to load Vulkan library") };
+    // ── 2. Vulkan instance/device/queue via vulkano, then bridge into ash ──
+    let bootstrap = vk_context::create_parent_context(window.clone(), el)
+        .unwrap_or_else(|e| panic!("Failed to initialize vulkano parent context: {e}"));
 
-    let instance_api_version = unsafe {
-        entry
-            .try_enumerate_instance_version()
-            .ok()
-            .flatten()
-            .unwrap_or(vk::API_VERSION_1_0)
-    };
+    let entry = bootstrap.ash_entry;
+    let instance = bootstrap.ash_instance;
+    let physical_device = bootstrap.physical_device;
+    let device = bootstrap.ash_device;
+    let queue = bootstrap.queue;
+    let queue_family_index = bootstrap.queue_family_index;
+    let negotiated_api_version = bootstrap.negotiated_api_version;
+    let vk_instance_owner = bootstrap.instance_owner;
+    let vk_device_owner = bootstrap.device_owner;
+    let vk_queue_owner = bootstrap.queue_owner;
+    let vk_surface_owner = bootstrap
+        .surface_owner
+        .expect("Parent context must provide a window surface owner");
 
-    let display_handle = el.as_ref().display_handle().expect("Failed to get display handle");
-    let required_extensions = ash_window::enumerate_required_extensions(display_handle.as_raw())
-        .expect("Failed to enumerate required Vulkan extensions")
-        .to_vec();
-
-    let app_info = vk::ApplicationInfo::default()
-        .application_name(c"stokes-browser")
-        .api_version(instance_api_version);
-
-    let instance_ci = vk::InstanceCreateInfo::default()
-        .application_info(&app_info)
-        .enabled_extension_names(&required_extensions);
-
-    let instance = unsafe {
-        entry.create_instance(&instance_ci, None)
-            .expect("Failed to create Vulkan instance")
-    };
-
-    // ── 3. Surface from the winit window ─────────────────────────────────────
+    // ── 3. Surface from vulkano-owned surface handle ────────────────────────
     let surface_fn = ash::khr::surface::Instance::new(&entry, &instance);
+    let surface_khr = vk_surface_owner.handle();
 
-    let window_handle = window.window_handle().expect("Failed to get window handle");
-    let surface_khr = unsafe {
-        ash_window::create_surface(
-            &entry,
-            &instance,
-            display_handle.as_raw(),
-            window_handle.as_raw(),
-            None,
-        )
-        .expect("Failed to create Vulkan surface")
-    };
-
-    // ── 4. Physical device + queue family ────────────────────────────────────
-    let physical_devices = unsafe {
-        instance.enumerate_physical_devices()
-            .expect("Failed to enumerate physical devices")
-    };
-
-    let (physical_device, queue_family_index) = physical_devices
-        .iter()
-        .filter_map(|&pd| {
-            let queue_families = unsafe { instance.get_physical_device_queue_family_properties(pd) };
-            queue_families.iter().enumerate()
-                .position(|(i, q)| {
-                    q.queue_flags.contains(vk::QueueFlags::GRAPHICS)
-                        && unsafe {
-                            surface_fn.get_physical_device_surface_support(pd, i as u32, surface_khr)
-                                .unwrap_or(false)
-                        }
-                })
-                .map(|i| (pd, i as u32))
-        })
-        .min_by_key(|(pd, _)| {
-            let props = unsafe { instance.get_physical_device_properties(*pd) };
-            match props.device_type {
-                vk::PhysicalDeviceType::DISCRETE_GPU   => 0u32,
-                vk::PhysicalDeviceType::INTEGRATED_GPU => 1,
-                vk::PhysicalDeviceType::VIRTUAL_GPU    => 2,
-                vk::PhysicalDeviceType::CPU            => 3,
-                _                                      => 4,
-            }
-        })
-        .expect("No suitable Vulkan physical device found");
-
-    let device_api_version = unsafe {
-        instance
-            .get_physical_device_properties(physical_device)
-            .api_version
-    };
-    let negotiated_api_version = instance_api_version.min(device_api_version);
-
-    // ── 5. Logical device + queue ────────────────────────────────────────────
-    let queue_priority = [1.0f32];
-    let queue_ci = vk::DeviceQueueCreateInfo::default()
-        .queue_family_index(queue_family_index)
-        .queue_priorities(&queue_priority);
-
-    let device_extensions = crate::vk_shared::parent_device_extension_names();
-
-    // Validate required extensions up-front.
-    let available_exts = unsafe {
-        instance
-            .enumerate_device_extension_properties(physical_device)
-            .expect("Failed to enumerate Vulkan device extensions")
-    };
-    let available_ext_names: HashSet<String> = available_exts
-        .iter()
-        .map(|p| unsafe { CStr::from_ptr(p.extension_name.as_ptr()) }.to_string_lossy().into_owned())
-        .collect();
-    let missing_exts: Vec<String> = device_extensions
-        .iter()
-        .map(|&name| unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned())
-        .filter(|name| !available_ext_names.contains(name))
-        .collect();
-    if !missing_exts.is_empty() {
-        let driver_name = unsafe { CStr::from_ptr(instance.get_physical_device_properties(physical_device).device_name.as_ptr()) }
-            .to_string_lossy()
-            .into_owned();
-        panic!(
-            "Selected GPU is missing required Vulkan device extensions: {:?}. GPU: {}",
-            missing_exts,
-            driver_name,
-        );
-    }
-
-    let device_ci = vk::DeviceCreateInfo::default()
-        .queue_create_infos(std::slice::from_ref(&queue_ci))
-        .enabled_extension_names(&device_extensions);
-
-    let device = unsafe {
-        instance.create_device(physical_device, &device_ci, None)
-            .expect("Failed to create Vulkan logical device")
-    };
-
-    let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
-
-    // ── 6. Swapchain ─────────────────────────────────────────────────────────
+    // ── 4. Swapchain ─────────────────────────────────────────────────────────
     let swapchain_fn = ash::khr::swapchain::Device::new(&instance, &device);
 
     let (swapchain_format, skia_vk_format, color_type) =
@@ -937,6 +821,10 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         device,
         queue,
         queue_family_index,
+        vk_instance_owner,
+        vk_device_owner,
+        vk_queue_owner,
+        vk_surface_owner,
         surface_khr,
         surface_fn,
         swapchain_fn,
@@ -964,6 +852,5 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         vk,
     }
 }
-
 
 
