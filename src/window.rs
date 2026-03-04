@@ -1,13 +1,12 @@
-use crate::vk_shared::ImportedVkImage;
-use crate::vk_shared::VulkanDeviceInfo;
+use crate::vk_shared::{self, ImportedVkImage, VulkanDeviceInfo, SkiaGetProc, COLOR_SUBRESOURCE_RANGE};
 use ash::vk::{self, Handle};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use skia_safe::gpu::{self, DirectContext};
 use skia_safe::{ColorType, Surface};
 use std::collections::HashSet;
 use std::ffi::CStr;
-use std::ptr;
 use std::sync::Arc;
+use skia_safe::gpu::vk::GetProcOf;
 use winit::dpi::LogicalSize;
 use winit::window::{Window, WindowAttributes};
 use winit_core::event_loop::ActiveEventLoop;
@@ -30,14 +29,12 @@ impl Env {
     pub fn recreate_surface(&mut self) {
         self.vk.swapchain_valid = false;
         vk_prepare_swapchain(&mut self.vk, &**self.window, &mut self.gr_context);
-        // Point env.surface at index 0 as a safe placeholder until the next present.
         if !self.vk.skia_surfaces.is_empty() {
             self.surface = self.vk.skia_surfaces[0].clone();
         }
     }
 
     /// Acquire the next swapchain image and point the Skia surface at it.
-    /// Must be called at the start of each frame, before any Skia drawing.
     /// Returns `false` if the swapchain was out-of-date and the frame should be
     /// skipped.
     pub fn acquire_frame(&mut self) -> Result<bool, String> {
@@ -51,29 +48,14 @@ impl Env {
     /// Call order per frame:
     ///   1. `acquire_frame()`          — acquires swapchain image, redirects Skia surface
     ///   2. Skia draws chrome UI       — via `surface.canvas()` + `painter.render()`
-    ///   3. `gr_context.flush_and_submit()` — Skia submits GPU work; image → PRESENT_SRC_KHR
+    ///   3. `gr_context.flush_and_submit()` — Skia submits GPU work
     ///   4. `blit_tab_then_present()`  — blits tab, waits image_available, signals render_finished, presents
-    ///
-    /// If `tab_frame` is `None` the function skips the blit and just does the
-    /// semaphore hand-off + present.
     pub fn blit_tab_then_present(
         &mut self,
         tab_frame: Option<(&ImportedVkImage, u32, u32, i64)>,
         chrome_px: i32,
     ) -> Result<(), String> {
         vk_blit_tab_then_present(&mut self.vk, &**self.window, tab_frame, chrome_px)
-    }
-
-    /// Flush Skia GPU work and present the current swapchain image.
-    /// Must be called after all Skia drawing for the frame is done.
-    pub fn flush_and_present(&mut self) -> Result<(), String> {
-        vk_flush_and_present(&mut self.vk, &**self.window, &mut self.gr_context)
-    }
-
-    /// Present the rendered frame: acquires the next swapchain image, re-targets the
-    /// Skia surface to it, flushes, and presents.
-    pub fn present(&mut self) -> Result<(), String> {
-        vk_present(&mut self.vk, &**self.window, &mut self.surface, &mut self.gr_context)
     }
 }
 
@@ -97,12 +79,11 @@ pub(crate) struct VkState {
     swapchain_format: vk::Format,
     swapchain_extent: vk::Extent2D,
 
-    /// One pre-built Skia `Surface` per swapchain image — created once, reused every frame.
+    /// One pre-built Skia `Surface` per swapchain image.
     pub(crate) skia_surfaces: Vec<Surface>,
     pub(crate) swapchain_valid: bool,
 
     /// Index of the swapchain image acquired for the current frame.
-    /// Set by `vk_acquire`, consumed by `vk_flush_and_present`.
     pub(crate) current_image_index: u32,
 
     /// Skia color type matching the swapchain format.
@@ -114,6 +95,10 @@ pub(crate) struct VkState {
     image_available_semaphore: vk::Semaphore,
     render_finished_semaphore: vk::Semaphore,
     in_flight_fence: vk::Fence,
+
+    // Persistent command pool + buffer for blit operations (reused each frame)
+    blit_cmd_pool: vk::CommandPool,
+    blit_cmd_buf: vk::CommandBuffer,
 }
 
 impl VkState {
@@ -136,6 +121,7 @@ impl Drop for VkState {
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().ok();
+            self.device.destroy_command_pool(self.blit_cmd_pool, None);
             self.device.destroy_semaphore(self.image_available_semaphore, None);
             self.device.destroy_semaphore(self.render_finished_semaphore, None);
             self.device.destroy_fence(self.in_flight_fence, None);
@@ -150,18 +136,6 @@ impl Drop for VkState {
 // ---------------------------------------------------------------------------
 // Vulkan helpers
 // ---------------------------------------------------------------------------
-
-/// Map an `ash::vk::Format` to the Skia equivalents needed by `ImageInfo`.
-/// Returns `None` for formats Skia cannot handle directly.
-fn vk_map_format(fmt: vk::Format) -> Option<(skia_safe::gpu::vk::Format, ColorType)> {
-    match fmt {
-        vk::Format::B8G8R8A8_UNORM => Some((skia_safe::gpu::vk::Format::B8G8R8A8_UNORM, ColorType::BGRA8888)),
-        vk::Format::R8G8B8A8_UNORM => Some((skia_safe::gpu::vk::Format::R8G8B8A8_UNORM, ColorType::RGBA8888)),
-        vk::Format::B8G8R8A8_SRGB  => Some((skia_safe::gpu::vk::Format::B8G8R8A8_SRGB,  ColorType::BGRA8888)),
-        vk::Format::R8G8B8A8_SRGB  => Some((skia_safe::gpu::vk::Format::R8G8B8A8_SRGB,  ColorType::RGBA8888)),
-        _ => None,
-    }
-}
 
 /// Choose the best swapchain format, preferring UNORM over SRGB so Skia's maths stays linear.
 fn vk_pick_format(
@@ -182,13 +156,13 @@ fn vk_pick_format(
     ];
     for want in preferred {
         if formats.iter().any(|sf| sf.format == want) {
-            if let Some((vf, ct)) = vk_map_format(want) {
+            if let Some((vf, ct)) = vk_shared::vk_format_to_skia(want) {
                 return (want, vf, ct);
             }
         }
     }
     for sf in &formats {
-        if let Some((vf, ct)) = vk_map_format(sf.format) {
+        if let Some((vf, ct)) = vk_shared::vk_format_to_skia(sf.format) {
             return (sf.format, vf, ct);
         }
     }
@@ -203,7 +177,6 @@ fn vk_prepare_swapchain(vk: &mut VkState, window: &dyn Window, gr_context: &mut 
     }
 
     unsafe {
-        // Wait for any in-flight work to finish before destroying the old swapchain.
         vk.device.device_wait_idle().ok();
 
         let caps = match vk
@@ -261,7 +234,6 @@ fn vk_prepare_swapchain(vk: &mut VkState, window: &dyn Window, gr_context: &mut 
             Err(e) => panic!("Failed to recreate swapchain: {e:?}"),
         };
 
-        // Destroy the old swapchain after creating the new one.
         if old_swapchain != vk::SwapchainKHR::null() {
             vk.swapchain_fn.destroy_swapchain(old_swapchain, None);
         }
@@ -272,7 +244,6 @@ fn vk_prepare_swapchain(vk: &mut VkState, window: &dyn Window, gr_context: &mut 
             .get_swapchain_images(new_swapchain)
             .expect("Failed to get swapchain images");
 
-        // Drop old Skia surfaces before rebuilding.
         vk.skia_surfaces.clear();
         vk.skia_surfaces = vk_build_surfaces(
             gr_context,
@@ -301,11 +272,8 @@ fn vk_surface_for_image(
             skia_safe::gpu::vk::ImageTiling::OPTIMAL,
             skia_safe::gpu::vk::ImageLayout::UNDEFINED,
             vk_format,
-            1,  // sample count
-            None,
-            None,
-            None,
-            None,
+            1,
+            None, None, None, None,
         )
     };
 
@@ -351,7 +319,6 @@ fn vk_acquire(
         vk_prepare_swapchain(vk, window, gr_context);
     }
     if !vk.swapchain_valid || vk.skia_surfaces.is_empty() {
-        // During resize/minimize or surface reconfiguration there may be no valid swapchain yet.
         return Ok(false);
     }
 
@@ -395,16 +362,8 @@ fn vk_acquire(
 /// Flush Skia GPU work, optionally blit a tab frame into the page region of the
 /// swapchain image, then present.
 ///
-/// This is the zero-copy present path.  Ordering:
-///   1. `gr_context.flush_and_submit()` — Skia finishes; swapchain image is now
-///      in `PRESENT_SRC_KHR` layout.
-///   2. A single command buffer is submitted that:
-///        a. Waits on `image_available_semaphore` (WSI acquire guarantee).
-///        b. If a tab frame is supplied: transitions the swapchain image
-///           `PRESENT_SRC_KHR → TRANSFER_DST_OPTIMAL`, blits only the page
-///           region (below chrome), then transitions back to `PRESENT_SRC_KHR`.
-///        c. Signals `render_finished_semaphore`.
-///   3. Present waits on `render_finished_semaphore`.
+/// Uses the persistent blit command pool/buffer on VkState (no per-frame
+/// allocation or blocking fence wait for cleanup).
 fn vk_blit_tab_then_present(
     vk: &mut VkState,
     _window: &dyn Window,
@@ -415,40 +374,15 @@ fn vk_blit_tab_then_present(
         let device = &vk.device;
         let swapchain_image = vk.swapchain_images[vk.current_image_index as usize];
 
-        // ── Command pool + buffer ────────────────────────────────────────────
-        let cmd_pool = {
-            let ci = vk::CommandPoolCreateInfo::default()
-                .queue_family_index(vk.queue_family_index)
-                .flags(vk::CommandPoolCreateFlags::TRANSIENT);
-            device.create_command_pool(&ci, None)
-                .map_err(|e| format!("vkCreateCommandPool (blit-present): {:?}", e))?
-        };
-        let cmd_buf = {
-            let ai = vk::CommandBufferAllocateInfo::default()
-                .command_pool(cmd_pool)
-                .level(vk::CommandBufferLevel::PRIMARY)
-                .command_buffer_count(1);
-            let bufs = device.allocate_command_buffers(&ai).map_err(|e| {
-                device.destroy_command_pool(cmd_pool, None);
-                format!("vkAllocateCommandBuffers (blit-present): {:?}", e)
-            })?;
-            bufs[0]
-        };
+        // Reset the persistent command buffer for this frame.
+        device.reset_command_buffer(vk.blit_cmd_buf, vk::CommandBufferResetFlags::empty())
+            .map_err(|e| format!("vkResetCommandBuffer (blit-present): {:?}", e))?;
 
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        device.begin_command_buffer(cmd_buf, &begin_info).map_err(|e| {
-            device.destroy_command_pool(cmd_pool, None);
-            format!("vkBeginCommandBuffer (blit-present): {:?}", e)
-        })?;
+        device.begin_command_buffer(vk.blit_cmd_buf, &begin_info)
+            .map_err(|e| format!("vkBeginCommandBuffer (blit-present): {:?}", e))?;
 
-        let subresource = vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            base_mip_level: 0,
-            level_count: 1,
-            base_array_layer: 0,
-            layer_count: 1,
-        };
         let sublayers = vk::ImageSubresourceLayers {
             aspect_mask: vk::ImageAspectFlags::COLOR,
             mip_level: 0,
@@ -472,7 +406,7 @@ fn vk_blit_tab_then_present(
                     .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .image(swapchain_image)
-                    .subresource_range(subresource),
+                    .subresource_range(COLOR_SUBRESOURCE_RANGE),
                 vk::ImageMemoryBarrier::default()
                     .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::TRANSFER_WRITE)
                     .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
@@ -481,10 +415,10 @@ fn vk_blit_tab_then_present(
                     .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .image(tab.image())
-                    .subresource_range(subresource),
+                    .subresource_range(COLOR_SUBRESOURCE_RANGE),
             ];
             device.cmd_pipeline_barrier(
-                cmd_buf,
+                vk.blit_cmd_buf,
                 vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::TRANSFER,
                 vk::PipelineStageFlags::TRANSFER,
                 vk::DependencyFlags::empty(),
@@ -504,7 +438,7 @@ fn vk_blit_tab_then_present(
                     vk::Offset3D { x: sw, y: chrome_px + dst_h, z: 1 },
                 ]);
             device.cmd_blit_image(
-                cmd_buf,
+                vk.blit_cmd_buf,
                 tab.image(), vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 swapchain_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[blit],
@@ -523,7 +457,7 @@ fn vk_blit_tab_then_present(
                     .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .image(swapchain_image)
-                    .subresource_range(subresource),
+                    .subresource_range(COLOR_SUBRESOURCE_RANGE),
                 vk::ImageMemoryBarrier::default()
                     .src_access_mask(vk::AccessFlags::TRANSFER_READ)
                     .dst_access_mask(vk::AccessFlags::empty())
@@ -532,10 +466,10 @@ fn vk_blit_tab_then_present(
                     .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .image(tab.image())
-                    .subresource_range(subresource),
+                    .subresource_range(COLOR_SUBRESOURCE_RANGE),
             ];
             device.cmd_pipeline_barrier(
-                cmd_buf,
+                vk.blit_cmd_buf,
                 vk::PipelineStageFlags::TRANSFER,
                 vk::PipelineStageFlags::BOTTOM_OF_PIPE,
                 vk::DependencyFlags::empty(),
@@ -543,16 +477,14 @@ fn vk_blit_tab_then_present(
             );
         }
 
-        device.end_command_buffer(cmd_buf)
+        device.end_command_buffer(vk.blit_cmd_buf)
             .map_err(|e| format!("vkEndCommandBuffer (blit-present): {:?}", e))?;
 
-        // Submit: wait image_available (+ tab render-complete semaphore when available), then blit.
-        let mut wait_sems = vec![vk.image_available_semaphore];
-        let mut wait_stages = vec![vk::PipelineStageFlags::TRANSFER];
-        // Intentionally avoid waiting on imported external semaphores here.
-        // During resize/reconfigure they can become stale and block the queue indefinitely.
+        // Submit: wait image_available, signal render_finished.
+        let wait_sems = [vk.image_available_semaphore];
+        let wait_stages = [vk::PipelineStageFlags::TRANSFER];
         let signal_sems = [vk.render_finished_semaphore];
-        let cmd_bufs = [cmd_buf];
+        let cmd_bufs = [vk.blit_cmd_buf];
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(&wait_sems)
             .wait_dst_stage_mask(&wait_stages)
@@ -560,10 +492,7 @@ fn vk_blit_tab_then_present(
             .signal_semaphores(&signal_sems);
 
         device.queue_submit(vk.queue, &[submit_info], vk.in_flight_fence)
-            .map_err(|e| {
-                 device.destroy_command_pool(cmd_pool, None);
-                 format!("vkQueueSubmit (blit-present): {:?}", e)
-             })?;
+            .map_err(|e| format!("vkQueueSubmit (blit-present): {:?}", e))?;
 
         // Present
         let swapchains = [vk.swapchain];
@@ -582,157 +511,11 @@ fn vk_blit_tab_then_present(
             }
             Err(e) => return Err(format!("queue_present: {:?}", e)),
         }
-
-        // Free the transient command pool.
-        // We wait on in_flight_fence so we know the GPU is done with cmd_pool
-        // before destroying it. The fence stays signaled — vk_acquire resets it
-        // at the top of the next frame (after its own wait_for_fences).
-        device.wait_for_fences(&[vk.in_flight_fence], true, 5_000_000_000)
-            .map_err(|e| format!("wait_for_fences (blit-present cleanup): {:?}", e))?;
-        device.destroy_command_pool(cmd_pool, None);
-        // Leave in_flight_fence SIGNALED — vk_acquire will reset it.
     }
-    Ok(())
-}
-
-/// Flush Skia GPU work, submit semaphore sync, and present the current image.
-/// Must be called after `vk_acquire` and all Skia drawing for the frame.
-fn vk_flush_and_present(
-    vk: &mut VkState,
-    window: &dyn Window,
-    gr_context: &mut DirectContext,
-) -> Result<(), String> {
-    unsafe {
-        gr_context.flush_and_submit();
-
-        let wait_semaphores = [vk.image_available_semaphore];
-        let signal_semaphores = [vk.render_finished_semaphore];
-        let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-
-        let submit_info = vk::SubmitInfo::default()
-            .wait_semaphores(&wait_semaphores)
-            .wait_dst_stage_mask(&wait_stages)
-            .signal_semaphores(&signal_semaphores);
-
-        vk.device
-            .queue_submit(vk.queue, &[submit_info], vk.in_flight_fence)
-            .map_err(|e| format!("queue_submit: {:?}", e))?;
-
-        let swapchains = [vk.swapchain];
-        let image_indices = [vk.current_image_index];
-        let present_info = vk::PresentInfoKHR::default()
-            .wait_semaphores(&signal_semaphores)
-            .swapchains(&swapchains)
-            .image_indices(&image_indices);
-
-        match vk.swapchain_fn.queue_present(vk.queue, &present_info) {
-            Ok(false) => {}
-            Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                vk.swapchain_valid = false;
-            }
-            Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
-                vk_recreate_surface(vk, window)?;
-            }
-            Err(e) => return Err(format!("queue_present: {:?}", e)),
-        }
-    }
-
-    Ok(())
-}
-
-/// Acquire the next swapchain image, redirect the Skia surface to it, flush, and present.
-fn vk_present(
-    vk: &mut VkState,
-    window: &dyn Window,
-    current_surface: &mut Surface,
-    gr_context: &mut DirectContext,
-) -> Result<(), String> {
-    if !vk.swapchain_valid {
-        vk_prepare_swapchain(vk, window, gr_context);
-    }
-    if !vk.swapchain_valid || vk.skia_surfaces.is_empty() {
-        return Ok(());
-    }
-
-    unsafe {
-        // Wait for the previous frame to finish.
-        vk.device
-            .wait_for_fences(&[vk.in_flight_fence], true, u64::MAX)
-            .map_err(|e| format!("wait_for_fences: {:?}", e))?;
-        vk.device
-            .reset_fences(&[vk.in_flight_fence])
-            .map_err(|e| format!("reset_fences: {:?}", e))?;
-
-        // Acquire the next swapchain image.
-        let (image_index, suboptimal) = match vk.swapchain_fn.acquire_next_image(
-            vk.swapchain,
-            u64::MAX,
-            vk.image_available_semaphore,
-            vk::Fence::null(),
-        ) {
-            Ok(result) => result,
-            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                vk.swapchain_valid = false;
-                return Ok(());
-            }
-            Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
-                println!("VK: Lost KHR");
-                vk_recreate_surface(vk, window)?;
-                return Ok(());
-            }
-            Err(e) => return Err(format!("acquire_next_image: {:?}", e)),
-        };
-
-        if suboptimal {
-            vk.swapchain_valid = false;
-        }
-
-        // Redirect the Skia surface for this frame.
-        *current_surface = vk.skia_surfaces[image_index as usize].clone();
-
-        // Flush Skia GPU work.
-        gr_context.flush_and_submit();
-
-        // Submit a dummy command buffer that waits on image_available and signals render_finished.
-        // (Skia already recorded commands via the DirectContext; we just need the semaphore sync.)
-        let wait_semaphores = [vk.image_available_semaphore];
-        let signal_semaphores = [vk.render_finished_semaphore];
-        let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-
-        let submit_info = vk::SubmitInfo::default()
-            .wait_semaphores(&wait_semaphores)
-            .wait_dst_stage_mask(&wait_stages)
-            .signal_semaphores(&signal_semaphores);
-
-        vk.device
-            .queue_submit(vk.queue, &[submit_info], vk.in_flight_fence)
-            .map_err(|e| format!("queue_submit: {:?}", e))?;
-
-        // Present.
-        let swapchains = [vk.swapchain];
-        let image_indices = [image_index];
-        let present_info = vk::PresentInfoKHR::default()
-            .wait_semaphores(&signal_semaphores)
-            .swapchains(&swapchains)
-            .image_indices(&image_indices);
-
-        match vk.swapchain_fn.queue_present(vk.queue, &present_info) {
-            Ok(false) => {}
-            Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                vk.swapchain_valid = false;
-            }
-            Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
-                vk_recreate_surface(vk, window)?;
-            }
-            Err(e) => return Err(format!("queue_present: {:?}", e)),
-        }
-    }
-
     Ok(())
 }
 
 /// Recreate the Vulkan surface from the current native window handles.
-/// The swapchain is dropped and marked invalid so it can be rebuilt lazily.
 fn vk_recreate_surface(vk: &mut VkState, window: &dyn Window) -> Result<(), String> {
     unsafe {
         vk.device.device_wait_idle().ok();
@@ -804,7 +587,6 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
     // ── 2. ash Entry + Instance ──────────────────────────────────────────────
     let entry = unsafe { ash::Entry::load().expect("Failed to load Vulkan library") };
 
-    // Query loader-supported Vulkan API version; fall back to 1.0 when unavailable.
     let instance_api_version = unsafe {
         entry
             .try_enumerate_instance_version()
@@ -813,7 +595,6 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
             .unwrap_or(vk::API_VERSION_1_0)
     };
 
-    // Collect required instance extensions for surface creation.
     let display_handle = el.as_ref().display_handle().expect("Failed to get display handle");
     let required_extensions = ash_window::enumerate_required_extensions(display_handle.as_raw())
         .expect("Failed to enumerate required Vulkan extensions")
@@ -879,8 +660,6 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         })
         .expect("No suitable Vulkan physical device found");
 
-    // Cap device API usage to what this GPU advertises to avoid asking Skia
-    // for Vulkan symbols the driver does not implement.
     let device_api_version = unsafe {
         instance
             .get_physical_device_properties(physical_device)
@@ -896,7 +675,7 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
 
     let device_extensions = crate::vk_shared::parent_device_extension_names();
 
-    // Validate required device extensions up-front so setup failures are explicit.
+    // Validate required extensions up-front.
     let available_exts = unsafe {
         instance
             .enumerate_device_extension_properties(physical_device)
@@ -1000,83 +779,27 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
             .expect("Failed to create in_flight fence")
     };
 
+    // ── 7b. Persistent blit command pool + buffer ────────────────────────────
+    let blit_cmd_pool = unsafe {
+        let pool_ci = vk::CommandPoolCreateInfo::default()
+            .queue_family_index(queue_family_index)
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+        device.create_command_pool(&pool_ci, None)
+            .expect("Failed to create blit command pool")
+    };
+    let blit_cmd_buf = unsafe {
+        let ai = vk::CommandBufferAllocateInfo::default()
+            .command_pool(blit_cmd_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        device.allocate_command_buffers(&ai)
+            .expect("Failed to allocate blit command buffer")[0]
+    };
+
     // ── 8. Skia DirectContext via ash raw handles ────────────────────────────
-    // Use the same proc-loader strategy as tab_process to keep platform behavior identical.
     let mut gr_context = {
-        let get_device_proc_addr = instance.fp_v1_0().get_device_proc_addr;
-        let get_proc = |of: skia_safe::gpu::vk::GetProcOf| {
-            unsafe {
-                match of {
-                    skia_safe::gpu::vk::GetProcOf::Instance(raw_instance, name) => {
-                        // Skia may query global symbols with a null instance handle.
-                        let vk_instance = if raw_instance.addr() == 0 {
-                            vk::Instance::null()
-                        } else {
-                            vk::Instance::from_raw(raw_instance as _)
-                        };
-                        entry.get_instance_proc_addr(vk_instance, name)
-                    }
-                    skia_safe::gpu::vk::GetProcOf::Device(raw_device, name) => {
-                        if raw_device.addr() == 0 {
-                            // Some drivers/routes ask for core procs through a null device path.
-                            entry.get_instance_proc_addr(vk::Instance::null(), name)
-                        } else {
-                            let vk_device = vk::Device::from_raw(raw_device as _);
-                            get_device_proc_addr(vk_device, name)
-                        }
-                    }
-                }
-                .map(|f| f as _)
-                .unwrap_or(ptr::null())
-            }
-        };
-
-        // Fail early with actionable diagnostics if the Vulkan loader cannot resolve
-        // core symbols Skia needs to create a Vulkan DirectContext.
-        let mut missing_procs = Vec::new();
-
-        let instance_required = [
-            c"vkGetPhysicalDeviceProperties",
-            c"vkGetPhysicalDeviceMemoryProperties",
-            c"vkGetPhysicalDeviceQueueFamilyProperties",
-        ];
-        for name in instance_required {
-            let addr: *const core::ffi::c_void = get_proc(skia_safe::gpu::vk::GetProcOf::Instance(
-                instance.handle().as_raw() as _,
-                name.as_ptr(),
-            ));
-            if addr.is_null() {
-                missing_procs.push(name.to_str().unwrap_or("<invalid-instance-proc>").to_string());
-            }
-        }
-
-        let device_required = [
-            c"vkGetDeviceQueue",
-            c"vkQueueSubmit",
-            c"vkCreateImage",
-            c"vkBindImageMemory",
-            c"vkGetImageMemoryRequirements",
-        ];
-        for name in device_required {
-            let addr: *const core::ffi::c_void = get_proc(skia_safe::gpu::vk::GetProcOf::Device(
-                device.handle().as_raw() as _,
-                name.as_ptr(),
-            ));
-            if addr.is_null() {
-                missing_procs.push(name.to_str().unwrap_or("<invalid-device-proc>").to_string());
-            }
-        }
-
-        if !missing_procs.is_empty() {
-            let driver_name = unsafe { CStr::from_ptr(instance.get_physical_device_properties(physical_device).device_name.as_ptr()) }
-                .to_string_lossy()
-                .into_owned();
-            panic!(
-                "Vulkan proc resolution failed on this driver. Missing symbols: {:?}. GPU: {}",
-                missing_procs,
-                driver_name,
-            );
-        }
+        let get_proc = SkiaGetProc::new(&entry, &instance);
+        let get_proc_fn = |of: GetProcOf| get_proc.resolve(of);
 
         let mut backend_context = unsafe {
             skia_safe::gpu::vk::BackendContext::new(
@@ -1084,7 +807,7 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
                 physical_device.as_raw() as _,
                 device.handle().as_raw() as _,
                 (queue.as_raw() as _, queue_family_index as usize),
-                &get_proc,
+                &get_proc_fn,
             )
         };
         backend_context.set_max_api_version(negotiated_api_version);
@@ -1096,19 +819,10 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
                     .to_string_lossy()
                     .into_owned();
                 panic!(
-                    "Failed to create Skia Vulkan DirectContext. GPU: {} (type {:?}), queue_family_index: {}, instance_api_version: {}, device_api_version: {}, negotiated_api_version: {}",
-                    driver_name,
-                    props.device_type,
-                    queue_family_index,
-                    vk::api_version_major(instance_api_version) * 1_000_000
-                        + vk::api_version_minor(instance_api_version) * 1_000
-                        + vk::api_version_patch(instance_api_version),
-                    vk::api_version_major(device_api_version) * 1_000_000
-                        + vk::api_version_minor(device_api_version) * 1_000
-                        + vk::api_version_patch(device_api_version),
-                    vk::api_version_major(negotiated_api_version) * 1_000_000
-                        + vk::api_version_minor(negotiated_api_version) * 1_000
-                        + vk::api_version_patch(negotiated_api_version),
+                    "Failed to create Skia Vulkan DirectContext. GPU: {} (type {:?}), \
+                     queue_family_index: {}, negotiated_api_version: 0x{:X}",
+                    driver_name, props.device_type,
+                    queue_family_index, negotiated_api_version,
                 )
             })
     };
@@ -1145,6 +859,8 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         image_available_semaphore,
         render_finished_semaphore,
         in_flight_fence,
+        blit_cmd_pool,
+        blit_cmd_buf,
     };
 
     Env {
@@ -1154,6 +870,8 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         vk,
     }
 }
+
+
 
 
 

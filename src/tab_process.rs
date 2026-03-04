@@ -1,12 +1,11 @@
 use crate::dom::{AbstractDom, Dom};
 use crate::engine::nav_provider::{NavigationProviderMessage, StokesNavigationProvider};
-// Tab process module - runs the browser engine in a separate process
 use crate::engine::{Engine, EngineConfig, ENGINE_REF, USER_AGENT_REF};
 use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage};
 use crate::networking;
 use crate::renderer::painter::{ScenePainter, SkiaCache};
 use crate::shell_provider::{ShellProviderMessage, StokesShellProvider};
-use crate::vk_shared::{TabVkImage, VulkanDeviceInfo};
+use crate::vk_shared::{SkiaGetProc, TabVkImage, VulkanDeviceInfo};
 use ash::vk::{self, Handle};
 use blitz_traits::shell::{ShellProvider, Viewport};
 use skia_safe::gpu::{self as sk_gpu, DirectContext};
@@ -15,41 +14,67 @@ use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use skia_safe::gpu::vk::GetProcOf;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
-/// Tab process that runs in its own OS process
+// ── Grouped Vulkan state for the tab process ────────────────────────────────
+
+/// All Vulkan handles owned by the tab process, grouped into a single struct.
+/// Stored as `Option<TabVulkanState>` on `TabProcess` — if `None`, Vulkan is
+/// unavailable and the tab falls back to CPU rendering.
+struct TabVulkanState {
+    _entry: ash::Entry,
+    instance: ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    device: ash::Device,
+    queue_family_index: u32,
+    gr_context: DirectContext,
+    /// Parent PID, cached at init to avoid re-parsing the env var each frame.
+    parent_pid: u32,
+    /// Preferred image format (from the parent's swapchain).
+    vk_format: vk::Format,
+}
+
+impl Drop for TabVulkanState {
+    fn drop(&mut self) {
+        // DirectContext must be dropped before the device.
+        // (Rust drops fields in declaration order, so gr_context is dropped
+        //  before device — but let's be explicit.)
+        unsafe {
+            self.device.device_wait_idle().ok();
+        }
+    }
+}
+
+/// Tab process that runs in its own OS process.
+///
+/// **Field ordering matters for drop safety.**  `vk_image` must be declared
+/// (and therefore dropped) *before* `vk_state`, because the image holds a
+/// cloned `ash::Device` and calls Vulkan destroy functions in its `Drop` impl.
+/// If `vk_state` were dropped first its `Drop` would call `vkDestroyDevice`,
+/// leaving `vk_image` with a dangling device handle.
 pub struct TabProcess {
     pub(crate) engine: Engine,
     scene_cache: SkiaCache,
     animation_time: Option<Instant>,
     channel: IpcChannel,
     tab_id: String,
-    /// Skia DirectContext backed by our own Vulkan device
-    gr_context: Option<DirectContext>,
-    /// Current Vulkan image + Skia surface used for rendering
+    /// Current Vulkan image + Skia surface used for rendering.
+    /// ⚠ Must be declared before `vk_state` so it is dropped first.
     vk_image: Option<TabVkImage>,
-    /// ash Entry – must outlive Instance/Device to keep libvulkan loaded
-    ash_entry: Option<ash::Entry>,
-    /// ash handles for our private Vulkan device
-    ash_instance: Option<ash::Instance>,
-    ash_physical_device: Option<vk::PhysicalDevice>,
-    ash_device: Option<ash::Device>,
-    queue_family_index: u32,
-    /// Preferred image format taken from the parent's swapchain
-    vk_format: vk::Format,
+    /// Vulkan state — `None` if Vulkan init failed (CPU fallback).
+    vk_state: Option<TabVulkanState>,
     shell_receiver: UnboundedReceiver<ShellProviderMessage>,
     nav_receiver: UnboundedReceiver<NavigationProviderMessage>,
     redraw_request: AtomicBool,
 }
 
 impl TabProcess {
-    /// Create a new tab process and connect to the parent
+    /// Create a new tab process and connect to the parent.
     pub fn new(tab_id: String, server_name: String) -> io::Result<Self> {
         let channel = connect(&server_name)?;
 
-        // Create an unbounded channel for shell provider messages which can be sent from any thread
         let (shell_tx, shell_rx) = unbounded_channel::<ShellProviderMessage>();
-
         let shell_provider = StokesShellProvider::new(shell_tx);
 
         let (nav_tx, nav_rx) = unbounded_channel::<NavigationProviderMessage>();
@@ -66,7 +91,6 @@ impl TabProcess {
             Arc::new(navigation_provider),
         );
 
-        // Set the engine reference in the thread-local storage
         ENGINE_REF.with(|engine_ref| {
             *engine_ref.borrow_mut() = Some(&mut engine as *mut Engine);
         });
@@ -74,28 +98,25 @@ impl TabProcess {
             *agent_ref.borrow_mut() = Some(engine.config.user_agent.clone());
         });
 
-        // Parse VulkanDeviceInfo from the environment variable set by the parent
+        // Parse VulkanDeviceInfo from the environment variable set by the parent.
         let vk_device_info: Option<VulkanDeviceInfo> = std::env::var("STOKES_VK_DEVICE_INFO")
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok());
 
-        // Determine preferred format (fall back to R8G8B8A8_UNORM)
-        let vk_format = vk_device_info.as_ref()
+        let parent_pid = vk_device_info.as_ref().map(|i| i.parent_pid).unwrap_or(0);
+        let vk_format = vk_device_info
+            .as_ref()
             .map(|i| vk::Format::from_raw(i.image_format))
             .unwrap_or(vk::Format::R8G8B8A8_UNORM);
 
-        // Initialise our private Vulkan device so we can create exportable VkImages.
-        let (ash_entry, ash_instance, ash_physical_device, ash_device, queue_family_index, gr_context) =
-            match unsafe { Self::init_vulkan(vk_device_info.as_ref()) } {
-                Ok(handles) => {
-                    let (entry, inst, phys, dev, qfi, ctx) = handles;
-                    (Some(entry), Some(inst), Some(phys), Some(dev), qfi, Some(ctx))
-                }
-                Err(e) => {
-                    eprintln!("[Tab {}] Vulkan init failed (will use CPU fallback): {}", tab_id, e);
-                    (None, None, None, None, 0, None)
-                }
-            };
+        // Initialise our private Vulkan device.
+        let vk_state = match unsafe { Self::init_vulkan(vk_device_info.as_ref(), parent_pid, vk_format) } {
+            Ok(state) => Some(state),
+            Err(e) => {
+                eprintln!("[Tab {}] Vulkan init failed (CPU fallback): {}", tab_id, e);
+                None
+            }
+        };
 
         Ok(Self {
             engine,
@@ -103,14 +124,8 @@ impl TabProcess {
             animation_time: None,
             channel,
             tab_id,
-            gr_context,
             vk_image: None,
-            ash_entry,
-            ash_instance,
-            ash_physical_device,
-            ash_device,
-            queue_family_index,
-            vk_format,
+            vk_state,
             shell_receiver: shell_rx,
             nav_receiver: nav_rx,
             redraw_request: AtomicBool::new(false),
@@ -118,26 +133,18 @@ impl TabProcess {
     }
 
     /// Initialise a private Vulkan instance + device suitable for offscreen rendering.
-    /// Tries to select the same physical device the parent is using (by index/handles from
-    /// `VulkanDeviceInfo`), falling back to the first GPU if not found.
     unsafe fn init_vulkan(
         parent_info: Option<&VulkanDeviceInfo>,
-    ) -> Result<(ash::Entry, ash::Instance, vk::PhysicalDevice, ash::Device, u32, DirectContext), String> {
-        println!("[Tab:init_vulkan] Starting Vulkan init; parent_info present={}", parent_info.is_some());
-        let entry = match ash::Entry::load() {
-            Ok(e) => { println!("[Tab:init_vulkan] ash::Entry::load OK"); e }
-            Err(err) => {
-                let msg = format!("ash Entry::load: {:?}", err);
-                println!("[Tab:init_vulkan] ERROR: {}", msg);
-                return Err(msg);
-            }
-        };
+        parent_pid: u32,
+        vk_format: vk::Format,
+    ) -> Result<TabVulkanState, String> {
+        let entry = ash::Entry::load()
+            .map_err(|e| format!("ash Entry::load: {:?}", e))?;
 
         let instance_api_version = entry
             .try_enumerate_instance_version()
             .map_err(|e| format!("vkEnumerateInstanceVersion: {:?}", e))?
             .unwrap_or(vk::API_VERSION_1_0);
-        println!("[Tab:init_vulkan] instance_api_version=0x{:X}", instance_api_version);
 
         let app_info = vk::ApplicationInfo::default()
             .application_name(c"stokes-tab")
@@ -146,71 +153,39 @@ impl TabProcess {
         let instance_ci = vk::InstanceCreateInfo::default()
             .application_info(&app_info);
 
-        let instance = match entry.create_instance(&instance_ci, None) {
-            Ok(i) => { println!("[Tab:init_vulkan] vkCreateInstance succeeded"); i }
-            Err(e) => {
-                let msg = format!("vkCreateInstance: {:?}", e);
-                println!("[Tab:init_vulkan] ERROR: {}", msg);
-                return Err(msg);
-            }
-        };
+        let instance = entry.create_instance(&instance_ci, None)
+            .map_err(|e| format!("vkCreateInstance: {:?}", e))?;
 
-        let physical_devices = match instance.enumerate_physical_devices() {
-            Ok(devs) => { println!("[Tab:init_vulkan] enumerate_physical_devices found {} devices", devs.len()); devs }
-            Err(e) => {
-                let msg = format!("enumerate_physical_devices: {:?}", e);
-                println!("[Tab:init_vulkan] ERROR: {}", msg);
-                return Err(msg);
-            }
-        };
+        let physical_devices = instance.enumerate_physical_devices()
+            .map_err(|e| format!("enumerate_physical_devices: {:?}", e))?;
 
         if physical_devices.is_empty() {
-            println!("[Tab:init_vulkan] No Vulkan physical devices found");
             return Err("No Vulkan physical devices found".into());
         }
 
-        // Print info about each physical device
-        for (i, &pd) in physical_devices.iter().enumerate() {
-            let props = instance.get_physical_device_properties(pd);
-            let name = CStr::from_ptr(props.device_name.as_ptr()).to_string_lossy().into_owned();
-            let uuid = crate::vk_shared::physical_device_uuid(&instance, pd);
-            // uuid is a [u8;16] — convert to a hex string for printing
-            let uuid_hex = uuid.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join("");
-            println!("[Tab:init_vulkan] PD[{}] name='{}' uuid='{}'", i, name, uuid_hex);
-        }
-
-        let mut matched_parent_uuid = false;
+        // Try to match the same GPU the parent is using (by device UUID).
         let physical_device = parent_info
             .and_then(|info| {
                 physical_devices.iter().find(|&&d| {
-                    let uuid = crate::vk_shared::physical_device_uuid(&instance, d);
-                    uuid == info.device_uuid
+                    crate::vk_shared::physical_device_uuid(&instance, d) == info.device_uuid
                 }).copied()
             })
-            .inspect(|_| println!("[Tab:init_vulkan] matched parent GPU by UUID"))
-            .inspect(|_| matched_parent_uuid = true)
             .unwrap_or(physical_devices[0]);
 
-        // Print selected physical device
-        let sel_props = instance.get_physical_device_properties(physical_device);
-        let sel_name = CStr::from_ptr(sel_props.device_name.as_ptr()).to_string_lossy().into_owned();
-        println!("[Tab:init_vulkan] Selected physical device: '{}'", sel_name);
-
         let queue_families = instance.get_physical_device_queue_family_properties(physical_device);
-        println!("[Tab:init_vulkan] queue_families count = {}", queue_families.len());
         let fallback_qfi = queue_families
             .iter()
             .enumerate()
             .find(|(_, q)| q.queue_flags.contains(vk::QueueFlags::GRAPHICS))
             .map(|(i, _)| i as u32)
-            .ok_or_else(|| "Selected Vulkan physical device has no graphics queue family".to_string())?;
+            .ok_or("No graphics queue family found")?;
 
-        println!("[Tab:init_vulkan] fallback_qfi = {}", fallback_qfi);
-
-        // Only reuse parent's queue family index when we actually matched the same GPU and
-        // the index is valid for this physical device.
-        let queue_family_index = if matched_parent_uuid {
-            println!("[Tab:init_vulkan] parent matched, checking parent's queue_family_index validity");
+        // Reuse parent's queue family index when we matched the same GPU.
+        let matched_parent = parent_info
+            .is_some_and(|info| {
+                crate::vk_shared::physical_device_uuid(&instance, physical_device) == info.device_uuid
+            });
+        let queue_family_index = if matched_parent {
             parent_info
                 .filter(|info| {
                     queue_families
@@ -220,22 +195,13 @@ impl TabProcess {
                 .map(|info| info.queue_family_index)
                 .unwrap_or(fallback_qfi)
         } else {
-            println!("[Tab:init_vulkan] parent not matched; using fallback queue family index");
             fallback_qfi
         };
 
-        println!("[Tab:init_vulkan] chosen queue_family_index = {}", queue_family_index);
-
+        // Validate required device extensions.
         let ext_names = crate::vk_shared::tab_device_extension_names();
-        println!("[Tab:init_vulkan] required device extensions count = {}", ext_names.len());
-        let available_exts = match instance.enumerate_device_extension_properties(physical_device) {
-            Ok(exts) => { println!("[Tab:init_vulkan] enumerate_device_extension_properties OK ({} ext)", exts.len()); exts }
-            Err(e) => {
-                let msg = format!("enumerate_device_extension_properties: {:?}", e);
-                println!("[Tab:init_vulkan] ERROR: {}", msg);
-                return Err(msg);
-            }
-        };
+        let available_exts = instance.enumerate_device_extension_properties(physical_device)
+            .map_err(|e| format!("enumerate_device_extension_properties: {:?}", e))?;
         let missing_exts: Vec<String> = ext_names
             .iter()
             .map(|&name| CStr::from_ptr(name).to_string_lossy().into_owned())
@@ -249,12 +215,13 @@ impl TabProcess {
             })
             .collect();
         if !missing_exts.is_empty() {
-            let driver_name = CStr::from_ptr(instance.get_physical_device_properties(physical_device).device_name.as_ptr())
-                .to_string_lossy()
-                .into_owned();
-            println!("[Tab:init_vulkan] ERROR: missing required Vulkan tab extensions: {:?}; GPU: {}", missing_exts, driver_name);
+            let driver_name = CStr::from_ptr(
+                instance.get_physical_device_properties(physical_device).device_name.as_ptr(),
+            )
+            .to_string_lossy()
+            .into_owned();
             return Err(format!(
-                "Selected GPU is missing required Vulkan tab extensions: {:?}. GPU: {}",
+                "Missing required Vulkan tab extensions: {:?}. GPU: {}",
                 missing_exts, driver_name
             ));
         }
@@ -268,61 +235,43 @@ impl TabProcess {
             .queue_create_infos(std::slice::from_ref(&queue_ci))
             .enabled_extension_names(&ext_names);
 
-        println!("[Tab:init_vulkan] Creating device (queue_family_index={})", queue_family_index);
-        let device = match instance.create_device(physical_device, &device_ci, None) {
-            Ok(d) => { println!("[Tab:init_vulkan] vkCreateDevice succeeded"); d }
-            Err(e) => {
-                let msg = format!("vkCreateDevice: {:?} (queue_family_index={})", e, queue_family_index);
-                println!("[Tab:init_vulkan] ERROR: {}", msg);
-                return Err(msg);
-            }
-        };
+        let device = instance.create_device(physical_device, &device_ci, None)
+            .map_err(|e| format!("vkCreateDevice: {:?}", e))?;
 
-        // Build a Skia DirectContext against this device
         let queue = device.get_device_queue(queue_family_index, 0);
-        println!("[Tab:init_vulkan] Obtained device queue (handle=0x{:X})", queue.as_raw());
-        let get_device_proc_addr = instance.fp_v1_0().get_device_proc_addr;
-        let get_proc = |gpo: skia_safe::gpu::vk::GetProcOf| {
-            match gpo {
-                skia_safe::gpu::vk::GetProcOf::Instance(raw_instance, name) => {
-                    let vk_instance = if raw_instance.addr() == 0 {
-                        vk::Instance::null()
-                    } else {
-                        vk::Instance::from_raw(raw_instance as _)
-                    };
-                    entry.get_instance_proc_addr(vk_instance, name)
-                }
-                skia_safe::gpu::vk::GetProcOf::Device(raw_device, name) => {
-                    if raw_device.addr() == 0 {
-                        entry.get_instance_proc_addr(vk::Instance::null(), name)
-                    } else {
-                        let vk_device = vk::Device::from_raw(raw_device as _);
-                        get_device_proc_addr(vk_device, name)
-                    }
-                }
-            }
-            .map(|f| f as _)
-            .unwrap_or(std::ptr::null())
-        };
 
-        let gr_context = sk_gpu::direct_contexts::make_vulkan(
-            &skia_safe::gpu::vk::BackendContext::new(
-                instance.handle().as_raw() as _,
-                physical_device.as_raw() as _,
-                device.handle().as_raw() as _,
-                (queue.as_raw() as _, queue_family_index as usize),
-                &get_proc,
-            ),
-            None,
-        ).ok_or_else(|| {
-            let msg = "Failed to create Skia Vulkan DirectContext in tab".to_string();
-            println!("[Tab:init_vulkan] ERROR: {}", msg);
-            msg
-        })?;
+        // Negotiate API version to match what window.rs does.
+        let device_api_version = instance
+            .get_physical_device_properties(physical_device)
+            .api_version;
+        let negotiated_api_version = instance_api_version.min(device_api_version);
 
-        println!("[Tab:init_vulkan] Skia DirectContext created successfully");
+        // Build Skia DirectContext using the shared proc loader.
+        let get_proc = SkiaGetProc::new(&entry, &instance);
+        let get_proc_fn = |of: GetProcOf| get_proc.resolve(of);
 
-        Ok((entry, instance, physical_device, device, queue_family_index, gr_context))
+        let mut backend_ctx = skia_safe::gpu::vk::BackendContext::new(
+            instance.handle().as_raw() as _,
+            physical_device.as_raw() as _,
+            device.handle().as_raw() as _,
+            (queue.as_raw() as _, queue_family_index as usize),
+            &get_proc_fn,
+        );
+        backend_ctx.set_max_api_version(negotiated_api_version);
+
+        let gr_context = sk_gpu::direct_contexts::make_vulkan(&backend_ctx, None)
+            .ok_or("Failed to create Skia Vulkan DirectContext in tab")?;
+
+        Ok(TabVulkanState {
+            _entry: entry,
+            instance,
+            physical_device,
+            device,
+            queue_family_index,
+            gr_context,
+            parent_pid,
+            vk_format,
+        })
     }
 
     fn animation_time(&mut self) -> f64 {
@@ -336,9 +285,8 @@ impl TabProcess {
     }
 
     /// Ensure the VkImage is allocated at the given dimensions.
-    /// Returns `Ok(false)` if Vulkan is not available (tab continues without GPU rendering).
+    /// Returns `Ok(false)` if Vulkan is not available.
     fn ensure_vk_image(&mut self, width: u32, height: u32) -> io::Result<bool> {
-        // Check if we need to (re)create the image
         let needs_create = match &self.vk_image {
             None => true,
             Some(img) => img.width != width || img.height != height,
@@ -348,45 +296,40 @@ impl TabProcess {
             return Ok(true);
         }
 
-        // Drop the old image first
-        println!("[Tab:ensure_vk_image] about to drop old image (exists={})", self.vk_image.is_some());
-        self.vk_image = None;
-        println!("[Tab:ensure_vk_image] dropped old image");
+        // Wait for all GPU work to finish before dropping the old image.
+        // On Windows, pending semaphore signals or Skia submissions can cause
+        // access violations if the image/memory is destroyed while still in use.
+        if let Some(vk) = self.vk_state.as_mut() {
+            vk.gr_context.flush_and_submit();
+            unsafe { vk.device.device_wait_idle().ok(); }
+        }
 
-        let (inst, phys, dev, ctx) = match (
-            self.ash_instance.as_ref(),
-            self.ash_physical_device.as_ref(),
-            self.ash_device.as_ref(),
-            self.gr_context.as_mut(),
-        ) {
-            (Some(i), Some(p), Some(d), Some(c)) => (i, p, d, c),
-            _ => {
-                eprintln!("[Tab:{}] Vulkan not available — skipping VkImage creation", self.tab_id);
-                return Ok(false);
-            }
+        // Drop the old image (now safe — GPU is idle).
+        self.vk_image = None;
+
+        let vk = match self.vk_state.as_mut() {
+            Some(v) => v,
+            None => return Ok(false),
         };
 
-        println!("[Tab:ensure_vk_image] creating TabVkImage width={} height={} format={:?}", width, height, self.vk_format);
-        println!("[Tab:ensure_vk_image] getting device queue (qfi={})", self.queue_family_index);
-        let queue = unsafe { dev.get_device_queue(self.queue_family_index, 0) };
+        let queue = unsafe { vk.device.get_device_queue(vk.queue_family_index, 0) };
 
         let img = unsafe {
             TabVkImage::new(
-                inst,
-                *phys,
-                dev,
-                ctx,
+                &vk.instance,
+                vk.physical_device,
+                &vk.device,
+                &mut vk.gr_context,
                 width,
                 height,
-                self.vk_format,
-                self.queue_family_index,
+                vk.vk_format,
+                vk.queue_family_index,
                 queue,
             )
         };
 
         match img {
             Ok(created) => {
-                println!("[Tab:ensure_vk_image] TabVkImage created successfully (alloc_size={})", created.alloc_size);
                 self.vk_image = Some(created);
                 Ok(true)
             }
@@ -700,36 +643,27 @@ impl TabProcess {
         }
 
         // Flush the Skia GPU commands so the image memory is ready to export
-        if let Some(ctx) = self.gr_context.as_mut() {
+        if let Some(ctx) = self.vk_state.as_mut().map(|s| &mut s.gr_context) {
             ctx.flush_and_submit();
-            println!("[Tab:render_frame] Skia flush_and_submit called");
         }
 
         self.scene_cache.next_gen();
 
+        // Use cached parent_pid from TabVulkanState.
+        let parent_pid = self.vk_state.as_ref().map(|s| s.parent_pid).unwrap_or(0);
+
         // After Skia flush, submit a barrier (COLOR_ATTACHMENT_OPTIMAL → GENERAL)
-        // and signal the exportable semaphore.  The parent will import that
-        // semaphore and wait on it before reading the image, giving us a
-        // true GPU-side synchronization fence across the process boundary.
-        // Falls back to a CPU queue_wait_idle when semaphores are unavailable.
-        let parent_pid = std::env::var("STOKES_VK_DEVICE_INFO")
-            .ok()
-            .and_then(|s| serde_json::from_str::<crate::vk_shared::VulkanDeviceInfo>(&s).ok())
-            .map(|info| info.parent_pid)
-            .unwrap_or(0);
+        // and signal the exportable semaphore for cross-process GPU sync.
+        let sem_handle: i64 = {
+            let vk_image = self.vk_image.as_mut().unwrap();
+            unsafe { vk_image.signal_and_export_semaphore(parent_pid) }
+        };
 
-        let vk_image = self.vk_image.as_ref().unwrap();
-        let sem_handle: i64 = unsafe { vk_image.signal_and_export_semaphore(parent_pid) };
-        println!("[Tab:render_frame] semaphore handle returned = {}", sem_handle);
-
-        // If we couldn't get a semaphore, fall back to a CPU wait so the
-        // parent still sees a complete frame.
+        // If we couldn't get a semaphore, fall back to a CPU wait.
         if sem_handle == -1 || sem_handle == 0 {
-            println!("[Tab:render_frame] semaphore not available, falling back to queue_wait_idle if possible");
-            if let Some(device) = self.ash_device.as_ref() {
-                let queue = unsafe { device.get_device_queue(self.queue_family_index, 0) };
-                unsafe { device.queue_wait_idle(queue).ok() };
-                println!("[Tab:render_frame] queue_wait_idle executed");
+            if let Some(vk) = self.vk_state.as_ref() {
+                let queue = unsafe { vk.device.get_device_queue(vk.queue_family_index, 0) };
+                unsafe { vk.device.queue_wait_idle(queue).ok() };
             }
         }
 
@@ -739,17 +673,9 @@ impl TabProcess {
         let vk_format = vk_image.format.as_raw();
         let alloc_size = vk_image.alloc_size;
 
-        // Retrieve the parent PID from VulkanDeviceInfo (set via env at startup).
-        let parent_pid = std::env::var("STOKES_VK_DEVICE_INFO")
-            .ok()
-            .and_then(|s| serde_json::from_str::<VulkanDeviceInfo>(&s).ok())
-            .map(|info| info.parent_pid)
-            .unwrap_or(0);
-
         // Export the backing memory as a cross-process handle.
-        println!("[Tab:render_frame] exporting memory handle to parent_pid={}", parent_pid);
         let mem_handle = match unsafe { vk_image.export_handle(parent_pid) } {
-            Ok(h) => { println!("[Tab:render_frame] export_handle succeeded: {}", h); h }
+            Ok(h) => h,
             Err(e) => {
                 eprintln!("[Tab {}] export_handle failed: {}", self.tab_id, e);
                 return Ok(());
@@ -757,7 +683,6 @@ impl TabProcess {
         };
 
         // Send the FrameRendered metadata message with the handle embedded.
-        println!("[Tab:render_frame] sending FrameRendered (w={} h={} format=0x{:X} alloc_size={} sem={})", width, height, vk_format, alloc_size, sem_handle);
         self.channel.send(&TabToParentMessage::FrameRendered {
             mem_handle,
             width,
@@ -773,7 +698,7 @@ impl TabProcess {
 
 /// Entry point for tab process executable
 pub async fn tab_process_main(tab_id: String, server_name: String) -> io::Result<()> {
-    //tokio::time::sleep(Duration::from_millis(10000)).await;
+    tokio::time::sleep(Duration::from_millis(10000)).await;
     let mut process = TabProcess::new(tab_id, server_name)?;
     process.run().await
 }

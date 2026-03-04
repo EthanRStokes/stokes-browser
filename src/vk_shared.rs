@@ -16,35 +16,25 @@
 ///
 /// The parent process:
 ///  1. Receives the handle value from `FrameRendered`.
-///  2. Calls `import_skia_image` to bind the memory into its own Vulkan device and
-///     produce a `skia_safe::Image` that can be drawn directly onto the swapchain canvas.
+///  2. Calls `import_vk_image_raw` to bind the memory into its own Vulkan device and
+///     produce an `ImportedVkImage` that can be blitted directly to the swapchain.
 
 use ash::vk::{self, Handle};
 use skia_safe::gpu::vk::AllocFlag;
 use skia_safe::gpu::{self, DirectContext};
-use skia_safe::{ColorType, Image};
 use std::ffi::c_char;
 
 
-// ── Platform-specific external semaphore handle type ───────────────────────
-
-#[cfg(windows)]
-fn external_semaphore_handle_type() -> vk::ExternalSemaphoreHandleTypeFlags {
-    vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32
-}
-
-#[cfg(not(windows))]
-fn external_semaphore_handle_type() -> vk::ExternalSemaphoreHandleTypeFlags {
-    vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD
-}
 // ── VkFormat ↔ Skia mappings ────────────────────────────────────────────────
 
-pub fn vk_format_to_skia(fmt: vk::Format) -> Option<(gpu::vk::Format, ColorType)> {
+/// Map a `vk::Format` to the corresponding Skia format + color type.
+/// Returns `None` for formats Skia cannot handle directly.
+pub fn vk_format_to_skia(fmt: vk::Format) -> Option<(gpu::vk::Format, skia_safe::ColorType)> {
     match fmt {
-        vk::Format::B8G8R8A8_UNORM => Some((gpu::vk::Format::B8G8R8A8_UNORM, ColorType::BGRA8888)),
-        vk::Format::R8G8B8A8_UNORM => Some((gpu::vk::Format::R8G8B8A8_UNORM, ColorType::RGBA8888)),
-        vk::Format::B8G8R8A8_SRGB  => Some((gpu::vk::Format::B8G8R8A8_SRGB,  ColorType::BGRA8888)),
-        vk::Format::R8G8B8A8_SRGB  => Some((gpu::vk::Format::R8G8B8A8_SRGB,  ColorType::RGBA8888)),
+        vk::Format::B8G8R8A8_UNORM => Some((gpu::vk::Format::B8G8R8A8_UNORM, skia_safe::ColorType::BGRA8888)),
+        vk::Format::R8G8B8A8_UNORM => Some((gpu::vk::Format::R8G8B8A8_UNORM, skia_safe::ColorType::RGBA8888)),
+        vk::Format::B8G8R8A8_SRGB  => Some((gpu::vk::Format::B8G8R8A8_SRGB,  skia_safe::ColorType::BGRA8888)),
+        vk::Format::R8G8B8A8_SRGB  => Some((gpu::vk::Format::R8G8B8A8_SRGB,  skia_safe::ColorType::RGBA8888)),
         _ => None,
     }
 }
@@ -60,6 +50,80 @@ fn external_handle_type() -> vk::ExternalMemoryHandleTypeFlags {
 fn external_handle_type() -> vk::ExternalMemoryHandleTypeFlags {
     vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT
 }
+
+// ── Platform-specific external semaphore handle type ──────────────────────
+
+#[cfg(windows)]
+fn external_semaphore_handle_type() -> vk::ExternalSemaphoreHandleTypeFlags {
+    vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32
+}
+
+#[cfg(not(windows))]
+fn external_semaphore_handle_type() -> vk::ExternalSemaphoreHandleTypeFlags {
+    vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD
+}
+
+// ── Shared Skia proc-loader ─────────────────────────────────────────────────
+
+/// Helper struct that resolves Vulkan function pointers for Skia.
+///
+/// The same logic is needed by both the parent (window.rs) and child
+/// (tab_process.rs) Vulkan initialisation paths.
+pub struct SkiaGetProc {
+    get_instance_proc_addr: vk::PFN_vkGetInstanceProcAddr,
+    get_device_proc_addr: vk::PFN_vkGetDeviceProcAddr,
+}
+
+impl SkiaGetProc {
+    /// Build from ash Entry + Instance.
+    pub fn new(entry: &ash::Entry, instance: &ash::Instance) -> Self {
+        Self {
+            get_instance_proc_addr: entry.static_fn().get_instance_proc_addr,
+            get_device_proc_addr: instance.fp_v1_0().get_device_proc_addr,
+        }
+    }
+
+    /// Resolve a Vulkan proc for Skia.
+    pub fn resolve(&self, of: gpu::vk::GetProcOf) -> *const core::ffi::c_void {
+        unsafe {
+            match of {
+                gpu::vk::GetProcOf::Instance(raw_instance, name) => {
+                    let vk_instance = if raw_instance.addr() == 0 {
+                        vk::Instance::null()
+                    } else {
+                        vk::Instance::from_raw(raw_instance as _)
+                    };
+                    (self.get_instance_proc_addr)(vk_instance, name)
+                        .map(|f| f as *const core::ffi::c_void)
+                        .unwrap_or(std::ptr::null())
+                }
+                gpu::vk::GetProcOf::Device(raw_device, name) => {
+                    if raw_device.addr() == 0 {
+                        (self.get_instance_proc_addr)(vk::Instance::null(), name)
+                            .map(|f| f as *const core::ffi::c_void)
+                            .unwrap_or(std::ptr::null())
+                    } else {
+                        let vk_device = vk::Device::from_raw(raw_device as _);
+                        (self.get_device_proc_addr)(vk_device, name)
+                            .map(|f| f as *const core::ffi::c_void)
+                            .unwrap_or(std::ptr::null())
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── Common color subresource range ──────────────────────────────────────────
+
+/// Standard color subresource range used for layout transitions.
+pub const COLOR_SUBRESOURCE_RANGE: vk::ImageSubresourceRange = vk::ImageSubresourceRange {
+    aspect_mask: vk::ImageAspectFlags::COLOR,
+    base_mip_level: 0,
+    level_count: 1,
+    base_array_layer: 0,
+    layer_count: 1,
+};
 
 // ── TabVkImage (child/tab side) ─────────────────────────────────────────────
 
@@ -83,6 +147,13 @@ pub struct TabVkImage {
     /// Pre-recorded command buffer: COLOR_ATTACHMENT_OPTIMAL → GENERAL barrier.
     cmd_buf: vk::CommandBuffer,
     pub queue: vk::Queue,
+    /// Fence used to track the last `signal_and_export_semaphore` submission.
+    /// On Windows, `device_wait_idle` alone may not be sufficient to ensure the
+    /// driver has fully retired a signaled-but-never-waited-on semaphore; using
+    /// a fence gives us a reliable synchronization point.
+    submit_fence: vk::Fence,
+    /// Whether `submit_fence` is currently in the submitted (unsignaled) state.
+    submit_fence_pending: bool,
 
     #[cfg(windows)]
     ext_mem_win32: ash::khr::external_memory_win32::Device,
@@ -114,8 +185,6 @@ impl TabVkImage {
         let mut ext_image_ci = vk::ExternalMemoryImageCreateInfo::default()
             .handle_types(handle_type);
 
-        let family_indices = [queue_family_index];
-
         let image_ci = vk::ImageCreateInfo::default()
             .push_next(&mut ext_image_ci)
             .image_type(vk::ImageType::TYPE_2D)
@@ -132,7 +201,6 @@ impl TabVkImage {
                     | vk::ImageUsageFlags::TRANSFER_DST,
             )
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .queue_family_indices(&family_indices)
             .initial_layout(vk::ImageLayout::UNDEFINED);
 
         let image = device
@@ -177,24 +245,21 @@ impl TabVkImage {
         })?;
 
         // -- Build Skia surface -----------------------------------------------
-        let alloc = skia_safe::gpu::vk::Alloc::from_device_memory(
+        let alloc = gpu::vk::Alloc::from_device_memory(
             memory.as_raw() as _,
-            0,                 // offset
-            mem_reqs.size,     // size
-            AllocFlag::empty(),                 // flags
+            0,
+            mem_reqs.size,
+            AllocFlag::empty(),
         );
 
-        let sk_image_info = skia_safe::gpu::vk::ImageInfo::new(
+        let sk_image_info = gpu::vk::ImageInfo::new(
             image.as_raw() as _,
             alloc,
-            skia_safe::gpu::vk::ImageTiling::OPTIMAL,
-            skia_safe::gpu::vk::ImageLayout::UNDEFINED,
+            gpu::vk::ImageTiling::OPTIMAL,
+            gpu::vk::ImageLayout::UNDEFINED,
             skia_format,
             1,
-            None,
-            None,
-            None,
-            None,
+            None, None, None, None,
         );
 
         let render_target = gpu::backend_render_targets::make_vk(
@@ -219,23 +284,21 @@ impl TabVkImage {
         })?;
 
         // -- Command pool + buffer for the post-render layout transition ------
-        let cmd_pool = {
-            let pool_ci = vk::CommandPoolCreateInfo::default()
-                .queue_family_index(queue_family_index)
-                .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-            device.create_command_pool(&pool_ci, None).map_err(|e| {
-                device.free_memory(memory, None);
-                device.destroy_image(image, None);
-                format!("vkCreateCommandPool (tab) failed: {:?}", e)
-            })?
-        };
+        let pool_ci = vk::CommandPoolCreateInfo::default()
+            .queue_family_index(queue_family_index)
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+        let cmd_pool = device.create_command_pool(&pool_ci, None).map_err(|e| {
+            device.free_memory(memory, None);
+            device.destroy_image(image, None);
+            format!("vkCreateCommandPool (tab) failed: {:?}", e)
+        })?;
 
         let cmd_buf = {
-            let alloc_info = vk::CommandBufferAllocateInfo::default()
+            let ai = vk::CommandBufferAllocateInfo::default()
                 .command_pool(cmd_pool)
                 .level(vk::CommandBufferLevel::PRIMARY)
                 .command_buffer_count(1);
-            let bufs = device.allocate_command_buffers(&alloc_info).map_err(|e| {
+            let bufs = device.allocate_command_buffers(&ai).map_err(|e| {
                 device.destroy_command_pool(cmd_pool, None);
                 device.free_memory(memory, None);
                 device.destroy_image(image, None);
@@ -253,6 +316,15 @@ impl TabVkImage {
                 e
             })
             .ok();
+
+        // -- Fence for tracking signal_and_export_semaphore submissions ------
+        let submit_fence = device.create_fence(&vk::FenceCreateInfo::default(), None)
+            .map_err(|e| {
+                device.destroy_command_pool(cmd_pool, None);
+                device.free_memory(memory, None);
+                device.destroy_image(image, None);
+                format!("vkCreateFence (tab submit) failed: {:?}", e)
+            })?;
 
         #[cfg(windows)]
         let ext_mem_win32 = ash::khr::external_memory_win32::Device::new(instance, device);
@@ -272,6 +344,8 @@ impl TabVkImage {
             cmd_pool,
             cmd_buf,
             queue,
+            submit_fence,
+            submit_fence_pending: false,
             #[cfg(windows)]
             ext_mem_win32,
             #[cfg(not(windows))]
@@ -288,15 +362,8 @@ impl TabVkImage {
     ///
     /// **Windows**: returns a Win32 `HANDLE` that has already been duplicated into the
     ///   target process (`parent_pid`). The parent process can use this value directly.
-    ///   The local handle is closed after duplication; the parent is responsible for
-    ///   closing the duplicated handle after importing.
     ///
-    /// **Linux**: returns a dup'd file-descriptor number (i64 cast to u64). The caller
-    ///   is responsible for closing the fd after sending it.
-    ///
-    /// # Parameters
-    /// * `parent_pid` – On Windows: the PID of the parent process that will import the handle.
-    ///                  Ignored on Linux.
+    /// **Linux**: returns a dup'd file-descriptor number (i64 cast to u64).
     pub unsafe fn export_handle(&self, parent_pid: u32) -> Result<u64, String> {
         #[cfg(windows)]
         {
@@ -307,7 +374,6 @@ impl TabVkImage {
                 GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE,
             };
 
-            // Get our own handle from Vulkan
             let get_info = vk::MemoryGetWin32HandleInfoKHR::default()
                 .memory(self.memory)
                 .handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32);
@@ -316,7 +382,6 @@ impl TabVkImage {
                 .get_memory_win32_handle(&get_info)
                 .map_err(|e| format!("vkGetMemoryWin32HandleKHR failed: {:?}", e))?;
 
-            // Duplicate the handle into the parent process.
             let parent_proc: HANDLE = OpenProcess(PROCESS_DUP_HANDLE, 0, parent_pid);
             if parent_proc == 0 as HANDLE || parent_proc == INVALID_HANDLE_VALUE {
                 let err = std::io::Error::last_os_error();
@@ -347,7 +412,7 @@ impl TabVkImage {
 
         #[cfg(not(windows))]
         {
-            let _ = parent_pid; // unused
+            let _ = parent_pid;
             let get_fd_info = vk::MemoryGetFdInfoKHR::default()
                 .memory(self.memory)
                 .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
@@ -364,26 +429,33 @@ impl TabVkImage {
     ///      `COLOR_ATTACHMENT_OPTIMAL` → `GENERAL` (readable cross-process).
     ///   2. Signals `render_semaphore`.
     ///
-    /// Returns the exported semaphore handle to embed in the IPC message, or
-    /// -1/0 if the semaphore is unavailable.
-    ///
+    /// Returns the exported semaphore handle, or -1/0 if unavailable.
     /// Must be called *after* `gr_context.flush_and_submit()`.
-    pub unsafe fn signal_and_export_semaphore(&self, parent_pid: u32) -> i64 {
+    pub unsafe fn signal_and_export_semaphore(&mut self, parent_pid: u32) -> i64 {
         let sem = match &self.render_semaphore {
             Some(s) => s,
             None => return -1,
         };
 
-        // Re-record the command buffer each frame (pool has RESET_COMMAND_BUFFER).
+        // Wait for any prior submission to complete before reusing the command
+        // buffer and fence.  This is essential on Windows where the driver may
+        // crash if we reset a command buffer / fence that is still in use.
+        if self.submit_fence_pending {
+            let _ = self.device.wait_for_fences(
+                &[self.submit_fence],
+                true,
+                5_000_000_000, // 5 seconds
+            );
+            let _ = self.device.reset_fences(&[self.submit_fence]);
+            self.submit_fence_pending = false;
+        }
+
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         if self.device.begin_command_buffer(self.cmd_buf, &begin_info).is_err() {
             return -1;
         }
 
-        // Transition: COLOR_ATTACHMENT_OPTIMAL → GENERAL
-        // (GENERAL is the safe layout for cross-process export; the parent will
-        //  then transition it to SHADER_READ_ONLY_OPTIMAL before sampling.)
         let barrier = vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
             .dst_access_mask(vk::AccessFlags::empty())
@@ -392,13 +464,7 @@ impl TabVkImage {
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .image(self.image)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            });
+            .subresource_range(COLOR_SUBRESOURCE_RANGE);
 
         self.device.cmd_pipeline_barrier(
             self.cmd_buf,
@@ -412,29 +478,47 @@ impl TabVkImage {
             return -1;
         }
 
-        // Submit: execute barrier, then signal the semaphore.
         let signal_semaphores = [sem.semaphore];
         let cmd_bufs = [self.cmd_buf];
         let submit_info = vk::SubmitInfo::default()
             .command_buffers(&cmd_bufs)
             .signal_semaphores(&signal_semaphores);
 
-        if self.device.queue_submit(self.queue, &[submit_info], vk::Fence::null()).is_err() {
+        if self.device.queue_submit(self.queue, &[submit_info], self.submit_fence).is_err() {
             return -1;
         }
+        self.submit_fence_pending = true;
 
-        // Export the (now-signaled) semaphore handle.
         sem.export(parent_pid)
     }
 }
 
 impl Drop for TabVkImage {
     fn drop(&mut self) {
-        // Drop Skia surface first (holds GPU references)
+        // Drop the Skia surface first — it may hold internal references to
+        // the VkImage / VkDeviceMemory through the Skia GPU backend.
         self.skia_surface = None;
+
         unsafe {
+            // Wait for the last signal_and_export_semaphore submission to finish.
+            // On Windows, destroying a semaphore or command pool while GPU work
+            // referencing them is still pending causes an access violation.
+            if self.submit_fence_pending {
+                let _ = self.device.wait_for_fences(
+                    &[self.submit_fence],
+                    true,
+                    5_000_000_000, // 5 seconds
+                );
+                self.submit_fence_pending = false;
+            }
+
+            // Also do a full device wait as a safety net — Skia may have
+            // submitted additional GPU work we don't track with our fence.
             self.device.device_wait_idle().ok();
+
+            // Now safe to destroy everything.
             self.render_semaphore = None;
+            self.device.destroy_fence(self.submit_fence, None);
             self.device.destroy_command_pool(self.cmd_pool, None);
             self.device.free_memory(self.memory, None);
             self.device.destroy_image(self.image, None);
@@ -471,126 +555,8 @@ impl Drop for ImportedVkImage {
 
 // ── Parent-side import ───────────────────────────────────────────────────────
 
-/// Import a cross-process memory handle into the parent's Vulkan device and wrap
-/// it as a Skia `Image` ready to composite onto the swapchain canvas.
-///
-/// # Parameters
-/// * `handle` – Platform handle value from `TabVkImage::export_handle`.
-///   * Windows: a Win32 HANDLE already duplicated into this process.
-///   * Linux:   a file descriptor number.
-/// * `parent_pid` – Ignored; present for API symmetry.
-///
-/// # Safety
-/// The caller must not use `handle` after this call; ownership is transferred to
-/// the Vulkan driver.
-pub unsafe fn import_skia_image(
-    instance: &ash::Instance,
-    physical_device: vk::PhysicalDevice,
-    device: &ash::Device,
-    gr_context: &mut DirectContext,
-    handle: u64,
-    width: u32,
-    height: u32,
-    format: vk::Format,
-    alloc_size: u64,
-) -> Result<(Image, ImportedVkImage), String> {
-    let (skia_format, color_type) = vk_format_to_skia(format)
-        .ok_or_else(|| format!("Unsupported format {:?}", format))?;
-
-    let handle_type = external_handle_type();
-
-    // -- Create the parent-side VkImage with external memory chain -----------
-    let mut ext_image_ci = vk::ExternalMemoryImageCreateInfo::default()
-        .handle_types(handle_type);
-
-    let image_ci = vk::ImageCreateInfo::default()
-        .push_next(&mut ext_image_ci)
-        .image_type(vk::ImageType::TYPE_2D)
-        .format(format)
-        .extent(vk::Extent3D { width, height, depth: 1 })
-        .mip_levels(1)
-        .array_layers(1)
-        .samples(vk::SampleCountFlags::TYPE_1)
-        .tiling(vk::ImageTiling::OPTIMAL)
-        .usage(
-            vk::ImageUsageFlags::COLOR_ATTACHMENT
-                | vk::ImageUsageFlags::SAMPLED
-                | vk::ImageUsageFlags::TRANSFER_SRC
-                | vk::ImageUsageFlags::TRANSFER_DST,
-        )
-        .sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .initial_layout(vk::ImageLayout::UNDEFINED);
-
-    let image = device
-        .create_image(&image_ci, None)
-        .map_err(|e| format!("vkCreateImage (parent import) failed: {:?}", e))?;
-
-    let mem_reqs = device.get_image_memory_requirements(image);
-
-    // -- Import handle into VkDeviceMemory -----------------------------------
-    // Use the original allocation size from the tab process, not the parent's
-    // mem_reqs.size, which may differ due to alignment/padding differences.
-    let imported_memory = import_memory(instance, physical_device, device, image, handle, alloc_size, &mem_reqs)?;
-
-    device.bind_image_memory(image, imported_memory, 0).map_err(|e| {
-        device.free_memory(imported_memory, None);
-        device.destroy_image(image, None);
-        format!("vkBindImageMemory (import) failed: {:?}", e)
-    })?;
-
-    // Wrap in RAII guard so it's cleaned up if Skia fails
-    let guard = ImportedVkImage {
-        device: device.clone(),
-        image,
-        memory: imported_memory,
-    };
-
-    // -- Build a Skia texture from the parent's VkImage ----------------------
-    let alloc = skia_safe::gpu::vk::Alloc::from_device_memory(
-        imported_memory.as_raw() as _,
-        0,                 // offset
-        alloc_size,        // size
-        AllocFlag::empty(),                 // flags
-    );
-
-    let sk_image_info = skia_safe::gpu::vk::ImageInfo::new(
-        image.as_raw() as _,
-        alloc,
-        skia_safe::gpu::vk::ImageTiling::OPTIMAL,
-        skia_safe::gpu::vk::ImageLayout::UNDEFINED,
-        skia_format,
-        1,
-        None,
-        None,
-        None,
-        None,
-    );
-
-    let backend_texture = skia_safe::gpu::backend_textures::make_vk(
-        (width as i32, height as i32),
-        &sk_image_info,
-        "tab_frame",
-    );
-
-    // The ImportedVkImage guard is returned to the caller so it stays alive
-    // as long as the Skia image is in use, and gets cleaned up when dropped.
-
-    let skia_image = gpu::images::borrow_texture_from(
-        gr_context,
-        &backend_texture,
-        gpu::SurfaceOrigin::TopLeft,
-        color_type,
-        skia_safe::AlphaType::Premul,
-        None,
-    )
-    .ok_or_else(|| "Failed to create Skia image from imported Vulkan texture".to_string())?;
-
-    Ok((skia_image, guard))
-}
-
-/// Import a cross-process memory handle into the parent's Vulkan device as a
-/// raw `ImportedVkImage` (no Skia wrapping).  Use this when the frame will be
-/// composited via a direct `vkCmdBlitImage` rather than through Skia.
+/// Import a cross-process memory handle into the parent's Vulkan device as an
+/// `ImportedVkImage`. The frame will be composited via `vkCmdBlitImage`.
 ///
 /// # Safety
 /// The caller must not use `handle` after this call; ownership is transferred to
@@ -649,213 +615,6 @@ pub unsafe fn import_vk_image_raw(
     })
 }
 
-/// Blit a tab's imported VkImage directly onto a swapchain image using
-/// `vkCmdBlitImage`, bypassing Skia for the tab-content compositing step.
-///
-/// * `src_image`      – The imported tab frame (`GENERAL` layout, produced by
-///                      the tab after `signal_and_export_semaphore`).
-/// * `src_size`       – `(width, height)` of the source image in pixels.
-/// * `dst_image`      – The swapchain image (must be in
-///                      `COLOR_ATTACHMENT_OPTIMAL` or `GENERAL` layout; this
-///                      function transitions it to `TRANSFER_DST_OPTIMAL`
-///                      first and back to `COLOR_ATTACHMENT_OPTIMAL` after).
-/// * `dst_rect`       – Destination rectangle on the swapchain image
-///                      `(x, y, width, height)` in pixels.  Typically the
-///                      area below the browser chrome.
-/// * `wait_semaphore` – Optional imported VkSemaphore to wait on before the
-///                      blit (GPU-side synchronisation with the tab's render).
-///                      Pass `vk::Semaphore::null()` to skip.
-///
-/// A transient command pool + buffer is created for each call; suitable for
-/// once-per-frame use.
-///
-/// # Safety
-/// All handles must be valid for the given device.
-pub unsafe fn blit_to_swapchain_image(
-    device: &ash::Device,
-    queue: vk::Queue,
-    queue_family_index: u32,
-    src_image: vk::Image,
-    src_size: (u32, u32),
-    dst_image: vk::Image,
-    dst_rect: (i32, i32, i32, i32), // x, y, w, h
-    wait_semaphore: vk::Semaphore,
-) -> Result<(), String> {
-    // Transient command pool + one-shot command buffer.
-    let cmd_pool = {
-        let pool_ci = vk::CommandPoolCreateInfo::default()
-            .queue_family_index(queue_family_index)
-            .flags(vk::CommandPoolCreateFlags::TRANSIENT);
-        device
-            .create_command_pool(&pool_ci, None)
-            .map_err(|e| format!("vkCreateCommandPool (blit) failed: {:?}", e))?
-    };
-
-    let cmd_buf = {
-        let alloc_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(cmd_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
-        let bufs = device.allocate_command_buffers(&alloc_info).map_err(|e| {
-            device.destroy_command_pool(cmd_pool, None);
-            format!("vkAllocateCommandBuffers (blit) failed: {:?}", e)
-        })?;
-        bufs[0]
-    };
-
-    let begin_info = vk::CommandBufferBeginInfo::default()
-        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-    device.begin_command_buffer(cmd_buf, &begin_info).map_err(|e| {
-        device.destroy_command_pool(cmd_pool, None);
-        format!("vkBeginCommandBuffer (blit) failed: {:?}", e)
-    })?;
-
-    let subresource = vk::ImageSubresourceRange {
-        aspect_mask: vk::ImageAspectFlags::COLOR,
-        base_mip_level: 0,
-        level_count: 1,
-        base_array_layer: 0,
-        layer_count: 1,
-    };
-
-    // Barrier 1: src GENERAL → TRANSFER_SRC_OPTIMAL
-    //            dst UNDEFINED/COLOR_ATTACHMENT → TRANSFER_DST_OPTIMAL
-    let barriers = [
-        vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(src_image)
-            .subresource_range(subresource),
-        vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(dst_image)
-            .subresource_range(subresource),
-    ];
-
-    device.cmd_pipeline_barrier(
-        cmd_buf,
-        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::TRANSFER,
-        vk::PipelineStageFlags::TRANSFER,
-        vk::DependencyFlags::empty(),
-        &[],
-        &[],
-        &barriers,
-    );
-
-    // vkCmdBlitImage: tab frame → swapchain region
-    let src_subresource = vk::ImageSubresourceLayers {
-        aspect_mask: vk::ImageAspectFlags::COLOR,
-        mip_level: 0,
-        base_array_layer: 0,
-        layer_count: 1,
-    };
-    let (dst_x, dst_y, dst_w, dst_h) = dst_rect;
-    let blit = vk::ImageBlit::default()
-        .src_subresource(src_subresource)
-        .src_offsets([
-            vk::Offset3D { x: 0, y: 0, z: 0 },
-            vk::Offset3D { x: src_size.0 as i32, y: src_size.1 as i32, z: 1 },
-        ])
-        .dst_subresource(src_subresource)
-        .dst_offsets([
-            vk::Offset3D { x: dst_x, y: dst_y, z: 0 },
-            vk::Offset3D { x: dst_x + dst_w, y: dst_y + dst_h, z: 1 },
-        ]);
-
-    device.cmd_blit_image(
-        cmd_buf,
-        src_image,
-        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-        dst_image,
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-        &[blit],
-        vk::Filter::LINEAR,
-    );
-
-    // Barrier 2: dst TRANSFER_DST_OPTIMAL → COLOR_ATTACHMENT_OPTIMAL
-    //             (Skia will draw the chrome on top next)
-    //            src TRANSFER_SRC_OPTIMAL → GENERAL (restore for next frame)
-    let barriers_after = [
-        vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::TRANSFER_READ)
-            .dst_access_mask(vk::AccessFlags::empty())
-            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(src_image)
-            .subresource_range(subresource),
-        vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-            .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(dst_image)
-            .subresource_range(subresource),
-    ];
-
-    device.cmd_pipeline_barrier(
-        cmd_buf,
-        vk::PipelineStageFlags::TRANSFER,
-        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-        vk::DependencyFlags::empty(),
-        &[],
-        &[],
-        &barriers_after,
-    );
-
-    device
-        .end_command_buffer(cmd_buf)
-        .map_err(|e| format!("vkEndCommandBuffer (blit) failed: {:?}", e))?;
-
-    // Submit — wait on the tab's render semaphore if provided.
-    let fence = device
-        .create_fence(&vk::FenceCreateInfo::default(), None)
-        .map_err(|e| format!("vkCreateFence (blit) failed: {:?}", e))?;
-
-    let cmd_bufs = [cmd_buf];
-    // Keep these alive for the duration of the submit_info borrow.
-    let wait_sems = [wait_semaphore];
-    let wait_stages = [vk::PipelineStageFlags::TRANSFER];
-    let submit_info = if wait_semaphore != vk::Semaphore::null() {
-        vk::SubmitInfo::default()
-            .wait_semaphores(&wait_sems)
-            .wait_dst_stage_mask(&wait_stages)
-            .command_buffers(&cmd_bufs)
-    } else {
-        vk::SubmitInfo::default().command_buffers(&cmd_bufs)
-    };
-
-    device
-        .queue_submit(queue, &[submit_info], fence)
-        .map_err(|e| {
-            device.destroy_fence(fence, None);
-            device.destroy_command_pool(cmd_pool, None);
-            format!("vkQueueSubmit (blit) failed: {:?}", e)
-        })?;
-
-    // Wait for the blit to finish so the command pool can be freed safely.
-    device
-        .wait_for_fences(&[fence], true, 5_000_000_000)
-        .map_err(|e| format!("wait_for_fences (blit) failed: {:?}", e))?;
-
-    device.destroy_fence(fence, None);
-    device.destroy_command_pool(cmd_pool, None);
-
-    Ok(())
-}
-
 // ── Platform-specific memory import helpers ─────────────────────────────────
 
 #[cfg(windows)]
@@ -872,7 +631,6 @@ unsafe fn import_memory(
 
     let ext = external_memory_win32::Device::new(instance, device);
 
-    // Query memory type bits for the imported handle
     let mut handle_props = vk::MemoryWin32HandlePropertiesKHR::default();
     ext.get_memory_win32_handle_properties(
         vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32,
@@ -928,8 +686,6 @@ unsafe fn import_memory(
 
     let ext_fd = ash::khr::external_memory_fd::Device::new(instance, device);
 
-    // DMA_BUF handles support vkGetMemoryFdPropertiesKHR (unlike OPAQUE_FD),
-    // which tells us which memory types are compatible with this imported fd.
     let mut fd_props = vk::MemoryFdPropertiesKHR::default();
     ext_fd
         .get_memory_fd_properties(
@@ -942,9 +698,6 @@ unsafe fn import_memory(
             format!("vkGetMemoryFdPropertiesKHR failed: {:?}", e)
         })?;
 
-    // Prefer the intersection of image-required and fd-compatible types, but
-    // fall back to fd-only bits if the intersection is empty (common on AMD/Intel
-    // where DMA-BUF memory lives in a GTT/system heap the image doesn't list).
     let combined_bits = mem_reqs.memory_type_bits & fd_props.memory_type_bits;
     let candidate_bits = if combined_bits != 0 { combined_bits } else { fd_props.memory_type_bits };
 
@@ -955,7 +708,6 @@ unsafe fn import_memory(
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
     )
     .or_else(|| {
-        // Fallback: try without DEVICE_LOCAL requirement
         find_memory_type(instance, physical_device, candidate_bits, vk::MemoryPropertyFlags::empty())
     })
     .ok_or_else(|| {
@@ -1009,11 +761,6 @@ pub fn find_memory_type(
 // ── TabVkSemaphore (child/tab side) ─────────────────────────────────────────
 
 /// An exportable binary `VkSemaphore` owned by the tab process.
-///
-/// The tab submits GPU work that *signals* this semaphore, then exports it as
-/// a platform handle sent to the parent alongside the memory handle.  The
-/// parent imports and *waits* on it so the GPU pipeline stalls until the tab's
-/// render is complete before reading the shared image.
 pub struct TabVkSemaphore {
     device: ash::Device,
     pub semaphore: vk::Semaphore,
@@ -1055,9 +802,7 @@ impl TabVkSemaphore {
 
     /// Export the semaphore as a platform handle to send to the parent.
     ///
-    /// * Linux   – returns a `sync_fd` (i32 cast to i64). SYNC_FD semaphores
-    ///             are one-shot: the fd is consumed on import and the semaphore
-    ///             automatically resets to unsignaled afterward.
+    /// * Linux   – returns a `sync_fd` (i32 cast to i64).
     /// * Windows – returns a Win32 HANDLE already duplicated into `parent_pid`.
     ///
     /// Returns -1 / 0 on failure (non-fatal; parent falls back to CPU wait).
@@ -1128,150 +873,6 @@ impl Drop for TabVkSemaphore {
     }
 }
 
-// ── Parent-side semaphore import + GPU wait ──────────────────────────────────
-
-/// Import a cross-process semaphore handle and submit a GPU wait on it so the
-/// parent's pipeline stalls until the tab's render is complete.
-///
-/// A command buffer is submitted to `queue` that:
-///   1. Waits on the imported semaphore at `FRAGMENT_SHADER` stage.
-///   2. Executes a pipeline barrier that transitions `image` from
-///      `GENERAL` → `SHADER_READ_ONLY_OPTIMAL`.
-///
-/// On success returns the temporary `VkSemaphore` (which will be auto-reset
-/// after the wait on Linux SYNC_FD, or must be destroyed after the submit
-/// completes on Windows).  The caller should `device_wait_idle` or use a fence
-/// before dropping the returned semaphore if on Windows.
-///
-/// Falls back silently (no barrier submitted) when `sem_handle` is -1/0.
-pub unsafe fn import_semaphore_and_submit_wait(
-    instance: &ash::Instance,
-    device: &ash::Device,
-    queue: vk::Queue,
-    queue_family_index: u32,
-    image: vk::Image,
-    sem_handle: i64,
-) -> Result<Option<vk::Semaphore>, String> {
-    // -1 (Linux) / <=0 (Windows) -> no semaphore was sent, fall through.
-    #[cfg(not(windows))]
-    if sem_handle == -1 { return Ok(None); }
-    #[cfg(windows)]
-    if sem_handle <= 0 { return Ok(None); }
-
-    // -- Import the semaphore ------------------------------------------------
-    let semaphore = {
-        let sem_ci = vk::SemaphoreCreateInfo::default();
-        device.create_semaphore(&sem_ci, None)
-            .map_err(|e| format!("vkCreateSemaphore (import) failed: {:?}", e))?
-    };
-
-    #[cfg(not(windows))]
-    {
-        let ext_fd = ash::khr::external_semaphore_fd::Device::new(instance, device);
-        let import_info = vk::ImportSemaphoreFdInfoKHR::default()
-            .semaphore(semaphore)
-            .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD)
-            // TEMPORARY: semaphore auto-resets to unsignaled after the wait.
-            .flags(vk::SemaphoreImportFlags::TEMPORARY)
-            .fd(sem_handle as i32);
-        ext_fd.import_semaphore_fd(&import_info)
-            .map_err(|e| { device.destroy_semaphore(semaphore, None); format!("vkImportSemaphoreFdKHR failed: {:?}", e) })?;
-    }
-
-    #[cfg(windows)]
-    {
-        let ext_win32 = ash::khr::external_semaphore_win32::Device::new(instance, device);
-        let import_info = vk::ImportSemaphoreWin32HandleInfoKHR::default()
-            .semaphore(semaphore)
-            .handle_type(vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32)
-            .flags(vk::SemaphoreImportFlags::TEMPORARY)
-            .handle(sem_handle as vk::HANDLE);
-        ext_win32.import_semaphore_win32_handle(&import_info)
-            .map_err(|e| { device.destroy_semaphore(semaphore, None); format!("vkImportSemaphoreWin32HandleKHR failed: {:?}", e) })?;
-    }
-
-    // -- Allocate a one-shot command buffer ----------------------------------
-    let cmd_pool = {
-        let pool_ci = vk::CommandPoolCreateInfo::default()
-            .queue_family_index(queue_family_index)
-            .flags(vk::CommandPoolCreateFlags::TRANSIENT);
-        device.create_command_pool(&pool_ci, None)
-            .map_err(|e| { device.destroy_semaphore(semaphore, None); format!("vkCreateCommandPool (sem wait) failed: {:?}", e) })?
-    };
-
-    let cmd_buf = {
-        let alloc_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(cmd_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
-        let bufs = device.allocate_command_buffers(&alloc_info)
-            .map_err(|e| { device.destroy_command_pool(cmd_pool, None); device.destroy_semaphore(semaphore, None); format!("vkAllocateCommandBuffers failed: {:?}", e) })?;
-        bufs[0]
-    };
-
-    // -- Record: image layout transition GENERAL → SHADER_READ_ONLY_OPTIMAL -
-    let begin_info = vk::CommandBufferBeginInfo::default()
-        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-    device.begin_command_buffer(cmd_buf, &begin_info)
-        .map_err(|e| format!("vkBeginCommandBuffer failed: {:?}", e))?;
-
-    let barrier = vk::ImageMemoryBarrier::default()
-        .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::TRANSFER_WRITE)
-        .dst_access_mask(vk::AccessFlags::SHADER_READ)
-        .old_layout(vk::ImageLayout::GENERAL)
-        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .image(image)
-        .subresource_range(vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            base_mip_level: 0,
-            level_count: 1,
-            base_array_layer: 0,
-            layer_count: 1,
-        });
-
-    device.cmd_pipeline_barrier(
-        cmd_buf,
-        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::TRANSFER,
-        vk::PipelineStageFlags::FRAGMENT_SHADER,
-        vk::DependencyFlags::empty(),
-        &[],
-        &[],
-        &[barrier],
-    );
-
-    device.end_command_buffer(cmd_buf)
-        .map_err(|e| format!("vkEndCommandBuffer failed: {:?}", e))?;
-
-    // -- Submit: wait on imported semaphore, execute barrier -----------------
-    let wait_semaphores = [semaphore];
-    let wait_stages = [vk::PipelineStageFlags::FRAGMENT_SHADER];
-    let cmd_bufs = [cmd_buf];
-
-    let submit_info = vk::SubmitInfo::default()
-        .wait_semaphores(&wait_semaphores)
-        .wait_dst_stage_mask(&wait_stages)
-        .command_buffers(&cmd_bufs);
-
-    // Use a fence so we can clean up the pool when done.
-    let fence = device.create_fence(&vk::FenceCreateInfo::default(), None)
-        .map_err(|e| format!("vkCreateFence (sem wait) failed: {:?}", e))?;
-
-    device.queue_submit(queue, &[submit_info], fence)
-        .map_err(|e| { device.destroy_fence(fence, None); format!("vkQueueSubmit (sem wait) failed: {:?}", e) })?;
-
-    // Wait for the barrier submit to complete so we can free the command pool.
-    // This is a one-time cost per frame; the GPU does the heavy waiting async.
-    device.wait_for_fences(&[fence], true, 5_000_000_000 /* 5 s */)
-        .map_err(|e| format!("wait_for_fences (sem wait) failed: {:?}", e))?;
-
-    device.destroy_fence(fence, None);
-    device.destroy_command_pool(cmd_pool, None);
-
-    Ok(Some(semaphore))
-}
-
 // ── VulkanDeviceInfo: serialisable info the parent passes to child via env ──
 
 /// The minimal Vulkan info the parent passes to each tab process so they can
@@ -1299,9 +900,9 @@ pub unsafe fn physical_device_uuid(
     id_props.device_uuid
 }
 
-/// Shared external-memory/semaphore extension set used by both parent and tab.
-///
-/// This intentionally uses the same extension family on all platforms.
+// ── Device extension lists ──────────────────────────────────────────────────
+
+/// External-memory/semaphore extensions shared by parent and tab.
 #[cfg(windows)]
 fn shared_external_device_extensions() -> Vec<*const c_char> {
     vec![
@@ -1312,7 +913,7 @@ fn shared_external_device_extensions() -> Vec<*const c_char> {
     ]
 }
 
-/// Shared external-memory/semaphore extension set used by both parent and tab.
+/// External-memory/semaphore extensions shared by parent and tab.
 #[cfg(not(windows))]
 fn shared_external_device_extensions() -> Vec<*const c_char> {
     vec![
