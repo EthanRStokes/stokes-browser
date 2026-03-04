@@ -52,7 +52,7 @@ impl Env {
     ///   4. `blit_tab_then_present()`  — blits tab, waits image_available, signals render_finished, presents
     pub fn blit_tab_then_present(
         &mut self,
-        tab_frame: Option<(&ImportedVkImage, u32, u32, i64)>,
+        tab_frame: Option<(&Arc<ImportedVkImage>, u32, u32, i64)>,
         chrome_px: i32,
     ) -> Result<(), String> {
         vk_blit_tab_then_present(&mut self.vk, &**self.window, tab_frame, chrome_px)
@@ -100,11 +100,13 @@ pub(crate) struct VkState {
     // Synchronisation (single frame-in-flight)
     image_available_semaphore: vk::Semaphore,
     render_finished_semaphore: vk::Semaphore,
-    in_flight_fence: vk::Fence,
 
     // Persistent command pool + buffer for blit operations (reused each frame)
     blit_cmd_pool: vk::CommandPool,
     blit_cmd_buf: vk::CommandBuffer,
+
+    /// Keep the submitted tab image alive until `in_flight_fence` signals.
+    in_flight_tab_image: Option<Arc<ImportedVkImage>>,
 
     /// Imported external semaphores waited by the previous submit.
     /// Destroy only after `in_flight_fence` signals.
@@ -137,7 +139,6 @@ impl Drop for VkState {
             self.device.destroy_command_pool(self.blit_cmd_pool, None);
             self.device.destroy_semaphore(self.image_available_semaphore, None);
             self.device.destroy_semaphore(self.render_finished_semaphore, None);
-            self.device.destroy_fence(self.in_flight_fence, None);
             self.swapchain_fn.destroy_swapchain(self.swapchain, None);
         }
     }
@@ -332,10 +333,14 @@ fn vk_acquire(
         return Ok(false);
     }
 
+    // Let vulkano own queue synchronization and avoid manual fence lifecycle issues.
+    vk.vk_queue_owner
+        .with(|mut q| q.wait_idle())
+        .map_err(|e| format!("queue_wait_idle: {:?}", e))?;
+
     unsafe {
-        vk.device
-            .wait_for_fences(&[vk.in_flight_fence], true, u64::MAX)
-            .map_err(|e| format!("wait_for_fences: {:?}", e))?;
+        // Release previously submitted shared tab image after GPU completion.
+        vk.in_flight_tab_image = None;
 
         // Previous submit is complete, so it is now safe to destroy per-frame
         // imported wait semaphores created for external tab sync.
@@ -355,7 +360,7 @@ fn vk_acquire(
                 return Ok(false);
             }
             Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
-                vk_recreate_surface(vk, window)?;
+                vk_recreate_surface(vk, window.clone())?;
                 return Ok(false);
             }
             Err(e) => return Err(format!("acquire_next_image: {:?}", e)),
@@ -440,12 +445,13 @@ unsafe fn import_wait_semaphore_for_frame(
 fn vk_blit_tab_then_present(
     vk: &mut VkState,
     _window: &dyn Window,
-    tab_frame: Option<(&ImportedVkImage, u32, u32, i64)>,
+    tab_frame: Option<(&Arc<ImportedVkImage>, u32, u32, i64)>,
     chrome_px: i32,
 ) -> Result<(), String> {
     unsafe {
         let device = &vk.device;
         let swapchain_image = vk.swapchain_images[vk.current_image_index as usize];
+        let mut submitted_tab_image: Option<Arc<ImportedVkImage>> = None;
 
         // Reset the persistent command buffer for this frame.
         device.reset_command_buffer(vk.blit_cmd_buf, vk::CommandBufferResetFlags::empty())
@@ -466,6 +472,8 @@ fn vk_blit_tab_then_present(
         };
 
         if let Some((tab, tab_w, tab_h, sem_handle)) = tab_frame {
+            submitted_tab_image = Some(tab.clone());
+
             if let Some(imported_wait) = import_wait_semaphore_for_frame(&vk.instance, device, sem_handle)? {
                 external_wait_semaphore = imported_wait;
             }
@@ -487,12 +495,12 @@ fn vk_blit_tab_then_present(
                     .image(swapchain_image)
                     .subresource_range(COLOR_SUBRESOURCE_RANGE),
                 vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::TRANSFER_WRITE)
+                    .src_access_mask(vk::AccessFlags::empty())
                     .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
                     .old_layout(vk::ImageLayout::GENERAL)
                     .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
+                    .dst_queue_family_index(vk.queue_family_index)
                     .image(tab.image())
                     .subresource_range(COLOR_SUBRESOURCE_RANGE),
             ];
@@ -542,8 +550,8 @@ fn vk_blit_tab_then_present(
                     .dst_access_mask(vk::AccessFlags::empty())
                     .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
                     .new_layout(vk::ImageLayout::GENERAL)
-                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .src_queue_family_index(vk.queue_family_index)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
                     .image(tab.image())
                     .subresource_range(COLOR_SUBRESOURCE_RANGE),
             ];
@@ -574,12 +582,7 @@ fn vk_blit_tab_then_present(
             .command_buffers(&cmd_bufs)
             .signal_semaphores(&signal_sems);
 
-        // Reset only immediately before the submit that will signal this fence.
-        device
-            .reset_fences(&[vk.in_flight_fence])
-            .map_err(|e| format!("reset_fences: {:?}", e))?;
-
-        if let Err(e) = device.queue_submit(vk.queue, &[submit_info], vk.in_flight_fence) {
+        if let Err(e) = device.queue_submit(vk.queue, &[submit_info], vk::Fence::null()) {
             if external_wait_semaphore != vk::Semaphore::null() {
                 device.destroy_semaphore(external_wait_semaphore, None);
             }
@@ -589,6 +592,7 @@ fn vk_blit_tab_then_present(
         if external_wait_semaphore != vk::Semaphore::null() {
             vk.deferred_wait_semaphores.push(external_wait_semaphore);
         }
+        vk.in_flight_tab_image = submitted_tab_image;
 
         // Present
         let swapchains = [vk.swapchain];
@@ -751,10 +755,6 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         device.create_semaphore(&semaphore_ci, None)
             .expect("Failed to create render_finished semaphore")
     };
-    let in_flight_fence = unsafe {
-        device.create_fence(&fence_ci, None)
-            .expect("Failed to create in_flight fence")
-    };
 
     // ── 7b. Persistent blit command pool + buffer ────────────────────────────
     let blit_cmd_pool = unsafe {
@@ -839,9 +839,9 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         vk_format: skia_vk_format,
         image_available_semaphore,
         render_finished_semaphore,
-        in_flight_fence,
         blit_cmd_pool,
         blit_cmd_buf,
+        in_flight_tab_image: None,
         deferred_wait_semaphores: Vec::new(),
     };
 
@@ -852,5 +852,3 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         vk,
     }
 }
-
-

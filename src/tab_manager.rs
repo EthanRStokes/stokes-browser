@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::io;
 use std::process::{Child, Command};
 use std::thread;
+use std::sync::Arc;
 use taffy::Point;
 
 /// Represents a managed tab process
@@ -27,9 +28,9 @@ pub struct RenderedFrame {
     /// swapchain via `vkCmdBlitImage` — no Skia texture wrapping needed.
     pub width: u32,
     pub height: u32,
-    /// RAII guard that owns the imported VkImage + VkDeviceMemory.
-    /// Dropped automatically when replaced by a newer frame.
-    pub vk_guard: ImportedVkImage,
+    /// Shared owner of the imported VkImage + VkDeviceMemory.
+    /// The renderer keeps an extra clone while a frame is in flight.
+    pub vk_guard: Arc<ImportedVkImage>,
     /// Exported render-complete semaphore handle from the tab frame.
     /// Linux: local duplicated fd (or -1 when unavailable). Windows: HANDLE value (or 0).
     pub sem_handle: i64,
@@ -289,7 +290,12 @@ impl TabManager {
                                 // semaphore on the same vkQueueSubmit that does the
                                 // blit — so the GPU handles synchronization without
                                 // any CPU stall on the main thread.
-                                tab.rendered_frame = Some(RenderedFrame { width, height, vk_guard, sem_handle: local_sem_handle });
+                                tab.rendered_frame = Some(RenderedFrame {
+                                    width,
+                                    height,
+                                    vk_guard: Arc::new(vk_guard),
+                                    sem_handle: local_sem_handle,
+                                });
                             }
                             Err(e) => {
                                 eprintln!("[TabManager] Failed to import VkImage: {}", e);

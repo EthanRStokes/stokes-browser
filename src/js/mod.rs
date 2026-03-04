@@ -8,11 +8,13 @@ mod jsapi;
 pub use runtime::JsRuntime;
 
 pub(crate) fn with_runtime_mut<R>(f: impl FnOnce(&mut JsRuntime) -> R) -> Option<R> {
-    runtime::RUNTIME.with(|runtime| {
+    // TODO
+    None
+    /*runtime::RUNTIME.with(|runtime| {
         let mut runtime_ref = runtime.borrow_mut();
         let runtime_ptr = runtime_ref.as_mut()?;
         Some(unsafe { f(&mut **runtime_ptr) })
-    })
+    })*/
 }
 
 /// JavaScript execution result

@@ -147,6 +147,7 @@ pub struct TabVkImage {
     /// Pre-recorded command buffer: COLOR_ATTACHMENT_OPTIMAL → GENERAL barrier.
     cmd_buf: vk::CommandBuffer,
     pub queue: vk::Queue,
+    queue_family_index: u32,
     /// Fence used to track the last `signal_and_export_semaphore` submission.
     /// On Windows, `device_wait_idle` alone may not be sufficient to ensure the
     /// driver has fully retired a signaled-but-never-waited-on semaphore; using
@@ -344,6 +345,7 @@ impl TabVkImage {
             cmd_pool,
             cmd_buf,
             queue,
+            queue_family_index,
             submit_fence,
             submit_fence_pending: false,
             #[cfg(windows)]
@@ -431,20 +433,14 @@ impl TabVkImage {
     ///
     /// Returns the exported semaphore handle, or -1/0 if unavailable.
     /// Must be called *after* `gr_context.flush_and_submit()`.
-    pub unsafe fn signal_and_export_semaphore(&mut self, parent_pid: u32) -> i64 {
-        let sem = match &self.render_semaphore {
-            Some(s) => s,
-            None => return -1,
-        };
-
+    pub unsafe fn signal_and_export_semaphore(&mut self, _parent_pid: u32) -> i64 {
         // Wait for any prior submission to complete before reusing the command
-        // buffer and fence.  This is essential on Windows where the driver may
-        // crash if we reset a command buffer / fence that is still in use.
+        // buffer and fence.
         if self.submit_fence_pending {
             let _ = self.device.wait_for_fences(
                 &[self.submit_fence],
                 true,
-                5_000_000_000, // 5 seconds
+                5_000_000_000,
             );
             let _ = self.device.reset_fences(&[self.submit_fence]);
             self.submit_fence_pending = false;
@@ -461,8 +457,8 @@ impl TabVkImage {
             .dst_access_mask(vk::AccessFlags::empty())
             .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .new_layout(vk::ImageLayout::GENERAL)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
             .image(self.image)
             .subresource_range(COLOR_SUBRESOURCE_RANGE);
 
@@ -478,18 +474,15 @@ impl TabVkImage {
             return -1;
         }
 
-        let signal_semaphores = [sem.semaphore];
         let cmd_bufs = [self.cmd_buf];
-        let submit_info = vk::SubmitInfo::default()
-            .command_buffers(&cmd_bufs)
-            .signal_semaphores(&signal_semaphores);
+        let submit_info = vk::SubmitInfo::default().command_buffers(&cmd_bufs);
 
         if self.device.queue_submit(self.queue, &[submit_info], self.submit_fence).is_err() {
             return -1;
         }
         self.submit_fence_pending = true;
 
-        sem.export(parent_pid)
+        -1
     }
 }
 
