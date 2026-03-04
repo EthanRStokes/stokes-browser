@@ -14,7 +14,8 @@ use std::ffi::CStr;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
 
@@ -286,7 +287,9 @@ impl TabProcess {
         }
 
         // Drop the old image first
+        println!("aobut to drop old image");
         self.vk_image = None;
+        println!("dropped");
 
         let (inst, phys, dev, ctx) = match (
             self.ash_instance.as_ref(),
@@ -301,6 +304,7 @@ impl TabProcess {
             }
         };
 
+        println!("about to get dev queue");
         let queue = unsafe { dev.get_device_queue(self.queue_family_index, 0) };
 
         let img = unsafe {
@@ -705,6 +709,7 @@ impl TabProcess {
 
 /// Entry point for tab process executable
 pub async fn tab_process_main(tab_id: String, server_name: String) -> io::Result<()> {
+    tokio::time::sleep(Duration::from_millis(10000)).await;
     let mut process = TabProcess::new(tab_id, server_name)?;
     process.run().await
 }
