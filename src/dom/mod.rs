@@ -32,6 +32,7 @@ use crate::ui::TextBrush;
 use blitz_traits::events::HitResult;
 use blitz_traits::net::{DummyNetProvider, NetProvider};
 use blitz_traits::shell::{DummyShellProvider, ShellProvider, Viewport};
+use cursor_icon::CursorIcon;
 use euclid::Size2D;
 use markup5ever::{local_name, QualName};
 use parley::fontique::{Attributes, Blob, Query, QueryFont, QueryStatus};

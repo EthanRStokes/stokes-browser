@@ -20,7 +20,6 @@ impl Dom {
 
     pub(crate) fn load_image(&mut self, node_id: usize) {
         let node = &self.nodes[node_id];
-        println!("Loading image for node_id: {}", node_id);
         if let Some(raw_src) = node.attr(local_name!("src")) {
             if !raw_src.is_empty() {
                 let src = self.resolve_url(raw_src);

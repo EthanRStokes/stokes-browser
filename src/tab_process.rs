@@ -2,11 +2,12 @@
 use crate::engine::{Engine, EngineConfig, ENGINE_REF, USER_AGENT_REF};
 use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage};
 use crate::{js, networking};
-use crate::renderer::painter::ScenePainter;
+use crate::renderer::painter::{ScenePainter, SkiaCache};
 use blitz_traits::shell::{ShellProvider, Viewport};
 use shared_memory::{Shmem, ShmemConf};
 use skia_safe::{AlphaType, ColorType, ImageInfo, Surface};
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use crate::shell_provider::{StokesShellProvider, ShellProviderMessage};
@@ -17,6 +18,7 @@ use crate::engine::nav_provider::{NavigationProviderMessage, StokesNavigationPro
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
     pub(crate) engine: Engine,
+    scene_cache: SkiaCache,
     animation_time: Option<Instant>,
     channel: IpcChannel,
     tab_id: String,
@@ -24,6 +26,7 @@ pub struct TabProcess {
     surface_generation: u32,
     shell_receiver: UnboundedReceiver<ShellProviderMessage>,
     nav_receiver: UnboundedReceiver<NavigationProviderMessage>,
+    redraw_request: AtomicBool,
 }
 
 /// Shared memory surface for efficient rendering data transfer
@@ -64,6 +67,7 @@ impl TabProcess {
 
         Ok(Self {
             engine,
+            scene_cache: SkiaCache::default(),
             animation_time: None,
             channel,
             tab_id,
@@ -71,6 +75,7 @@ impl TabProcess {
             surface_generation: 0,
             shell_receiver: shell_rx,
             nav_receiver: nav_rx,
+            redraw_request: AtomicBool::new(false),
         })
     }
 
@@ -136,8 +141,8 @@ impl TabProcess {
         loop {
             match self.shell_receiver.try_recv() {
                 Ok(msg) => {
-                    self.handle_shell_provider_message(&msg).await?;
-                    self.channel.send(&TabToParentMessage::ShellProvider(msg))?;
+                    let _ = self.handle_shell_provider_message(&msg).await;
+                    let _ = self.channel.send(&TabToParentMessage::ShellProvider(msg));
                 }
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {},
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {},
@@ -146,10 +151,13 @@ impl TabProcess {
                 Ok(msg) => {
                     match msg {
                         NavigationProviderMessage::NavigateTo(options) => {
+                            if self.engine.dom.is_none() {
+                                continue;
+                            }
                             let nav_provider = self.engine.navigation_provider.clone();
-                            self.channel.send(&TabToParentMessage::LoadingStateChanged(true))?;
+                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(true));
                             let url = options.url.as_str().to_string();
-                            self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()))?;
+                            let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                             self.dom().unwrap().net_provider.fetch_with_callback(
                                 options.into_request(),
                                 Box::new(move |result| {
@@ -171,21 +179,20 @@ impl TabProcess {
                         }
                         NavigationProviderMessage::Navigate { url, contents, retain_scroll_position: _, is_md: _ } => {
                             self.engine.set_loading_state(true);
-
                             match self.engine.navigate(&url, contents, true, true).await {
                                 Ok(_) => {
                                     let title = self.engine.page_title().to_string();
-                                    self.channel.send(&TabToParentMessage::NavigationCompleted {
+                                    let _ = self.channel.send(&TabToParentMessage::NavigationCompleted {
                                         url: url.clone(),
                                         title: title.clone(),
-                                    })?;
-                                    self.channel.send(&TabToParentMessage::TitleChanged(title))?;
-                                    self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                                    });
+                                    let _ = self.channel.send(&TabToParentMessage::TitleChanged(title));
+                                    let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                                     self.render_frame()?;
                                 }
                                 Err(e) => {
-                                    self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()))?;
-                                    self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                                    let _ = self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()));
+                                    let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                                 }
                             }
                         }
@@ -198,12 +205,18 @@ impl TabProcess {
 
             // Process all pending messages from parent (non-blocking)
             let mut has_messages = true;
+            let mut should_render_after_messages = false;
             while has_messages {
                 let msg_option = self.channel.try_receive()?;
                 match msg_option {
                     Some(msg) => {
-                        if !self.handle_message(msg).await? {
+                        let (should_render, should_continue) = self.handle_message(msg).await?;
+                        if !should_continue {
+                            println!("Shutting down");
                             return Ok(()); // Shutdown requested
+                        }
+                        if should_render {
+                            should_render_after_messages = true;
                         }
                     }
                     None => {
@@ -211,15 +224,17 @@ impl TabProcess {
                     }
                 }
             }
+            if self.redraw_request.load(Ordering::Relaxed) {
+                should_render_after_messages = true;
+                self.redraw_request.store(false, Ordering::Relaxed);
+            }
 
-            // TODO Process engine timers
-            /*if self.engine.process_timers() {
-                // If timers executed, render a new frame
+            if should_render_after_messages {
                 self.render_frame()?;
-            }*/
+            }
 
             // Small sleep to prevent CPU spinning
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            //tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
     }
 
@@ -232,54 +247,51 @@ impl TabProcess {
     }
 
     /// Handle a message from the parent process
-    async fn handle_message(&mut self, message: ParentToTabMessage) -> io::Result<bool> {
+    async fn handle_message(&mut self, message: ParentToTabMessage) -> io::Result<(bool, bool)> {
+        let mut should_render: bool = false;
         match message {
             ParentToTabMessage::Navigate(url) => {
-                self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()))?;
+                let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                 self.engine.set_loading_state(true);
 
-                let contents = networking::fetch(&url, &self.engine.config.user_agent).unwrap_or_else(|err| {
+                let contents = networking::fetch(&url, &self.engine.config.user_agent).unwrap_or_else(|_| {
                     include_str!("../assets/404.html").to_string()
                 });
                 match self.engine.navigate(&url, contents, true, true).await {
                     Ok(_) => {
                         let title = self.engine.page_title().to_string();
-                        self.channel.send(&TabToParentMessage::NavigationCompleted {
+                        let _ = self.channel.send(&TabToParentMessage::NavigationCompleted {
                             url: url.clone(),
                             title: title.clone(),
-                        })?;
-                        self.channel.send(&TabToParentMessage::TitleChanged(title))?;
-                        self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
-                        self.render_frame()?;
+                        });
+                        let _ = self.channel.send(&TabToParentMessage::TitleChanged(title));
+                        let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                        should_render = true;
                     }
                     Err(e) => {
-                        self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()))?;
-                        self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                        let _ = self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()));
+                        let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                     }
                 }
             }
             ParentToTabMessage::Reload => {
                 let url = self.engine.current_url().to_string();
                 if !url.is_empty() {
-                    self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()))?;
+                    let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                     self.engine.set_loading_state(true);
-
-                    let contents = networking::fetch(&url, &self.engine.config.user_agent).unwrap_or_else(|_err| {
+                    let contents = networking::fetch(&url, &self.engine.config.user_agent).unwrap_or_else(|_| {
                         include_str!("../assets/404.html").to_string()
                     });
                     match self.engine.navigate(&url, contents, true, true).await {
                         Ok(_) => {
                             let title = self.engine.page_title().to_string();
-                            self.channel.send(&TabToParentMessage::NavigationCompleted {
-                                url: url.clone(),
-                                title,
-                            })?;
-                            self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
-                            self.render_frame()?;
+                            let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
+                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                            should_render = true;
                         }
                         Err(e) => {
-                            self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()))?;
-                            self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                            let _ = self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()));
+                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                         }
                     }
                 }
@@ -287,23 +299,19 @@ impl TabProcess {
             ParentToTabMessage::GoBack => {
                 if self.engine.can_go_back() {
                     let url = self.engine.current_url().to_string();
-                    self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()))?;
+                    let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                     self.engine.set_loading_state(true);
-
                     match self.engine.go_back().await {
                         Ok(_) => {
                             let title = self.engine.page_title().to_string();
                             let url = self.engine.current_url().to_string();
-                            self.channel.send(&TabToParentMessage::NavigationCompleted {
-                                url: url.clone(),
-                                title,
-                            })?;
-                            self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
-                            self.render_frame()?;
+                            let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
+                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                            should_render = true;
                         }
                         Err(e) => {
                             eprintln!("Go back failed: {}", e);
-                            self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                         }
                     }
                 }
@@ -311,23 +319,19 @@ impl TabProcess {
             ParentToTabMessage::GoForward => {
                 if self.engine.can_go_forward() {
                     let url = self.engine.current_url().to_string();
-                    self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()))?;
+                    let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                     self.engine.set_loading_state(true);
-
                     match self.engine.go_forward().await {
                         Ok(_) => {
                             let title = self.engine.page_title().to_string();
                             let url = self.engine.current_url().to_string();
-                            self.channel.send(&TabToParentMessage::NavigationCompleted {
-                                url: url.clone(),
-                                title,
-                            })?;
-                            self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
-                            self.render_frame()?;
+                            let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
+                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                            should_render = true;
                         }
                         Err(e) => {
                             eprintln!("Go forward failed: {}", e);
-                            self.channel.send(&TabToParentMessage::LoadingStateChanged(false))?;
+                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                         }
                     }
                 }
@@ -335,109 +339,37 @@ impl TabProcess {
             ParentToTabMessage::Resize { width, height } => {
                 self.engine.resize(width, height);
                 self.init_shared_surface(width as u32, height as u32)?;
-                self.render_frame()?;
+                should_render = true;
             }
-            ParentToTabMessage::Scroll { delta_x, delta_y } => {
-                if self.engine.dom.is_some() {
-                    self.engine.scroll(delta_x, delta_y);
-                    self.render_frame()?;
-                }
-            }
-            ParentToTabMessage::Click { x, y, modifiers } => {
-                // Handle click and check if a link was clicked
-                if let Some(href) = self.engine.handle_click(x, y) {
-                    println!("[Tab Process] Link clicked: {}", href);
-
-                    // Resolve the href against the current page URL
-                    match self.engine.resolve_url(&href) {
-                        Ok(resolved_url) => {
-                            println!("[Tab Process] Resolved to: {}", resolved_url);
-                            // Check if Ctrl key was pressed - open in new tab
-                            if modifiers.ctrl {
-                                println!("[Tab Process] Ctrl+click detected, opening in new tab");
-                                self.channel.send(&TabToParentMessage::NavigateRequestInNewTab(resolved_url))?;
-                            } else {
-                                // Send navigation request to parent
-                                self.channel.send(&TabToParentMessage::NavigateRequest(resolved_url))?;
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("[Tab Process] Failed to resolve URL '{}': {}", href, e);
-                            // Try with the raw href as fallback
-                            if modifiers.ctrl {
-                                self.channel.send(&TabToParentMessage::NavigateRequestInNewTab(href))?;
-                            } else {
-                                self.channel.send(&TabToParentMessage::NavigateRequest(href))?;
-                            }
-                        }
-                    }
-                }
-                self.render_frame()?;
-            }
-            //ParentToTabMessage::MouseMove { x, y } => {
-                // Update cursor if hovering over interactive elements
-                //self.engine.handle_mouse_move(x / self.engine.viewport.hidpi_scale, y / self.engine.viewport.hidpi_scale);
-            //}
+            // todo ctrl+click nav new tab, middle click, Home + End keys, keyboard scrolling
             ParentToTabMessage::UI(event) => {
                 if let Some(dom) = self.dom_mut() {
                     dom.handle_ui_event(event);
                 }
             }
-            ParentToTabMessage::KeyboardInput { key_type, modifiers } => {
-                // Handle keyboard input in the engine
-                use crate::ipc::{KeyInputType, ScrollDirection};
-
+            /*ParentToTabMessage::KeyboardInput { key_type, modifiers } => {
+                use crate::ipc::KeyInputType;
                 match key_type {
-                    KeyInputType::Scroll { direction, amount } => {
-                        // Handle keyboard scrolling
-                    }
+                    KeyInputType::Scroll { direction, amount } => {}
                     KeyInputType::Named(key_name) => {
-                        // Handle named keys
                         match key_name.as_str() {
-                            "Home" => {
-                                self.engine.set_scroll_position(0.0, 0.0);
-                            }
-                            "End" => {
-                                self.engine.set_scroll_position(0.0, f32::MAX);
-                            }
-                            "Enter" | "Escape" | "Tab" | "ShiftTab" | "Backspace" | "Delete" => {
-                                // These keys might be handled by JavaScript or form elements
-                                // For now, we just trigger a re-render
-                                // TODO: Forward to focused element in DOM
-                            }
+                            "Home" => { self.engine.set_scroll_position(0.0, 0.0); }
+                            "End" => { self.engine.set_scroll_position(0.0, f32::MAX); }
                             _ => {}
                         }
                     }
                     KeyInputType::Character(text) => {
-                        // Handle character input
-                        // This could be for text input fields, keyboard shortcuts, etc.
-                        // TODO: Forward to focused element in DOM
-
-                        // Check for special keyboard shortcuts
                         if modifiers.ctrl {
                             match text.as_str() {
-                                "ctrl+a" => {
-                                    // Select all in page
-                                    // TODO: Implement text selection
-                                }
-                                "ctrl+c" => {
-                                    // Copy selected text
-                                    // TODO: Implement copy from page content
-                                }
-                                "ctrl+f" => {
-                                    // Find in page
-                                    // TODO: Implement find functionality
-                                }
                                 _ => {}
                             }
                         }
                     }
                 }
-
-                self.render_frame()?;
-            }
+                should_render = true;
+            }*/
             ParentToTabMessage::RequestFrame => {
-                self.render_frame()?;
+                should_render = true;
             }
             ParentToTabMessage::SetScaleFactor(scale) => {
                 self.engine.set_viewport(Viewport {
@@ -450,19 +382,19 @@ impl TabProcess {
                     zoom,
                     ..self.engine.viewport
                 });
-                self.render_frame()?;
+                should_render = true;
             }
             ParentToTabMessage::Shutdown => {
-                return Ok(false); // Signal to exit the loop
+                return Ok((false, false));
             }
         }
-        Ok(true) // Continue running
+        Ok((should_render, true))
     }
 
     async fn handle_shell_provider_message(&mut self, message: &ShellProviderMessage) -> io::Result<()> {
         match message {
             ShellProviderMessage::RequestRedraw => {
-                self.render_frame()?;
+                self.redraw_request.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             _ => {}
         }
@@ -476,23 +408,24 @@ impl TabProcess {
             let canvas = shared.surface.canvas();
 
             // Clear the canvas to prevent old frames from showing through
+            canvas.restore_to_count(1);
             canvas.clear(skia_safe::Color::WHITE);
 
-            let mut painter = ScenePainter {
-                inner: canvas,
-                cache: &mut Default::default(),
-            };
+        let mut painter = ScenePainter {
+            inner: canvas,
+            cache: &mut self.scene_cache,
+        };
 
-            let engine = &mut self.engine;
-            if engine.dom.is_some() {
-                engine.render(&mut painter, animation_time);
+        let engine = &mut self.engine;
+        if engine.dom.is_some() {
+            engine.render(&mut painter, animation_time);
 
-                let dom = engine.dom.as_ref().unwrap();
-                // todo check if window is visible
-                if dom.animating() {
-                    dom.shell_provider.request_redraw();
-                }
+            let dom = engine.dom.as_ref().unwrap();
+            // todo check if window is visible
+            if dom.animating() {
+                dom.shell_provider.request_redraw();
             }
+        }
 
             // Copy the pixel data to shared memory
             if let Some(pixmap) = shared.surface.peek_pixels() {
@@ -507,6 +440,8 @@ impl TabProcess {
             } else {
                 return Err(io::Error::new(io::ErrorKind::Other, "Failed to peek pixels"));
             }
+
+            self.scene_cache.next_gen();
 
             // Notify parent that frame is ready
             self.channel.send(&TabToParentMessage::FrameRendered {

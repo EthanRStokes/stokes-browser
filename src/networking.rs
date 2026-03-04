@@ -13,7 +13,6 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use style::font_face::{FontFaceSourceFormat, FontFaceSourceFormatKeyword, Source};
 use style::media_queries::MediaList;
-use style::parser::ParserContext;
 use style::servo_arc::Arc as ServoArc;
 use style::shared_lock::{Locked, SharedRwLock, SharedRwLockReadGuard};
 use style::stylesheets::import_rule::{ImportLayer, ImportSheet, ImportSupportsCondition};
@@ -573,14 +572,14 @@ pub fn resolve_url(current_url: &str, url: &str) -> Result<String, NetworkError>
     }
 }
 
-pub struct NewHttpClient {
+pub struct HttpClient {
     pub(crate) tx: Sender<DomEvent>,
     pub(crate) dom_id: usize,
     pub(crate) net_provider: Arc<StokesNetProvider>,
     pub(crate) shell_provider: Arc<StokesShellProvider>,
 }
 
-impl NewHttpClient {
+impl HttpClient {
     pub fn new(tx: Sender<DomEvent>, dom_id: usize, net_provider: Arc<StokesNetProvider>, shell_provider: Arc<StokesShellProvider>) -> Self {
         Self {
             tx,
