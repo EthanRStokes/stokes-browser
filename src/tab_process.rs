@@ -14,10 +14,8 @@ use std::ffi::CStr;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread::sleep;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
-use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
@@ -42,7 +40,6 @@ pub struct TabProcess {
     shell_receiver: UnboundedReceiver<ShellProviderMessage>,
     nav_receiver: UnboundedReceiver<NavigationProviderMessage>,
     redraw_request: AtomicBool,
-    navigation_id: u64,
 }
 
 impl TabProcess {
@@ -117,7 +114,6 @@ impl TabProcess {
             shell_receiver: shell_rx,
             nav_receiver: nav_rx,
             redraw_request: AtomicBool::new(false),
-            navigation_id: 0,
         })
     }
 
@@ -127,12 +123,21 @@ impl TabProcess {
     unsafe fn init_vulkan(
         parent_info: Option<&VulkanDeviceInfo>,
     ) -> Result<(ash::Entry, ash::Instance, vk::PhysicalDevice, ash::Device, u32, DirectContext), String> {
-        let entry = ash::Entry::load().map_err(|e| format!("ash Entry::load: {:?}", e))?;
+        println!("[Tab:init_vulkan] Starting Vulkan init; parent_info present={}", parent_info.is_some());
+        let entry = match ash::Entry::load() {
+            Ok(e) => { println!("[Tab:init_vulkan] ash::Entry::load OK"); e }
+            Err(err) => {
+                let msg = format!("ash Entry::load: {:?}", err);
+                println!("[Tab:init_vulkan] ERROR: {}", msg);
+                return Err(msg);
+            }
+        };
 
         let instance_api_version = entry
             .try_enumerate_instance_version()
             .map_err(|e| format!("vkEnumerateInstanceVersion: {:?}", e))?
             .unwrap_or(vk::API_VERSION_1_0);
+        println!("[Tab:init_vulkan] instance_api_version=0x{:X}", instance_api_version);
 
         let app_info = vk::ApplicationInfo::default()
             .application_name(c"stokes-tab")
@@ -141,14 +146,37 @@ impl TabProcess {
         let instance_ci = vk::InstanceCreateInfo::default()
             .application_info(&app_info);
 
-        let instance = entry.create_instance(&instance_ci, None)
-            .map_err(|e| format!("vkCreateInstance: {:?}", e))?;
+        let instance = match entry.create_instance(&instance_ci, None) {
+            Ok(i) => { println!("[Tab:init_vulkan] vkCreateInstance succeeded"); i }
+            Err(e) => {
+                let msg = format!("vkCreateInstance: {:?}", e);
+                println!("[Tab:init_vulkan] ERROR: {}", msg);
+                return Err(msg);
+            }
+        };
 
-        let physical_devices = instance.enumerate_physical_devices()
-            .map_err(|e| format!("enumerate_physical_devices: {:?}", e))?;
+        let physical_devices = match instance.enumerate_physical_devices() {
+            Ok(devs) => { println!("[Tab:init_vulkan] enumerate_physical_devices found {} devices", devs.len()); devs }
+            Err(e) => {
+                let msg = format!("enumerate_physical_devices: {:?}", e);
+                println!("[Tab:init_vulkan] ERROR: {}", msg);
+                return Err(msg);
+            }
+        };
 
         if physical_devices.is_empty() {
+            println!("[Tab:init_vulkan] No Vulkan physical devices found");
             return Err("No Vulkan physical devices found".into());
+        }
+
+        // Print info about each physical device
+        for (i, &pd) in physical_devices.iter().enumerate() {
+            let props = instance.get_physical_device_properties(pd);
+            let name = CStr::from_ptr(props.device_name.as_ptr()).to_string_lossy().into_owned();
+            let uuid = crate::vk_shared::physical_device_uuid(&instance, pd);
+            // uuid is a [u8;16] — convert to a hex string for printing
+            let uuid_hex = uuid.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join("");
+            println!("[Tab:init_vulkan] PD[{}] name='{}' uuid='{}'", i, name, uuid_hex);
         }
 
         let mut matched_parent_uuid = false;
@@ -159,10 +187,17 @@ impl TabProcess {
                     uuid == info.device_uuid
                 }).copied()
             })
+            .inspect(|_| println!("[Tab:init_vulkan] matched parent GPU by UUID"))
             .inspect(|_| matched_parent_uuid = true)
             .unwrap_or(physical_devices[0]);
 
+        // Print selected physical device
+        let sel_props = instance.get_physical_device_properties(physical_device);
+        let sel_name = CStr::from_ptr(sel_props.device_name.as_ptr()).to_string_lossy().into_owned();
+        println!("[Tab:init_vulkan] Selected physical device: '{}'", sel_name);
+
         let queue_families = instance.get_physical_device_queue_family_properties(physical_device);
+        println!("[Tab:init_vulkan] queue_families count = {}", queue_families.len());
         let fallback_qfi = queue_families
             .iter()
             .enumerate()
@@ -170,9 +205,12 @@ impl TabProcess {
             .map(|(i, _)| i as u32)
             .ok_or_else(|| "Selected Vulkan physical device has no graphics queue family".to_string())?;
 
+        println!("[Tab:init_vulkan] fallback_qfi = {}", fallback_qfi);
+
         // Only reuse parent's queue family index when we actually matched the same GPU and
         // the index is valid for this physical device.
         let queue_family_index = if matched_parent_uuid {
+            println!("[Tab:init_vulkan] parent matched, checking parent's queue_family_index validity");
             parent_info
                 .filter(|info| {
                     queue_families
@@ -182,13 +220,22 @@ impl TabProcess {
                 .map(|info| info.queue_family_index)
                 .unwrap_or(fallback_qfi)
         } else {
+            println!("[Tab:init_vulkan] parent not matched; using fallback queue family index");
             fallback_qfi
         };
 
+        println!("[Tab:init_vulkan] chosen queue_family_index = {}", queue_family_index);
+
         let ext_names = crate::vk_shared::tab_device_extension_names();
-        let available_exts = instance
-            .enumerate_device_extension_properties(physical_device)
-            .map_err(|e| format!("enumerate_device_extension_properties: {:?}", e))?;
+        println!("[Tab:init_vulkan] required device extensions count = {}", ext_names.len());
+        let available_exts = match instance.enumerate_device_extension_properties(physical_device) {
+            Ok(exts) => { println!("[Tab:init_vulkan] enumerate_device_extension_properties OK ({} ext)", exts.len()); exts }
+            Err(e) => {
+                let msg = format!("enumerate_device_extension_properties: {:?}", e);
+                println!("[Tab:init_vulkan] ERROR: {}", msg);
+                return Err(msg);
+            }
+        };
         let missing_exts: Vec<String> = ext_names
             .iter()
             .map(|&name| CStr::from_ptr(name).to_string_lossy().into_owned())
@@ -205,6 +252,7 @@ impl TabProcess {
             let driver_name = CStr::from_ptr(instance.get_physical_device_properties(physical_device).device_name.as_ptr())
                 .to_string_lossy()
                 .into_owned();
+            println!("[Tab:init_vulkan] ERROR: missing required Vulkan tab extensions: {:?}; GPU: {}", missing_exts, driver_name);
             return Err(format!(
                 "Selected GPU is missing required Vulkan tab extensions: {:?}. GPU: {}",
                 missing_exts, driver_name
@@ -220,11 +268,19 @@ impl TabProcess {
             .queue_create_infos(std::slice::from_ref(&queue_ci))
             .enabled_extension_names(&ext_names);
 
-        let device = instance.create_device(physical_device, &device_ci, None)
-            .map_err(|e| format!("vkCreateDevice: {:?} (queue_family_index={})", e, queue_family_index))?;
+        println!("[Tab:init_vulkan] Creating device (queue_family_index={})", queue_family_index);
+        let device = match instance.create_device(physical_device, &device_ci, None) {
+            Ok(d) => { println!("[Tab:init_vulkan] vkCreateDevice succeeded"); d }
+            Err(e) => {
+                let msg = format!("vkCreateDevice: {:?} (queue_family_index={})", e, queue_family_index);
+                println!("[Tab:init_vulkan] ERROR: {}", msg);
+                return Err(msg);
+            }
+        };
 
         // Build a Skia DirectContext against this device
         let queue = device.get_device_queue(queue_family_index, 0);
+        println!("[Tab:init_vulkan] Obtained device queue (handle=0x{:X})", queue.as_raw());
         let get_device_proc_addr = instance.fp_v1_0().get_device_proc_addr;
         let get_proc = |gpo: skia_safe::gpu::vk::GetProcOf| {
             match gpo {
@@ -258,7 +314,13 @@ impl TabProcess {
                 &get_proc,
             ),
             None,
-        ).ok_or_else(|| "Failed to create Skia Vulkan DirectContext in tab".to_string())?;
+        ).ok_or_else(|| {
+            let msg = "Failed to create Skia Vulkan DirectContext in tab".to_string();
+            println!("[Tab:init_vulkan] ERROR: {}", msg);
+            msg
+        })?;
+
+        println!("[Tab:init_vulkan] Skia DirectContext created successfully");
 
         Ok((entry, instance, physical_device, device, queue_family_index, gr_context))
     }
@@ -287,9 +349,9 @@ impl TabProcess {
         }
 
         // Drop the old image first
-        println!("aobut to drop old image");
+        println!("[Tab:ensure_vk_image] about to drop old image (exists={})", self.vk_image.is_some());
         self.vk_image = None;
-        println!("dropped");
+        println!("[Tab:ensure_vk_image] dropped old image");
 
         let (inst, phys, dev, ctx) = match (
             self.ash_instance.as_ref(),
@@ -299,12 +361,13 @@ impl TabProcess {
         ) {
             (Some(i), Some(p), Some(d), Some(c)) => (i, p, d, c),
             _ => {
-                eprintln!("[Tab {}] Vulkan not available — skipping VkImage creation", self.tab_id);
+                eprintln!("[Tab:{}] Vulkan not available — skipping VkImage creation", self.tab_id);
                 return Ok(false);
             }
         };
 
-        println!("about to get dev queue");
+        println!("[Tab:ensure_vk_image] creating TabVkImage width={} height={} format={:?}", width, height, self.vk_format);
+        println!("[Tab:ensure_vk_image] getting device queue (qfi={})", self.queue_family_index);
         let queue = unsafe { dev.get_device_queue(self.queue_family_index, 0) };
 
         let img = unsafe {
@@ -319,10 +382,19 @@ impl TabProcess {
                 self.queue_family_index,
                 queue,
             )
-        }.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        };
 
-        self.vk_image = Some(img);
-        Ok(true)
+        match img {
+            Ok(created) => {
+                println!("[Tab:ensure_vk_image] TabVkImage created successfully (alloc_size={})", created.alloc_size);
+                self.vk_image = Some(created);
+                Ok(true)
+            }
+            Err(e) => {
+                eprintln!("[Tab:ensure_vk_image] TabVkImage::new failed: {}", e);
+                Err(io::Error::new(io::ErrorKind::Other, e))
+            }
+        }
     }
 
     /// Main event loop for the tab process
@@ -347,10 +419,6 @@ impl TabProcess {
                                 continue;
                             }
 
-                            // Only let the latest async navigation callback commit a document.
-                            self.navigation_id = self.navigation_id.wrapping_add(1);
-                            let navigation_id = self.navigation_id;
-
                             let nav_provider = self.engine.navigation_provider.clone();
                             let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(true));
                             let url = options.url.as_str().to_string();
@@ -366,7 +434,6 @@ impl TabProcess {
                                     };
                                     let contents = std::str::from_utf8(&bytes).unwrap().to_string();
                                     let _ = nav_provider.sender.send(NavigationProviderMessage::Navigate {
-                                        navigation_id,
                                         url,
                                         contents,
                                         is_md: false,
@@ -376,15 +443,11 @@ impl TabProcess {
                             );
                         }
                         NavigationProviderMessage::Navigate {
-                            navigation_id,
                             url,
                             contents,
                             retain_scroll_position: _,
                             is_md: _,
                         } => {
-                            if navigation_id != self.navigation_id {
-                                continue;
-                            }
                             self.engine.set_loading_state(true);
                             match self.engine.navigate(&url, contents, true, true).await {
                                 Ok(_) => {
@@ -457,8 +520,6 @@ impl TabProcess {
         let mut should_render: bool = false;
         match message {
             ParentToTabMessage::Navigate(url) => {
-                // Invalidate any in-flight async navigation callback.
-                self.navigation_id = self.navigation_id.wrapping_add(1);
                 let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                 self.engine.set_loading_state(true);
 
@@ -483,7 +544,6 @@ impl TabProcess {
                 }
             }
             ParentToTabMessage::Reload => {
-                self.navigation_id = self.navigation_id.wrapping_add(1);
                 let url = self.engine.current_url().to_string();
                 if !url.is_empty() {
                     let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
@@ -506,7 +566,6 @@ impl TabProcess {
                 }
             }
             ParentToTabMessage::GoBack => {
-                self.navigation_id = self.navigation_id.wrapping_add(1);
                 if self.engine.can_go_back() {
                     let url = self.engine.current_url().to_string();
                     let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
@@ -527,7 +586,6 @@ impl TabProcess {
                 }
             }
             ParentToTabMessage::GoForward => {
-                self.navigation_id = self.navigation_id.wrapping_add(1);
                 if self.engine.can_go_forward() {
                     let url = self.engine.current_url().to_string();
                     let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
@@ -644,6 +702,7 @@ impl TabProcess {
         // Flush the Skia GPU commands so the image memory is ready to export
         if let Some(ctx) = self.gr_context.as_mut() {
             ctx.flush_and_submit();
+            println!("[Tab:render_frame] Skia flush_and_submit called");
         }
 
         self.scene_cache.next_gen();
@@ -661,13 +720,16 @@ impl TabProcess {
 
         let vk_image = self.vk_image.as_ref().unwrap();
         let sem_handle: i64 = unsafe { vk_image.signal_and_export_semaphore(parent_pid) };
+        println!("[Tab:render_frame] semaphore handle returned = {}", sem_handle);
 
         // If we couldn't get a semaphore, fall back to a CPU wait so the
         // parent still sees a complete frame.
         if sem_handle == -1 || sem_handle == 0 {
+            println!("[Tab:render_frame] semaphore not available, falling back to queue_wait_idle if possible");
             if let Some(device) = self.ash_device.as_ref() {
                 let queue = unsafe { device.get_device_queue(self.queue_family_index, 0) };
                 unsafe { device.queue_wait_idle(queue).ok() };
+                println!("[Tab:render_frame] queue_wait_idle executed");
             }
         }
 
@@ -685,8 +747,9 @@ impl TabProcess {
             .unwrap_or(0);
 
         // Export the backing memory as a cross-process handle.
+        println!("[Tab:render_frame] exporting memory handle to parent_pid={}", parent_pid);
         let mem_handle = match unsafe { vk_image.export_handle(parent_pid) } {
-            Ok(h) => h,
+            Ok(h) => { println!("[Tab:render_frame] export_handle succeeded: {}", h); h }
             Err(e) => {
                 eprintln!("[Tab {}] export_handle failed: {}", self.tab_id, e);
                 return Ok(());
@@ -694,6 +757,7 @@ impl TabProcess {
         };
 
         // Send the FrameRendered metadata message with the handle embedded.
+        println!("[Tab:render_frame] sending FrameRendered (w={} h={} format=0x{:X} alloc_size={} sem={})", width, height, vk_format, alloc_size, sem_handle);
         self.channel.send(&TabToParentMessage::FrameRendered {
             mem_handle,
             width,
@@ -709,7 +773,7 @@ impl TabProcess {
 
 /// Entry point for tab process executable
 pub async fn tab_process_main(tab_id: String, server_name: String) -> io::Result<()> {
-    tokio::time::sleep(Duration::from_millis(10000)).await;
+    //tokio::time::sleep(Duration::from_millis(10000)).await;
     let mut process = TabProcess::new(tab_id, server_name)?;
     process.run().await
 }
