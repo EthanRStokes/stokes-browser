@@ -24,6 +24,19 @@ use skia_safe::gpu::{self, DirectContext};
 use std::ffi::c_char;
 use ash::vk::Handle;
 use vulkano::format::Format;
+use std::sync::Arc;
+use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer};
+use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
+use vulkano::device::Queue;
+use vulkano::sync::{self, GpuFuture};
+use vulkano::image::ImageLayout as VulkanoImageLayout;
+use vulkano::sync::AccessFlags as VulkanoAccessFlags;
+use vulkano::sync::PipelineStages as VulkanoPipelineStages;
+use vulkano::sync::DependencyInfo;
+use vulkano::sync::ImageMemoryBarrier;
+use vulkano::image::ImageAspects;
+use vulkano::image::ImageSubresourceRange;
+use vulkano::instance::Instance;
 // ── VkFormat ↔ Skia mappings ────────────────────────────────────────────────
 
 /// Map a `vk::Format` to the corresponding Skia format + color type.
@@ -158,9 +171,6 @@ pub struct TabVkImage {
     pub queue: ash::vk::Queue,
     queue_family_index: u32,
     /// Fence used to track the last `signal_and_export_semaphore` submission.
-    /// On Windows, `device_wait_idle` alone may not be sufficient to ensure the
-    /// driver has fully retired a signaled-but-never-waited-on semaphore; using
-    /// a fence gives us a reliable synchronization point.
     submit_fence: ash::vk::Fence,
     /// Whether `submit_fence` is currently in the submitted (unsignaled) state.
     submit_fence_pending: bool,
@@ -186,114 +196,113 @@ impl TabVkImage {
         queue_family_index: u32,
         queue: ash::vk::Queue,
     ) -> Result<Self, String> {
-        let (skia_format, color_type) = ash_format_to_skia(format)
-            .ok_or_else(|| format!("Unsupported format {:?}", format))?;
+         let (skia_format, color_type) = ash_format_to_skia(format)
+             .ok_or_else(|| format!("Unsupported format {:?}", format))?;
 
-        let handle_type = external_handle_type();
+         let handle_type = external_handle_type();
 
-        // -- Create image with external memory info chained in pNext ----------
-        let mut ext_image_ci = ash::vk::ExternalMemoryImageCreateInfo::default()
-            .handle_types(handle_type);
+         // -- Create image with external memory info chained in pNext ----------
+         let mut ext_image_ci = ash::vk::ExternalMemoryImageCreateInfo::default()
+             .handle_types(handle_type);
 
-        let image_ci = ash::vk::ImageCreateInfo::default()
-            .push_next(&mut ext_image_ci)
-            .image_type(ash::vk::ImageType::TYPE_2D)
-            .format(format)
-            .extent(ash::vk::Extent3D { width, height, depth: 1 })
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(ash::vk::SampleCountFlags::TYPE_1)
-            .tiling(ash::vk::ImageTiling::OPTIMAL)
-            .usage(
-                ash::vk::ImageUsageFlags::COLOR_ATTACHMENT
-                    | ash::vk::ImageUsageFlags::SAMPLED
-                    | ash::vk::ImageUsageFlags::TRANSFER_SRC
-                    | ash::vk::ImageUsageFlags::TRANSFER_DST,
-            )
-            .sharing_mode(ash::vk::SharingMode::EXCLUSIVE)
-            .initial_layout(ash::vk::ImageLayout::UNDEFINED);
+         let image_ci = ash::vk::ImageCreateInfo::default()
+             .push_next(&mut ext_image_ci)
+             .image_type(ash::vk::ImageType::TYPE_2D)
+             .format(format)
+             .extent(ash::vk::Extent3D { width, height, depth: 1 })
+             .mip_levels(1)
+             .array_layers(1)
+             .samples(ash::vk::SampleCountFlags::TYPE_1)
+             .tiling(ash::vk::ImageTiling::OPTIMAL)
+             .usage(
+                 ash::vk::ImageUsageFlags::COLOR_ATTACHMENT
+                     | ash::vk::ImageUsageFlags::SAMPLED
+                     | ash::vk::ImageUsageFlags::TRANSFER_SRC
+                     | ash::vk::ImageUsageFlags::TRANSFER_DST,
+             )
+             .sharing_mode(ash::vk::SharingMode::EXCLUSIVE)
+             .initial_layout(ash::vk::ImageLayout::UNDEFINED);
 
-        let image = device
-            .create_image(&image_ci, None)
-            .map_err(|e| format!("vkCreateImage failed: {:?}", e))?;
+         let image = device
+             .create_image(&image_ci, None)
+             .map_err(|e| format!("vkCreateImage failed: {:?}", e))?;
 
-        // -- Allocate memory with export info ---------------------------------
-        let mem_reqs = device.get_image_memory_requirements(image);
+         // -- Allocate memory with export info ---------------------------------
+         let mem_reqs = device.get_image_memory_requirements(image);
 
-        let mem_type_index = find_memory_type(
-            instance,
-            physical_device,
-            mem_reqs.memory_type_bits,
-            ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        )
-        .ok_or_else(|| {
-            device.destroy_image(image, None);
-            "No suitable memory type".to_string()
-        })?;
+         let mem_type_index = find_memory_type(
+             instance,
+             physical_device,
+             mem_reqs.memory_type_bits,
+             ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
+         )
+         .ok_or_else(|| {
+             device.destroy_image(image, None);
+             "No suitable memory type".to_string()
+         })?;
 
-        let mut export_alloc_info = ash::vk::ExportMemoryAllocateInfo::default()
-            .handle_types(handle_type);
+         let mut export_alloc_info = ash::vk::ExportMemoryAllocateInfo::default()
+             .handle_types(handle_type);
 
-        let mut dedicated_alloc_info = ash::vk::MemoryDedicatedAllocateInfo::default()
-            .image(image);
+         let mut dedicated_alloc_info = ash::vk::MemoryDedicatedAllocateInfo::default()
+             .image(image);
 
-        let alloc_info = ash::vk::MemoryAllocateInfo::default()
-            .push_next(&mut export_alloc_info)
-            .push_next(&mut dedicated_alloc_info)
-            .allocation_size(mem_reqs.size)
-            .memory_type_index(mem_type_index);
+         let alloc_info = ash::vk::MemoryAllocateInfo::default()
+             .push_next(&mut export_alloc_info)
+             .push_next(&mut dedicated_alloc_info)
+             .allocation_size(mem_reqs.size)
+             .memory_type_index(mem_type_index);
 
-        let memory = device.allocate_memory(&alloc_info, None).map_err(|e| {
-            device.destroy_image(image, None);
-            format!("vkAllocateMemory failed: {:?}", e)
-        })?;
+         let memory = device.allocate_memory(&alloc_info, None).map_err(|e| {
+             device.destroy_image(image, None);
+             format!("vkAllocateMemory failed: {:?}", e)
+         })?;
 
-        device.bind_image_memory(image, memory, 0).map_err(|e| {
-            device.free_memory(memory, None);
-            device.destroy_image(image, None);
-            format!("vkBindImageMemory failed: {:?}", e)
-        })?;
+         device.bind_image_memory(image, memory, 0).map_err(|e| {
+             device.free_memory(memory, None);
+             device.destroy_image(image, None);
+             format!("vkBindImageMemory failed: {:?}", e)
+         })?;
 
-        // -- Build Skia surface -----------------------------------------------
-        let alloc = gpu::vk::Alloc::from_device_memory(
-            memory.as_raw() as _,
-            0,
-            mem_reqs.size,
-            AllocFlag::empty(),
-        );
+         // -- Build Skia surface -----------------------------------------------
+         let alloc = gpu::vk::Alloc::from_device_memory(
+             memory.as_raw() as _,
+             0,
+             mem_reqs.size,
+             AllocFlag::empty(),
+         );
 
-        let sk_image_info = gpu::vk::ImageInfo::new(
-            image.as_raw() as _,
-            alloc,
-            gpu::vk::ImageTiling::OPTIMAL,
-            gpu::vk::ImageLayout::UNDEFINED,
-            skia_format,
-            1,
-            None, None, None, None,
-        );
+         let sk_image_info = gpu::vk::ImageInfo::new(
+             image.as_raw() as _,
+             alloc,
+             gpu::vk::ImageTiling::OPTIMAL,
+             gpu::vk::ImageLayout::UNDEFINED,
+             skia_format,
+             1,
+             None, None, None, None,
+         );
 
-        let render_target = gpu::backend_render_targets::make_vk(
-            (width as i32, height as i32),
-            &sk_image_info,
-        );
+         let render_target = gpu::backend_render_targets::make_vk(
+             (width as i32, height as i32),
+             &sk_image_info,
+         );
 
-        let skia_surface = gpu::surfaces::wrap_backend_render_target(
-            gr_context,
-            &render_target,
-            gpu::SurfaceOrigin::TopLeft,
-            color_type,
-            None,
-            None,
-        )
-        .ok_or_else(|| {
-            unsafe {
-                device.free_memory(memory, None);
-                device.destroy_image(image, None);
-            }
-            "Failed to wrap Vulkan image as Skia surface".to_string()
-        })?;
+         let skia_surface = gpu::surfaces::wrap_backend_render_target(
+             gr_context,
+             &render_target,
+             gpu::SurfaceOrigin::TopLeft,
+             color_type,
+             None,
+             None,
+         )
+         .ok_or_else(|| {
+             unsafe {
+                 device.free_memory(memory, None);
+                 device.destroy_image(image, None);
+             }
+             "Failed to wrap Vulkan image as Skia surface".to_string()
+         })?;
 
-        // -- Command pool + buffer for the post-render layout transition ------
         let pool_ci = ash::vk::CommandPoolCreateInfo::default()
             .queue_family_index(queue_family_index)
             .flags(ash::vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
@@ -317,52 +326,52 @@ impl TabVkImage {
             bufs[0]
         };
 
-        // -- Exportable render-complete semaphore -----------------------------
-        let render_semaphore = TabVkSemaphore::new(instance, device)
-            .map_err(|e| {
-                device.destroy_command_pool(cmd_pool, None);
-                device.free_memory(memory, None);
-                device.destroy_image(image, None);
-                e
-            })
-            .ok();
+         // -- Exportable render-complete semaphore -----------------------------
+         let render_semaphore = TabVkSemaphore::new(instance, device)
+             .map_err(|e| {
+                 device.free_memory(memory, None);
+                 device.destroy_image(image, None);
+                 e
+             })
+             .ok();
 
-        // -- Fence for tracking signal_and_export_semaphore submissions ------
-        let submit_fence = device.create_fence(&ash::vk::FenceCreateInfo::default(), None)
-            .map_err(|e| {
-                device.destroy_command_pool(cmd_pool, None);
-                device.free_memory(memory, None);
-                device.destroy_image(image, None);
-                format!("vkCreateFence (tab submit) failed: {:?}", e)
-            })?;
+         // -- Fence for tracking signal_and_export_semaphore submissions ------
+         let submit_fence = device
+             .create_fence(&ash::vk::FenceCreateInfo::default(), None)
+             .map_err(|e| {
+                 device.destroy_command_pool(cmd_pool, None);
+                 device.free_memory(memory, None);
+                 device.destroy_image(image, None);
+                 format!("vkCreateFence (tab submit) failed: {:?}", e)
+             })?;
 
-        #[cfg(windows)]
-        let ext_mem_win32 = ash::khr::external_memory_win32::Device::new(instance, device);
-        #[cfg(not(windows))]
-        let ext_mem_fd = ash::khr::external_memory_fd::Device::new(instance, device);
+         #[cfg(windows)]
+         let ext_mem_win32 = ash::khr::external_memory_win32::Device::new(instance, device);
+         #[cfg(not(windows))]
+         let ext_mem_fd = ash::khr::external_memory_fd::Device::new(instance, device);
 
-        Ok(Self {
-            device: device.clone(),
-            image,
-            memory,
-            width,
-            height,
-            format,
-            alloc_size: mem_reqs.size,
-            skia_surface: Some(skia_surface),
-            render_semaphore,
-            cmd_pool,
-            cmd_buf,
-            queue,
-            queue_family_index,
-            submit_fence,
-            submit_fence_pending: false,
-            #[cfg(windows)]
-            ext_mem_win32,
-            #[cfg(not(windows))]
-            ext_mem_fd,
-        })
-    }
+         Ok(Self {
+             device: device.clone(),
+             image,
+             memory,
+             width,
+             height,
+             format,
+             alloc_size: mem_reqs.size,
+             skia_surface: Some(skia_surface),
+             render_semaphore,
+             cmd_pool,
+             cmd_buf,
+             queue,
+             queue_family_index,
+             submit_fence,
+             submit_fence_pending: false,
+             #[cfg(windows)]
+             ext_mem_win32,
+             #[cfg(not(windows))]
+             ext_mem_fd,
+         })
+     }
 
     /// Get a mutable reference to the Skia surface for rendering.
     pub fn surface_mut(&mut self) -> &mut skia_safe::Surface {
@@ -446,11 +455,7 @@ impl TabVkImage {
         // Wait for any prior submission to complete before reusing the command
         // buffer and fence.
         if self.submit_fence_pending {
-            let _ = self.device.wait_for_fences(
-                &[self.submit_fence],
-                true,
-                5_000_000_000,
-            );
+            let _ = self.device.wait_for_fences(&[self.submit_fence], true, 5_000_000_000);
             let _ = self.device.reset_fences(&[self.submit_fence]);
             self.submit_fence_pending = false;
         }
@@ -476,7 +481,9 @@ impl TabVkImage {
             ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             ash::vk::PipelineStageFlags::BOTTOM_OF_PIPE,
             ash::vk::DependencyFlags::empty(),
-            &[], &[], &[barrier],
+            &[],
+            &[],
+            &[barrier],
         );
 
         if self.device.end_command_buffer(self.cmd_buf).is_err() {
@@ -485,8 +492,11 @@ impl TabVkImage {
 
         let cmd_bufs = [self.cmd_buf];
         let submit_info = ash::vk::SubmitInfo::default().command_buffers(&cmd_bufs);
-
-        if self.device.queue_submit(self.queue, &[submit_info], self.submit_fence).is_err() {
+        if self
+            .device
+            .queue_submit(self.queue, &[submit_info], self.submit_fence)
+            .is_err()
+        {
             return -1;
         }
         self.submit_fence_pending = true;
@@ -502,31 +512,24 @@ impl Drop for TabVkImage {
         self.skia_surface = None;
 
         unsafe {
-            // Wait for the last signal_and_export_semaphore submission to finish.
-            // On Windows, destroying a semaphore or command pool while GPU work
-            // referencing them is still pending causes an access violation.
             if self.submit_fence_pending {
-                let _ = self.device.wait_for_fences(
-                    &[self.submit_fence],
-                    true,
-                    5_000_000_000, // 5 seconds
-                );
+                let _ = self.device.wait_for_fences(&[self.submit_fence], true, 5_000_000_000);
                 self.submit_fence_pending = false;
             }
 
-            // Also do a full device wait as a safety net — Skia may have
-            // submitted additional GPU work we don't track with our fence.
-            self.device.device_wait_idle().ok();
+             // Also do a full device wait as a safety net — Skia may have
+             // submitted additional GPU work we don't track with our fence.
+             self.device.device_wait_idle().ok();
 
-            // Now safe to destroy everything.
-            self.render_semaphore = None;
-            self.device.destroy_fence(self.submit_fence, None);
-            self.device.destroy_command_pool(self.cmd_pool, None);
-            self.device.free_memory(self.memory, None);
-            self.device.destroy_image(self.image, None);
-        }
-    }
-}
+             // Now safe to destroy everything.
+             self.render_semaphore = None;
+             self.device.destroy_fence(self.submit_fence, None);
+             self.device.destroy_command_pool(self.cmd_pool, None);
+             self.device.free_memory(self.memory, None);
+             self.device.destroy_image(self.image, None);
+         }
+     }
+ }
 
 // ── ImportedVkImage: RAII wrapper for resources imported by the parent ──────
 
