@@ -1,11 +1,11 @@
 use crate::vk_context;
 use crate::vk_shared::{self, ImportedVkImage, VulkanDeviceInfo, SkiaGetProc, COLOR_SUBRESOURCE_RANGE};
-use ash::vk::{self, Handle};
 use skia_safe::gpu::vk::GetProcOf;
 use skia_safe::gpu::{self, DirectContext};
 use skia_safe::{ColorType, Surface};
 use std::ffi::CStr;
 use std::sync::Arc;
+use ash::vk::Handle;
 use vulkano::VulkanObject;
 use winit::dpi::LogicalSize;
 use winit::window::{Window, WindowAttributes};
@@ -63,9 +63,9 @@ impl Env {
 pub(crate) struct VkState {
     pub(crate) entry: ash::Entry,
     pub(crate) instance: ash::Instance,
-    pub(crate) physical_device: vk::PhysicalDevice,
+    pub(crate) physical_device: ash::vk::PhysicalDevice,
     pub(crate) device: ash::Device,
-    pub(crate) queue: vk::Queue,
+    pub(crate) queue: ash::vk::Queue,
     pub(crate) queue_family_index: u32,
 
     // Keep the vulkano objects alive while ash wrappers are used by the renderer.
@@ -75,15 +75,15 @@ pub(crate) struct VkState {
     vk_surface_owner: Arc<vulkano::swapchain::Surface>,
 
     // Surface
-    surface_khr: vk::SurfaceKHR,
+    surface_khr: ash::vk::SurfaceKHR,
     surface_fn: ash::khr::surface::Instance,
 
     // Swapchain
     swapchain_fn: ash::khr::swapchain::Device,
-    swapchain: vk::SwapchainKHR,
-    swapchain_images: Vec<vk::Image>,
-    swapchain_format: vk::Format,
-    swapchain_extent: vk::Extent2D,
+    swapchain: ash::vk::SwapchainKHR,
+    swapchain_images: Vec<ash::vk::Image>,
+    swapchain_format: ash::vk::Format,
+    swapchain_extent: ash::vk::Extent2D,
 
     /// One pre-built Skia `Surface` per swapchain image.
     pub(crate) skia_surfaces: Vec<Surface>,
@@ -98,19 +98,19 @@ pub(crate) struct VkState {
     pub(crate) vk_format: skia_safe::gpu::vk::Format,
 
     // Synchronisation (single frame-in-flight)
-    image_available_semaphore: vk::Semaphore,
-    render_finished_semaphore: vk::Semaphore,
+    image_available_semaphore: ash::vk::Semaphore,
+    render_finished_semaphore: ash::vk::Semaphore,
 
     // Persistent command pool + buffer for blit operations (reused each frame)
-    blit_cmd_pool: vk::CommandPool,
-    blit_cmd_buf: vk::CommandBuffer,
+    blit_cmd_pool: ash::vk::CommandPool,
+    blit_cmd_buf: ash::vk::CommandBuffer,
 
     /// Keep the submitted tab image alive until `in_flight_fence` signals.
     in_flight_tab_image: Option<Arc<ImportedVkImage>>,
 
     /// Imported external semaphores waited by the previous submit.
     /// Destroy only after `in_flight_fence` signals.
-    deferred_wait_semaphores: Vec<vk::Semaphore>,
+    deferred_wait_semaphores: Vec<ash::vk::Semaphore>,
 }
 
 impl VkState {
@@ -151,19 +151,19 @@ impl Drop for VkState {
 /// Choose the best swapchain format, preferring UNORM over SRGB so Skia's maths stays linear.
 fn vk_pick_format(
     surface_fn: &ash::khr::surface::Instance,
-    physical_device: vk::PhysicalDevice,
-    surface: vk::SurfaceKHR,
-) -> (vk::Format, skia_safe::gpu::vk::Format, ColorType) {
+    physical_device: ash::vk::PhysicalDevice,
+    surface: ash::vk::SurfaceKHR,
+) -> (ash::vk::Format, skia_safe::gpu::vk::Format, ColorType) {
     let formats = unsafe {
         surface_fn.get_physical_device_surface_formats(physical_device, surface)
             .expect("Failed to query surface formats")
     };
 
     let preferred = [
-        vk::Format::B8G8R8A8_UNORM,
-        vk::Format::R8G8B8A8_UNORM,
-        vk::Format::B8G8R8A8_SRGB,
-        vk::Format::R8G8B8A8_SRGB,
+        ash::vk::Format::B8G8R8A8_UNORM,
+        ash::vk::Format::R8G8B8A8_UNORM,
+        ash::vk::Format::B8G8R8A8_SRGB,
+        ash::vk::Format::R8G8B8A8_SRGB,
     ];
     for want in preferred {
         if formats.iter().any(|sf| sf.format == want) {
@@ -195,7 +195,7 @@ fn vk_prepare_swapchain(vk: &mut VkState, window: Arc<Box<dyn Window>>, gr_conte
             .get_physical_device_surface_capabilities(vk.physical_device, vk.surface_khr)
         {
             Ok(caps) => caps,
-            Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
+            Err(ash::vk::Result::ERROR_SURFACE_LOST_KHR) => {
                 let _ = vk_recreate_surface(vk, window);
                 return;
             }
@@ -205,7 +205,7 @@ fn vk_prepare_swapchain(vk: &mut VkState, window: Arc<Box<dyn Window>>, gr_conte
         let extent = if caps.current_extent.width != u32::MAX {
             caps.current_extent
         } else {
-            vk::Extent2D {
+            ash::vk::Extent2D {
                 width: sz.width.max(caps.min_image_extent.width).min(caps.max_image_extent.width),
                 height: sz.height.max(caps.min_image_extent.height).min(caps.max_image_extent.height),
             }
@@ -217,35 +217,35 @@ fn vk_prepare_swapchain(vk: &mut VkState, window: Arc<Box<dyn Window>>, gr_conte
 
         let old_swapchain = vk.swapchain;
 
-        let swapchain_ci = vk::SwapchainCreateInfoKHR::default()
+        let swapchain_ci = ash::vk::SwapchainCreateInfoKHR::default()
             .surface(vk.surface_khr)
             .min_image_count(min_image_count)
             .image_format(vk.swapchain_format)
-            .image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
+            .image_color_space(ash::vk::ColorSpaceKHR::SRGB_NONLINEAR)
             .image_extent(extent)
             .image_array_layers(1)
-            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
-            .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .image_usage(ash::vk::ImageUsageFlags::COLOR_ATTACHMENT | ash::vk::ImageUsageFlags::TRANSFER_DST)
+            .image_sharing_mode(ash::vk::SharingMode::EXCLUSIVE)
             .pre_transform(caps.current_transform)
-            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(vk::PresentModeKHR::FIFO)
+            .composite_alpha(ash::vk::CompositeAlphaFlagsKHR::OPAQUE)
+            .present_mode(ash::vk::PresentModeKHR::FIFO)
             .clipped(true)
             .old_swapchain(old_swapchain);
 
         let new_swapchain = match vk.swapchain_fn.create_swapchain(&swapchain_ci, None) {
             Ok(sc) => sc,
-            Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
+            Err(ash::vk::Result::ERROR_SURFACE_LOST_KHR) => {
                 let _ = vk_recreate_surface(vk, window);
                 return;
             }
-            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+            Err(ash::vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 vk.swapchain_valid = false;
                 return;
             }
             Err(e) => panic!("Failed to recreate swapchain: {e:?}"),
         };
 
-        if old_swapchain != vk::SwapchainKHR::null() {
+        if old_swapchain != ash::vk::SwapchainKHR::null() {
             vk.swapchain_fn.destroy_swapchain(old_swapchain, None);
         }
 
@@ -270,8 +270,8 @@ fn vk_prepare_swapchain(vk: &mut VkState, window: Arc<Box<dyn Window>>, gr_conte
 /// Build a Skia `Surface` that renders into a specific Vulkan swapchain image.
 fn vk_surface_for_image(
     gr_context: &mut DirectContext,
-    image: vk::Image,
-    extent: vk::Extent2D,
+    image: ash::vk::Image,
+    extent: ash::vk::Extent2D,
     vk_format: skia_safe::gpu::vk::Format,
     color_type: ColorType,
 ) -> Surface {
@@ -307,8 +307,8 @@ fn vk_surface_for_image(
 /// Pre-allocate one Skia `Surface` for every swapchain image.
 fn vk_build_surfaces(
     gr_context: &mut DirectContext,
-    images: &[vk::Image],
-    extent: vk::Extent2D,
+    images: &[ash::vk::Image],
+    extent: ash::vk::Extent2D,
     vk_format: skia_safe::gpu::vk::Format,
     color_type: ColorType,
 ) -> Vec<Surface> {
@@ -352,14 +352,14 @@ fn vk_acquire(
             vk.swapchain,
             u64::MAX,
             vk.image_available_semaphore,
-            vk::Fence::null(),
+            ash::vk::Fence::null(),
         ) {
             Ok(result) => result,
-            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+            Err(ash::vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 vk.swapchain_valid = false;
                 return Ok(false);
             }
-            Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
+            Err(ash::vk::Result::ERROR_SURFACE_LOST_KHR) => {
                 vk_recreate_surface(vk, window.clone())?;
                 return Ok(false);
             }
@@ -382,21 +382,21 @@ unsafe fn import_wait_semaphore_for_frame(
     instance: &ash::Instance,
     device: &ash::Device,
     sem_handle: i64,
-) -> Result<Option<vk::Semaphore>, String> {
+) -> Result<Option<ash::vk::Semaphore>, String> {
     if sem_handle < 0 {
         return Ok(None);
     }
 
-    let sem_ci = vk::SemaphoreCreateInfo::default();
+    let sem_ci = ash::vk::SemaphoreCreateInfo::default();
     let sem = device
         .create_semaphore(&sem_ci, None)
         .map_err(|e| format!("vkCreateSemaphore (import wait): {:?}", e))?;
 
     let ext_sem_fd = ash::khr::external_semaphore_fd::Device::new(instance, device);
-    let import_info = vk::ImportSemaphoreFdInfoKHR::default()
+    let import_info = ash::vk::ImportSemaphoreFdInfoKHR::default()
         .semaphore(sem)
-        .flags(vk::SemaphoreImportFlags::TEMPORARY)
-        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD)
+        .flags(ash::vk::SemaphoreImportFlags::TEMPORARY)
+        .handle_type(ash::vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD)
         .fd(sem_handle as libc::c_int);
 
     if let Err(e) = ext_sem_fd.import_semaphore_fd(&import_info) {
@@ -412,22 +412,22 @@ unsafe fn import_wait_semaphore_for_frame(
     instance: &ash::Instance,
     device: &ash::Device,
     sem_handle: i64,
-) -> Result<Option<vk::Semaphore>, String> {
+) -> Result<Option<ash::vk::Semaphore>, String> {
     if sem_handle == 0 {
         return Ok(None);
     }
 
-    let sem_ci = vk::SemaphoreCreateInfo::default();
+    let sem_ci = ash::vk::SemaphoreCreateInfo::default();
     let sem = device
         .create_semaphore(&sem_ci, None)
         .map_err(|e| format!("vkCreateSemaphore (import wait): {:?}", e))?;
 
     let ext_sem_win32 = ash::khr::external_semaphore_win32::Device::new(instance, device);
-    let mut import_info = vk::ImportSemaphoreWin32HandleInfoKHR::default()
+    let mut import_info = ash::vk::ImportSemaphoreWin32HandleInfoKHR::default()
         .semaphore(sem)
-        .flags(vk::SemaphoreImportFlags::TEMPORARY)
-        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32)
-        .handle(sem_handle as vk::HANDLE);
+        .flags(ash::vk::SemaphoreImportFlags::TEMPORARY)
+        .handle_type(ash::vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32)
+        .handle(sem_handle as ash::vk::HANDLE);
 
     if let Err(e) = ext_sem_win32.import_semaphore_win32_handle(&mut import_info) {
         device.destroy_semaphore(sem, None);
@@ -454,18 +454,18 @@ fn vk_blit_tab_then_present(
         let mut submitted_tab_image: Option<Arc<ImportedVkImage>> = None;
 
         // Reset the persistent command buffer for this frame.
-        device.reset_command_buffer(vk.blit_cmd_buf, vk::CommandBufferResetFlags::empty())
+        device.reset_command_buffer(vk.blit_cmd_buf, ash::vk::CommandBufferResetFlags::empty())
             .map_err(|e| format!("vkResetCommandBuffer (blit-present): {:?}", e))?;
 
-        let begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let begin_info = ash::vk::CommandBufferBeginInfo::default()
+            .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         device.begin_command_buffer(vk.blit_cmd_buf, &begin_info)
             .map_err(|e| format!("vkBeginCommandBuffer (blit-present): {:?}", e))?;
 
-        let mut external_wait_semaphore = vk::Semaphore::null();
+        let mut external_wait_semaphore = ash::vk::Semaphore::null();
 
-        let sublayers = vk::ImageSubresourceLayers {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
+        let sublayers = ash::vk::ImageSubresourceLayers {
+            aspect_mask: ash::vk::ImageAspectFlags::COLOR,
             mip_level: 0,
             base_array_layer: 0,
             layer_count: 1,
@@ -485,81 +485,81 @@ fn vk_blit_tab_then_present(
             // Transition swapchain image: PRESENT_SRC_KHR → TRANSFER_DST_OPTIMAL
             // Transition tab image:       GENERAL          → TRANSFER_SRC_OPTIMAL
             let barriers_pre = [
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                    .old_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                    .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                ash::vk::ImageMemoryBarrier::default()
+                    .src_access_mask(ash::vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                    .dst_access_mask(ash::vk::AccessFlags::TRANSFER_WRITE)
+                    .old_layout(ash::vk::ImageLayout::PRESENT_SRC_KHR)
+                    .new_layout(ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .src_queue_family_index(ash::vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(ash::vk::QUEUE_FAMILY_IGNORED)
                     .image(swapchain_image)
                     .subresource_range(COLOR_SUBRESOURCE_RANGE),
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::empty())
-                    .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-                    .old_layout(vk::ImageLayout::GENERAL)
-                    .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                    .src_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
+                ash::vk::ImageMemoryBarrier::default()
+                    .src_access_mask(ash::vk::AccessFlags::empty())
+                    .dst_access_mask(ash::vk::AccessFlags::TRANSFER_READ)
+                    .old_layout(ash::vk::ImageLayout::GENERAL)
+                    .new_layout(ash::vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                    .src_queue_family_index(ash::vk::QUEUE_FAMILY_EXTERNAL)
                     .dst_queue_family_index(vk.queue_family_index)
                     .image(tab.image())
                     .subresource_range(COLOR_SUBRESOURCE_RANGE),
             ];
             device.cmd_pipeline_barrier(
                 vk.blit_cmd_buf,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
+                ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | ash::vk::PipelineStageFlags::TRANSFER,
+                ash::vk::PipelineStageFlags::TRANSFER,
+                ash::vk::DependencyFlags::empty(),
                 &[], &[], &barriers_pre,
             );
 
             // Blit tab → swapchain page region
-            let blit = vk::ImageBlit::default()
+            let blit = ash::vk::ImageBlit::default()
                 .src_subresource(sublayers)
                 .src_offsets([
-                    vk::Offset3D { x: 0, y: 0, z: 0 },
-                    vk::Offset3D { x: tab_w as i32, y: tab_h as i32, z: 1 },
+                    ash::vk::Offset3D { x: 0, y: 0, z: 0 },
+                    ash::vk::Offset3D { x: tab_w as i32, y: tab_h as i32, z: 1 },
                 ])
                 .dst_subresource(sublayers)
                 .dst_offsets([
-                    vk::Offset3D { x: 0, y: chrome_px, z: 0 },
-                    vk::Offset3D { x: sw, y: chrome_px + dst_h, z: 1 },
+                    ash::vk::Offset3D { x: 0, y: chrome_px, z: 0 },
+                    ash::vk::Offset3D { x: sw, y: chrome_px + dst_h, z: 1 },
                 ]);
             device.cmd_blit_image(
                 vk.blit_cmd_buf,
-                tab.image(), vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                swapchain_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                tab.image(), ash::vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                swapchain_image, ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[blit],
-                vk::Filter::LINEAR,
+                ash::vk::Filter::LINEAR,
             );
 
             // Transition back:
             //   swapchain: TRANSFER_DST → PRESENT_SRC_KHR
             //   tab image: TRANSFER_SRC → GENERAL (ready for next frame)
             let barriers_post = [
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::empty())
-                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                    .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                ash::vk::ImageMemoryBarrier::default()
+                    .src_access_mask(ash::vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(ash::vk::AccessFlags::empty())
+                    .old_layout(ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .new_layout(ash::vk::ImageLayout::PRESENT_SRC_KHR)
+                    .src_queue_family_index(ash::vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(ash::vk::QUEUE_FAMILY_IGNORED)
                     .image(swapchain_image)
                     .subresource_range(COLOR_SUBRESOURCE_RANGE),
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::TRANSFER_READ)
-                    .dst_access_mask(vk::AccessFlags::empty())
-                    .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                    .new_layout(vk::ImageLayout::GENERAL)
+                ash::vk::ImageMemoryBarrier::default()
+                    .src_access_mask(ash::vk::AccessFlags::TRANSFER_READ)
+                    .dst_access_mask(ash::vk::AccessFlags::empty())
+                    .old_layout(ash::vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                    .new_layout(ash::vk::ImageLayout::GENERAL)
                     .src_queue_family_index(vk.queue_family_index)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
+                    .dst_queue_family_index(ash::vk::QUEUE_FAMILY_EXTERNAL)
                     .image(tab.image())
                     .subresource_range(COLOR_SUBRESOURCE_RANGE),
             ];
             device.cmd_pipeline_barrier(
                 vk.blit_cmd_buf,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                vk::DependencyFlags::empty(),
+                ash::vk::PipelineStageFlags::TRANSFER,
+                ash::vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                ash::vk::DependencyFlags::empty(),
                 &[], &[], &barriers_post,
             );
         }
@@ -569,27 +569,27 @@ fn vk_blit_tab_then_present(
 
         // Submit: wait image_available (+ optional tab frame semaphore), signal render_finished.
         let mut wait_sems = vec![vk.image_available_semaphore];
-        let mut wait_stages = vec![vk::PipelineStageFlags::TRANSFER];
-        if external_wait_semaphore != vk::Semaphore::null() {
+        let mut wait_stages = vec![ash::vk::PipelineStageFlags::TRANSFER];
+        if external_wait_semaphore != ash::vk::Semaphore::null() {
             wait_sems.push(external_wait_semaphore);
-            wait_stages.push(vk::PipelineStageFlags::TRANSFER);
+            wait_stages.push(ash::vk::PipelineStageFlags::TRANSFER);
         }
         let signal_sems = [vk.render_finished_semaphore];
         let cmd_bufs = [vk.blit_cmd_buf];
-        let submit_info = vk::SubmitInfo::default()
+        let submit_info = ash::vk::SubmitInfo::default()
             .wait_semaphores(&wait_sems)
             .wait_dst_stage_mask(&wait_stages)
             .command_buffers(&cmd_bufs)
             .signal_semaphores(&signal_sems);
 
-        if let Err(e) = device.queue_submit(vk.queue, &[submit_info], vk::Fence::null()) {
-            if external_wait_semaphore != vk::Semaphore::null() {
+        if let Err(e) = device.queue_submit(vk.queue, &[submit_info], ash::vk::Fence::null()) {
+            if external_wait_semaphore != ash::vk::Semaphore::null() {
                 device.destroy_semaphore(external_wait_semaphore, None);
             }
             return Err(format!("vkQueueSubmit (blit-present): {:?}", e));
         }
 
-        if external_wait_semaphore != vk::Semaphore::null() {
+        if external_wait_semaphore != ash::vk::Semaphore::null() {
             vk.deferred_wait_semaphores.push(external_wait_semaphore);
         }
         vk.in_flight_tab_image = submitted_tab_image;
@@ -597,7 +597,7 @@ fn vk_blit_tab_then_present(
         // Present
         let swapchains = [vk.swapchain];
         let image_indices = [vk.current_image_index];
-        let present_info = vk::PresentInfoKHR::default()
+        let present_info = ash::vk::PresentInfoKHR::default()
             .wait_semaphores(&signal_sems)
             .swapchains(&swapchains)
             .image_indices(&image_indices);
@@ -605,8 +605,8 @@ fn vk_blit_tab_then_present(
         match vk.swapchain_fn.queue_present(vk.queue, &present_info) {
             Ok(false) => {}
             Ok(true)
-            | Err(vk::Result::ERROR_OUT_OF_DATE_KHR)
-            | Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
+            | Err(ash::vk::Result::ERROR_OUT_OF_DATE_KHR)
+            | Err(ash::vk::Result::ERROR_SURFACE_LOST_KHR) => {
                 vk.swapchain_valid = false;
             }
             Err(e) => return Err(format!("queue_present: {:?}", e)),
@@ -620,9 +620,9 @@ fn vk_recreate_surface(vk: &mut VkState, window: Arc<Box<dyn Window>>) -> Result
     unsafe {
         vk.device.device_wait_idle().ok();
 
-        if vk.swapchain != vk::SwapchainKHR::null() {
+        if vk.swapchain != ash::vk::SwapchainKHR::null() {
             vk.swapchain_fn.destroy_swapchain(vk.swapchain, None);
-            vk.swapchain = vk::SwapchainKHR::null();
+            vk.swapchain = ash::vk::SwapchainKHR::null();
         }
         vk.swapchain_images.clear();
         vk.skia_surfaces.clear();
@@ -708,7 +708,7 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
     let extent = if caps.current_extent.width != u32::MAX {
         caps.current_extent
     } else {
-        vk::Extent2D {
+        ash::vk::Extent2D {
             width: window_size.width.max(caps.min_image_extent.width).min(caps.max_image_extent.width),
             height: window_size.height.max(caps.min_image_extent.height).min(caps.max_image_extent.height),
         }
@@ -718,18 +718,18 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         if caps.max_image_count > 0 { caps.max_image_count } else { u32::MAX }
     );
 
-    let swapchain_ci = vk::SwapchainCreateInfoKHR::default()
+    let swapchain_ci = ash::vk::SwapchainCreateInfoKHR::default()
         .surface(surface_khr)
         .min_image_count(min_image_count)
         .image_format(swapchain_format)
-        .image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
+        .image_color_space(ash::vk::ColorSpaceKHR::SRGB_NONLINEAR)
         .image_extent(extent)
         .image_array_layers(1)
-        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
-        .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .image_usage(ash::vk::ImageUsageFlags::COLOR_ATTACHMENT | ash::vk::ImageUsageFlags::TRANSFER_DST)
+        .image_sharing_mode(ash::vk::SharingMode::EXCLUSIVE)
         .pre_transform(caps.current_transform)
-        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-        .present_mode(vk::PresentModeKHR::FIFO)
+        .composite_alpha(ash::vk::CompositeAlphaFlagsKHR::OPAQUE)
+        .present_mode(ash::vk::PresentModeKHR::FIFO)
         .clipped(true);
 
     let swapchain = unsafe {
@@ -743,9 +743,9 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
     };
 
     // ── 7. Synchronisation primitives ────────────────────────────────────────
-    let semaphore_ci = vk::SemaphoreCreateInfo::default();
-    let fence_ci = vk::FenceCreateInfo::default()
-        .flags(vk::FenceCreateFlags::SIGNALED);
+    let semaphore_ci = ash::vk::SemaphoreCreateInfo::default();
+    let fence_ci = ash::vk::FenceCreateInfo::default()
+        .flags(ash::vk::FenceCreateFlags::SIGNALED);
 
     let image_available_semaphore = unsafe {
         device.create_semaphore(&semaphore_ci, None)
@@ -758,16 +758,16 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
 
     // ── 7b. Persistent blit command pool + buffer ────────────────────────────
     let blit_cmd_pool = unsafe {
-        let pool_ci = vk::CommandPoolCreateInfo::default()
+        let pool_ci = ash::vk::CommandPoolCreateInfo::default()
             .queue_family_index(queue_family_index)
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+            .flags(ash::vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
         device.create_command_pool(&pool_ci, None)
             .expect("Failed to create blit command pool")
     };
     let blit_cmd_buf = unsafe {
-        let ai = vk::CommandBufferAllocateInfo::default()
+        let ai = ash::vk::CommandBufferAllocateInfo::default()
             .command_pool(blit_cmd_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
+            .level(ash::vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(1);
         device.allocate_command_buffers(&ai)
             .expect("Failed to allocate blit command buffer")[0]

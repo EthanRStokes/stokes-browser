@@ -1,4 +1,3 @@
-use ash::vk;
 use std::sync::Arc;
 use vulkano::device::{
     physical::PhysicalDeviceType,
@@ -24,8 +23,8 @@ pub(crate) struct VulkanoOwnedContext {
     pub(crate) ash_entry: ash::Entry,
     pub(crate) ash_instance: ash::Instance,
     pub(crate) ash_device: ash::Device,
-    pub(crate) physical_device: vk::PhysicalDevice,
-    pub(crate) queue: vk::Queue,
+    pub(crate) physical_device: ash::vk::PhysicalDevice,
+    pub(crate) queue: ash::vk::Queue,
     pub(crate) queue_family_index: u32,
     pub(crate) negotiated_api_version: u32,
 }
@@ -204,7 +203,7 @@ pub(crate) fn create_tab_context(
 }
 
 fn to_api_version(v: Version) -> u32 {
-    vk::make_api_version(0, v.major, v.minor, v.patch)
+    ash::vk::make_api_version(0, v.major, v.minor, v.patch)
 }
 
 fn parent_device_extensions() -> DeviceExtensions {

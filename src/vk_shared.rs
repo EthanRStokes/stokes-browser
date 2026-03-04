@@ -19,22 +19,20 @@
 ///  2. Calls `import_vk_image_raw` to bind the memory into its own Vulkan device and
 ///     produce an `ImportedVkImage` that can be blitted directly to the swapchain.
 
-use ash::vk::{self, Handle};
 use skia_safe::gpu::vk::AllocFlag;
 use skia_safe::gpu::{self, DirectContext};
 use std::ffi::c_char;
-
-
+use ash::vk::Handle;
 // ── VkFormat ↔ Skia mappings ────────────────────────────────────────────────
 
 /// Map a `vk::Format` to the corresponding Skia format + color type.
 /// Returns `None` for formats Skia cannot handle directly.
-pub fn vk_format_to_skia(fmt: vk::Format) -> Option<(gpu::vk::Format, skia_safe::ColorType)> {
+pub fn vk_format_to_skia(fmt: ash::vk::Format) -> Option<(gpu::vk::Format, skia_safe::ColorType)> {
     match fmt {
-        vk::Format::B8G8R8A8_UNORM => Some((gpu::vk::Format::B8G8R8A8_UNORM, skia_safe::ColorType::BGRA8888)),
-        vk::Format::R8G8B8A8_UNORM => Some((gpu::vk::Format::R8G8B8A8_UNORM, skia_safe::ColorType::RGBA8888)),
-        vk::Format::B8G8R8A8_SRGB  => Some((gpu::vk::Format::B8G8R8A8_SRGB,  skia_safe::ColorType::BGRA8888)),
-        vk::Format::R8G8B8A8_SRGB  => Some((gpu::vk::Format::R8G8B8A8_SRGB,  skia_safe::ColorType::RGBA8888)),
+        ash::vk::Format::B8G8R8A8_UNORM => Some((gpu::vk::Format::B8G8R8A8_UNORM, skia_safe::ColorType::BGRA8888)),
+        ash::vk::Format::R8G8B8A8_UNORM => Some((gpu::vk::Format::R8G8B8A8_UNORM, skia_safe::ColorType::RGBA8888)),
+        ash::vk::Format::B8G8R8A8_SRGB  => Some((gpu::vk::Format::B8G8R8A8_SRGB,  skia_safe::ColorType::BGRA8888)),
+        ash::vk::Format::R8G8B8A8_SRGB  => Some((gpu::vk::Format::R8G8B8A8_SRGB,  skia_safe::ColorType::RGBA8888)),
         _ => None,
     }
 }
@@ -42,25 +40,25 @@ pub fn vk_format_to_skia(fmt: vk::Format) -> Option<(gpu::vk::Format, skia_safe:
 // ── Platform-specific external memory handle type ─────────────────────────
 
 #[cfg(windows)]
-fn external_handle_type() -> vk::ExternalMemoryHandleTypeFlags {
-    vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32
+fn external_handle_type() -> ash::vk::ExternalMemoryHandleTypeFlags {
+    ash::vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32
 }
 
 #[cfg(not(windows))]
-fn external_handle_type() -> vk::ExternalMemoryHandleTypeFlags {
-    vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT
+fn external_handle_type() -> ash::vk::ExternalMemoryHandleTypeFlags {
+    ash::vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT
 }
 
 // ── Platform-specific external semaphore handle type ──────────────────────
 
 #[cfg(windows)]
-fn external_semaphore_handle_type() -> vk::ExternalSemaphoreHandleTypeFlags {
-    vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32
+fn external_semaphore_handle_type() -> ash::vk::ExternalSemaphoreHandleTypeFlags {
+    ash::vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32
 }
 
 #[cfg(not(windows))]
-fn external_semaphore_handle_type() -> vk::ExternalSemaphoreHandleTypeFlags {
-    vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD
+fn external_semaphore_handle_type() -> ash::vk::ExternalSemaphoreHandleTypeFlags {
+    ash::vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD
 }
 
 // ── Shared Skia proc-loader ─────────────────────────────────────────────────
@@ -70,8 +68,8 @@ fn external_semaphore_handle_type() -> vk::ExternalSemaphoreHandleTypeFlags {
 /// The same logic is needed by both the parent (window.rs) and child
 /// (tab_process.rs) Vulkan initialisation paths.
 pub struct SkiaGetProc {
-    get_instance_proc_addr: vk::PFN_vkGetInstanceProcAddr,
-    get_device_proc_addr: vk::PFN_vkGetDeviceProcAddr,
+    get_instance_proc_addr: ash::vk::PFN_vkGetInstanceProcAddr,
+    get_device_proc_addr: ash::vk::PFN_vkGetDeviceProcAddr,
 }
 
 impl SkiaGetProc {
@@ -89,9 +87,9 @@ impl SkiaGetProc {
             match of {
                 gpu::vk::GetProcOf::Instance(raw_instance, name) => {
                     let vk_instance = if raw_instance.addr() == 0 {
-                        vk::Instance::null()
+                        ash::vk::Instance::null()
                     } else {
-                        vk::Instance::from_raw(raw_instance as _)
+                        ash::vk::Instance::from_raw(raw_instance as _)
                     };
                     (self.get_instance_proc_addr)(vk_instance, name)
                         .map(|f| f as *const core::ffi::c_void)
@@ -99,11 +97,11 @@ impl SkiaGetProc {
                 }
                 gpu::vk::GetProcOf::Device(raw_device, name) => {
                     if raw_device.addr() == 0 {
-                        (self.get_instance_proc_addr)(vk::Instance::null(), name)
+                        (self.get_instance_proc_addr)(ash::vk::Instance::null(), name)
                             .map(|f| f as *const core::ffi::c_void)
                             .unwrap_or(std::ptr::null())
                     } else {
-                        let vk_device = vk::Device::from_raw(raw_device as _);
+                        let vk_device = ash::vk::Device::from_raw(raw_device as _);
                         (self.get_device_proc_addr)(vk_device, name)
                             .map(|f| f as *const core::ffi::c_void)
                             .unwrap_or(std::ptr::null())
@@ -117,8 +115,8 @@ impl SkiaGetProc {
 // ── Common color subresource range ──────────────────────────────────────────
 
 /// Standard color subresource range used for layout transitions.
-pub const COLOR_SUBRESOURCE_RANGE: vk::ImageSubresourceRange = vk::ImageSubresourceRange {
-    aspect_mask: vk::ImageAspectFlags::COLOR,
+pub const COLOR_SUBRESOURCE_RANGE: ash::vk::ImageSubresourceRange = ash::vk::ImageSubresourceRange {
+    aspect_mask: ash::vk::ImageAspectFlags::COLOR,
     base_mip_level: 0,
     level_count: 1,
     base_array_layer: 0,
@@ -132,27 +130,27 @@ pub const COLOR_SUBRESOURCE_RANGE: vk::ImageSubresourceRange = vk::ImageSubresou
 /// current platform so the parent can import it.
 pub struct TabVkImage {
     device: ash::Device,
-    pub image: vk::Image,
-    pub memory: vk::DeviceMemory,
+    pub image: ash::vk::Image,
+    pub memory: ash::vk::DeviceMemory,
     pub width: u32,
     pub height: u32,
-    pub format: vk::Format,
+    pub format: ash::vk::Format,
     /// Exact allocation size (bytes) — must be sent to the parent for import.
     pub alloc_size: u64,
     skia_surface: Option<skia_safe::Surface>,
     /// Exportable semaphore signaled after each render to synchronize the parent.
     pub render_semaphore: Option<TabVkSemaphore>,
     /// Command pool for the layout-transition submit done after each render.
-    cmd_pool: vk::CommandPool,
+    cmd_pool: ash::vk::CommandPool,
     /// Pre-recorded command buffer: COLOR_ATTACHMENT_OPTIMAL → GENERAL barrier.
-    cmd_buf: vk::CommandBuffer,
-    pub queue: vk::Queue,
+    cmd_buf: ash::vk::CommandBuffer,
+    pub queue: ash::vk::Queue,
     queue_family_index: u32,
     /// Fence used to track the last `signal_and_export_semaphore` submission.
     /// On Windows, `device_wait_idle` alone may not be sufficient to ensure the
     /// driver has fully retired a signaled-but-never-waited-on semaphore; using
     /// a fence gives us a reliable synchronization point.
-    submit_fence: vk::Fence,
+    submit_fence: ash::vk::Fence,
     /// Whether `submit_fence` is currently in the submitted (unsignaled) state.
     submit_fence_pending: bool,
 
@@ -168,14 +166,14 @@ impl TabVkImage {
     /// `gr_context` must have been created against the same Vulkan device.
     pub unsafe fn new(
         instance: &ash::Instance,
-        physical_device: vk::PhysicalDevice,
+        physical_device: ash::vk::PhysicalDevice,
         device: &ash::Device,
         gr_context: &mut DirectContext,
         width: u32,
         height: u32,
-        format: vk::Format,
+        format: ash::vk::Format,
         queue_family_index: u32,
-        queue: vk::Queue,
+        queue: ash::vk::Queue,
     ) -> Result<Self, String> {
         let (skia_format, color_type) = vk_format_to_skia(format)
             .ok_or_else(|| format!("Unsupported format {:?}", format))?;
@@ -183,26 +181,26 @@ impl TabVkImage {
         let handle_type = external_handle_type();
 
         // -- Create image with external memory info chained in pNext ----------
-        let mut ext_image_ci = vk::ExternalMemoryImageCreateInfo::default()
+        let mut ext_image_ci = ash::vk::ExternalMemoryImageCreateInfo::default()
             .handle_types(handle_type);
 
-        let image_ci = vk::ImageCreateInfo::default()
+        let image_ci = ash::vk::ImageCreateInfo::default()
             .push_next(&mut ext_image_ci)
-            .image_type(vk::ImageType::TYPE_2D)
+            .image_type(ash::vk::ImageType::TYPE_2D)
             .format(format)
-            .extent(vk::Extent3D { width, height, depth: 1 })
+            .extent(ash::vk::Extent3D { width, height, depth: 1 })
             .mip_levels(1)
             .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
+            .samples(ash::vk::SampleCountFlags::TYPE_1)
+            .tiling(ash::vk::ImageTiling::OPTIMAL)
             .usage(
-                vk::ImageUsageFlags::COLOR_ATTACHMENT
-                    | vk::ImageUsageFlags::SAMPLED
-                    | vk::ImageUsageFlags::TRANSFER_SRC
-                    | vk::ImageUsageFlags::TRANSFER_DST,
+                ash::vk::ImageUsageFlags::COLOR_ATTACHMENT
+                    | ash::vk::ImageUsageFlags::SAMPLED
+                    | ash::vk::ImageUsageFlags::TRANSFER_SRC
+                    | ash::vk::ImageUsageFlags::TRANSFER_DST,
             )
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
+            .sharing_mode(ash::vk::SharingMode::EXCLUSIVE)
+            .initial_layout(ash::vk::ImageLayout::UNDEFINED);
 
         let image = device
             .create_image(&image_ci, None)
@@ -215,20 +213,20 @@ impl TabVkImage {
             instance,
             physical_device,
             mem_reqs.memory_type_bits,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )
         .ok_or_else(|| {
             device.destroy_image(image, None);
             "No suitable memory type".to_string()
         })?;
 
-        let mut export_alloc_info = vk::ExportMemoryAllocateInfo::default()
+        let mut export_alloc_info = ash::vk::ExportMemoryAllocateInfo::default()
             .handle_types(handle_type);
 
-        let mut dedicated_alloc_info = vk::MemoryDedicatedAllocateInfo::default()
+        let mut dedicated_alloc_info = ash::vk::MemoryDedicatedAllocateInfo::default()
             .image(image);
 
-        let alloc_info = vk::MemoryAllocateInfo::default()
+        let alloc_info = ash::vk::MemoryAllocateInfo::default()
             .push_next(&mut export_alloc_info)
             .push_next(&mut dedicated_alloc_info)
             .allocation_size(mem_reqs.size)
@@ -285,9 +283,9 @@ impl TabVkImage {
         })?;
 
         // -- Command pool + buffer for the post-render layout transition ------
-        let pool_ci = vk::CommandPoolCreateInfo::default()
+        let pool_ci = ash::vk::CommandPoolCreateInfo::default()
             .queue_family_index(queue_family_index)
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+            .flags(ash::vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
         let cmd_pool = device.create_command_pool(&pool_ci, None).map_err(|e| {
             device.free_memory(memory, None);
             device.destroy_image(image, None);
@@ -295,9 +293,9 @@ impl TabVkImage {
         })?;
 
         let cmd_buf = {
-            let ai = vk::CommandBufferAllocateInfo::default()
+            let ai = ash::vk::CommandBufferAllocateInfo::default()
                 .command_pool(cmd_pool)
-                .level(vk::CommandBufferLevel::PRIMARY)
+                .level(ash::vk::CommandBufferLevel::PRIMARY)
                 .command_buffer_count(1);
             let bufs = device.allocate_command_buffers(&ai).map_err(|e| {
                 device.destroy_command_pool(cmd_pool, None);
@@ -319,7 +317,7 @@ impl TabVkImage {
             .ok();
 
         // -- Fence for tracking signal_and_export_semaphore submissions ------
-        let submit_fence = device.create_fence(&vk::FenceCreateInfo::default(), None)
+        let submit_fence = device.create_fence(&ash::vk::FenceCreateInfo::default(), None)
             .map_err(|e| {
                 device.destroy_command_pool(cmd_pool, None);
                 device.free_memory(memory, None);
@@ -376,9 +374,9 @@ impl TabVkImage {
                 GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE,
             };
 
-            let get_info = vk::MemoryGetWin32HandleInfoKHR::default()
+            let get_info = ash::vk::MemoryGetWin32HandleInfoKHR::default()
                 .memory(self.memory)
-                .handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32);
+                .handle_type(ash::vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32);
             let local_handle = self
                 .ext_mem_win32
                 .get_memory_win32_handle(&get_info)
@@ -415,9 +413,9 @@ impl TabVkImage {
         #[cfg(not(windows))]
         {
             let _ = parent_pid;
-            let get_fd_info = vk::MemoryGetFdInfoKHR::default()
+            let get_fd_info = ash::vk::MemoryGetFdInfoKHR::default()
                 .memory(self.memory)
-                .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+                .handle_type(ash::vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
 
             self.ext_mem_fd
                 .get_memory_fd(&get_fd_info)
@@ -446,27 +444,27 @@ impl TabVkImage {
             self.submit_fence_pending = false;
         }
 
-        let begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let begin_info = ash::vk::CommandBufferBeginInfo::default()
+            .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         if self.device.begin_command_buffer(self.cmd_buf, &begin_info).is_err() {
             return -1;
         }
 
-        let barrier = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-            .dst_access_mask(vk::AccessFlags::empty())
-            .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .new_layout(vk::ImageLayout::GENERAL)
+        let barrier = ash::vk::ImageMemoryBarrier::default()
+            .src_access_mask(ash::vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+            .dst_access_mask(ash::vk::AccessFlags::empty())
+            .old_layout(ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .new_layout(ash::vk::ImageLayout::GENERAL)
             .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
+            .dst_queue_family_index(ash::vk::QUEUE_FAMILY_EXTERNAL)
             .image(self.image)
             .subresource_range(COLOR_SUBRESOURCE_RANGE);
 
         self.device.cmd_pipeline_barrier(
             self.cmd_buf,
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-            vk::DependencyFlags::empty(),
+            ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            ash::vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            ash::vk::DependencyFlags::empty(),
             &[], &[], &[barrier],
         );
 
@@ -475,7 +473,7 @@ impl TabVkImage {
         }
 
         let cmd_bufs = [self.cmd_buf];
-        let submit_info = vk::SubmitInfo::default().command_buffers(&cmd_bufs);
+        let submit_info = ash::vk::SubmitInfo::default().command_buffers(&cmd_bufs);
 
         if self.device.queue_submit(self.queue, &[submit_info], self.submit_fence).is_err() {
             return -1;
@@ -525,14 +523,14 @@ impl Drop for TabVkImage {
 /// Cleaned up when dropped.
 pub struct ImportedVkImage {
     device: ash::Device,
-    image: vk::Image,
-    memory: vk::DeviceMemory,
+    image: ash::vk::Image,
+    memory: ash::vk::DeviceMemory,
 }
 
 impl ImportedVkImage {
     /// The raw `VkImage` handle, needed for pipeline barriers.
     #[inline]
-    pub fn image(&self) -> vk::Image {
+    pub fn image(&self) -> ash::vk::Image {
         self.image
     }
 }
@@ -556,35 +554,35 @@ impl Drop for ImportedVkImage {
 /// the Vulkan driver.
 pub unsafe fn import_vk_image_raw(
     instance: &ash::Instance,
-    physical_device: vk::PhysicalDevice,
+    physical_device: ash::vk::PhysicalDevice,
     device: &ash::Device,
     handle: u64,
     width: u32,
     height: u32,
-    format: vk::Format,
+    format: ash::vk::Format,
     alloc_size: u64,
 ) -> Result<ImportedVkImage, String> {
     let handle_type = external_handle_type();
 
-    let mut ext_image_ci = vk::ExternalMemoryImageCreateInfo::default()
+    let mut ext_image_ci = ash::vk::ExternalMemoryImageCreateInfo::default()
         .handle_types(handle_type);
 
-    let image_ci = vk::ImageCreateInfo::default()
+    let image_ci = ash::vk::ImageCreateInfo::default()
         .push_next(&mut ext_image_ci)
-        .image_type(vk::ImageType::TYPE_2D)
+        .image_type(ash::vk::ImageType::TYPE_2D)
         .format(format)
-        .extent(vk::Extent3D { width, height, depth: 1 })
+        .extent(ash::vk::Extent3D { width, height, depth: 1 })
         .mip_levels(1)
         .array_layers(1)
-        .samples(vk::SampleCountFlags::TYPE_1)
-        .tiling(vk::ImageTiling::OPTIMAL)
+        .samples(ash::vk::SampleCountFlags::TYPE_1)
+        .tiling(ash::vk::ImageTiling::OPTIMAL)
         .usage(
-            vk::ImageUsageFlags::TRANSFER_SRC
-                | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::SAMPLED,
+            ash::vk::ImageUsageFlags::TRANSFER_SRC
+                | ash::vk::ImageUsageFlags::TRANSFER_DST
+                | ash::vk::ImageUsageFlags::SAMPLED,
         )
-        .sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .initial_layout(vk::ImageLayout::UNDEFINED);
+        .sharing_mode(ash::vk::SharingMode::EXCLUSIVE)
+        .initial_layout(ash::vk::ImageLayout::UNDEFINED);
 
     let image = device
         .create_image(&image_ci, None)
@@ -613,21 +611,21 @@ pub unsafe fn import_vk_image_raw(
 #[cfg(windows)]
 unsafe fn import_memory(
     instance: &ash::Instance,
-    physical_device: vk::PhysicalDevice,
+    physical_device: ash::vk::PhysicalDevice,
     device: &ash::Device,
-    image: vk::Image,
+    image: ash::vk::Image,
     handle: u64,
     alloc_size: u64,
-    mem_reqs: &vk::MemoryRequirements,
-) -> Result<vk::DeviceMemory, String> {
+    mem_reqs: &ash::vk::MemoryRequirements,
+) -> Result<ash::vk::DeviceMemory, String> {
     use ash::khr::external_memory_win32;
 
     let ext = external_memory_win32::Device::new(instance, device);
 
-    let mut handle_props = vk::MemoryWin32HandlePropertiesKHR::default();
+    let mut handle_props = ash::vk::MemoryWin32HandlePropertiesKHR::default();
     ext.get_memory_win32_handle_properties(
-        vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32,
-        handle as vk::HANDLE,
+        ash::vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32,
+        handle as ash::vk::HANDLE,
         &mut handle_props,
     )
     .map_err(|e| format!("vkGetMemoryWin32HandlePropertiesKHR failed: {:?}", e))?;
@@ -637,21 +635,21 @@ unsafe fn import_memory(
         instance,
         physical_device,
         combined_bits,
-        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
     )
     .ok_or_else(|| {
         unsafe { device.destroy_image(image, None) };
         "No compatible memory type for import (win32)".to_string()
     })?;
 
-    let mut import_info = vk::ImportMemoryWin32HandleInfoKHR::default()
-        .handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32)
-        .handle(handle as vk::HANDLE);
+    let mut import_info = ash::vk::ImportMemoryWin32HandleInfoKHR::default()
+        .handle_type(ash::vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32)
+        .handle(handle as ash::vk::HANDLE);
 
-    let mut dedicated_alloc_info = vk::MemoryDedicatedAllocateInfo::default()
+    let mut dedicated_alloc_info = ash::vk::MemoryDedicatedAllocateInfo::default()
         .image(image);
 
-    let alloc_info = vk::MemoryAllocateInfo::default()
+    let alloc_info = ash::vk::MemoryAllocateInfo::default()
         .push_next(&mut import_info)
         .push_next(&mut dedicated_alloc_info)
         .allocation_size(alloc_size)
@@ -668,21 +666,21 @@ unsafe fn import_memory(
 #[cfg(not(windows))]
 unsafe fn import_memory(
     instance: &ash::Instance,
-    physical_device: vk::PhysicalDevice,
+    physical_device: ash::vk::PhysicalDevice,
     device: &ash::Device,
-    image: vk::Image,
+    image: ash::vk::Image,
     handle: u64,
     alloc_size: u64,
-    mem_reqs: &vk::MemoryRequirements,
-) -> Result<vk::DeviceMemory, String> {
+    mem_reqs: &ash::vk::MemoryRequirements,
+) -> Result<ash::vk::DeviceMemory, String> {
     let fd = handle as std::os::unix::io::RawFd;
 
     let ext_fd = ash::khr::external_memory_fd::Device::new(instance, device);
 
-    let mut fd_props = vk::MemoryFdPropertiesKHR::default();
+    let mut fd_props = ash::vk::MemoryFdPropertiesKHR::default();
     ext_fd
         .get_memory_fd_properties(
-            vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT,
+            ash::vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT,
             fd,
             &mut fd_props,
         )
@@ -698,10 +696,10 @@ unsafe fn import_memory(
         instance,
         physical_device,
         candidate_bits,
-        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
     )
     .or_else(|| {
-        find_memory_type(instance, physical_device, candidate_bits, vk::MemoryPropertyFlags::empty())
+        find_memory_type(instance, physical_device, candidate_bits, ash::vk::MemoryPropertyFlags::empty())
     })
     .ok_or_else(|| {
         unsafe { device.destroy_image(image, None) };
@@ -712,14 +710,14 @@ unsafe fn import_memory(
         )
     })?;
 
-    let mut import_info = vk::ImportMemoryFdInfoKHR::default()
-        .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
+    let mut import_info = ash::vk::ImportMemoryFdInfoKHR::default()
+        .handle_type(ash::vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
         .fd(fd);
 
-    let mut dedicated_alloc_info = vk::MemoryDedicatedAllocateInfo::default()
+    let mut dedicated_alloc_info = ash::vk::MemoryDedicatedAllocateInfo::default()
         .image(image);
 
-    let alloc_info = vk::MemoryAllocateInfo::default()
+    let alloc_info = ash::vk::MemoryAllocateInfo::default()
         .push_next(&mut import_info)
         .push_next(&mut dedicated_alloc_info)
         .allocation_size(alloc_size)
@@ -737,9 +735,9 @@ unsafe fn import_memory(
 
 pub fn find_memory_type(
     instance: &ash::Instance,
-    physical_device: vk::PhysicalDevice,
+    physical_device: ash::vk::PhysicalDevice,
     type_filter: u32,
-    properties: vk::MemoryPropertyFlags,
+    properties: ash::vk::MemoryPropertyFlags,
 ) -> Option<u32> {
     let mem_props = unsafe { instance.get_physical_device_memory_properties(physical_device) };
     for i in 0..mem_props.memory_type_count {
@@ -756,7 +754,7 @@ pub fn find_memory_type(
 /// An exportable binary `VkSemaphore` owned by the tab process.
 pub struct TabVkSemaphore {
     device: ash::Device,
-    pub semaphore: vk::Semaphore,
+    pub semaphore: ash::vk::Semaphore,
     #[cfg(windows)]
     ext_sem_win32: ash::khr::external_semaphore_win32::Device,
     #[cfg(not(windows))]
@@ -768,10 +766,10 @@ impl TabVkSemaphore {
     pub unsafe fn new(instance: &ash::Instance, device: &ash::Device) -> Result<Self, String> {
         let handle_type = external_semaphore_handle_type();
 
-        let mut export_info = vk::ExportSemaphoreCreateInfo::default()
+        let mut export_info = ash::vk::ExportSemaphoreCreateInfo::default()
             .handle_types(handle_type);
 
-        let sem_ci = vk::SemaphoreCreateInfo::default()
+        let sem_ci = ash::vk::SemaphoreCreateInfo::default()
             .push_next(&mut export_info);
 
         let semaphore = device
@@ -805,7 +803,7 @@ impl TabVkSemaphore {
         #[cfg(not(windows))]
         {
             let _ = parent_pid;
-            let get_info = vk::SemaphoreGetFdInfoKHR::default()
+            let get_info = ash::vk::SemaphoreGetFdInfoKHR::default()
                 .semaphore(self.semaphore)
                 .handle_type(handle_type);
             match self.ext_sem_fd.get_semaphore_fd(&get_info) {
@@ -826,7 +824,7 @@ impl TabVkSemaphore {
                 GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE,
             };
 
-            let get_info = vk::SemaphoreGetWin32HandleInfoKHR::default()
+            let get_info = ash::vk::SemaphoreGetWin32HandleInfoKHR::default()
                 .semaphore(self.semaphore)
                 .handle_type(handle_type);
             let local_handle = match self.ext_sem_win32.get_semaphore_win32_handle(&get_info) {
@@ -885,10 +883,10 @@ pub struct VulkanDeviceInfo {
 /// Query the `deviceUUID` for a physical device (requires Vulkan 1.1+).
 pub unsafe fn physical_device_uuid(
     instance: &ash::Instance,
-    physical_device: vk::PhysicalDevice,
+    physical_device: ash::vk::PhysicalDevice,
 ) -> [u8; 16] {
-    let mut id_props = vk::PhysicalDeviceIDProperties::default();
-    let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut id_props);
+    let mut id_props = ash::vk::PhysicalDeviceIDProperties::default();
+    let mut props2 = ash::vk::PhysicalDeviceProperties2::default().push_next(&mut id_props);
     instance.get_physical_device_properties2(physical_device, &mut props2);
     id_props.device_uuid
 }

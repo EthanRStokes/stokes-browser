@@ -7,17 +7,16 @@ use crate::renderer::painter::{ScenePainter, SkiaCache};
 use crate::shell_provider::{ShellProviderMessage, StokesShellProvider};
 use crate::vk_context;
 use crate::vk_shared::{SkiaGetProc, TabVkImage, VulkanDeviceInfo};
-use ash::vk::{self, Handle};
 use blitz_traits::shell::{ShellProvider, Viewport};
+use skia_safe::gpu::vk::GetProcOf;
 use skia_safe::gpu::{self as sk_gpu, DirectContext};
-use std::ffi::CStr;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use skia_safe::gpu::vk::GetProcOf;
+use std::time::Instant;
+use ash::vk::Handle;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
-
+use vulkano::format::Format;
 // ── Grouped Vulkan state for the tab process ────────────────────────────────
 
 /// All Vulkan handles owned by the tab process, grouped into a single struct.
@@ -26,7 +25,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 struct TabVulkanState {
     _entry: ash::Entry,
     instance: ash::Instance,
-    physical_device: vk::PhysicalDevice,
+    physical_device: ash::vk::PhysicalDevice,
     device: ash::Device,
     queue_family_index: u32,
     gr_context: DirectContext,
@@ -36,7 +35,7 @@ struct TabVulkanState {
     /// Parent PID, cached at init to avoid re-parsing the env var each frame.
     parent_pid: u32,
     /// Preferred image format (from the parent's swapchain).
-    vk_format: vk::Format,
+    vk_format: ash::vk::Format,
 }
 
 impl Drop for TabVulkanState {
@@ -110,8 +109,8 @@ impl TabProcess {
         let parent_pid = vk_device_info.as_ref().map(|i| i.parent_pid).unwrap_or(0);
         let vk_format = vk_device_info
             .as_ref()
-            .map(|i| vk::Format::from_raw(i.image_format))
-            .unwrap_or(vk::Format::R8G8B8A8_UNORM);
+            .map(|i| ash::vk::Format::from_raw(i.image_format))
+            .unwrap_or(ash::vk::Format::R8G8B8A8_UNORM);
 
         // Initialise our private Vulkan device.
         let vk_state = match unsafe { Self::init_vulkan(vk_device_info.as_ref(), parent_pid, vk_format) } {
@@ -140,7 +139,7 @@ impl TabProcess {
     unsafe fn init_vulkan(
         parent_info: Option<&VulkanDeviceInfo>,
         parent_pid: u32,
-        vk_format: vk::Format,
+        vk_format: ash::vk::Format,
     ) -> Result<TabVulkanState, String> {
         let bootstrap = vk_context::create_tab_context(parent_info)?;
 

@@ -43,10 +43,10 @@ pub struct TabManager {
     vk_device_info: Option<VulkanDeviceInfo>,
     /// ash Instance / PhysicalDevice / Device for importing VkImages
     ash_instance: Option<ash::Instance>,
-    ash_physical_device: Option<vk::PhysicalDevice>,
+    ash_physical_device: Option<ash::vk::PhysicalDevice>,
     ash_device: Option<ash::Device>,
     /// Queue used for semaphore-wait submits and image layout transitions.
-    ash_queue: Option<vk::Queue>,
+    ash_queue: Option<ash::vk::Queue>,
     ash_queue_family_index: u32,
 }
 
@@ -71,9 +71,9 @@ impl TabManager {
         &mut self,
         device_info: VulkanDeviceInfo,
         ash_instance: ash::Instance,
-        ash_physical_device: vk::PhysicalDevice,
+        ash_physical_device: ash::vk::PhysicalDevice,
         ash_device: ash::Device,
-        ash_queue: vk::Queue,
+        ash_queue: ash::vk::Queue,
         ash_queue_family_index: u32,
     ) {
         self.vk_device_info = Some(device_info);
@@ -192,7 +192,7 @@ impl TabManager {
                     tab.is_loading = is_loading;
                 }
                 TabToParentMessage::FrameRendered { mem_handle, width, height, vk_format, alloc_size, sem_handle } => {
-                    let format = vk::Format::from_raw(vk_format);
+                    let format = ash::vk::Format::from_raw(vk_format);
                     if let (Some(inst), Some(phys), Some(dev)) = (
                         self.ash_instance.as_ref(),
                         self.ash_physical_device.as_ref(),
