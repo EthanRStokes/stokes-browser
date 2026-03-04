@@ -7,14 +7,22 @@ use crate::dom::events::ime::handle_ime_event;
 use crate::dom::events::keyboard::handle_keypress;
 use crate::dom::events::pointer::{handle_click, handle_pointerdown, handle_pointermove, handle_pointerup, handle_wheel};
 // Event system for DOM nodes using mozjs
-use crate::dom::{Dom, DomNode};
+use crate::dom::{Dom, DomNode, NodeData};
 use crate::events::{BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData, EventState, UiEvent};
+use crate::js::bindings::element_bindings::create_js_element_by_id;
+use crate::js::with_runtime_mut;
 use blitz_traits::shell::ShellProvider;
-use mozjs::context::JSContext;
-use mozjs::jsapi::{JSObject, JS_DefineProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JSPROP_ENUMERATE};
-use mozjs::jsval::{BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, StringValue};
-use mozjs::rooted;
+use crate::shell_provider::ShellProviderMessage;
+use mozjs::jsapi::{
+    CallArgs, HandleValueArray, JSContext, JSObject, JS_CallFunctionValue, JS_DefineFunction,
+    JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JS_SetProperty,
+    JSPROP_ENUMERATE,
+};
+use mozjs::jsval::{BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use std::collections::{HashMap, VecDeque};
+use std::os::raw::c_uint;
+use mozjs::rooted;
+use mozjs::rust::ValueArray;
 
 impl Dom {
     pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
@@ -25,13 +33,12 @@ impl Dom {
         let target_node_id = event.target;
 
         // Handle forwarding event sub-document
-        let node = &mut self.nodes[target_node_id];
 
         match &event.data {
             DomEventData::PointerMove(event) => {
                 let changed = handle_pointermove(self, target_node_id, event, dispatch_event);
                 if changed {
-                    self.shell_provider.request_redraw();
+                    let _ = self.shell_provider.sender.send(ShellProviderMessage::RequestRedraw);
                 }
             }
             DomEventData::MouseMove(_) => {
@@ -283,7 +290,9 @@ impl EventType {
 #[derive(Clone)]
 pub struct EventListener {
     /// JavaScript function to call
-    pub callback: JSObject,
+    pub callback: *mut JSObject,
+    /// Stable pointer identity for removeEventListener
+    pub callback_ptr: usize,
     /// Whether to capture the event
     pub use_capture: bool,
     /// Unique ID for this listener
@@ -293,8 +302,8 @@ pub struct EventListener {
 /// Event listener registry for a DOM node
 #[derive(Clone, Default)]
 pub struct EventListenerRegistry {
-    /// Map of event type to list of listeners
-    listeners: HashMap<EventType, Vec<EventListener>>,
+    /// Map of event type name to list of listeners
+    listeners: HashMap<String, Vec<EventListener>>,
     /// Counter for generating unique listener IDs
     next_id: usize,
 }
@@ -308,28 +317,53 @@ impl EventListenerRegistry {
         }
     }
 
-    /// Add an event listener
-    pub fn add_listener(&mut self, event_type: EventType, callback: JSObject, use_capture: bool) -> usize {
+    /// Add an event listener using a raw event type name.
+    pub fn add_listener_by_name(&mut self, event_name: &str, callback: *mut JSObject, use_capture: bool) -> usize {
+        let key = event_name.to_ascii_lowercase();
+        if self.has_callback_listener(&key, callback, use_capture) {
+            return usize::MAX;
+        }
+
         let id = self.next_id;
         self.next_id += 1;
 
         let listener = EventListener {
             callback,
+            callback_ptr: callback as usize,
             use_capture,
             id,
         };
 
         self.listeners
-            .entry(event_type)
+            .entry(key)
             .or_insert_with(Vec::new)
             .push(listener);
 
         id
     }
 
+    /// Add an event listener
+    pub fn add_listener(&mut self, event_type: EventType, callback: *mut JSObject, use_capture: bool) -> usize {
+        self.add_listener_by_name(event_type.as_str(), callback, use_capture)
+    }
+
+    /// Remove an event listener by callback identity.
+    pub fn remove_listener_by_callback(&mut self, event_name: &str, callback: *mut JSObject, use_capture: bool) -> bool {
+        let key = event_name.to_ascii_lowercase();
+        if let Some(listeners) = self.listeners.get_mut(&key) {
+            let initial_len = listeners.len();
+            let callback_ptr = callback as usize;
+            listeners.retain(|listener| {
+                listener.callback_ptr != callback_ptr || listener.use_capture != use_capture
+            });
+            return listeners.len() < initial_len;
+        }
+        false
+    }
+
     /// Remove an event listener by ID
     pub fn remove_listener_by_id(&mut self, event_type: &EventType, id: usize) -> bool {
-        if let Some(listeners) = self.listeners.get_mut(event_type) {
+        if let Some(listeners) = self.listeners.get_mut(event_type.as_str()) {
             let initial_len = listeners.len();
             listeners.retain(|listener| listener.id != id);
             listeners.len() < initial_len
@@ -340,22 +374,36 @@ impl EventListenerRegistry {
 
     /// Get all listeners for an event type
     pub fn get_listeners(&self, event_type: &EventType) -> Option<&Vec<EventListener>> {
-        self.listeners.get(event_type)
+        self.listeners.get(event_type.as_str())
+    }
+
+    /// Get all listeners for an event name.
+    pub fn get_listeners_by_name(&self, event_name: &str) -> Option<&Vec<EventListener>> {
+        self.listeners.get(&event_name.to_ascii_lowercase())
     }
 
     /// Check if there are any listeners for an event type
     pub fn has_listeners(&self, event_type: &EventType) -> bool {
-        self.listeners.get(event_type).map_or(false, |l| !l.is_empty())
+        self.listeners.get(event_type.as_str()).is_some_and(|l| !l.is_empty())
     }
 
     /// Clear all listeners for an event type
     pub fn clear_event_type(&mut self, event_type: &EventType) {
-        self.listeners.remove(event_type);
+        self.listeners.remove(event_type.as_str());
     }
 
     /// Clear all listeners
     pub fn clear_all(&mut self) {
         self.listeners.clear();
+    }
+
+    fn has_callback_listener(&self, event_name: &str, callback: *mut JSObject, use_capture: bool) -> bool {
+        let callback_ptr = callback as usize;
+        self.listeners.get(event_name).is_some_and(|listeners| {
+            listeners
+                .iter()
+                .any(|listener| listener.callback_ptr == callback_ptr && listener.use_capture == use_capture)
+        })
     }
 }
 
@@ -464,8 +512,7 @@ impl Event {
     }
 
     /// Convert to JavaScript object
-    pub fn to_js_object(&self, context: &mut JSContext) -> Result<JSVal, String> {
-        let raw_cx = unsafe { context.raw_cx() };
+    pub fn to_js_object(&self, raw_cx: &mut JSContext) -> Result<JSVal, String> {
 
         unsafe {
             rooted!(in(raw_cx) let event_obj = JS_NewPlainObject(raw_cx));
@@ -980,4 +1027,340 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
         let mut doc = &mut self.doc;
         doc.handle_dom_event(event, |new_evt| self.queue.push_back(new_evt));
     }
+}
+
+pub struct JsEventHandler;
+impl EventHandler for JsEventHandler {
+    fn handle_event(
+        &mut self,
+        chain: &[usize],
+        event: &mut DomEvent,
+        doc: &mut Dom,
+        event_state: &mut EventState,
+    ) {
+        dispatch_js_event(chain, event, doc, event_state);
+    }
+}
+
+fn dispatch_js_event(chain: &[usize], event: &DomEvent, doc: &mut Dom, event_state: &mut EventState) {
+    let target = event.target;
+    let ancestors: Vec<usize> = chain.iter().copied().skip(1).collect();
+
+    with_runtime_mut(|runtime| {
+        runtime.do_with_jsapi(|_rt, raw_cx, _global| unsafe {
+            for node_id in ancestors.iter().rev() {
+                if event_state.propagation_is_stopped() {
+                    return;
+                }
+                fire_js_listeners_for_node(raw_cx, doc, *node_id, target, event, true, event_state);
+            }
+
+            if !event_state.propagation_is_stopped() {
+                fire_js_listeners_for_node(raw_cx, doc, target, target, event, true, event_state);
+            }
+            if !event_state.propagation_is_stopped() {
+                fire_js_listeners_for_node(raw_cx, doc, target, target, event, false, event_state);
+            }
+
+            if event.bubbles {
+                for node_id in ancestors {
+                    if event_state.propagation_is_stopped() {
+                        return;
+                    }
+                    fire_js_listeners_for_node(raw_cx, doc, node_id, target, event, false, event_state);
+                }
+            }
+        });
+        runtime.run_pending_jobs();
+    });
+}
+
+unsafe fn fire_js_listeners_for_node(
+    raw_cx: *mut JSContext,
+    doc: &Dom,
+    node_id: usize,
+    target_id: usize,
+    event: &DomEvent,
+    capture: bool,
+    event_state: &mut EventState,
+) {
+    let listeners = match doc
+        .get_node(node_id)
+        .and_then(|node| node.event_listeners.get_listeners_by_name(event.name()).cloned())
+    {
+        Some(listeners) => listeners,
+        None => return,
+    };
+
+    for listener in listeners {
+        if listener.use_capture != capture {
+            continue;
+        }
+
+        let Some(target_obj) = create_js_node_object(raw_cx, doc, target_id) else {
+            continue;
+        };
+        let Some(current_target_obj) = create_js_node_object(raw_cx, doc, node_id) else {
+            continue;
+        };
+        let Some(event_obj) = create_js_event_object(raw_cx, event, target_obj, current_target_obj, event_state) else {
+            continue;
+        };
+
+        rooted!(in(raw_cx) let mut rval = UndefinedValue());
+        rooted!(in(raw_cx) let callable = ObjectValue(listener.callback));
+        rooted!(in(raw_cx) let mut one_arg = ValueArray::new([ObjectValue(event_obj)]));
+        rooted!(in(raw_cx) let this_obj = current_target_obj);
+
+        let ok = JS_CallFunctionValue(
+            raw_cx,
+            this_obj.handle().into(),
+            callable.handle().into(),
+            &HandleValueArray::from(&one_arg),
+            rval.handle_mut().into(),
+        );
+        if !ok {
+            continue;
+        }
+
+        rooted!(in(raw_cx) let event_obj_rooted = event_obj);
+        rooted!(in(raw_cx) let mut prevent_default = UndefinedValue());
+        rooted!(in(raw_cx) let mut stop_propagation = UndefinedValue());
+
+        let prevent_default_name = std::ffi::CString::new("__defaultPrevented").unwrap();
+        let stop_propagation_name = std::ffi::CString::new("__propagationStopped").unwrap();
+
+        let _ = JS_GetProperty(
+            raw_cx,
+            event_obj_rooted.handle().into(),
+            prevent_default_name.as_ptr(),
+            prevent_default.handle_mut().into(),
+        );
+        let _ = JS_GetProperty(
+            raw_cx,
+            event_obj_rooted.handle().into(),
+            stop_propagation_name.as_ptr(),
+            stop_propagation.handle_mut().into(),
+        );
+
+        if prevent_default.get().is_boolean() && prevent_default.get().to_boolean() {
+            event_state.prevent_default();
+        }
+        if stop_propagation.get().is_boolean() && stop_propagation.get().to_boolean() {
+            event_state.stop_propagation();
+        }
+
+        if event_state.propagation_is_stopped() {
+            return;
+        }
+    }
+}
+
+unsafe fn create_js_node_object(raw_cx: *mut JSContext, doc: &Dom, node_id: usize) -> Option<*mut JSObject> {
+    let node = doc.get_node(node_id)?;
+    match &node.data {
+        NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
+            let tag_name = element_data.name.local.to_string();
+            let js_val = create_js_element_by_id(raw_cx, node_id, &tag_name, &element_data.attributes).ok()?;
+            if js_val.is_object() && !js_val.is_null() {
+                Some(js_val.to_object())
+            } else {
+                None
+            }
+        }
+        _ => {
+            rooted!(in(raw_cx) let obj = JS_NewPlainObject(raw_cx));
+            if obj.get().is_null() {
+                return None;
+            }
+            rooted!(in(raw_cx) let node_id_val = DoubleValue(node_id as f64));
+            let key = std::ffi::CString::new("__nodeId").unwrap();
+            JS_DefineProperty(
+                raw_cx,
+                obj.handle().into(),
+                key.as_ptr(),
+                node_id_val.handle().into(),
+                0,
+            );
+            Some(obj.get())
+        }
+    }
+}
+
+unsafe fn create_js_event_object(
+    raw_cx: *mut JSContext,
+    event: &DomEvent,
+    target_obj: *mut JSObject,
+    current_target_obj: *mut JSObject,
+    event_state: &EventState,
+) -> Option<*mut JSObject> {
+    rooted!(in(raw_cx) let event_obj = JS_NewPlainObject(raw_cx));
+    if event_obj.get().is_null() {
+        return None;
+    }
+
+    define_event_method(raw_cx, event_obj.get(), "preventDefault", js_event_prevent_default, 0);
+    define_event_method(raw_cx, event_obj.get(), "stopPropagation", js_event_stop_propagation, 0);
+
+    set_js_string_property(raw_cx, event_obj.get(), "type", event.name());
+    set_js_bool_property(raw_cx, event_obj.get(), "bubbles", event.bubbles);
+    set_js_bool_property(raw_cx, event_obj.get(), "cancelable", event.cancelable);
+    set_js_bool_property(raw_cx, event_obj.get(), "defaultPrevented", event_state.is_cancelled());
+    set_js_bool_property(raw_cx, event_obj.get(), "__defaultPrevented", event_state.is_cancelled());
+    set_js_bool_property(raw_cx, event_obj.get(), "__propagationStopped", event_state.propagation_is_stopped());
+
+    rooted!(in(raw_cx) let target_val = ObjectValue(target_obj));
+    rooted!(in(raw_cx) let current_target_val = ObjectValue(current_target_obj));
+    let target_name = std::ffi::CString::new("target").unwrap();
+    let current_target_name = std::ffi::CString::new("currentTarget").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        event_obj.handle().into(),
+        target_name.as_ptr(),
+        target_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+    JS_DefineProperty(
+        raw_cx,
+        event_obj.handle().into(),
+        current_target_name.as_ptr(),
+        current_target_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    match &event.data {
+        DomEventData::PointerMove(e)
+        | DomEventData::PointerDown(e)
+        | DomEventData::PointerUp(e)
+        | DomEventData::PointerEnter(e)
+        | DomEventData::PointerLeave(e)
+        | DomEventData::PointerOver(e)
+        | DomEventData::PointerOut(e)
+        | DomEventData::MouseMove(e)
+        | DomEventData::MouseDown(e)
+        | DomEventData::MouseUp(e)
+        | DomEventData::MouseEnter(e)
+        | DomEventData::MouseLeave(e)
+        | DomEventData::MouseOver(e)
+        | DomEventData::MouseOut(e)
+        | DomEventData::Click(e)
+        | DomEventData::ContextMenu(e)
+        | DomEventData::DoubleClick(e) => {
+            set_js_double_property(raw_cx, event_obj.get(), "clientX", e.client_x() as f64);
+            set_js_double_property(raw_cx, event_obj.get(), "clientY", e.client_y() as f64);
+        }
+        DomEventData::Wheel(e) => {
+            set_js_double_property(raw_cx, event_obj.get(), "clientX", e.client_x() as f64);
+            set_js_double_property(raw_cx, event_obj.get(), "clientY", e.client_y() as f64);
+        }
+        DomEventData::KeyPress(e) | DomEventData::KeyDown(e) | DomEventData::KeyUp(e) => {
+            let key = e.key.to_string();
+            set_js_string_property(raw_cx, event_obj.get(), "key", &key);
+            set_js_int_property(raw_cx, event_obj.get(), "keyCode", 0);
+        }
+        _ => {}
+    }
+
+    Some(event_obj.get())
+}
+
+unsafe fn define_event_method(
+    raw_cx: *mut JSContext,
+    obj: *mut JSObject,
+    name: &str,
+    method: unsafe extern "C" fn(*mut JSContext, c_uint, *mut JSVal) -> bool,
+    argc: u32,
+) {
+    let cname = std::ffi::CString::new(name).unwrap();
+    rooted!(in(raw_cx) let obj_rooted = obj);
+    JS_DefineFunction(
+        raw_cx,
+        obj_rooted.handle().into(),
+        cname.as_ptr(),
+        Some(method),
+        argc,
+        JSPROP_ENUMERATE as u32,
+    );
+}
+
+unsafe fn set_js_string_property(raw_cx: *mut JSContext, obj: *mut JSObject, name: &str, value: &str) {
+    let utf16: Vec<u16> = value.encode_utf16().collect();
+    rooted!(in(raw_cx) let str_val = JS_NewUCStringCopyN(raw_cx, utf16.as_ptr(), utf16.len()));
+    rooted!(in(raw_cx) let js_val = StringValue(&*str_val.get()));
+    let cname = std::ffi::CString::new(name).unwrap();
+    rooted!(in(raw_cx) let obj_rooted = obj);
+    JS_DefineProperty(
+        raw_cx,
+        obj_rooted.handle().into(),
+        cname.as_ptr(),
+        js_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+}
+
+unsafe fn set_js_bool_property(raw_cx: *mut JSContext, obj: *mut JSObject, name: &str, value: bool) {
+    rooted!(in(raw_cx) let js_val = BooleanValue(value));
+    let cname = std::ffi::CString::new(name).unwrap();
+    rooted!(in(raw_cx) let obj_rooted = obj);
+    JS_DefineProperty(
+        raw_cx,
+        obj_rooted.handle().into(),
+        cname.as_ptr(),
+        js_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+}
+
+unsafe fn set_js_int_property(raw_cx: *mut JSContext, obj: *mut JSObject, name: &str, value: i32) {
+    rooted!(in(raw_cx) let js_val = Int32Value(value));
+    let cname = std::ffi::CString::new(name).unwrap();
+    rooted!(in(raw_cx) let obj_rooted = obj);
+    JS_DefineProperty(
+        raw_cx,
+        obj_rooted.handle().into(),
+        cname.as_ptr(),
+        js_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+}
+
+unsafe fn set_js_double_property(raw_cx: *mut JSContext, obj: *mut JSObject, name: &str, value: f64) {
+    rooted!(in(raw_cx) let js_val = DoubleValue(value));
+    let cname = std::ffi::CString::new(name).unwrap();
+    rooted!(in(raw_cx) let obj_rooted = obj);
+    JS_DefineProperty(
+        raw_cx,
+        obj_rooted.handle().into(),
+        cname.as_ptr(),
+        js_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+}
+
+unsafe extern "C" fn js_event_prevent_default(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this_val = args.thisv();
+    if this_val.get().is_object() && !this_val.get().is_null() {
+        rooted!(in(raw_cx) let this_obj = this_val.get().to_object());
+        rooted!(in(raw_cx) let true_val = BooleanValue(true));
+        let hidden_name = std::ffi::CString::new("__defaultPrevented").unwrap();
+        let public_name = std::ffi::CString::new("defaultPrevented").unwrap();
+        let _ = JS_SetProperty(raw_cx, this_obj.handle().into(), hidden_name.as_ptr(), true_val.handle().into());
+        let _ = JS_SetProperty(raw_cx, this_obj.handle().into(), public_name.as_ptr(), true_val.handle().into());
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+unsafe extern "C" fn js_event_stop_propagation(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this_val = args.thisv();
+    if this_val.get().is_object() && !this_val.get().is_null() {
+        rooted!(in(raw_cx) let this_obj = this_val.get().to_object());
+        rooted!(in(raw_cx) let true_val = BooleanValue(true));
+        let hidden_name = std::ffi::CString::new("__propagationStopped").unwrap();
+        let _ = JS_SetProperty(raw_cx, this_obj.handle().into(), hidden_name.as_ptr(), true_val.handle().into());
+    }
+    args.rval().set(UndefinedValue());
+    true
 }

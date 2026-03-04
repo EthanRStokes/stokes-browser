@@ -891,7 +891,34 @@ unsafe extern "C" fn element_add_event_listener(raw_cx: *mut JSContext, argc: c_
         String::new()
     };
 
-    println!("[JS] element.addEventListener('{}') called", event_type);
+    if event_type.is_empty() || argc < 2 || !args.get(1).is_object() || args.get(1).is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let use_capture = if argc > 2 {
+        let options = *args.get(2);
+        options.is_boolean() && options.to_boolean()
+    } else {
+        false
+    };
+
+    let Some(node_id) = get_node_id_from_this(raw_cx, &args) else {
+        args.rval().set(UndefinedValue());
+        return true;
+    };
+
+    let callback = args.get(1).to_object();
+    DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = *dom_ref.borrow() {
+            let dom = unsafe { &mut *dom_ptr };
+            if let Some(node) = dom.get_node_mut(node_id) {
+                node.event_listeners
+                    .add_listener_by_name(&event_type, callback, use_capture);
+            }
+        }
+    });
+
     args.rval().set(UndefinedValue());
     true
 }
@@ -906,7 +933,34 @@ unsafe extern "C" fn element_remove_event_listener(raw_cx: *mut JSContext, argc:
         String::new()
     };
 
-    println!("[JS] element.removeEventListener('{}') called", event_type);
+    if event_type.is_empty() || argc < 2 || !args.get(1).is_object() || args.get(1).is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let use_capture = if argc > 2 {
+        let options = *args.get(2);
+        options.is_boolean() && options.to_boolean()
+    } else {
+        false
+    };
+
+    let Some(node_id) = get_node_id_from_this(raw_cx, &args) else {
+        args.rval().set(UndefinedValue());
+        return true;
+    };
+
+    let callback = args.get(1).to_object();
+    DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = *dom_ref.borrow() {
+            let dom = unsafe { &mut *dom_ptr };
+            if let Some(node) = dom.get_node_mut(node_id) {
+                node.event_listeners
+                    .remove_listener_by_callback(&event_type, callback, use_capture);
+            }
+        }
+    });
+
     args.rval().set(UndefinedValue());
     true
 }
@@ -927,7 +981,7 @@ unsafe extern "C" fn element_focus(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
     true
 }
 
-/// element.blur implementation
+/// element.blure implementation
 unsafe extern "C" fn element_blur(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     println!("[JS] element.blur() called");
@@ -2308,9 +2362,9 @@ unsafe extern "C" fn form_get_elements(raw_cx: *mut JSContext, argc: c_uint, vp:
 
         for (idx, (id, tag, attrs, name_attr, id_attr)) in controls.iter().enumerate() {
             if let Ok(elem) = create_js_element_by_id(raw_cx, *id, tag, attrs) {
-                rooted!(in(raw_cx) let elem_rooted = elem);
+                rooted!(in(raw_cx) let elem_val = elem);
                 rooted!(in(raw_cx) let collection_obj = collection.get());
-                mozjs::rust::wrappers::JS_SetElement(raw_cx, collection_obj.handle().into(), idx as u32, elem_rooted.handle().into());
+                mozjs::rust::wrappers::JS_SetElement(raw_cx, collection_obj.handle().into(), idx as u32, elem_val.handle().into());
 
                 // Add named property aliases for first matching id/name.
                 for key in [name_attr.as_ref(), id_attr.as_ref()].into_iter().flatten() {
@@ -2322,7 +2376,7 @@ unsafe extern "C" fn form_get_elements(raw_cx: *mut JSContext, argc: c_uint, vp:
                             raw_cx,
                             collection_obj.handle().into(),
                             cname.as_ptr(),
-                            elem_rooted.handle().into(),
+                            elem_val.handle().into(),
                             JSPROP_ENUMERATE as u32,
                         );
                     }

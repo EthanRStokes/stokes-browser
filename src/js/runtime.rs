@@ -331,14 +331,16 @@ impl JsRuntime {
     {
         let rt = &mut self.runtime;
         let cx = unsafe { rt.cx().raw_cx() };
-        let global = &self.global;
+        let global_ptr = self.global.get();
 
-        rooted!(in (cx) let global_root = global.get());
+        // `global_ptr` is kept alive by `self.global: Heap<*mut JSObject>`, so we can avoid
+        // pushing another rooted entry here (which can fail in some non-standard call paths).
+        let global_handle = unsafe { HandleObject::from_marked_location(&global_ptr) };
 
         let ret;
         {
-            let _ac = JSAutoRealm::new(cx, global.get());
-            ret = consumer(rt, cx, global_root.handle().into());
+            let _ac = JSAutoRealm::new(cx, global_ptr);
+            ret = consumer(rt, cx, global_handle);
         }
         ret
     }

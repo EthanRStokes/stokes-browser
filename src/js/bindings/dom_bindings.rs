@@ -1448,7 +1448,30 @@ unsafe extern "C" fn window_add_event_listener(raw_cx: *mut JSContext, argc: c_u
         String::new()
     };
 
-    println!("[JS] window.addEventListener('{}') called", event_type);
+    if event_type.is_empty() || argc < 2 || !args.get(1).is_object() || args.get(1).is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let use_capture = if argc > 2 {
+        let options = *args.get(2);
+        options.is_boolean() && options.to_boolean()
+    } else {
+        false
+    };
+
+    let callback = args.get(1).to_object();
+    DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = *dom_ref.borrow() {
+            let dom = unsafe { &mut *dom_ptr };
+            let root_id = dom.root_element().id;
+            if let Some(node) = dom.get_node_mut(root_id) {
+                node.event_listeners
+                    .add_listener_by_name(&event_type, callback, use_capture);
+            }
+        }
+    });
+
     args.rval().set(UndefinedValue());
     true
 }
@@ -1463,7 +1486,30 @@ unsafe extern "C" fn window_remove_event_listener(raw_cx: *mut JSContext, argc: 
         String::new()
     };
 
-    println!("[JS] window.removeEventListener('{}') called", event_type);
+    if event_type.is_empty() || argc < 2 || !args.get(1).is_object() || args.get(1).is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let use_capture = if argc > 2 {
+        let options = *args.get(2);
+        options.is_boolean() && options.to_boolean()
+    } else {
+        false
+    };
+
+    let callback = args.get(1).to_object();
+    DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = *dom_ref.borrow() {
+            let dom = unsafe { &mut *dom_ptr };
+            let root_id = dom.root_element().id;
+            if let Some(node) = dom.get_node_mut(root_id) {
+                node.event_listeners
+                    .remove_listener_by_callback(&event_type, callback, use_capture);
+            }
+        }
+    });
+
     args.rval().set(UndefinedValue());
     true
 }

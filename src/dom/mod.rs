@@ -97,7 +97,7 @@ use style::values::computed::font::{GenericFontFamily, QueryFontMetricsFlags};
 use style::values::computed::{Au, CSSPixelLength, Length, Overflow};
 use stylo_atoms::Atom;
 use taffy::Point;
-use crate::dom::events::{EventDriver, NoopEventHandler};
+use crate::dom::events::{EventDriver, JsEventHandler};
 use crate::dom::parser::HtmlProvider;
 use crate::engine::js_provider::StokesJsProvider;
 
@@ -162,7 +162,7 @@ pub trait AbstractDom: Any + 'static {
     /// Update the [`Document`] in response to a [`UiEvent`] (click, keypress, etc)
     fn handle_ui_event(&mut self, event: UiEvent) {
         let mut doc = self.inner_mut();
-        let mut driver = EventDriver::new(&mut *doc, NoopEventHandler);
+        let mut driver = EventDriver::new(&mut *doc, JsEventHandler);
         driver.handle_ui_event(event);
     }
 
@@ -1654,14 +1654,14 @@ impl Dom {
     }
 
     /// Update the selection focus point (used during mouse drag to extend selection).
-    pub fn update_selection_focus(&mut self, focus_node: usize, focus_offset: usize) {
+    pub fn update_selection_focus(&mut self, focusNode: usize, focusOffset: usize) {
         // For anonymous blocks, store parent+sibling_index; otherwise store node directly
-        if let (Some(parent), Some(idx)) = self.anonymous_block_location(focus_node) {
+        if let (Some(parent), Some(idx)) = self.anonymous_block_location(focusNode) {
             self.text_selection
                 .focus
-                .set_anonymous(parent, idx, focus_offset);
+                .set_anonymous(parent, idx, focusOffset);
         } else {
-            self.text_selection.set_focus(focus_node, focus_offset);
+            self.text_selection.set_focus(focusNode, focusOffset);
         }
     }
 
