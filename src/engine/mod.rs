@@ -7,7 +7,6 @@ pub mod js_provider;
 
 pub use self::config::EngineConfig;
 use crate::dom::{Dom, NodeData};
-use crate::dom::{EventDispatcher, EventType};
 use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
 use crate::engine::nav_provider::StokesNavigationProvider;
 use crate::js::JsRuntime;

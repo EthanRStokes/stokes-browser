@@ -18,7 +18,6 @@ use crate::renderer::sizing::compute_object_fit;
 use crate::renderer::text::{draw_text_selection, stroke_text, SELECTION_COLOR};
 use anyrender::{CustomPaint, Paint, PaintScene};
 use color::AlphaColor;
-use euclid::Transform3D;
 use kurbo::{Affine, Insets, Point, Rect, Stroke, Vec2};
 use markup5ever::local_name;
 use painter::ScenePainter;
@@ -62,7 +61,7 @@ impl HtmlRenderer<'_> {
     pub fn render(
         &mut self,
         painter: &mut ScenePainter,
-        _node: &DomNode,
+        node: &DomNode,
     ) {
         let scroll = self.dom.viewport_scroll;
 
@@ -111,10 +110,6 @@ impl HtmlRenderer<'_> {
                 x: -scroll.x,
                 y: -scroll.y,
             },
-            Affine::translate(Vec2 {
-                x: -scroll.x * self.scale_factor,
-                y: -scroll.y * self.scale_factor,
-            }),
         );
 
         // Draw debug hitboxes if enabled
@@ -350,7 +345,6 @@ impl HtmlRenderer<'_> {
         painter: &mut ScenePainter,
         node_id: usize,
         location: Point,
-        parent_transform: Affine,
     ) {
         let node = &self.dom.tree()[node_id];
 
@@ -392,6 +386,10 @@ impl HtmlRenderer<'_> {
         } = node.final_layout;
 
         let scaled_padding_border = (padding + border).map(f64::from);
+        let content_pos = Point {
+            x: position.x + scaled_padding_border.left,
+            y: position.y + scaled_padding_border.top,
+        };
         let content_box_size = kurbo::Size {
             width: (size.width as f64 - scaled_padding_border.left - scaled_padding_border.right) * self.scale_factor,
             height: (size.height as f64 - scaled_padding_border.top - scaled_padding_border.bottom) * self.scale_factor,
@@ -408,7 +406,7 @@ impl HtmlRenderer<'_> {
             return;
         }
 
-        let mut element = self.element(node, layout, position, parent_transform);
+        let mut element = self.element(node, layout, position);
 
         element.draw_outline(painter);
         element.draw_outset_box_shadow(painter);
@@ -442,8 +440,8 @@ impl HtmlRenderer<'_> {
                         y: element.position.y - node.scroll_offset.y,
                     };
                     element.transform = element.transform.then_translate(Vec2 {
-                        x: -node.scroll_offset.x * self.scale_factor,
-                        y: -node.scroll_offset.y * self.scale_factor,
+                        x: -node.scroll_offset.x,
+                        y: -node.scroll_offset.y
                     });
                     element.draw_image(painter);
                     element.draw_svg(painter);
@@ -457,20 +455,14 @@ impl HtmlRenderer<'_> {
         );
     }
 
-    fn render_node(
-        &self,
-        scene: &mut ScenePainter,
-        node_id: usize,
-        location: Point,
-        parent_transform: Affine,
-    ) {
+    fn render_node(&self, scene: &mut ScenePainter, node_id: usize, location: Point) {
         let node = &self.dom.tree()[node_id];
 
         match &node.data {
             NodeData::Element(_) | NodeData::AnonymousBlock(_) => {
-                self.render_element(scene, node_id, location, parent_transform)
+                self.render_element(scene, node_id, location)
             }
-            NodeData::Text(_) => {
+            NodeData::Text(text) => {
                 unreachable!()
             }
             NodeData::Document => {}
@@ -485,7 +477,6 @@ impl HtmlRenderer<'_> {
         node: &'a DomNode,
         layout: Layout,
         position: Point,
-        parent_transform: Affine,
     ) -> Element<'a> {
         let style = node.stylo_data.borrow().as_ref().map(|elem_data| elem_data.styles.primary().clone())
             .unwrap_or(
@@ -495,65 +486,8 @@ impl HtmlRenderer<'_> {
         let scale = self.scale_factor;
 
         let frame = create_css_rect(&style, &layout, scale);
-        let mut transform = parent_transform.then_translate(Vec2 {
-            x: layout.location.x as f64 * scale,
-            y: layout.location.y as f64 * scale,
-        });
 
-        let reference_box = euclid::Rect::new(
-            euclid::Point2D::new(CSSPixelLength::new(0.0), CSSPixelLength::new(0.0)),
-            euclid::Size2D::new(
-                CSSPixelLength::new(layout.size.width),
-                CSSPixelLength::new(layout.size.height),
-            ),
-        );
-
-        // Apply CSS transform property (where transforms are 2d)
-        //
-        // TODO: Handle hit testing correctly for transformed nodes
-        let (t, has_3d) = &style
-            .get_box()
-            .transform
-            .to_transform_3d_matrix(Some(&reference_box))
-            .unwrap_or((Transform3D::default(), false));
-        if !has_3d {
-            // See: https://drafts.csswg.org/css-transforms-2/#two-dimensional-subset
-            // And https://docs.rs/kurbo/latest/kurbo/struct.Affine.html#method.new
-            let kurbo_transform = Affine::new(
-                [
-                    t.m11,
-                    t.m12,
-                    t.m21,
-                    t.m22,
-                    // Scale the translation but not the scale or skew
-                    t.m41 * scale as f32,
-                    t.m42 * scale as f32,
-                ]
-                    .map(|v| v as f64),
-            );
-
-            // Apply the transform origin by:
-            //   - Translating by the origin offset
-            //   - Applying our transform
-            //   - Translating by the inverse of the origin offset
-            let transform_origin = &style.get_box().transform_origin;
-            let origin_translation = Affine::translate(Vec2 {
-                x: transform_origin
-                    .horizontal
-                    .resolve(CSSPixelLength::new(layout.size.width))
-                    .px() as f64
-                    * scale,
-                y: transform_origin
-                    .vertical
-                    .resolve(CSSPixelLength::new(layout.size.height))
-                    .px() as f64
-                    * scale,
-            });
-            let kurbo_transform =
-                origin_translation * kurbo_transform * origin_translation.inverse();
-
-            transform *= kurbo_transform;
-        }
+        let transform = Affine::translate(position.to_vec2() * scale);
 
         let element = node.element_data().unwrap();
 
@@ -636,16 +570,14 @@ impl Element<'_> {
                     x: self.position.x + child.position.x as f64,
                     y: self.position.y + child.position.y as f64,
                 };
-                self.context
-                    .render_node(painter, child.node_id, pos, self.transform);
+                self.context.render_node(painter, child.node_id, pos);
             }
         }
 
         // regular
         if let Some(children) = &*self.node.paint_children.borrow() {
             for child_id in children {
-                self.context
-                    .render_node(painter, *child_id, self.position, self.transform);
+                self.context.render_node(painter, *child_id, self.position);
             }
         }
 
@@ -656,16 +588,9 @@ impl Element<'_> {
                     x: self.position.x + child.position.x as f64,
                     y: self.position.y + child.position.y as f64,
                 };
-                self.context
-                    .render_node(painter, child.node_id, pos, self.transform);
+                self.context.render_node(painter, child.node_id, pos);
             }
         }
-    }
-
-    fn text_transform_at(&self, pos: Point) -> Affine {
-        let delta = pos - self.position;
-        self.transform
-            .then_translate(delta * self.scale_factor)
     }
 
     fn draw_marker(&self, painter: &mut impl PaintScene, pos: Point) {
@@ -700,7 +625,8 @@ impl Element<'_> {
                 y: pos.y + y_offset as f64,
             };
 
-            let transform = self.text_transform_at(pos);
+            let transform =
+                Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor));
 
             stroke_text(painter, layout.lines(), self.context.dom, transform);
         }
@@ -712,7 +638,8 @@ impl Element<'_> {
                 panic!("Tried to render node marked as inline root but has no inline layout data: {:?}", self.node)
             });
 
-            let transform = self.text_transform_at(pos);
+            let transform =
+                Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor));
 
             if let Some(&(start, end)) = self.context.selection_ranges.get(&self.node.id) {
                 draw_text_selection(
@@ -741,7 +668,7 @@ impl Element<'_> {
                 y: pos.y + y_offset,
             };
 
-            let transform = self.text_transform_at(pos);
+            let transform = Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor));
 
             if self.node.is_focused() {
                 // Render selection/caret
