@@ -1,6 +1,6 @@
 use crate::dom::damage::{HoistedPaintChildren, ALL_DAMAGE};
 use crate::dom::events::EventListenerRegistry;
-use crate::dom::ZERO;
+use crate::dom::{AbstractDom, ZERO};
 use crate::layout::table::TableContext;
 use crate::ui::TextBrush;
 use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut};

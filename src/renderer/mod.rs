@@ -23,6 +23,7 @@ use kurbo::{Affine, Insets, Point, Rect, Stroke, Vec2};
 use markup5ever::local_name;
 use parley::PositionedLayoutItem;
 use peniko::Fill;
+use style::dom::TElement;
 use style::properties::generated::longhands::border_collapse::computed_value::T as BorderCollapse;
 use style::properties::generated::longhands::visibility::computed_value::T as Visibility;
 use style::properties::style_structs::Font;

@@ -14,8 +14,6 @@ use std::sync::Arc;
 use std::time::Instant;
 use crate::shell_provider::{StokesShellProvider, ShellProviderMessage};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
-use crate::dom::Dom;
-use crate::engine::nav_provider::{NavigationProviderMessage, StokesNavigationProvider};
 use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
 
 /// Tab process that runs in its own OS process

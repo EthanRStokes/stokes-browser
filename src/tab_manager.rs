@@ -7,6 +7,7 @@ use std::io;
 use std::process::{Child, Command};
 use std::thread;
 use std::time::Instant;
+use taffy::Point;
 
 /// Represents a managed tab process
 pub struct ManagedTab {
@@ -15,6 +16,7 @@ pub struct ManagedTab {
     pub url: String,
     pub is_loading: bool,
     pub zoom: f32,
+    pub viewport_scroll: Point<f64>,
     process: Child,
     channel: ParentIpcChannel,
     pub rendered_frame: Option<RenderedFrame>,
@@ -70,6 +72,7 @@ impl TabManager {
             url: String::new(),
             is_loading: false,
             zoom: 1.0,
+            viewport_scroll: Point { x: 0.0, y: 0.0 },
             process: child,
             channel,
             rendered_frame: None,
@@ -124,6 +127,9 @@ impl TabManager {
                     tab.is_loading = false;
                     tab.url = url;
                     tab.title = title;
+
+                    // todo conditional reset scroll
+                    tab.viewport_scroll = Point::default();
                 }
                 TabToParentMessage::NavigationFailed(error) => {
                     tab.is_loading = false;

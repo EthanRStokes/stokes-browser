@@ -27,6 +27,7 @@ use blitz_traits::net::Request;
 use style::dom::TNode;
 use style::thread_state::ThreadState;
 use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
+use crate::engine::nav_provider::StokesNavigationProvider;
 
 thread_local! {
     pub(crate) static ENGINE_REF: RefCell<Option<*mut Engine>> = RefCell::new(None);

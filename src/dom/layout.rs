@@ -19,7 +19,6 @@ use style::shared_lock::StylesheetGuards;
 use style::values::computed::{Content, ContentItem, Display, Float, PositionProperty};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use taffy::{compute_root_layout, round_layout, AvailableSpace, NodeId};
-use style::properties::generated::longhands::position::computed_value::T as Position;
 use crate::layout::list::collect_list_item_children;
 
 thread_local! {

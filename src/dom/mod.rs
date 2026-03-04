@@ -20,7 +20,6 @@ mod sub_dom;
 
 use html5ever::ns;
 pub use events::{EventDispatcher, EventType};
-pub use self::node::{AttributeMap, DomNode, ElementData, ImageData, ImageLoadingState, NodeData};
 use std::any::Any;
 use std::cell::RefCell;
 pub use self::node::{
@@ -39,15 +38,12 @@ use crate::dom::damage::{ALL_DAMAGE, CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTR
 use crate::dom::layout::collect_layout_children;
 use crate::dom::node::{Attribute, DomNodeFlags, SpecialElementData, TextData};
 use crate::dom::url::DocUrl;
-use crate::engine::nav_provider::StokesNavigationProvider;
-use crate::engine::net_provider::StokesNetProvider;
-use crate::events::{BlitzScrollEvent, DomEventData, UiEvent};
+use crate::events::UiEvent;
 use crate::networking::{ImageType, ResourceLoadResponse, StylesheetLoader};
 use crate::ui::TextBrush;
 use blitz_traits::events::HitResult;
 use blitz_traits::net::{DummyNetProvider, NetProvider};
 use blitz_traits::shell::{DummyShellProvider, ShellProvider, Viewport};
-use cursor_icon::CursorIcon;
 use euclid::Size2D;
 use markup5ever::{local_name, QualName};
 use parley::fontique::{Attributes, Blob, Query, QueryFont, QueryStatus};

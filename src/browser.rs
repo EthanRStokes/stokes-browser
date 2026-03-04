@@ -18,7 +18,7 @@ use winit_core::event::ButtonSource;
 use winit_core::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
 use crate::ipc::{ParentToTabMessage, TabToParentMessage};
 use crate::renderer::painter::{ScenePainter, SkiaCache};
-use crate::tab_manager::TabManager;
+use crate::tab_manager::{ManagedTab, TabManager};
 use crate::ui::{BrowserUI, TextBrush};
 use crate::window::{create_surface, Env};
 use crate::{input, ipc};
