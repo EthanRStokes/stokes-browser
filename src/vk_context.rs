@@ -11,6 +11,7 @@ use vulkano::device::{
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::swapchain::Surface;
 use vulkano::{Version, VulkanLibrary, VulkanObject};
+use vulkano::device::physical::PhysicalDevice;
 use winit_core::event_loop::ActiveEventLoop;
 use winit_core::window::Window;
 
@@ -20,10 +21,11 @@ pub(crate) struct VulkanoOwnedContext {
     pub(crate) device_owner: Arc<Device>,
     pub(crate) queue_owner: Arc<Queue>,
     pub(crate) surface_owner: Option<Arc<Surface>>,
+    pub(crate) physical_device: Arc<PhysicalDevice>,
     pub(crate) ash_entry: ash::Entry,
     pub(crate) ash_instance: ash::Instance,
     pub(crate) ash_device: ash::Device,
-    pub(crate) physical_device: ash::vk::PhysicalDevice,
+    pub(crate) ash_physical_device: ash::vk::PhysicalDevice,
     pub(crate) queue: ash::vk::Queue,
     pub(crate) queue_family_index: u32,
     pub(crate) negotiated_api_version: u32,
@@ -92,6 +94,7 @@ pub(crate) fn create_parent_context(window: Arc<Box<dyn Window>>, el: &Box<&dyn 
     let entry = unsafe { ash::Entry::load().map_err(|e| format!("ash::Entry::load: {e:?}"))? };
     let ash_instance = unsafe { ash::Instance::load(entry.static_fn(), instance.handle()) };
     let ash_device = unsafe { ash::Device::load(ash_instance.fp_v1_0(), device.handle()) };
+    let ash_physical_device = physical_device.handle();
 
     let negotiated_api_version = to_api_version(std::cmp::min(instance.api_version(), physical_device.api_version()));
 
@@ -101,10 +104,11 @@ pub(crate) fn create_parent_context(window: Arc<Box<dyn Window>>, el: &Box<&dyn 
         device_owner: device,
         queue_owner: queue.clone(),
         surface_owner: Some(surface),
+        physical_device,
         ash_entry: entry,
         ash_instance,
         ash_device,
-        physical_device: physical_device.handle(),
+        ash_physical_device,
         queue: queue.handle(),
         queue_family_index,
         negotiated_api_version,
@@ -185,6 +189,7 @@ pub(crate) fn create_tab_context(
 
     let ash_device = unsafe { ash::Device::load(ash_instance.fp_v1_0(), device.handle()) };
     let negotiated_api_version = to_api_version(std::cmp::min(instance.api_version(), selected.api_version()));
+    let ash_physical_device = selected.handle();
 
     Ok(VulkanoOwnedContext {
         _library: library,
@@ -192,10 +197,11 @@ pub(crate) fn create_tab_context(
         device_owner: device,
         queue_owner: queue.clone(),
         surface_owner: None,
+        physical_device: selected,
         ash_entry: entry,
         ash_instance,
         ash_device,
-        physical_device: selected.handle(),
+        ash_physical_device,
         queue: queue.handle(),
         queue_family_index,
         negotiated_api_version,

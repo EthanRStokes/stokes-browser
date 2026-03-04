@@ -16,7 +16,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use ash::vk::Handle;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use vulkano::device::physical::PhysicalDevice;
 use vulkano::format::Format;
+use vulkano::VulkanObject;
 // ── Grouped Vulkan state for the tab process ────────────────────────────────
 
 /// All Vulkan handles owned by the tab process, grouped into a single struct.
@@ -29,9 +31,10 @@ struct TabVulkanState {
     device: ash::Device,
     queue_family_index: u32,
     gr_context: DirectContext,
-    _vk_instance_owner: Arc<vulkano::instance::Instance>,
-    _vk_device_owner: Arc<vulkano::device::Device>,
-    _vk_queue_owner: Arc<vulkano::device::Queue>,
+    vk_instance_owner: Arc<vulkano::instance::Instance>,
+    vk_device_owner: Arc<vulkano::device::Device>,
+    vk_queue_owner: Arc<vulkano::device::Queue>,
+    vk_physical_device: Arc<PhysicalDevice>,
     /// Parent PID, cached at init to avoid re-parsing the env var each frame.
     parent_pid: u32,
     /// Preferred image format (from the parent's swapchain).
@@ -147,6 +150,7 @@ impl TabProcess {
         let instance = bootstrap.ash_instance;
         let physical_device = bootstrap.physical_device;
         let device = bootstrap.ash_device;
+        let ash_physical_device = bootstrap.ash_physical_device;
         let queue_family_index = bootstrap.queue_family_index;
         let queue = bootstrap.queue;
         let negotiated_api_version = bootstrap.negotiated_api_version;
@@ -159,8 +163,8 @@ impl TabProcess {
         let get_proc_fn = |of: GetProcOf| get_proc.resolve(of);
 
         let mut backend_ctx = skia_safe::gpu::vk::BackendContext::new(
-            instance.handle().as_raw() as _,
-            physical_device.as_raw() as _,
+            vk_instance_owner.handle().as_raw() as _,
+            physical_device.handle().as_raw() as _,
             device.handle().as_raw() as _,
             (queue.as_raw() as _, queue_family_index as usize),
             &get_proc_fn,
@@ -173,13 +177,14 @@ impl TabProcess {
         Ok(TabVulkanState {
             _entry: entry,
             instance,
-            physical_device,
+            physical_device: ash_physical_device,
             device,
             queue_family_index,
             gr_context,
-            _vk_instance_owner: vk_instance_owner,
-            _vk_device_owner: vk_device_owner,
-            _vk_queue_owner: vk_queue_owner,
+            vk_instance_owner,
+            vk_device_owner,
+            vk_queue_owner,
+            vk_physical_device: physical_device,
             parent_pid,
             vk_format,
         })

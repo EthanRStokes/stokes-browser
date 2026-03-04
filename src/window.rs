@@ -1,11 +1,18 @@
 use crate::vk_context;
-use crate::vk_shared::{self, ImportedVkImage, VulkanDeviceInfo, SkiaGetProc, COLOR_SUBRESOURCE_RANGE};
+use crate::vk_shared::{self, ImportedVkImage, SkiaGetProc, VulkanDeviceInfo, COLOR_SUBRESOURCE_RANGE};
+use ash::vk::{Extent2D, Handle};
 use skia_safe::gpu::vk::GetProcOf;
 use skia_safe::gpu::{self, DirectContext};
 use skia_safe::{ColorType, Surface};
 use std::ffi::CStr;
 use std::sync::Arc;
-use ash::vk::Handle;
+use vulkano::command_buffer::PrimaryCommandBufferAbstract;
+use vulkano::device::physical::PhysicalDevice;
+use vulkano::format::Format;
+use vulkano::image::ImageUsage;
+use vulkano::instance::Instance;
+use vulkano::swapchain::{ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, SurfaceTransform, Swapchain, SwapchainCreateInfo};
+use vulkano::sync::Sharing;
 use vulkano::VulkanObject;
 use winit::dpi::LogicalSize;
 use winit::window::{Window, WindowAttributes};
@@ -69,10 +76,11 @@ pub(crate) struct VkState {
     pub(crate) queue_family_index: u32,
 
     // Keep the vulkano objects alive while ash wrappers are used by the renderer.
-    vk_instance_owner: Arc<vulkano::instance::Instance>,
-    vk_device_owner: Arc<vulkano::device::Device>,
-    vk_queue_owner: Arc<vulkano::device::Queue>,
-    vk_surface_owner: Arc<vulkano::swapchain::Surface>,
+    pub(crate) vk_instance_owner: Arc<vulkano::instance::Instance>,
+    pub(crate) vk_device_owner: Arc<vulkano::device::Device>,
+    pub(crate) vk_physical_device: Arc<PhysicalDevice>,
+    pub(crate) vk_queue_owner: Arc<vulkano::device::Queue>,
+    pub(crate) vk_surface_owner: Arc<vulkano::swapchain::Surface>,
 
     // Surface
     surface_khr: ash::vk::SurfaceKHR,
@@ -81,8 +89,9 @@ pub(crate) struct VkState {
     // Swapchain
     swapchain_fn: ash::khr::swapchain::Device,
     swapchain: ash::vk::SwapchainKHR,
+    vk_swapchain: Arc<Swapchain>,
     swapchain_images: Vec<ash::vk::Image>,
-    swapchain_format: ash::vk::Format,
+    swapchain_format: Format,
     swapchain_extent: ash::vk::Extent2D,
 
     /// One pre-built Skia `Surface` per swapchain image.
@@ -123,7 +132,7 @@ impl VkState {
         VulkanDeviceInfo {
             device_uuid,
             queue_family_index: self.queue_family_index,
-            image_format: self.swapchain_format.as_raw(),
+            image_format: self.swapchain_format as i32,
             parent_pid: std::process::id(),
         }
     }
@@ -150,31 +159,31 @@ impl Drop for VkState {
 
 /// Choose the best swapchain format, preferring UNORM over SRGB so Skia's maths stays linear.
 fn vk_pick_format(
-    surface_fn: &ash::khr::surface::Instance,
-    physical_device: ash::vk::PhysicalDevice,
-    surface: ash::vk::SurfaceKHR,
-) -> (ash::vk::Format, skia_safe::gpu::vk::Format, ColorType) {
+    surface_fn: &Arc<Instance>,
+    physical_device: Arc<PhysicalDevice>,
+    surface: Arc<vulkano::swapchain::Surface>,
+) -> (Format, skia_safe::gpu::vk::Format, ColorType) {
     let formats = unsafe {
-        surface_fn.get_physical_device_surface_formats(physical_device, surface)
+        physical_device.surface_formats(&surface, Default::default())
             .expect("Failed to query surface formats")
     };
 
     let preferred = [
-        ash::vk::Format::B8G8R8A8_UNORM,
-        ash::vk::Format::R8G8B8A8_UNORM,
-        ash::vk::Format::B8G8R8A8_SRGB,
-        ash::vk::Format::R8G8B8A8_SRGB,
+        Format::B8G8R8A8_UNORM,
+        Format::R8G8B8A8_UNORM,
+        Format::B8G8R8A8_SRGB,
+        Format::R8G8B8A8_SRGB,
     ];
     for want in preferred {
-        if formats.iter().any(|sf| sf.format == want) {
+        if formats.iter().any(|sf| sf.0 == want) {
             if let Some((vf, ct)) = vk_shared::vk_format_to_skia(want) {
                 return (want, vf, ct);
             }
         }
     }
     for sf in &formats {
-        if let Some((vf, ct)) = vk_shared::vk_format_to_skia(sf.format) {
-            return (sf.format, vf, ct);
+        if let Some((vf, ct)) = vk_shared::vk_format_to_skia(sf.0) {
+            return (sf.0, vf, ct);
         }
     }
     panic!("No Skia-compatible Vulkan swapchain format found. Available: {formats:?}");
@@ -220,7 +229,7 @@ fn vk_prepare_swapchain(vk: &mut VkState, window: Arc<Box<dyn Window>>, gr_conte
         let swapchain_ci = ash::vk::SwapchainCreateInfoKHR::default()
             .surface(vk.surface_khr)
             .min_image_count(min_image_count)
-            .image_format(vk.swapchain_format)
+            .image_format(ash::vk::Format::from_raw(vk.swapchain_format as i32))
             .image_color_space(ash::vk::ColorSpaceKHR::SRGB_NONLINEAR)
             .image_extent(extent)
             .image_array_layers(1)
@@ -678,6 +687,7 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
     let entry = bootstrap.ash_entry;
     let instance = bootstrap.ash_instance;
     let physical_device = bootstrap.physical_device;
+    let ash_physical_device = bootstrap.ash_physical_device;
     let device = bootstrap.ash_device;
     let queue = bootstrap.queue;
     let queue_family_index = bootstrap.queue_family_index;
@@ -697,10 +707,10 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
     let swapchain_fn = ash::khr::swapchain::Device::new(&instance, &device);
 
     let (swapchain_format, skia_vk_format, color_type) =
-        vk_pick_format(&surface_fn, physical_device, surface_khr);
+        vk_pick_format(vk_surface_owner.as_ref().instance(), physical_device.clone(), vk_surface_owner.clone());
 
     let caps = unsafe {
-        surface_fn.get_physical_device_surface_capabilities(physical_device, surface_khr)
+        surface_fn.get_physical_device_surface_capabilities(ash_physical_device, surface_khr)
             .expect("Failed to query surface capabilities")
     };
 
@@ -718,29 +728,34 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         if caps.max_image_count > 0 { caps.max_image_count } else { u32::MAX }
     );
 
-    let swapchain_ci = ash::vk::SwapchainCreateInfoKHR::default()
-        .surface(surface_khr)
-        .min_image_count(min_image_count)
-        .image_format(swapchain_format)
-        .image_color_space(ash::vk::ColorSpaceKHR::SRGB_NONLINEAR)
-        .image_extent(extent)
-        .image_array_layers(1)
-        .image_usage(ash::vk::ImageUsageFlags::COLOR_ATTACHMENT | ash::vk::ImageUsageFlags::TRANSFER_DST)
-        .image_sharing_mode(ash::vk::SharingMode::EXCLUSIVE)
-        .pre_transform(caps.current_transform)
-        .composite_alpha(ash::vk::CompositeAlphaFlagsKHR::OPAQUE)
-        .present_mode(ash::vk::PresentModeKHR::FIFO)
-        .clipped(true);
-
-    let swapchain = unsafe {
-        swapchain_fn.create_swapchain(&swapchain_ci, None)
-            .expect("Failed to create swapchain")
+    let swapchain_ci = SwapchainCreateInfo {
+        flags: Default::default(),
+        min_image_count,
+        image_format: swapchain_format,
+        image_view_formats: Default::default(),
+        image_color_space: ColorSpace::SrgbNonLinear,
+        image_extent: [extent.width, extent.height],
+        image_array_layers: 1,
+        image_usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_DST,
+        image_sharing: Sharing::Exclusive,
+        pre_transform: SurfaceTransform::try_from(caps.current_transform).unwrap(),
+        composite_alpha: CompositeAlpha::Opaque,
+        present_mode: PresentMode::Fifo,
+        present_modes: Default::default(),
+        clipped: true,
+        scaling_behavior: None,
+        present_gravity: None,
+        full_screen_exclusive: FullScreenExclusive::Default,
+        win32_monitor: None,
+        ..Default::default()
     };
 
-    let swapchain_images = unsafe {
-        swapchain_fn.get_swapchain_images(swapchain)
-            .expect("Failed to get swapchain images")
-    };
+
+    let (swapchain, swapchain_images) = Swapchain::new(
+        vk_device_owner.clone(),
+        vk_surface_owner.clone(),
+        swapchain_ci,
+    ).expect("Failed to create swapchain");
 
     // ── 7. Synchronisation primitives ────────────────────────────────────────
     let semaphore_ci = ash::vk::SemaphoreCreateInfo::default();
@@ -781,7 +796,7 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         let mut backend_context = unsafe {
             skia_safe::gpu::vk::BackendContext::new(
                 instance.handle().as_raw() as _,
-                physical_device.as_raw() as _,
+                ash_physical_device.as_raw() as _,
                 device.handle().as_raw() as _,
                 (queue.as_raw() as _, queue_family_index as usize),
                 &get_proc_fn,
@@ -791,7 +806,7 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
 
         skia_safe::gpu::direct_contexts::make_vulkan(&backend_context, None)
             .unwrap_or_else(|| {
-                let props = unsafe { instance.get_physical_device_properties(physical_device) };
+                let props = unsafe { instance.get_physical_device_properties(ash_physical_device) };
                 let driver_name = unsafe { CStr::from_ptr(props.device_name.as_ptr()) }
                     .to_string_lossy()
                     .into_owned();
@@ -802,6 +817,12 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
                     queue_family_index, negotiated_api_version,
                 )
             })
+    };
+
+    // TODO replace
+    let swapchain_images = unsafe {
+        swapchain_fn.get_swapchain_images(swapchain.handle())
+            .expect("Failed to get swapchain images")
     };
 
     // ── 9. Skia surfaces (one per swapchain image) ───────────────────────────
@@ -817,18 +838,20 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
     let vk = VkState {
         entry,
         instance,
-        physical_device,
+        physical_device: ash_physical_device,
         device,
         queue,
         queue_family_index,
         vk_instance_owner,
         vk_device_owner,
+        vk_physical_device: physical_device,
         vk_queue_owner,
         vk_surface_owner,
         surface_khr,
         surface_fn,
         swapchain_fn,
-        swapchain,
+        swapchain: swapchain.handle(),
+        vk_swapchain: swapchain,
         swapchain_images,
         swapchain_format,
         swapchain_extent: extent,

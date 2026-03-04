@@ -23,16 +23,27 @@ use skia_safe::gpu::vk::AllocFlag;
 use skia_safe::gpu::{self, DirectContext};
 use std::ffi::c_char;
 use ash::vk::Handle;
+use vulkano::format::Format;
 // ── VkFormat ↔ Skia mappings ────────────────────────────────────────────────
 
 /// Map a `vk::Format` to the corresponding Skia format + color type.
 /// Returns `None` for formats Skia cannot handle directly.
-pub fn vk_format_to_skia(fmt: ash::vk::Format) -> Option<(gpu::vk::Format, skia_safe::ColorType)> {
+pub fn ash_format_to_skia(fmt: ash::vk::Format) -> Option<(gpu::vk::Format, skia_safe::ColorType)> {
     match fmt {
         ash::vk::Format::B8G8R8A8_UNORM => Some((gpu::vk::Format::B8G8R8A8_UNORM, skia_safe::ColorType::BGRA8888)),
         ash::vk::Format::R8G8B8A8_UNORM => Some((gpu::vk::Format::R8G8B8A8_UNORM, skia_safe::ColorType::RGBA8888)),
         ash::vk::Format::B8G8R8A8_SRGB  => Some((gpu::vk::Format::B8G8R8A8_SRGB,  skia_safe::ColorType::BGRA8888)),
         ash::vk::Format::R8G8B8A8_SRGB  => Some((gpu::vk::Format::R8G8B8A8_SRGB,  skia_safe::ColorType::RGBA8888)),
+        _ => None,
+    }
+}
+
+pub fn vk_format_to_skia(fmt: Format) -> Option<(gpu::vk::Format, skia_safe::ColorType)> {
+    match fmt {
+        Format::B8G8R8A8_UNORM => Some((gpu::vk::Format::B8G8R8A8_UNORM, skia_safe::ColorType::BGRA8888)),
+        Format::R8G8B8A8_UNORM => Some((gpu::vk::Format::R8G8B8A8_UNORM, skia_safe::ColorType::RGBA8888)),
+        Format::B8G8R8A8_SRGB  => Some((gpu::vk::Format::B8G8R8A8_SRGB,  skia_safe::ColorType::BGRA8888)),
+        Format::R8G8B8A8_SRGB  => Some((gpu::vk::Format::R8G8B8A8_SRGB,  skia_safe::ColorType::RGBA8888)),
         _ => None,
     }
 }
@@ -175,7 +186,7 @@ impl TabVkImage {
         queue_family_index: u32,
         queue: ash::vk::Queue,
     ) -> Result<Self, String> {
-        let (skia_format, color_type) = vk_format_to_skia(format)
+        let (skia_format, color_type) = ash_format_to_skia(format)
             .ok_or_else(|| format!("Unsupported format {:?}", format))?;
 
         let handle_type = external_handle_type();

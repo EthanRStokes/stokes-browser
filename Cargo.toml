@@ -7,7 +7,6 @@ edition = "2024"
 winit = "0.31.0-beta.2"
 winit-core = "0.31.0-beta.2"
 ash = "0.38"
-ash-window = "0.13"
 vulkano = { git = "https://github.com/EthanRStokes/vulkano", branch = "0.35.X" }
 skia-safe = { version = "0.93.1", features = ["vulkan"] }
 image = "0.25.8"
