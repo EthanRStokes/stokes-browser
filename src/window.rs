@@ -206,9 +206,17 @@ fn vk_prepare_swapchain(vk: &mut VkState, window: &dyn Window, gr_context: &mut 
         // Wait for any in-flight work to finish before destroying the old swapchain.
         vk.device.device_wait_idle().ok();
 
-        let caps = vk.surface_fn
+        let caps = match vk
+            .surface_fn
             .get_physical_device_surface_capabilities(vk.physical_device, vk.surface_khr)
-            .expect("Failed to query surface capabilities");
+        {
+            Ok(caps) => caps,
+            Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
+                let _ = vk_recreate_surface(vk, window);
+                return;
+            }
+            Err(e) => panic!("Failed to query surface capabilities: {e:?}"),
+        };
 
         let extent = if caps.current_extent.width != u32::MAX {
             caps.current_extent
@@ -240,9 +248,18 @@ fn vk_prepare_swapchain(vk: &mut VkState, window: &dyn Window, gr_context: &mut 
             .clipped(true)
             .old_swapchain(old_swapchain);
 
-        let new_swapchain = vk.swapchain_fn
-            .create_swapchain(&swapchain_ci, None)
-            .expect("Failed to recreate swapchain");
+        let new_swapchain = match vk.swapchain_fn.create_swapchain(&swapchain_ci, None) {
+            Ok(sc) => sc,
+            Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
+                let _ = vk_recreate_surface(vk, window);
+                return;
+            }
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                vk.swapchain_valid = false;
+                return;
+            }
+            Err(e) => panic!("Failed to recreate swapchain: {e:?}"),
+        };
 
         // Destroy the old swapchain after creating the new one.
         if old_swapchain != vk::SwapchainKHR::null() {
@@ -333,6 +350,10 @@ fn vk_acquire(
     if !vk.swapchain_valid {
         vk_prepare_swapchain(vk, window, gr_context);
     }
+    if !vk.swapchain_valid || vk.skia_surfaces.is_empty() {
+        // During resize/minimize or surface reconfiguration there may be no valid swapchain yet.
+        return Ok(false);
+    }
 
     unsafe {
         vk.device
@@ -351,6 +372,10 @@ fn vk_acquire(
             Ok(result) => result,
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 vk.swapchain_valid = false;
+                return Ok(false);
+            }
+            Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
+                vk_recreate_surface(vk, window)?;
                 return Ok(false);
             }
             Err(e) => return Err(format!("acquire_next_image: {:?}", e)),
@@ -382,60 +407,13 @@ fn vk_acquire(
 ///   3. Present waits on `render_finished_semaphore`.
 fn vk_blit_tab_then_present(
     vk: &mut VkState,
-    window: &dyn Window,
+    _window: &dyn Window,
     tab_frame: Option<(&ImportedVkImage, u32, u32, i64)>,
     chrome_px: i32,
 ) -> Result<(), String> {
     unsafe {
         let device = &vk.device;
         let swapchain_image = vk.swapchain_images[vk.current_image_index as usize];
-
-        let imported_tab_semaphore = if let Some((_, _, _, sem_handle)) = tab_frame {
-            #[cfg(not(windows))]
-            let no_semaphore = sem_handle == -1;
-            #[cfg(windows)]
-            let no_semaphore = sem_handle <= 0;
-
-            if no_semaphore {
-                None
-            } else {
-                let semaphore = device
-                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-                    .map_err(|e| format!("vkCreateSemaphore (tab wait import): {:?}", e))?;
-
-                #[cfg(not(windows))]
-                {
-                    let ext_fd = ash::khr::external_semaphore_fd::Device::new(&vk.instance, device);
-                    let import_info = vk::ImportSemaphoreFdInfoKHR::default()
-                        .semaphore(semaphore)
-                        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD)
-                        .flags(vk::SemaphoreImportFlags::TEMPORARY)
-                        .fd(sem_handle as i32);
-                    if let Err(e) = ext_fd.import_semaphore_fd(&import_info) {
-                        device.destroy_semaphore(semaphore, None);
-                        return Err(format!("vkImportSemaphoreFdKHR (tab wait import): {:?}", e));
-                    }
-                }
-
-                #[cfg(windows)]
-                {
-                    let ext_win32 = ash::khr::external_semaphore_win32::Device::new(&vk.instance, device);
-                    let import_info = vk::ImportSemaphoreWin32HandleInfoKHR::default()
-                        .semaphore(semaphore)
-                        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32)
-                        .flags(vk::SemaphoreImportFlags::TEMPORARY)
-                        .handle(sem_handle as vk::HANDLE);
-                    if let Err(e) = ext_win32.import_semaphore_win32_handle(&import_info) {
-                        device.destroy_semaphore(semaphore, None);
-                        return Err(format!("vkImportSemaphoreWin32HandleKHR (tab wait import): {:?}", e));
-                    }
-                }
-
-                Some(semaphore)
-            }
-        } else {
-            None
-        };
 
         // ── Command pool + buffer ────────────────────────────────────────────
         let cmd_pool = {
@@ -571,10 +549,8 @@ fn vk_blit_tab_then_present(
         // Submit: wait image_available (+ tab render-complete semaphore when available), then blit.
         let mut wait_sems = vec![vk.image_available_semaphore];
         let mut wait_stages = vec![vk::PipelineStageFlags::TRANSFER];
-        if let Some(tab_sem) = imported_tab_semaphore {
-            wait_sems.push(tab_sem);
-            wait_stages.push(vk::PipelineStageFlags::TRANSFER);
-        }
+        // Intentionally avoid waiting on imported external semaphores here.
+        // During resize/reconfigure they can become stale and block the queue indefinitely.
         let signal_sems = [vk.render_finished_semaphore];
         let cmd_bufs = [cmd_buf];
         let submit_info = vk::SubmitInfo::default()
@@ -585,11 +561,9 @@ fn vk_blit_tab_then_present(
 
         device.queue_submit(vk.queue, &[submit_info], vk.in_flight_fence)
             .map_err(|e| {
-                if let Some(tab_sem) = imported_tab_semaphore {
-                    device.destroy_semaphore(tab_sem, None);
-                }
-                format!("vkQueueSubmit (blit-present): {:?}", e)
-            })?;
+                 device.destroy_command_pool(cmd_pool, None);
+                 format!("vkQueueSubmit (blit-present): {:?}", e)
+             })?;
 
         // Present
         let swapchains = [vk.swapchain];
@@ -601,7 +575,9 @@ fn vk_blit_tab_then_present(
 
         match vk.swapchain_fn.queue_present(vk.queue, &present_info) {
             Ok(false) => {}
-            Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+            Ok(true)
+            | Err(vk::Result::ERROR_OUT_OF_DATE_KHR)
+            | Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
                 vk.swapchain_valid = false;
             }
             Err(e) => return Err(format!("queue_present: {:?}", e)),
@@ -613,9 +589,6 @@ fn vk_blit_tab_then_present(
         // at the top of the next frame (after its own wait_for_fences).
         device.wait_for_fences(&[vk.in_flight_fence], true, 5_000_000_000)
             .map_err(|e| format!("wait_for_fences (blit-present cleanup): {:?}", e))?;
-        if let Some(tab_sem) = imported_tab_semaphore {
-            device.destroy_semaphore(tab_sem, None);
-        }
         device.destroy_command_pool(cmd_pool, None);
         // Leave in_flight_fence SIGNALED — vk_acquire will reset it.
     }
@@ -657,6 +630,9 @@ fn vk_flush_and_present(
             Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 vk.swapchain_valid = false;
             }
+            Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
+                vk_recreate_surface(vk, window)?;
+            }
             Err(e) => return Err(format!("queue_present: {:?}", e)),
         }
     }
@@ -673,6 +649,9 @@ fn vk_present(
 ) -> Result<(), String> {
     if !vk.swapchain_valid {
         vk_prepare_swapchain(vk, window, gr_context);
+    }
+    if !vk.swapchain_valid || vk.skia_surfaces.is_empty() {
+        return Ok(());
     }
 
     unsafe {
@@ -694,6 +673,11 @@ fn vk_present(
             Ok(result) => result,
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 vk.swapchain_valid = false;
+                return Ok(());
+            }
+            Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
+                println!("VK: Lost KHR");
+                vk_recreate_surface(vk, window)?;
                 return Ok(());
             }
             Err(e) => return Err(format!("acquire_next_image: {:?}", e)),
@@ -737,8 +721,52 @@ fn vk_present(
             Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 vk.swapchain_valid = false;
             }
+            Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
+                vk_recreate_surface(vk, window)?;
+            }
             Err(e) => return Err(format!("queue_present: {:?}", e)),
         }
+    }
+
+    Ok(())
+}
+
+/// Recreate the Vulkan surface from the current native window handles.
+/// The swapchain is dropped and marked invalid so it can be rebuilt lazily.
+fn vk_recreate_surface(vk: &mut VkState, window: &dyn Window) -> Result<(), String> {
+    unsafe {
+        vk.device.device_wait_idle().ok();
+
+        if vk.swapchain != vk::SwapchainKHR::null() {
+            vk.swapchain_fn.destroy_swapchain(vk.swapchain, None);
+            vk.swapchain = vk::SwapchainKHR::null();
+        }
+        vk.swapchain_images.clear();
+        vk.skia_surfaces.clear();
+
+        if vk.surface_khr != vk::SurfaceKHR::null() {
+            vk.surface_fn.destroy_surface(vk.surface_khr, None);
+            vk.surface_khr = vk::SurfaceKHR::null();
+        }
+
+        let display_handle = window
+            .display_handle()
+            .map_err(|e| format!("display_handle: {e}"))?;
+        let window_handle = window
+            .window_handle()
+            .map_err(|e| format!("window_handle: {e}"))?;
+
+        vk.surface_khr = ash_window::create_surface(
+            &vk.entry,
+            &vk.instance,
+            display_handle.as_raw(),
+            window_handle.as_raw(),
+            None,
+        )
+        .map_err(|e| format!("create_surface (recreate): {e:?}"))?;
+
+        vk.current_image_index = 0;
+        vk.swapchain_valid = false;
     }
 
     Ok(())
@@ -1126,9 +1154,6 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         vk,
     }
 }
-
-
-
 
 
 
