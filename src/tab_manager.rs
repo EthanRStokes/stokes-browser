@@ -304,7 +304,6 @@ impl TabManager {
                                 inst.clone(),
                                 phys.clone(),
                                 dev.clone(),
-                                allocator.clone(),
                                 File::from_raw_fd(local_handle as RawFd),
                                 width,
                                 height,

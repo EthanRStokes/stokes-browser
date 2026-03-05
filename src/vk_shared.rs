@@ -557,7 +557,6 @@ pub unsafe fn import_vk_image_raw(
     instance: Arc<Instance>,
     physical_device: Arc<PhysicalDevice>,
     device: Arc<Device>,
-    allocator: Arc<dyn MemoryAllocator>,
     handle: File,
     width: u32,
     height: u32,
@@ -581,26 +580,34 @@ pub unsafe fn import_vk_image_raw(
         ..Default::default()
     };
 
-    let image = Image::new(
-        allocator.clone(),
-        image_ci.clone(),
-        Default::default(),
-    ).map_err(|e| format!("Failed to create image with external memory: {:?}", e))?;
+    // For imported external memory we must create an unbound raw image, import
+    // memory from the received handle, then bind that memory to this image.
+    let raw_image = RawImage::new(device.clone(), image_ci)
+        .map_err(|e| format!("Failed to create raw image for import: {:?}", e))?;
 
-    let raw_image = RawImage::from_handle_borrowed(device.clone(), image.handle(), image_ci)
-        .map_err(|e| {
-            format!("Failed to create raw image: {:?}", e)
+    let mem_reqs = raw_image.memory_requirements();
+
+    let imported_memory = import_memory(
+        physical_device,
+        device.clone(),
+        handle,
+        alloc_size,
+        Vec::from(mem_reqs),
+    )?;
+
+    let imported_memory = Arc::new(imported_memory);
+    let resource_memory = ResourceMemory::new_dedicated_unchecked(imported_memory.clone());
+    let image = raw_image
+        .bind_memory([resource_memory])
+        .map_err(|(e, img, _)| {
+            drop(img);
+            format!("Failed to bind imported memory to image: {:?}", e)
         })?;
 
-    let mem_reqs = image.memory_requirements();
-
-    let imported_memory =
-        import_memory(instance, physical_device, device.clone(), image.clone(), raw_image, handle, alloc_size, mem_reqs)?;
-
     Ok(ImportedVkImage {
-        device: device.clone(),
-        image,
-        memory: Arc::new(imported_memory),
+        device,
+        image: Arc::new(image),
+        memory: imported_memory,
     })
 }
 
@@ -663,32 +670,23 @@ unsafe fn import_memory(
 
 #[cfg(not(windows))]
 unsafe fn import_memory(
-    instance: Arc<Instance>,
     physical_device: Arc<PhysicalDevice>,
     device: Arc<Device>,
-    image: Arc<Image>,
-    raw_image: RawImage,
     handle: File,
     alloc_size: u64,
-    mem_reqs: &[MemoryRequirements],
+    mem_reqs: Vec<MemoryRequirements>,
 ) -> Result<DeviceMemory, String> {
     let fd = handle;
-    // todo check
-    let mem_reqs = mem_reqs.last().unwrap();
+    let mem_reqs = mem_reqs
+        .last()
+        .ok_or_else(|| "Vulkan returned no memory requirements for imported image".to_string())?;
 
-    // todo check
-    //let ext_fd = ash::khr::external_memory_fd::Device::new(instance, device);
-
-    let mut fd_props = ash::vk::MemoryFdPropertiesKHR::default();
-    device
+    let fd_props = device
         .memory_fd_properties(
             ExternalMemoryHandleType::DmaBuf,
             fd.try_clone().expect("Failed to clone fd"),
         )
-        .map_err(|e| {
-            unsafe { (device.fns().v1_0.destroy_image)(device.handle(), image.handle(), std::ptr::null()) };
-            format!("vkGetMemoryFdPropertiesKHR failed: {:?}", e)
-        })?;
+        .map_err(|e| format!("vkGetMemoryFdPropertiesKHR failed: {:?}", e))?;
 
     let combined_bits = mem_reqs.memory_type_bits & fd_props.memory_type_bits;
     let candidate_bits = if combined_bits != 0 { combined_bits } else { fd_props.memory_type_bits };
@@ -717,18 +715,12 @@ unsafe fn import_memory(
     let alloc_info = MemoryAllocateInfo {
         allocation_size: alloc_size,
         memory_type_index: mem_type_index,
-        dedicated_allocation: Some(
-            DedicatedAllocation::Image(&raw_image)
-        ),
+        dedicated_allocation: None,
         ..Default::default()
     };
 
-    let image2 = image.clone();
-    DeviceMemory::import(device.clone(), alloc_info, import_info)
-        .map_err(|e| {
-            unsafe { (device.fns().v1_0.destroy_image)(device.handle(), image2.handle(), std::ptr::null()) };
-            format!("vkAllocateMemory (dma-buf fd import) failed: {:?}", e)
-        })
+    DeviceMemory::import(device, alloc_info, import_info)
+        .map_err(|e| format!("vkAllocateMemory (dma-buf fd import) failed: {:?}", e))
 }
 
 // ── Helper: find_memory_type ────────────────────────────────────────────────
