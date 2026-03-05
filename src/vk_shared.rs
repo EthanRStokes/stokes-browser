@@ -610,14 +610,17 @@ pub unsafe fn import_vk_image_raw(
 
     let mem_reqs = raw_image.memory_requirements();
 
+    println!("About to hit import_memory");
     let imported_memory = import_memory(
         physical_device,
         device.clone(),
         handle,
         alloc_size,
         Vec::from(mem_reqs),
+        &raw_image,
     )?;
 
+    println!("Got past import_memory");
     let imported_memory = Arc::new(imported_memory);
     let resource_memory = ResourceMemory::new_dedicated_unchecked(imported_memory.clone());
     let image = raw_image
@@ -643,27 +646,45 @@ unsafe fn import_memory(
     handle: u64,
     alloc_size: u64,
     mem_reqs: Vec<MemoryRequirements>,
+    raw_image: &RawImage,
 ) -> Result<DeviceMemory, String> {
     let mem_reqs = mem_reqs
         .last()
         .ok_or_else(|| "Vulkan returned no memory requirements for imported image".to_string())?;
 
+    // Query which memory types are compatible with this Win32 handle.
+    // This is the Windows equivalent of vkGetMemoryFdPropertiesKHR and is
+    // required to avoid "invalid handle type" errors — the driver only allows
+    // importing into memory types it advertises through this query.
+    let mut handle_props = ash::vk::MemoryWin32HandlePropertiesKHR::default();
+    (device.fns().khr_external_memory_win32.get_memory_win32_handle_properties_khr)(
+        device.handle(),
+        ash::vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32,
+        handle as ash::vk::HANDLE,
+        &mut handle_props,
+    )
+    .result()
+    .map_err(|e| format!("vkGetMemoryWin32HandlePropertiesKHR failed: {:?}", e))?;
+
+    let combined_bits = mem_reqs.memory_type_bits & handle_props.memory_type_bits;
+    let candidate_bits = if combined_bits != 0 { combined_bits } else { handle_props.memory_type_bits };
+
     let mem_type_index = find_memory_type(
         physical_device.clone(),
-        mem_reqs.memory_type_bits,
+        candidate_bits,
         MemoryPropertyFlags::DEVICE_LOCAL,
     )
     .or_else(|| {
         find_memory_type(
             physical_device.clone(),
-            mem_reqs.memory_type_bits,
+            candidate_bits,
             MemoryPropertyFlags::empty(),
         )
     })
     .ok_or_else(|| {
         format!(
-            "No compatible memory type for import (win32): bits=0x{:x}",
-            mem_reqs.memory_type_bits
+            "No compatible memory type for import (win32): image bits=0x{:x}, handle bits=0x{:x}",
+            mem_reqs.memory_type_bits, handle_props.memory_type_bits
         )
     })?;
 
@@ -675,7 +696,8 @@ unsafe fn import_memory(
     let alloc_info = MemoryAllocateInfo {
         allocation_size: alloc_size,
         memory_type_index: mem_type_index,
-        dedicated_allocation: None,
+        // Must match the dedicated allocation used on the export side.
+        dedicated_allocation: Some(DedicatedAllocation::Image(raw_image)),
         ..Default::default()
     };
 
@@ -690,6 +712,7 @@ unsafe fn import_memory(
     handle: u64,
     alloc_size: u64,
     mem_reqs: Vec<MemoryRequirements>,
+    _raw_image: &RawImage,
 ) -> Result<DeviceMemory, String> {
     let fd = unsafe { File::from_raw_fd(handle as i32) };
     let mem_reqs = mem_reqs
