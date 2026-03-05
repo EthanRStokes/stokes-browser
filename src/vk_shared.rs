@@ -176,9 +176,9 @@ pub struct TabVkImage {
     pub queue: Arc<Queue>,
     queue_family_index: u32,
     /// Fence used to track the last `signal_and_export_semaphore` submission.
-    submit_fence: Arc<Fence>,
+    pub submit_fence: Arc<Fence>,
     /// Whether `submit_fence` is currently in the submitted (unsignaled) state.
-    submit_fence_pending: bool,
+    pub submit_fence_pending: bool,
 
     // todo check
     //#[cfg(windows)]
@@ -446,35 +446,59 @@ impl TabVkImage {
             usage: CommandBufferUsage::OneTimeSubmit,
             ..Default::default()
         };
-        let mut rec_cmd_buf = RecordingCommandBuffer::new(self.cmd_buf_allocator.clone(), self.queue_family_index, CommandBufferLevel::Primary, begin_info)
-            .expect("Failed to begin recording command buffer");
+        let mut rec_cmd_buf = RecordingCommandBuffer::new(
+            self.cmd_buf_allocator.clone(),
+            self.queue_family_index,
+            CommandBufferLevel::Primary,
+            begin_info,
+        )
+        .expect("Failed to begin recording command buffer");
 
-        // todo check
-        let bruh = ash::vk::ImageMemoryBarrier::default()
-            .src_access_mask(ash::vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-            .dst_access_mask(ash::vk::AccessFlags::empty())
-            .old_layout(ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .new_layout(ash::vk::ImageLayout::GENERAL)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(ash::vk::QUEUE_FAMILY_EXTERNAL)
-            .image(self.image.handle())
-            .subresource_range(COLOR_SUBRESOURCE_RANGE);
-
+        // Vulkano validates that the subresource range contains at least one aspect.
+        // Our shared images are color-only, so make that explicit.
         let barrier = DependencyInfo {
-            dependency_flags: Default::default(),
             image_memory_barriers: vec![
-                ImageMemoryBarrier::image(self.image.clone())
-            ].into(),
+                ImageMemoryBarrier {
+                    // Layout transition so the parent can read it.
+                    old_layout: ImageLayout::ColorAttachmentOptimal,
+                    new_layout: ImageLayout::General,
+
+                    // Color aspect, single mip level, single layer.
+                    subresource_range: self.image.subresource_range(),
+
+                    // Make writes by Skia (color attachment) visible to the external reader.
+                    src_access: vulkano::sync::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    dst_access: vulkano::sync::AccessFlags::MEMORY_READ,
+
+                    // Conservative stage masks for cross-process handoff.
+                    src_stages: vulkano::sync::PipelineStages::COLOR_ATTACHMENT_OUTPUT,
+                    dst_stages: vulkano::sync::PipelineStages::ALL_COMMANDS,
+
+                    // TODO check Queue family ownership transfer to external.
+                    //src_queue_family_index: self.queue_family_index,
+                    //dst_queue_family_index: vulkano::sync::QUEUE_FAMILY_EXTERNAL,
+
+                    ..ImageMemoryBarrier::image(self.image.clone())
+                }
+            ]
+            .into(),
             ..Default::default()
         };
 
-        rec_cmd_buf.pipeline_barrier(&barrier).expect("Failed to record pipeline barrier");
+        rec_cmd_buf
+            .pipeline_barrier(&barrier)
+            .expect("Failed to record pipeline barrier");
 
         rec_cmd_buf.end().expect("Failed to finish recording command buffer");
 
         let cmd_bufs = [self.cmd_buf.handle()];
         let submit_info = ash::vk::SubmitInfo::default().command_buffers(&cmd_bufs);
-        let res = (self.device.fns().v1_0.queue_submit)(self.queue.handle(), 1, &submit_info, self.submit_fence.handle());
+        let _res = (self.device.fns().v1_0.queue_submit)(
+            self.queue.handle(),
+            1,
+            &submit_info,
+            self.submit_fence.handle(),
+        );
         self.submit_fence_pending = true;
 
         -1
