@@ -1,19 +1,26 @@
 use crate::vk_context;
 use crate::vk_shared::{self, ImportedVkImage, SkiaGetProc, VulkanDeviceInfo, COLOR_SUBRESOURCE_RANGE};
-use ash::vk::{Extent2D, Handle};
+use ash::vk::Handle;
 use skia_safe::gpu::vk::GetProcOf;
 use skia_safe::gpu::{self, DirectContext};
 use skia_safe::{ColorType, Surface};
 use std::ffi::CStr;
 use std::sync::Arc;
-use vulkano::command_buffer::PrimaryCommandBufferAbstract;
-use vulkano::device::{Device, Queue};
+use vulkano::command_buffer::pool::{
+    CommandBufferAllocateInfo, CommandPool, CommandPoolAlloc, CommandPoolCreateFlags,
+    CommandPoolCreateInfo,
+};
 use vulkano::device::physical::PhysicalDevice;
+use vulkano::device::{Device, Queue};
 use vulkano::format::Format;
-use vulkano::image::ImageUsage;
+use vulkano::image::{Image, ImageUsage};
 use vulkano::instance::Instance;
 use vulkano::memory::allocator::MemoryAllocator;
-use vulkano::swapchain::{ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, SurfaceTransform, Swapchain, SwapchainCreateInfo};
+use vulkano::swapchain::{
+    AcquireNextImageInfo, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode,
+    Swapchain, SwapchainCreateInfo,
+};
+use vulkano::sync::semaphore::{Semaphore, SemaphoreCreateInfo};
 use vulkano::sync::Sharing;
 use vulkano::VulkanObject;
 use winit::dpi::LogicalSize;
@@ -85,15 +92,9 @@ pub(crate) struct VkState {
     pub(crate) allocator: Arc<dyn MemoryAllocator>,
     pub(crate) surface: Arc<vulkano::swapchain::Surface>,
 
-    // Surface
-    surface_khr: ash::vk::SurfaceKHR,
-    surface_fn: ash::khr::surface::Instance,
-
     // Swapchain
-    swapchain_fn: ash::khr::swapchain::Device,
-    swapchain: ash::vk::SwapchainKHR,
     vk_swapchain: Arc<Swapchain>,
-    swapchain_images: Vec<ash::vk::Image>,
+    swapchain_images: Vec<Arc<Image>>,
     swapchain_format: Format,
     swapchain_extent: ash::vk::Extent2D,
 
@@ -110,12 +111,12 @@ pub(crate) struct VkState {
     pub(crate) vk_format: skia_safe::gpu::vk::Format,
 
     // Synchronisation (single frame-in-flight)
-    image_available_semaphore: ash::vk::Semaphore,
-    render_finished_semaphore: ash::vk::Semaphore,
+    image_available_semaphore: Arc<Semaphore>,
+    render_finished_semaphore: Arc<Semaphore>,
 
     // Persistent command pool + buffer for blit operations (reused each frame)
-    blit_cmd_pool: ash::vk::CommandPool,
-    blit_cmd_buf: ash::vk::CommandBuffer,
+    blit_cmd_pool: Arc<CommandPool>,
+    blit_cmd_buf: CommandPoolAlloc,
 
     /// Keep the submitted tab image alive until `in_flight_fence` signals.
     in_flight_tab_image: Option<Arc<ImportedVkImage>>,
@@ -148,10 +149,6 @@ impl Drop for VkState {
             for sem in self.deferred_wait_semaphores.drain(..) {
                 self.ash_device.destroy_semaphore(sem, None);
             }
-            self.ash_device.destroy_command_pool(self.blit_cmd_pool, None);
-            self.ash_device.destroy_semaphore(self.image_available_semaphore, None);
-            self.ash_device.destroy_semaphore(self.render_finished_semaphore, None);
-            self.swapchain_fn.destroy_swapchain(self.swapchain, None);
         }
     }
 }
@@ -162,7 +159,7 @@ impl Drop for VkState {
 
 /// Choose the best swapchain format, preferring UNORM over SRGB so Skia's maths stays linear.
 fn vk_pick_format(
-    surface_fn: &Arc<Instance>,
+    _instance: &Arc<Instance>,
     physical_device: Arc<PhysicalDevice>,
     surface: Arc<vulkano::swapchain::Surface>,
 ) -> (Format, skia_safe::gpu::vk::Format, ColorType) {
@@ -203,69 +200,57 @@ fn vk_prepare_swapchain(vk: &mut VkState, window: Arc<Box<dyn Window>>, gr_conte
         vk.ash_device.device_wait_idle().ok();
 
         let caps = match vk
-            .surface_fn
-            .get_physical_device_surface_capabilities(vk.ash_physical_device, vk.surface_khr)
+            .physical_device
+            .surface_capabilities(&vk.surface, Default::default())
         {
             Ok(caps) => caps,
-            Err(ash::vk::Result::ERROR_SURFACE_LOST_KHR) => {
-                let _ = vk_recreate_surface(vk, window);
-                return;
-            }
             Err(e) => panic!("Failed to query surface capabilities: {e:?}"),
         };
 
-        let extent = if caps.current_extent.width != u32::MAX {
-            caps.current_extent
+        let extent = if let Some(current_extent) = caps.current_extent {
+            ash::vk::Extent2D {
+                width: current_extent[0],
+                height: current_extent[1],
+            }
         } else {
             ash::vk::Extent2D {
-                width: sz.width.max(caps.min_image_extent.width).min(caps.max_image_extent.width),
-                height: sz.height.max(caps.min_image_extent.height).min(caps.max_image_extent.height),
+                width: sz.width.max(caps.min_image_extent[0]).min(caps.max_image_extent[0]),
+                height: sz.height.max(caps.min_image_extent[1]).min(caps.max_image_extent[1]),
             }
         };
 
-        let min_image_count = caps.min_image_count.max(2).min(
-            if caps.max_image_count > 0 { caps.max_image_count } else { u32::MAX }
-        );
+        let min_image_count = caps.min_image_count.max(2).min(caps.max_image_count.unwrap_or(u32::MAX));
 
-        let old_swapchain = vk.swapchain;
+        let swapchain_ci = SwapchainCreateInfo {
+            flags: Default::default(),
+            min_image_count,
+            image_format: vk.swapchain_format,
+            image_view_formats: Default::default(),
+            image_color_space: ColorSpace::SrgbNonLinear,
+            image_extent: [extent.width, extent.height],
+            image_array_layers: 1,
+            image_usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_DST,
+            image_sharing: Sharing::Exclusive,
+            pre_transform: caps.current_transform,
+            composite_alpha: CompositeAlpha::Opaque,
+            present_mode: PresentMode::Fifo,
+            present_modes: Default::default(),
+            clipped: true,
+            scaling_behavior: None,
+            present_gravity: None,
+            full_screen_exclusive: FullScreenExclusive::Default,
+            win32_monitor: None,
+            ..Default::default()
+        };
 
-        let swapchain_ci = ash::vk::SwapchainCreateInfoKHR::default()
-            .surface(vk.surface_khr)
-            .min_image_count(min_image_count)
-            .image_format(ash::vk::Format::from_raw(vk.swapchain_format as i32))
-            .image_color_space(ash::vk::ColorSpaceKHR::SRGB_NONLINEAR)
-            .image_extent(extent)
-            .image_array_layers(1)
-            .image_usage(ash::vk::ImageUsageFlags::COLOR_ATTACHMENT | ash::vk::ImageUsageFlags::TRANSFER_DST)
-            .image_sharing_mode(ash::vk::SharingMode::EXCLUSIVE)
-            .pre_transform(caps.current_transform)
-            .composite_alpha(ash::vk::CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(ash::vk::PresentModeKHR::FIFO)
-            .clipped(true)
-            .old_swapchain(old_swapchain);
-
-        let new_swapchain = match vk.swapchain_fn.create_swapchain(&swapchain_ci, None) {
+        let (new_swapchain, new_images) = match Swapchain::new(vk.device.clone(), vk.surface.clone(), swapchain_ci) {
             Ok(sc) => sc,
-            Err(ash::vk::Result::ERROR_SURFACE_LOST_KHR) => {
-                let _ = vk_recreate_surface(vk, window);
-                return;
-            }
-            Err(ash::vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                vk.swapchain_valid = false;
-                return;
-            }
             Err(e) => panic!("Failed to recreate swapchain: {e:?}"),
         };
 
-        if old_swapchain != ash::vk::SwapchainKHR::null() {
-            vk.swapchain_fn.destroy_swapchain(old_swapchain, None);
-        }
-
-        vk.swapchain = new_swapchain;
+        vk.vk_swapchain = new_swapchain;
         vk.swapchain_extent = extent;
-        vk.swapchain_images = vk.swapchain_fn
-            .get_swapchain_images(new_swapchain)
-            .expect("Failed to get swapchain images");
+        vk.swapchain_images = new_images;
 
         vk.skia_surfaces.clear();
         vk.skia_surfaces = vk_build_surfaces(
@@ -319,14 +304,14 @@ fn vk_surface_for_image(
 /// Pre-allocate one Skia `Surface` for every swapchain image.
 fn vk_build_surfaces(
     gr_context: &mut DirectContext,
-    images: &[ash::vk::Image],
+    images: &[Arc<Image>],
     extent: ash::vk::Extent2D,
     vk_format: skia_safe::gpu::vk::Format,
     color_type: ColorType,
 ) -> Vec<Surface> {
     images
         .iter()
-        .map(|&img| vk_surface_for_image(gr_context, img, extent, vk_format, color_type))
+        .map(|img| vk_surface_for_image(gr_context, img.handle(), extent, vk_format, color_type))
         .collect()
 }
 
@@ -360,30 +345,29 @@ fn vk_acquire(
             vk.ash_device.destroy_semaphore(sem, None);
         }
 
-        let (image_index, suboptimal) = match vk.swapchain_fn.acquire_next_image(
-            vk.swapchain,
-            u64::MAX,
-            vk.image_available_semaphore,
-            ash::vk::Fence::null(),
-        ) {
+        let acquired = match vk.vk_swapchain.acquire_next_image(&AcquireNextImageInfo {
+            timeout: None,
+            semaphore: Some(vk.image_available_semaphore.clone()),
+            fence: None,
+            ..Default::default()
+        }) {
             Ok(result) => result,
-            Err(ash::vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                vk.swapchain_valid = false;
-                return Ok(false);
+            Err(err) => {
+                let msg = format!("acquire_next_image: {err:?}");
+                if msg.contains("OutOfDate") {
+                    vk.swapchain_valid = false;
+                    return Ok(false);
+                }
+                return Err(msg);
             }
-            Err(ash::vk::Result::ERROR_SURFACE_LOST_KHR) => {
-                vk_recreate_surface(vk, window.clone())?;
-                return Ok(false);
-            }
-            Err(e) => return Err(format!("acquire_next_image: {:?}", e)),
         };
 
-        if suboptimal {
+        if acquired.is_suboptimal {
             vk.swapchain_valid = false;
         }
 
-        vk.current_image_index = image_index;
-        *current_surface = vk.skia_surfaces[image_index as usize].clone();
+        vk.current_image_index = acquired.image_index;
+        *current_surface = vk.skia_surfaces[acquired.image_index as usize].clone();
     }
 
     Ok(true)
@@ -466,16 +450,16 @@ fn vk_blit_tab_then_present(
 ) -> Result<(), String> {
     unsafe {
         let ash_device = &vk.ash_device;
-        let swapchain_image = vk.swapchain_images[vk.current_image_index as usize];
+        let swapchain_image = vk.swapchain_images[vk.current_image_index as usize].handle();
         let mut submitted_tab_image: Option<Arc<ImportedVkImage>> = None;
 
         // Reset the persistent command buffer for this frame.
-        ash_device.reset_command_buffer(vk.blit_cmd_buf, ash::vk::CommandBufferResetFlags::empty())
+        ash_device.reset_command_buffer(vk.blit_cmd_buf.handle(), ash::vk::CommandBufferResetFlags::empty())
             .map_err(|e| format!("vkResetCommandBuffer (blit-present): {:?}", e))?;
 
         let begin_info = ash::vk::CommandBufferBeginInfo::default()
             .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        ash_device.begin_command_buffer(vk.blit_cmd_buf, &begin_info)
+        ash_device.begin_command_buffer(vk.blit_cmd_buf.handle(), &begin_info)
             .map_err(|e| format!("vkBeginCommandBuffer (blit-present): {:?}", e))?;
 
         let mut external_wait_semaphore = ash::vk::Semaphore::null();
@@ -521,7 +505,7 @@ fn vk_blit_tab_then_present(
                     .subresource_range(COLOR_SUBRESOURCE_RANGE),
             ];
             ash_device.cmd_pipeline_barrier(
-                vk.blit_cmd_buf,
+                vk.blit_cmd_buf.handle(),
                 ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | ash::vk::PipelineStageFlags::ALL_COMMANDS,
                 ash::vk::PipelineStageFlags::TRANSFER,
                 ash::vk::DependencyFlags::empty(),
@@ -541,7 +525,7 @@ fn vk_blit_tab_then_present(
                     ash::vk::Offset3D { x: sw, y: chrome_px + dst_h, z: 1 },
                 ]);
             ash_device.cmd_blit_image(
-                vk.blit_cmd_buf,
+                vk.blit_cmd_buf.handle(),
                 tab.image().handle(), ash::vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 swapchain_image, ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[blit],
@@ -572,7 +556,7 @@ fn vk_blit_tab_then_present(
                     .subresource_range(COLOR_SUBRESOURCE_RANGE),
             ];
             ash_device.cmd_pipeline_barrier(
-                vk.blit_cmd_buf,
+                vk.blit_cmd_buf.handle(),
                 ash::vk::PipelineStageFlags::TRANSFER,
                 ash::vk::PipelineStageFlags::ALL_COMMANDS,
                 ash::vk::DependencyFlags::empty(),
@@ -580,18 +564,18 @@ fn vk_blit_tab_then_present(
             );
         }
 
-        ash_device.end_command_buffer(vk.blit_cmd_buf)
+        ash_device.end_command_buffer(vk.blit_cmd_buf.handle())
             .map_err(|e| format!("vkEndCommandBuffer (blit-present): {:?}", e))?;
 
         // Submit: wait image_available (+ optional tab frame semaphore), signal render_finished.
-        let mut wait_sems = vec![vk.image_available_semaphore];
+        let mut wait_sems = vec![vk.image_available_semaphore.handle()];
         let mut wait_stages = vec![ash::vk::PipelineStageFlags::ALL_COMMANDS];
         if external_wait_semaphore != ash::vk::Semaphore::null() {
             wait_sems.push(external_wait_semaphore);
             wait_stages.push(ash::vk::PipelineStageFlags::ALL_COMMANDS);
         }
-        let signal_sems = [vk.render_finished_semaphore];
-        let cmd_bufs = [vk.blit_cmd_buf];
+        let signal_sems = [vk.render_finished_semaphore.handle()];
+        let cmd_bufs = [vk.blit_cmd_buf.handle()];
         let submit_info = ash::vk::SubmitInfo::default()
             .wait_semaphores(&wait_sems)
             .wait_dst_stage_mask(&wait_stages)
@@ -611,14 +595,16 @@ fn vk_blit_tab_then_present(
         vk.in_flight_tab_image = submitted_tab_image;
 
         // Present
-        let swapchains = [vk.swapchain];
+        let swapchains = [vk.vk_swapchain.handle()];
         let image_indices = [vk.current_image_index];
         let present_info = ash::vk::PresentInfoKHR::default()
             .wait_semaphores(&signal_sems)
             .swapchains(&swapchains)
             .image_indices(&image_indices);
 
-        match vk.swapchain_fn.queue_present(vk.ash_queue, &present_info) {
+        let mut present_result = false;
+        let swapchain_fn = ash::khr::swapchain::Device::new(&vk.ash_instance, ash_device);
+        match swapchain_fn.queue_present(vk.ash_queue, &present_info) {
             Ok(false) => {}
             Ok(true)
             | Err(ash::vk::Result::ERROR_OUT_OF_DATE_KHR)
@@ -636,10 +622,6 @@ fn vk_recreate_surface(vk: &mut VkState, window: Arc<Box<dyn Window>>) -> Result
     unsafe {
         vk.ash_device.device_wait_idle().ok();
 
-        if vk.swapchain != ash::vk::SwapchainKHR::null() {
-            vk.swapchain_fn.destroy_swapchain(vk.swapchain, None);
-            vk.swapchain = ash::vk::SwapchainKHR::null();
-        }
         vk.swapchain_images.clear();
         vk.skia_surfaces.clear();
 
@@ -649,7 +631,6 @@ fn vk_recreate_surface(vk: &mut VkState, window: Arc<Box<dyn Window>>) -> Result
         )
         .map_err(|e| format!("Surface::from_window_ref (recreate): {e:?}"))?;
 
-        vk.surface_khr = new_surface.handle();
         vk.surface = new_surface;
         vk.current_image_index = 0;
         vk.swapchain_valid = false;
@@ -664,7 +645,6 @@ fn vk_recreate_surface(vk: &mut VkState, window: Arc<Box<dyn Window>>) -> Result
 
 /// Create the main window using the Vulkan backend.
 pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
-    // ── 1. Create winit window ───────────────────────────────────────────────
     let icon: Option<Icon> = {
         let icon_bytes = include_bytes!("../assets/com.ethanstokes.stokes-browser.png");
         image::load_from_memory(icon_bytes).ok().and_then(|img| {
@@ -687,7 +667,6 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         el.create_window(win_attrs).expect("Failed to create window"),
     );
 
-    // ── 2. Vulkan instance/device/queue via vulkano, then bridge into ash ──
     let bootstrap = vk_context::create_parent_context(window.clone(), el)
         .unwrap_or_else(|e| panic!("Failed to initialize vulkano parent context: {e}"));
 
@@ -708,34 +687,27 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
 
     let vk_allocator = Arc::new(vulkano::memory::allocator::StandardMemoryAllocator::new_default(vk_device.clone()));
 
-    // ── 3. Surface from vulkano-owned surface handle ────────────────────────
-    let surface_fn = ash::khr::surface::Instance::new(&entry, &instance);
-    let surface_khr = vk_surface_owner.handle();
-
-    // ── 4. Swapchain ─────────────────────────────────────────────────────────
-    let swapchain_fn = ash::khr::swapchain::Device::new(&instance, &device);
-
     let (swapchain_format, skia_vk_format, color_type) =
         vk_pick_format(vk_surface_owner.as_ref().instance(), physical_device.clone(), vk_surface_owner.clone());
 
-    let caps = unsafe {
-        surface_fn.get_physical_device_surface_capabilities(ash_physical_device, surface_khr)
-            .expect("Failed to query surface capabilities")
-    };
+    let caps = physical_device
+        .surface_capabilities(&vk_surface_owner, Default::default())
+        .expect("Failed to query surface capabilities");
 
     let window_size = window.surface_size();
-    let extent = if caps.current_extent.width != u32::MAX {
-        caps.current_extent
+    let extent = if let Some(current_extent) = caps.current_extent {
+        ash::vk::Extent2D {
+            width: current_extent[0],
+            height: current_extent[1],
+        }
     } else {
         ash::vk::Extent2D {
-            width: window_size.width.max(caps.min_image_extent.width).min(caps.max_image_extent.width),
-            height: window_size.height.max(caps.min_image_extent.height).min(caps.max_image_extent.height),
+            width: window_size.width.max(caps.min_image_extent[0]).min(caps.max_image_extent[0]),
+            height: window_size.height.max(caps.min_image_extent[1]).min(caps.max_image_extent[1]),
         }
     };
 
-    let min_image_count = caps.min_image_count.max(2).min(
-        if caps.max_image_count > 0 { caps.max_image_count } else { u32::MAX }
-    );
+    let min_image_count = caps.min_image_count.max(2).min(caps.max_image_count.unwrap_or(u32::MAX));
 
     let swapchain_ci = SwapchainCreateInfo {
         flags: Default::default(),
@@ -747,7 +719,7 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         image_array_layers: 1,
         image_usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_DST,
         image_sharing: Sharing::Exclusive,
-        pre_transform: SurfaceTransform::try_from(caps.current_transform).unwrap(),
+        pre_transform: caps.current_transform,
         composite_alpha: CompositeAlpha::Opaque,
         present_mode: PresentMode::Fifo,
         present_modes: Default::default(),
@@ -759,45 +731,42 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         ..Default::default()
     };
 
-
     let (swapchain, swapchain_images) = Swapchain::new(
         vk_device.clone(),
         vk_surface_owner.clone(),
         swapchain_ci,
     ).expect("Failed to create swapchain");
 
-    // ── 7. Synchronisation primitives ────────────────────────────────────────
-    let semaphore_ci = ash::vk::SemaphoreCreateInfo::default();
-    let fence_ci = ash::vk::FenceCreateInfo::default()
-        .flags(ash::vk::FenceCreateFlags::SIGNALED);
+    let image_available_semaphore = Arc::new(
+        Semaphore::new(vk_device.clone(), SemaphoreCreateInfo::default())
+            .expect("Failed to create image_available semaphore"),
+    );
+    let render_finished_semaphore = Arc::new(
+        Semaphore::new(vk_device.clone(), SemaphoreCreateInfo::default())
+            .expect("Failed to create render_finished semaphore"),
+    );
 
-    let image_available_semaphore = unsafe {
-        device.create_semaphore(&semaphore_ci, None)
-            .expect("Failed to create image_available semaphore")
-    };
-    let render_finished_semaphore = unsafe {
-        device.create_semaphore(&semaphore_ci, None)
-            .expect("Failed to create render_finished semaphore")
-    };
+    let blit_cmd_pool = Arc::new(
+        CommandPool::new(
+            vk_device.clone(),
+            CommandPoolCreateInfo {
+                flags: CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+                queue_family_index,
+                ..Default::default()
+            },
+        )
+        .expect("Failed to create blit command pool"),
+    );
+    let blit_cmd_buf = blit_cmd_pool
+        .allocate_command_buffers(CommandBufferAllocateInfo {
+            level: vulkano::command_buffer::CommandBufferLevel::Primary,
+            command_buffer_count: 1,
+            ..Default::default()
+        })
+        .expect("Failed to allocate blit command buffer")
+        .next()
+        .expect("Expected one blit command buffer");
 
-    // ── 7b. Persistent blit command pool + buffer ────────────────────────────
-    let blit_cmd_pool = unsafe {
-        let pool_ci = ash::vk::CommandPoolCreateInfo::default()
-            .queue_family_index(queue_family_index)
-            .flags(ash::vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-        device.create_command_pool(&pool_ci, None)
-            .expect("Failed to create blit command pool")
-    };
-    let blit_cmd_buf = unsafe {
-        let ai = ash::vk::CommandBufferAllocateInfo::default()
-            .command_pool(blit_cmd_pool)
-            .level(ash::vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
-        device.allocate_command_buffers(&ai)
-            .expect("Failed to allocate blit command buffer")[0]
-    };
-
-    // ── 8. Skia DirectContext via ash raw handles ────────────────────────────
     let mut gr_context = {
         let get_proc = SkiaGetProc::new(&entry, &instance);
         let get_proc_fn = |of: GetProcOf| get_proc.resolve(of);
@@ -828,13 +797,6 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
             })
     };
 
-    // TODO replace
-    let swapchain_images = unsafe {
-        swapchain_fn.get_swapchain_images(swapchain.handle())
-            .expect("Failed to get swapchain images")
-    };
-
-    // ── 9. Skia surfaces (one per swapchain image) ───────────────────────────
     let skia_surfaces = vk_build_surfaces(
         &mut gr_context,
         &swapchain_images,
@@ -847,20 +809,16 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
     let vk = VkState {
         entry,
         ash_instance: instance,
-        ash_physical_device: ash_physical_device,
+        ash_physical_device,
         ash_device: device,
         ash_queue: queue,
         queue_family_index,
         instance: vk_instance,
         device: vk_device,
-        physical_device: physical_device,
+        physical_device,
         queue: vk_queue_owner,
         allocator: vk_allocator,
         surface: vk_surface_owner,
-        surface_khr,
-        surface_fn,
-        swapchain_fn,
-        swapchain: swapchain.handle(),
         vk_swapchain: swapchain,
         swapchain_images,
         swapchain_format,
