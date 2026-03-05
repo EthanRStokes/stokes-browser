@@ -8,6 +8,11 @@ use std::process::{Child, Command};
 use std::thread;
 use std::sync::Arc;
 use taffy::Point;
+use vulkano::device::{Device, Queue};
+use vulkano::device::physical::PhysicalDevice;
+use vulkano::format::Format;
+use vulkano::instance::Instance;
+use vulkano::memory::allocator::MemoryAllocator;
 
 /// Represents a managed tab process
 pub struct ManagedTab {
@@ -47,6 +52,11 @@ pub struct TabManager {
     ash_device: Option<ash::Device>,
     /// Queue used for semaphore-wait submits and image layout transitions.
     ash_queue: Option<ash::vk::Queue>,
+    vk_instance: Option<Arc<Instance>>,
+    vk_physical_device: Option<Arc<PhysicalDevice>>,
+    vk_device: Option<Arc<Device>>,
+    vk_allocator: Option<Arc<dyn MemoryAllocator>>,
+    vk_queue: Option<Arc<Queue>>,
     ash_queue_family_index: u32,
 }
 
@@ -61,6 +71,11 @@ impl TabManager {
             ash_physical_device: None,
             ash_device: None,
             ash_queue: None,
+            vk_instance: None,
+            vk_physical_device: None,
+            vk_device: None,
+            vk_allocator: None,
+            vk_queue: None,
             ash_queue_family_index: 0,
         })
     }
@@ -74,6 +89,11 @@ impl TabManager {
         ash_physical_device: ash::vk::PhysicalDevice,
         ash_device: ash::Device,
         ash_queue: ash::vk::Queue,
+        vk_instance: Arc<Instance>,
+        vk_physical_device: Arc<PhysicalDevice>,
+        vk_device: Arc<Device>,
+        vk_allocator: Arc<dyn MemoryAllocator>,
+        vk_queue: Arc<Queue>,
         ash_queue_family_index: u32,
     ) {
         self.vk_device_info = Some(device_info);
@@ -81,6 +101,11 @@ impl TabManager {
         self.ash_physical_device = Some(ash_physical_device);
         self.ash_device = Some(ash_device);
         self.ash_queue = Some(ash_queue);
+        self.vk_instance = Some(vk_instance);
+        self.vk_physical_device = Some(vk_physical_device);
+        self.vk_device = Some(vk_device);
+        self.vk_allocator = Some(vk_allocator);
+        self.vk_queue = Some(vk_queue);
         self.ash_queue_family_index = ash_queue_family_index;
     }
 
@@ -192,11 +217,12 @@ impl TabManager {
                     tab.is_loading = is_loading;
                 }
                 TabToParentMessage::FrameRendered { mem_handle, width, height, vk_format, alloc_size, sem_handle } => {
-                    let format = ash::vk::Format::from_raw(vk_format);
-                    if let (Some(inst), Some(phys), Some(dev)) = (
-                        self.ash_instance.as_ref(),
-                        self.ash_physical_device.as_ref(),
-                        self.ash_device.as_ref(),
+                    let format = Format::try_from(ash::vk::Format::from_raw(vk_format)).expect("Invalid VkFormat from tab process");
+                    if let (Some(inst), Some(phys), Some(dev), Some(allocator)) = (
+                        self.vk_instance.as_ref(),
+                        self.vk_physical_device.as_ref(),
+                        self.vk_device.as_ref(),
+                        self.vk_allocator.as_ref(),
                     ) {
                         // On Linux, the mem_handle is a raw fd number from the
                         // child process — it's not valid in our fd table.  Use
@@ -273,9 +299,10 @@ impl TabManager {
 
                         match unsafe {
                             import_vk_image_raw(
-                                inst,
-                                *phys,
-                                dev,
+                                inst.clone(),
+                                phys.clone(),
+                                dev.clone(),
+                                allocator.clone(),
                                 local_handle,
                                 width,
                                 height,

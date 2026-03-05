@@ -18,6 +18,7 @@ use ash::vk::Handle;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use vulkano::device::physical::PhysicalDevice;
 use vulkano::format::Format;
+use vulkano::memory::allocator::{MemoryAllocator, StandardMemoryAllocator};
 use vulkano::VulkanObject;
 // ── Grouped Vulkan state for the tab process ────────────────────────────────
 
@@ -32,13 +33,14 @@ struct TabVulkanState {
     queue_family_index: u32,
     gr_context: DirectContext,
     vk_instance_owner: Arc<vulkano::instance::Instance>,
-    vk_device_owner: Arc<vulkano::device::Device>,
+    vk_device: Arc<vulkano::device::Device>,
     vk_queue_owner: Arc<vulkano::device::Queue>,
+    vk_memory_allocator: Arc<dyn MemoryAllocator>,
     vk_physical_device: Arc<PhysicalDevice>,
     /// Parent PID, cached at init to avoid re-parsing the env var each frame.
     parent_pid: u32,
     /// Preferred image format (from the parent's swapchain).
-    vk_format: ash::vk::Format,
+    vk_format: Format,
 }
 
 impl Drop for TabVulkanState {
@@ -112,8 +114,8 @@ impl TabProcess {
         let parent_pid = vk_device_info.as_ref().map(|i| i.parent_pid).unwrap_or(0);
         let vk_format = vk_device_info
             .as_ref()
-            .map(|i| ash::vk::Format::from_raw(i.image_format))
-            .unwrap_or(ash::vk::Format::R8G8B8A8_UNORM);
+            .map(|i| Format::try_from(ash::vk::Format::from_raw(i.image_format)).unwrap())
+            .unwrap_or(Format::R8G8B8A8_UNORM);
 
         // Initialise our private Vulkan device.
         let vk_state = match unsafe { Self::init_vulkan(vk_device_info.as_ref(), parent_pid, vk_format) } {
@@ -142,7 +144,7 @@ impl TabProcess {
     unsafe fn init_vulkan(
         parent_info: Option<&VulkanDeviceInfo>,
         parent_pid: u32,
-        vk_format: ash::vk::Format,
+        vk_format: Format,
     ) -> Result<TabVulkanState, String> {
         let bootstrap = vk_context::create_tab_context(parent_info)?;
 
@@ -155,8 +157,10 @@ impl TabProcess {
         let queue = bootstrap.queue;
         let negotiated_api_version = bootstrap.negotiated_api_version;
         let vk_instance_owner = bootstrap.instance_owner;
-        let vk_device_owner = bootstrap.device_owner;
+        let vk_device = bootstrap.device_owner;
         let vk_queue_owner = bootstrap.queue_owner;
+
+        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(vk_device.clone()));
 
         // Build Skia DirectContext using the shared proc loader.
         let get_proc = SkiaGetProc::new(&entry, &instance);
@@ -182,8 +186,9 @@ impl TabProcess {
             queue_family_index,
             gr_context,
             vk_instance_owner,
-            vk_device_owner,
+            vk_device,
             vk_queue_owner,
+            vk_memory_allocator: memory_allocator,
             vk_physical_device: physical_device,
             parent_pid,
             vk_format,
@@ -234,7 +239,8 @@ impl TabProcess {
             TabVkImage::new(
                 &vk.instance,
                 vk.physical_device,
-                &vk.device,
+                vk.vk_device.clone(),
+                vk.vk_memory_allocator.clone(),
                 &mut vk.gr_context,
                 width,
                 height,

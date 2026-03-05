@@ -1,3 +1,4 @@
+use ash::vk::{Handle, HANDLE};
 /// Shared-Vulkan-image helpers for zero-copy cross-process rendering.
 ///
 /// # Platform support
@@ -22,21 +23,23 @@
 use skia_safe::gpu::vk::AllocFlag;
 use skia_safe::gpu::{self, DirectContext};
 use std::ffi::c_char;
-use ash::vk::Handle;
-use vulkano::format::Format;
+use std::fs::File;
+use std::os::fd::IntoRawFd;
 use std::sync::Arc;
-use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer};
-use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
-use vulkano::device::Queue;
-use vulkano::sync::{self, GpuFuture};
-use vulkano::image::ImageLayout as VulkanoImageLayout;
-use vulkano::sync::AccessFlags as VulkanoAccessFlags;
-use vulkano::sync::PipelineStages as VulkanoPipelineStages;
-use vulkano::sync::DependencyInfo;
-use vulkano::sync::ImageMemoryBarrier;
-use vulkano::image::ImageAspects;
-use vulkano::image::ImageSubresourceRange;
+use vulkano::device::{Device, Queue};
+use vulkano::format::Format;
+use vulkano::image::{Image, ImageCreateInfo, ImageLayout, ImageTiling, ImageType, ImageUsage, SampleCount};
 use vulkano::instance::Instance;
+use vulkano::memory::allocator::{AllocationCreateInfo, AllocationType, MemoryAllocator};
+use vulkano::memory::{DedicatedAllocation, DeviceMemory, ExternalMemoryHandleType, MemoryAllocateInfo, MemoryPropertyFlags, MemoryRequirements, ResourceMemory};
+use vulkano::sync::semaphore::{ExternalSemaphoreHandleType, ExternalSemaphoreHandleTypes, Semaphore, SemaphoreCreateInfo};
+use vulkano::sync::Sharing;
+use vulkano::{Validated, VulkanError, VulkanObject};
+use vulkano::command_buffer::{CommandBuffer, CommandBufferLevel};
+use vulkano::command_buffer::pool::{CommandBufferAllocateInfo, CommandPool, CommandPoolAlloc, CommandPoolCreateFlags, CommandPoolCreateInfo};
+use vulkano::device::physical::PhysicalDevice;
+use vulkano::image::sys::RawImage;
+use vulkano::sync::fence::{Fence, FenceCreateInfo};
 // ── VkFormat ↔ Skia mappings ────────────────────────────────────────────────
 
 /// Map a `vk::Format` to the corresponding Skia format + color type.
@@ -64,25 +67,25 @@ pub fn vk_format_to_skia(fmt: Format) -> Option<(gpu::vk::Format, skia_safe::Col
 // ── Platform-specific external memory handle type ─────────────────────────
 
 #[cfg(windows)]
-fn external_handle_type() -> ash::vk::ExternalMemoryHandleTypeFlags {
-    ash::vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32
+fn external_handle_type() -> ExternalMemoryHandleType {
+    ExternalMemoryHandleType::OpaqueWin32
 }
 
 #[cfg(not(windows))]
-fn external_handle_type() -> ash::vk::ExternalMemoryHandleTypeFlags {
-    ash::vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT
+fn external_handle_type() -> ExternalMemoryHandleType {
+    ExternalMemoryHandleType::DmaBuf
 }
 
 // ── Platform-specific external semaphore handle type ──────────────────────
 
 #[cfg(windows)]
-fn external_semaphore_handle_type() -> ash::vk::ExternalSemaphoreHandleTypeFlags {
-    ash::vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32
+fn external_semaphore_handle_type() -> ExternalSemaphoreHandleType {
+    ExternalSemaphoreHandleType::OpaqueWin32
 }
 
 #[cfg(not(windows))]
-fn external_semaphore_handle_type() -> ash::vk::ExternalSemaphoreHandleTypeFlags {
-    ash::vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD
+fn external_semaphore_handle_type() -> ExternalSemaphoreHandleType {
+    ExternalSemaphoreHandleType::SyncFd
 }
 
 // ── Shared Skia proc-loader ─────────────────────────────────────────────────
@@ -153,32 +156,33 @@ pub const COLOR_SUBRESOURCE_RANGE: ash::vk::ImageSubresourceRange = ash::vk::Ima
 /// Memory is allocated with the appropriate exportable handle type for the
 /// current platform so the parent can import it.
 pub struct TabVkImage {
-    device: ash::Device,
-    pub image: ash::vk::Image,
-    pub memory: ash::vk::DeviceMemory,
+    device: Arc<Device>,
+    pub image: Image,
+    pub memory: Arc<DeviceMemory>,
     pub width: u32,
     pub height: u32,
-    pub format: ash::vk::Format,
+    pub format: Format,
     /// Exact allocation size (bytes) — must be sent to the parent for import.
     pub alloc_size: u64,
     skia_surface: Option<skia_safe::Surface>,
     /// Exportable semaphore signaled after each render to synchronize the parent.
     pub render_semaphore: Option<TabVkSemaphore>,
     /// Command pool for the layout-transition submit done after each render.
-    cmd_pool: ash::vk::CommandPool,
+    cmd_pool: Arc<CommandPool>,
     /// Pre-recorded command buffer: COLOR_ATTACHMENT_OPTIMAL → GENERAL barrier.
-    cmd_buf: ash::vk::CommandBuffer,
-    pub queue: ash::vk::Queue,
+    cmd_buf: Arc<CommandPoolAlloc>,
+    pub queue: Arc<Queue>,
     queue_family_index: u32,
     /// Fence used to track the last `signal_and_export_semaphore` submission.
-    submit_fence: ash::vk::Fence,
+    submit_fence: Arc<Fence>,
     /// Whether `submit_fence` is currently in the submitted (unsignaled) state.
     submit_fence_pending: bool,
 
-    #[cfg(windows)]
-    ext_mem_win32: ash::khr::external_memory_win32::Device,
-    #[cfg(not(windows))]
-    ext_mem_fd: ash::khr::external_memory_fd::Device,
+    // todo check
+    //#[cfg(windows)]
+    //ext_mem_win32: ash::khr::external_memory_win32::Device,
+    //#[cfg(not(windows))]
+    //ext_mem_fd: ash::khr::external_memory_fd::Device,
 }
 
 impl TabVkImage {
@@ -186,94 +190,98 @@ impl TabVkImage {
     ///
     /// `gr_context` must have been created against the same Vulkan device.
     pub unsafe fn new(
-        instance: &ash::Instance,
-        physical_device: ash::vk::PhysicalDevice,
-        device: &ash::Device,
+        instance: &Arc<Instance>,
+        physical_device: Arc<PhysicalDevice>,
+        device: Arc<Device>,
+        memory_allocator: Arc<dyn MemoryAllocator>,
         gr_context: &mut DirectContext,
         width: u32,
         height: u32,
-        format: ash::vk::Format,
+        format: Format,
         queue_family_index: u32,
-        queue: ash::vk::Queue,
+        queue: Arc<Queue>,
     ) -> Result<Self, String> {
-         let (skia_format, color_type) = ash_format_to_skia(format)
+         let (skia_format, color_type) = vk_format_to_skia(format)
              .ok_or_else(|| format!("Unsupported format {:?}", format))?;
 
          let handle_type = external_handle_type();
 
+        let create_info = ImageCreateInfo {
+            flags: Default::default(),
+            image_type: ImageType::Dim2d,
+            format,
+            view_formats: vec![],
+            extent: [width, height, 1],
+            array_layers: 1,
+            mip_levels: 1,
+            samples: SampleCount::Sample1,
+            tiling: ImageTiling::Optimal,
+            usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::SAMPLED | ImageUsage::TRANSFER_SRC | ImageUsage::TRANSFER_DST,
+            stencil_usage: None,
+            sharing: Sharing::Exclusive,
+            initial_layout: ImageLayout::Undefined,
+            drm_format_modifiers: vec![],
+            drm_format_modifier_plane_layouts: vec![],
+            external_memory_handle_types: Default::default(),
+            ..Default::default()
+        };
+
          // -- Create image with external memory info chained in pNext ----------
-         let mut ext_image_ci = ash::vk::ExternalMemoryImageCreateInfo::default()
-             .handle_types(handle_type);
-
-         let image_ci = ash::vk::ImageCreateInfo::default()
-             .push_next(&mut ext_image_ci)
-             .image_type(ash::vk::ImageType::TYPE_2D)
-             .format(format)
-             .extent(ash::vk::Extent3D { width, height, depth: 1 })
-             .mip_levels(1)
-             .array_layers(1)
-             .samples(ash::vk::SampleCountFlags::TYPE_1)
-             .tiling(ash::vk::ImageTiling::OPTIMAL)
-             .usage(
-                 ash::vk::ImageUsageFlags::COLOR_ATTACHMENT
-                     | ash::vk::ImageUsageFlags::SAMPLED
-                     | ash::vk::ImageUsageFlags::TRANSFER_SRC
-                     | ash::vk::ImageUsageFlags::TRANSFER_DST,
-             )
-             .sharing_mode(ash::vk::SharingMode::EXCLUSIVE)
-             .initial_layout(ash::vk::ImageLayout::UNDEFINED);
-
-         let image = device
-             .create_image(&image_ci, None)
-             .map_err(|e| format!("vkCreateImage failed: {:?}", e))?;
+        let image = Image::new(
+            memory_allocator.clone(),
+            create_info.clone(),
+            // todo fix
+            AllocationCreateInfo {
+                ..Default::default()
+            }
+        ).expect("Failed to create image with external memory");
 
          // -- Allocate memory with export info ---------------------------------
-         let mem_reqs = device.get_image_memory_requirements(image);
+         let mem_reqs = image.memory_requirements().last().unwrap();
 
          let mem_type_index = find_memory_type(
-             instance,
-             physical_device,
+             physical_device.clone(),
              mem_reqs.memory_type_bits,
-             ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
+             MemoryPropertyFlags::DEVICE_LOCAL,
          )
          .ok_or_else(|| {
-             device.destroy_image(image, None);
+             (device.fns().v1_0.destroy_image)(device.handle(), image.handle(), std::ptr::null());
              "No suitable memory type".to_string()
          })?;
 
-         let mut export_alloc_info = ash::vk::ExportMemoryAllocateInfo::default()
-             .handle_types(handle_type);
+        let raw_image = RawImage::from_handle_borrowed(device.clone(), image.handle(), create_info)
+            .expect("Failed to create raw image");
 
-         let mut dedicated_alloc_info = ash::vk::MemoryDedicatedAllocateInfo::default()
-             .image(image);
+        let alloc_info = MemoryAllocateInfo {
+            allocation_size: mem_reqs.layout.size(),
+            memory_type_index: mem_type_index,
+            dedicated_allocation: Some(
+                DedicatedAllocation::Image(&raw_image)
+            ),
+            export_handle_types: handle_type.into(),
+            ..Default::default()
+        };
 
-         let alloc_info = ash::vk::MemoryAllocateInfo::default()
-             .push_next(&mut export_alloc_info)
-             .push_next(&mut dedicated_alloc_info)
-             .allocation_size(mem_reqs.size)
-             .memory_type_index(mem_type_index);
+        let memory = Arc::new(DeviceMemory::allocate(
+            device.clone(),
+            alloc_info
+        ).expect("Failed to allocate memory"));
+        let resource_memory = ResourceMemory::new_dedicated_unchecked(memory.clone());
 
-         let memory = device.allocate_memory(&alloc_info, None).map_err(|e| {
-             device.destroy_image(image, None);
-             format!("vkAllocateMemory failed: {:?}", e)
-         })?;
-
-         device.bind_image_memory(image, memory, 0).map_err(|e| {
-             device.free_memory(memory, None);
-             device.destroy_image(image, None);
-             format!("vkBindImageMemory failed: {:?}", e)
-         })?;
+        let image = raw_image.bind_memory([resource_memory])
+            .ok()
+            .expect("Failed to bind image");
 
          // -- Build Skia surface -----------------------------------------------
          let alloc = gpu::vk::Alloc::from_device_memory(
-             memory.as_raw() as _,
+             memory.handle().as_raw() as _,
              0,
-             mem_reqs.size,
+             mem_reqs.layout.size(),
              AllocFlag::empty(),
          );
 
          let sk_image_info = gpu::vk::ImageInfo::new(
-             image.as_raw() as _,
+             image.handle().as_raw() as _,
              alloc,
              gpu::vk::ImageTiling::OPTIMAL,
              gpu::vk::ImageLayout::UNDEFINED,
@@ -297,81 +305,55 @@ impl TabVkImage {
          )
          .ok_or_else(|| {
              unsafe {
-                 device.free_memory(memory, None);
-                 device.destroy_image(image, None);
+                 //device.free_memory(memory, None);
+                 //device.destroy_image(image, None);
              }
              "Failed to wrap Vulkan image as Skia surface".to_string()
          })?;
 
-        let pool_ci = ash::vk::CommandPoolCreateInfo::default()
-            .queue_family_index(queue_family_index)
-            .flags(ash::vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-        let cmd_pool = device.create_command_pool(&pool_ci, None).map_err(|e| {
-            device.free_memory(memory, None);
-            device.destroy_image(image, None);
-            format!("vkCreateCommandPool (tab) failed: {:?}", e)
-        })?;
+        let pool_ci = CommandPoolCreateInfo {
+            flags: CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+            queue_family_index,
+            ..Default::default()
+        };
+        let cmd_pool = CommandPool::new(device.clone(), pool_ci).expect("Failed to create command pool");
 
         let cmd_buf = {
-            let ai = ash::vk::CommandBufferAllocateInfo::default()
-                .command_pool(cmd_pool)
-                .level(ash::vk::CommandBufferLevel::PRIMARY)
-                .command_buffer_count(1);
-            let bufs = device.allocate_command_buffers(&ai).map_err(|e| {
-                device.destroy_command_pool(cmd_pool, None);
-                device.free_memory(memory, None);
-                device.destroy_image(image, None);
-                format!("vkAllocateCommandBuffers (tab) failed: {:?}", e)
-            })?;
-            bufs[0]
+            let ai = CommandBufferAllocateInfo {
+                level: CommandBufferLevel::Primary,
+                command_buffer_count: 1,
+                ..Default::default()
+            };
+            let bufs = cmd_pool.allocate_command_buffers(ai).expect("Failed to allocate command buffers");
+            bufs.into_iter().next().unwrap() // works bc the count is 1
         };
 
          // -- Exportable render-complete semaphore -----------------------------
-         let render_semaphore = TabVkSemaphore::new(instance, device)
-             .map_err(|e| {
-                 device.free_memory(memory, None);
-                 device.destroy_image(image, None);
-                 e
-             })
+         let render_semaphore = TabVkSemaphore::new(instance.clone(), device.clone())
              .ok();
 
          // -- Fence for tracking signal_and_export_semaphore submissions ------
-         let submit_fence = device
-             .create_fence(&ash::vk::FenceCreateInfo::default(), None)
-             .map_err(|e| {
-                 device.destroy_command_pool(cmd_pool, None);
-                 device.free_memory(memory, None);
-                 device.destroy_image(image, None);
-                 format!("vkCreateFence (tab submit) failed: {:?}", e)
-             })?;
+        let submit_fence = Arc::new(Fence::new(device.clone(), FenceCreateInfo::default())
+            .expect("Failed to create Fence"));
 
-         #[cfg(windows)]
-         let ext_mem_win32 = ash::khr::external_memory_win32::Device::new(instance, device);
-         #[cfg(not(windows))]
-         let ext_mem_fd = ash::khr::external_memory_fd::Device::new(instance, device);
-
-         Ok(Self {
-             device: device.clone(),
-             image,
-             memory,
-             width,
-             height,
-             format,
-             alloc_size: mem_reqs.size,
-             skia_surface: Some(skia_surface),
-             render_semaphore,
-             cmd_pool,
-             cmd_buf,
-             queue,
-             queue_family_index,
-             submit_fence,
-             submit_fence_pending: false,
-             #[cfg(windows)]
-             ext_mem_win32,
-             #[cfg(not(windows))]
-             ext_mem_fd,
-         })
-     }
+        Ok(Self {
+            device: device.clone(),
+            image,
+            memory,
+            width,
+            height,
+            format,
+            alloc_size: mem_reqs.layout.size(),
+            skia_surface: Some(skia_surface),
+            render_semaphore,
+            cmd_pool: Arc::new(cmd_pool),
+            cmd_buf: Arc::new(cmd_buf),
+            queue,
+            queue_family_index,
+            submit_fence,
+            submit_fence_pending: false,
+        })
+    }
 
     /// Get a mutable reference to the Skia surface for rendering.
     pub fn surface_mut(&mut self) -> &mut skia_safe::Surface {
@@ -388,7 +370,7 @@ impl TabVkImage {
         #[cfg(windows)]
         {
             use windows_sys::Win32::Foundation::{
-                CloseHandle, DuplicateHandle, HANDLE, DUPLICATE_SAME_ACCESS, INVALID_HANDLE_VALUE,
+                CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE, INVALID_HANDLE_VALUE,
             };
             use windows_sys::Win32::System::Threading::{
                 GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE,
@@ -432,15 +414,9 @@ impl TabVkImage {
 
         #[cfg(not(windows))]
         {
-            let _ = parent_pid;
-            let get_fd_info = ash::vk::MemoryGetFdInfoKHR::default()
-                .memory(self.memory)
-                .handle_type(ash::vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
-
-            self.ext_mem_fd
-                .get_memory_fd(&get_fd_info)
-                .map(|fd| fd as u64)
-                .map_err(|e| format!("vkGetMemoryFdKHR failed: {:?}", e))
+            self.memory.export_fd(ExternalMemoryHandleType::DmaBuf)
+                .map(|file| file.into_raw_fd() as u64)
+                .map_err(|e| format!("Failed to export memory fd: {:?}", e))
         }
     }
 
@@ -526,7 +502,6 @@ impl Drop for TabVkImage {
              self.device.destroy_fence(self.submit_fence, None);
              self.device.destroy_command_pool(self.cmd_pool, None);
              self.device.free_memory(self.memory, None);
-             self.device.destroy_image(self.image, None);
          }
      }
  }
@@ -536,9 +511,9 @@ impl Drop for TabVkImage {
 /// Owns a VkImage + VkDeviceMemory imported from a tab process.
 /// Cleaned up when dropped.
 pub struct ImportedVkImage {
-    device: ash::Device,
-    image: ash::vk::Image,
-    memory: ash::vk::DeviceMemory,
+    device: Arc<Device>,
+    image: Arc<Image>,
+    memory: Arc<DeviceMemory>,
 }
 
 impl ImportedVkImage {
@@ -552,7 +527,6 @@ impl ImportedVkImage {
 impl Drop for ImportedVkImage {
     fn drop(&mut self) {
         unsafe {
-            self.device.free_memory(self.memory, None);
             self.device.destroy_image(self.image, None);
         }
     }
@@ -567,56 +541,48 @@ impl Drop for ImportedVkImage {
 /// The caller must not use `handle` after this call; ownership is transferred to
 /// the Vulkan driver.
 pub unsafe fn import_vk_image_raw(
-    instance: &ash::Instance,
-    physical_device: ash::vk::PhysicalDevice,
-    device: &ash::Device,
-    handle: u64,
+    instance: Arc<Instance>,
+    physical_device: Arc<PhysicalDevice>,
+    device: Arc<Device>,
+    allocator: Arc<dyn MemoryAllocator>,
+    handle: File,
     width: u32,
     height: u32,
-    format: ash::vk::Format,
+    format: Format,
     alloc_size: u64,
 ) -> Result<ImportedVkImage, String> {
     let handle_type = external_handle_type();
 
-    let mut ext_image_ci = ash::vk::ExternalMemoryImageCreateInfo::default()
-        .handle_types(handle_type);
+    let image_ci = ImageCreateInfo {
+        image_type: ImageType::Dim2d,
+        format,
+        extent: [width, height, 1],
+        array_layers: 1,
+        mip_levels: 1,
+        samples: SampleCount::Sample1,
+        tiling: ImageTiling::Optimal,
+        usage: ImageUsage::TRANSFER_SRC | ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
+        sharing: Sharing::Exclusive,
+        initial_layout: ImageLayout::Undefined,
+        external_memory_handle_types: handle_type.into(),
+        ..Default::default()
+    };
 
-    let image_ci = ash::vk::ImageCreateInfo::default()
-        .push_next(&mut ext_image_ci)
-        .image_type(ash::vk::ImageType::TYPE_2D)
-        .format(format)
-        .extent(ash::vk::Extent3D { width, height, depth: 1 })
-        .mip_levels(1)
-        .array_layers(1)
-        .samples(ash::vk::SampleCountFlags::TYPE_1)
-        .tiling(ash::vk::ImageTiling::OPTIMAL)
-        .usage(
-            ash::vk::ImageUsageFlags::TRANSFER_SRC
-                | ash::vk::ImageUsageFlags::TRANSFER_DST
-                | ash::vk::ImageUsageFlags::SAMPLED,
-        )
-        .sharing_mode(ash::vk::SharingMode::EXCLUSIVE)
-        .initial_layout(ash::vk::ImageLayout::UNDEFINED);
+    let image = Image::new(
+        allocator.clone(),
+        image_ci.clone(),
+        Default::default(),
+    ).map_err(|e| format!("Failed to create image with external memory: {:?}", e))?;
 
-    let image = device
-        .create_image(&image_ci, None)
-        .map_err(|e| format!("vkCreateImage (raw import) failed: {:?}", e))?;
-
-    let mem_reqs = device.get_image_memory_requirements(image);
+    let mem_reqs = image.memory_requirements();
 
     let imported_memory =
-        import_memory(instance, physical_device, device, image, handle, alloc_size, &mem_reqs)?;
-
-    device.bind_image_memory(image, imported_memory, 0).map_err(|e| {
-        device.free_memory(imported_memory, None);
-        device.destroy_image(image, None);
-        format!("vkBindImageMemory (raw import) failed: {:?}", e)
-    })?;
+        import_memory(instance, physical_device, device.clone(), image.clone(), handle, alloc_size, mem_reqs)?;
 
     Ok(ImportedVkImage {
         device: device.clone(),
         image,
-        memory: imported_memory,
+        memory: Arc::new(imported_memory),
     })
 }
 
@@ -679,27 +645,28 @@ unsafe fn import_memory(
 
 #[cfg(not(windows))]
 unsafe fn import_memory(
-    instance: &ash::Instance,
-    physical_device: ash::vk::PhysicalDevice,
-    device: &ash::Device,
-    image: ash::vk::Image,
-    handle: u64,
+    instance: Arc<Instance>,
+    physical_device: Arc<PhysicalDevice>,
+    device: Arc<Device>,
+    image: Arc<Image>,
+    handle: File,
     alloc_size: u64,
-    mem_reqs: &ash::vk::MemoryRequirements,
-) -> Result<ash::vk::DeviceMemory, String> {
-    let fd = handle as std::os::unix::io::RawFd;
+    mem_reqs: &[MemoryRequirements],
+) -> Result<DeviceMemory, String> {
+    let fd = handle;
 
-    let ext_fd = ash::khr::external_memory_fd::Device::new(instance, device);
+    // todo check
+    //let ext_fd = ash::khr::external_memory_fd::Device::new(instance, device);
 
     let mut fd_props = ash::vk::MemoryFdPropertiesKHR::default();
-    ext_fd
-        .get_memory_fd_properties(
-            ash::vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT,
+    device
+        .memory_fd_properties(
+            ExternalMemoryHandleType::DmaBuf,
             fd,
-            &mut fd_props,
         )
         .map_err(|e| {
-            unsafe { device.destroy_image(image, None) };
+            unsafe { (device.fns().v1_0.destroy_image)(device.handle(), image.handle(), std::ptr::null()) };
+            drop(image);
             format!("vkGetMemoryFdPropertiesKHR failed: {:?}", e)
         })?;
 
@@ -748,16 +715,14 @@ unsafe fn import_memory(
 // ── Helper: find_memory_type ────────────────────────────────────────────────
 
 pub fn find_memory_type(
-    instance: &ash::Instance,
-    physical_device: ash::vk::PhysicalDevice,
+    physical_device: Arc<PhysicalDevice>,
     type_filter: u32,
-    properties: ash::vk::MemoryPropertyFlags,
+    properties: MemoryPropertyFlags,
 ) -> Option<u32> {
-    let mem_props = unsafe { instance.get_physical_device_memory_properties(physical_device) };
-    for i in 0..mem_props.memory_type_count {
-        let ty = mem_props.memory_types[i as usize];
+    let mem_types = physical_device.memory_properties().memory_types;
+    for (i, ty) in mem_types.iter().enumerate() {
         if (type_filter & (1 << i)) != 0 && ty.property_flags.contains(properties) {
-            return Some(i);
+            return Some(i as u32);
         }
     }
     None
@@ -767,41 +732,43 @@ pub fn find_memory_type(
 
 /// An exportable binary `VkSemaphore` owned by the tab process.
 pub struct TabVkSemaphore {
-    device: ash::Device,
-    pub semaphore: ash::vk::Semaphore,
-    #[cfg(windows)]
-    ext_sem_win32: ash::khr::external_semaphore_win32::Device,
-    #[cfg(not(windows))]
-    ext_sem_fd: ash::khr::external_semaphore_fd::Device,
+    device: Arc<Device>,
+    pub semaphore: Arc<Semaphore>,
+    // todo check
+    //#[cfg(windows)]
+    //ext_sem_win32: Arc<Device>,
+    //#[cfg(not(windows))]
+    //ext_sem_fd: Arc<Device>,
 }
 
 impl TabVkSemaphore {
     /// Create a new exportable binary semaphore.
-    pub unsafe fn new(instance: &ash::Instance, device: &ash::Device) -> Result<Self, String> {
+    pub unsafe fn new(instance: Arc<Instance>, device: Arc<Device>) -> Result<Self, String> {
         let handle_type = external_semaphore_handle_type();
 
-        let mut export_info = ash::vk::ExportSemaphoreCreateInfo::default()
-            .handle_types(handle_type);
+        let create_info = SemaphoreCreateInfo {
+            export_handle_types: ExternalSemaphoreHandleTypes::from(handle_type),
+            ..Default::default()
+        };
 
-        let sem_ci = ash::vk::SemaphoreCreateInfo::default()
-            .push_next(&mut export_info);
+        let semaphore = Semaphore::new(
+            device.clone(),
+            create_info,
+        ).map_err(|e| format!("Failed to create exportable semaphore: {:?}", e))?;
 
-        let semaphore = device
-            .create_semaphore(&sem_ci, None)
-            .map_err(|e| format!("vkCreateSemaphore (exportable) failed: {:?}", e))?;
-
-        #[cfg(windows)]
-        let ext_sem_win32 = ash::khr::external_semaphore_win32::Device::new(instance, device);
-        #[cfg(not(windows))]
-        let ext_sem_fd = ash::khr::external_semaphore_fd::Device::new(instance, device);
+        // todo check
+        //#[cfg(windows)]
+        //let ext_sem_win32 = ash::khr::external_semaphore_win32::Device::new(instance, device);
+        //#[cfg(not(windows))]
+        //let ext_sem_fd = Device::new(instance, device);
 
         Ok(Self {
             device: device.clone(),
-            semaphore,
-            #[cfg(windows)]
-            ext_sem_win32,
-            #[cfg(not(windows))]
-            ext_sem_fd,
+            semaphore: Arc::new(semaphore),
+            //#[cfg(windows)]
+            //ext_sem_win32,
+            //#[cfg(not(windows))]
+            //ext_sem_fd,
         })
     }
 
@@ -816,65 +783,22 @@ impl TabVkSemaphore {
 
         #[cfg(not(windows))]
         {
-            let _ = parent_pid;
-            let get_info = ash::vk::SemaphoreGetFdInfoKHR::default()
-                .semaphore(self.semaphore)
-                .handle_type(handle_type);
-            match self.ext_sem_fd.get_semaphore_fd(&get_info) {
-                Ok(fd) => fd as i64,
-                Err(e) => {
-                    eprintln!("[TabVkSemaphore] vkGetSemaphoreFdKHR failed: {:?}", e);
-                    -1
-                }
+            return match self.semaphore.export_fd(handle_type) {
+                Ok(file) => file.into_raw_fd() as i64,
+                Err(_) => -1
             }
         }
 
         #[cfg(windows)]
         {
-            use windows_sys::Win32::Foundation::{
-                CloseHandle, DuplicateHandle, HANDLE, DUPLICATE_SAME_ACCESS, INVALID_HANDLE_VALUE,
-            };
-            use windows_sys::Win32::System::Threading::{
-                GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE,
-            };
-
-            let get_info = ash::vk::SemaphoreGetWin32HandleInfoKHR::default()
-                .semaphore(self.semaphore)
-                .handle_type(handle_type);
-            let local_handle = match self.ext_sem_win32.get_semaphore_win32_handle(&get_info) {
-                Ok(h) => h,
-                Err(e) => {
-                    eprintln!("[TabVkSemaphore] vkGetSemaphoreWin32HandleKHR failed: {:?}", e);
-                    return 0;
+            return match self.semaphore.export_win32_handle(handle_type) {
+                Ok(handle) => handle as i64,
+                Err(_) => {
+                    eprintln!("Failed to export Win32 semaphore handle");
+                    0
                 }
-            };
-
-            let parent_proc: HANDLE = OpenProcess(PROCESS_DUP_HANDLE, 0, parent_pid);
-            if parent_proc == 0 as HANDLE || parent_proc == INVALID_HANDLE_VALUE {
-                CloseHandle(local_handle as HANDLE);
-                return 0;
             }
-
-            let mut dup: HANDLE = 0 as HANDLE;
-            let ok = DuplicateHandle(
-                GetCurrentProcess(),
-                local_handle as HANDLE,
-                parent_proc,
-                &mut dup,
-                0,
-                0,
-                DUPLICATE_SAME_ACCESS,
-            );
-            CloseHandle(parent_proc);
-            CloseHandle(local_handle as HANDLE);
-            if ok == 0 { 0 } else { dup as i64 }
         }
-    }
-}
-
-impl Drop for TabVkSemaphore {
-    fn drop(&mut self) {
-        unsafe { self.device.destroy_semaphore(self.semaphore, None); }
     }
 }
 

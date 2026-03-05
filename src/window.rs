@@ -11,6 +11,7 @@ use vulkano::device::physical::PhysicalDevice;
 use vulkano::format::Format;
 use vulkano::image::ImageUsage;
 use vulkano::instance::Instance;
+use vulkano::memory::allocator::MemoryAllocator;
 use vulkano::swapchain::{ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, SurfaceTransform, Swapchain, SwapchainCreateInfo};
 use vulkano::sync::Sharing;
 use vulkano::VulkanObject;
@@ -76,10 +77,11 @@ pub(crate) struct VkState {
     pub(crate) queue_family_index: u32,
 
     // Keep the vulkano objects alive while ash wrappers are used by the renderer.
-    pub(crate) vk_instance_owner: Arc<vulkano::instance::Instance>,
-    pub(crate) vk_device_owner: Arc<vulkano::device::Device>,
+    pub(crate) vk_instance: Arc<vulkano::instance::Instance>,
+    pub(crate) vk_device: Arc<vulkano::device::Device>,
     pub(crate) vk_physical_device: Arc<PhysicalDevice>,
-    pub(crate) vk_queue_owner: Arc<vulkano::device::Queue>,
+    pub(crate) vk_queue: Arc<vulkano::device::Queue>,
+    pub(crate) vk_allocator: Arc<dyn MemoryAllocator>,
     pub(crate) vk_surface_owner: Arc<vulkano::swapchain::Surface>,
 
     // Surface
@@ -343,7 +345,7 @@ fn vk_acquire(
     }
 
     // Let vulkano own queue synchronization and avoid manual fence lifecycle issues.
-    vk.vk_queue_owner
+    vk.vk_queue
         .with(|mut q| q.wait_idle())
         .map_err(|e| format!("queue_wait_idle: {:?}", e))?;
 
@@ -637,7 +639,7 @@ fn vk_recreate_surface(vk: &mut VkState, window: Arc<Box<dyn Window>>) -> Result
         vk.skia_surfaces.clear();
 
         let new_surface = vulkano::swapchain::Surface::from_window_ref(
-            vk.vk_instance_owner.clone(),
+            vk.vk_instance.clone(),
             &*window,
         )
         .map_err(|e| format!("Surface::from_window_ref (recreate): {e:?}"))?;
@@ -692,12 +694,14 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
     let queue = bootstrap.queue;
     let queue_family_index = bootstrap.queue_family_index;
     let negotiated_api_version = bootstrap.negotiated_api_version;
-    let vk_instance_owner = bootstrap.instance_owner;
-    let vk_device_owner = bootstrap.device_owner;
+    let vk_instance = bootstrap.instance_owner;
+    let vk_device = bootstrap.device_owner;
     let vk_queue_owner = bootstrap.queue_owner;
     let vk_surface_owner = bootstrap
         .surface_owner
         .expect("Parent context must provide a window surface owner");
+
+    let vk_allocator = Arc::new(vulkano::memory::allocator::StandardMemoryAllocator::new_default(vk_device.clone()));
 
     // ── 3. Surface from vulkano-owned surface handle ────────────────────────
     let surface_fn = ash::khr::surface::Instance::new(&entry, &instance);
@@ -752,7 +756,7 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
 
 
     let (swapchain, swapchain_images) = Swapchain::new(
-        vk_device_owner.clone(),
+        vk_device.clone(),
         vk_surface_owner.clone(),
         swapchain_ci,
     ).expect("Failed to create swapchain");
@@ -842,10 +846,11 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         device,
         queue,
         queue_family_index,
-        vk_instance_owner,
-        vk_device_owner,
+        vk_instance,
+        vk_device,
         vk_physical_device: physical_device,
-        vk_queue_owner,
+        vk_queue: vk_queue_owner,
+        vk_allocator,
         vk_surface_owner,
         surface_khr,
         surface_fn,
