@@ -1,4 +1,4 @@
-use ash::vk::{Handle, HANDLE};
+use ash::vk::Handle;
 /// Shared-Vulkan-image helpers for zero-copy cross-process rendering.
 ///
 /// # Platform support
@@ -24,18 +24,24 @@ use skia_safe::gpu::vk::AllocFlag;
 use skia_safe::gpu::{self, DirectContext};
 use std::ffi::c_char;
 use std::fs::File;
-use std::os::fd::IntoRawFd;
+#[cfg(not(windows))]
+use std::os::fd::{FromRawFd, IntoRawFd};
+#[cfg(windows)]
+use std::os::windows::io::IntoRawHandle;
 use std::sync::Arc;
 use vulkano::device::{Device, Queue};
 use vulkano::format::Format;
 use vulkano::image::{Image, ImageCreateInfo, ImageLayout, ImageTiling, ImageType, ImageUsage, SampleCount};
 use vulkano::instance::Instance;
-use vulkano::memory::allocator::{AllocationCreateInfo, AllocationType, MemoryAllocator};
-use vulkano::memory::{DedicatedAllocation, DeviceMemory, ExternalMemoryHandleType, MemoryAllocateInfo, MemoryImportInfo, MemoryPropertyFlags, MemoryRequirements, ResourceMemory};
+use vulkano::memory::allocator::MemoryAllocator;
+use vulkano::memory::{
+    DedicatedAllocation, DeviceMemory, ExternalMemoryHandleType, MemoryAllocateInfo, MemoryImportInfo,
+    MemoryPropertyFlags, MemoryRequirements, ResourceMemory,
+};
 use vulkano::sync::semaphore::{ExternalSemaphoreHandleType, ExternalSemaphoreHandleTypes, Semaphore, SemaphoreCreateInfo};
 use vulkano::sync::{DependencyInfo, ImageMemoryBarrier, Sharing};
 use vulkano::{Validated, VulkanError, VulkanObject};
-use vulkano::command_buffer::{CommandBuffer, CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsage, RecordingCommandBuffer};
+use vulkano::command_buffer::{CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsage, RecordingCommandBuffer};
 use vulkano::command_buffer::allocator::CommandBufferAllocator;
 use vulkano::command_buffer::pool::{CommandBufferAllocateInfo, CommandPool, CommandPoolAlloc, CommandPoolCreateFlags, CommandPoolCreateInfo};
 use vulkano::device::physical::PhysicalDevice;
@@ -170,8 +176,6 @@ pub struct TabVkImage {
     pub render_semaphore: Option<TabVkSemaphore>,
     /// Command pool for the layout-transition submit done after each render.
     cmd_pool: Arc<CommandPool>,
-    /// Pre-recorded command buffer: COLOR_ATTACHMENT_OPTIMAL → GENERAL barrier.
-    cmd_buf: Arc<CommandPoolAlloc>,
     cmd_buf_allocator: Arc<dyn CommandBufferAllocator>,
     pub queue: Arc<Queue>,
     queue_family_index: u32,
@@ -192,10 +196,10 @@ impl TabVkImage {
     ///
     /// `gr_context` must have been created against the same Vulkan device.
     pub unsafe fn new(
-        instance: Arc<Instance>,
+        _instance: Arc<Instance>,
         physical_device: Arc<PhysicalDevice>,
         device: Arc<Device>,
-        memory_allocator: Arc<dyn MemoryAllocator>,
+        _memory_allocator: Arc<dyn MemoryAllocator>,
         cmd_buf_allocator: Arc<dyn CommandBufferAllocator>,
         gr_context: &mut DirectContext,
         width: u32,
@@ -335,8 +339,7 @@ impl TabVkImage {
         };
 
          // -- Exportable render-complete semaphore -----------------------------
-         let render_semaphore = TabVkSemaphore::new(instance.clone(), device.clone())
-             .ok();
+         let render_semaphore = TabVkSemaphore::new(device.clone()).ok();
 
          // -- Fence for tracking signal_and_export_semaphore submissions ------
         let submit_fence = Arc::new(Fence::new(device.clone(), FenceCreateInfo::default())
@@ -353,7 +356,6 @@ impl TabVkImage {
             skia_surface: Some(skia_surface),
             render_semaphore,
             cmd_pool: Arc::new(cmd_pool),
-            cmd_buf: Arc::new(cmd_buf),
             cmd_buf_allocator,
             queue,
             queue_family_index,
@@ -384,12 +386,18 @@ impl TabVkImage {
             };
 
             let get_info = ash::vk::MemoryGetWin32HandleInfoKHR::default()
-                .memory(self.memory)
+                .memory(self.memory.handle())
                 .handle_type(ash::vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32);
-            let local_handle = self
-                .ext_mem_win32
-                .get_memory_win32_handle(&get_info)
-                .map_err(|e| format!("vkGetMemoryWin32HandleKHR failed: {:?}", e))?;
+
+            let mut local_handle: ash::vk::HANDLE = 0;
+            let res = (self.device.fns().khr_external_memory_win32.get_memory_win32_handle_khr)(
+                self.device.handle(),
+                &get_info,
+                &mut local_handle,
+            );
+            if res != ash::vk::Result::SUCCESS {
+                return Err(format!("vkGetMemoryWin32HandleKHR failed: {:?}", res));
+            }
 
             let parent_proc: HANDLE = OpenProcess(PROCESS_DUP_HANDLE, 0, parent_pid);
             if parent_proc == 0 as HANDLE || parent_proc == INVALID_HANDLE_VALUE {
@@ -421,7 +429,8 @@ impl TabVkImage {
 
         #[cfg(not(windows))]
         {
-            self.memory.export_fd(ExternalMemoryHandleType::DmaBuf)
+            self.memory
+                .export_fd(ExternalMemoryHandleType::DmaBuf)
                 .map(|file| file.into_raw_fd() as u64)
                 .map_err(|e| format!("Failed to export memory fd: {:?}", e))
         }
@@ -434,7 +443,7 @@ impl TabVkImage {
     ///
     /// Returns the exported semaphore handle, or -1/0 if unavailable.
     /// Must be called *after* `gr_context.flush_and_submit()`.
-    pub unsafe fn signal_and_export_semaphore(&mut self, _parent_pid: u32) -> i64 {
+    pub unsafe fn signal_and_export_semaphore(&mut self, parent_pid: u32) -> i64 {
         // Wait for any prior submission to complete before reusing the command
         // buffer and fence.
         if self.submit_fence_pending {
@@ -489,19 +498,34 @@ impl TabVkImage {
             .pipeline_barrier(&barrier)
             .expect("Failed to record pipeline barrier");
 
-        rec_cmd_buf.end().expect("Failed to finish recording command buffer");
+        let cmd_buf = rec_cmd_buf.end().expect("Failed to finish recording command buffer");
 
-        let cmd_bufs = [self.cmd_buf.handle()];
-        let submit_info = ash::vk::SubmitInfo::default().command_buffers(&cmd_bufs);
-        let _res = (self.device.fns().v1_0.queue_submit)(
+        let cmd_bufs = [cmd_buf.handle()];
+        let signal_semaphores_storage;
+        let mut submit_info = ash::vk::SubmitInfo::default().command_buffers(&cmd_bufs);
+
+        if let Some(render_semaphore) = self.render_semaphore.as_ref() {
+            signal_semaphores_storage = [render_semaphore.semaphore.handle()];
+            submit_info = submit_info.signal_semaphores(&signal_semaphores_storage);
+        }
+
+        self.submit_fence.reset().expect("Failed to reset submit fence");
+
+        let res = (self.device.fns().v1_0.queue_submit)(
             self.queue.handle(),
             1,
             &submit_info,
             self.submit_fence.handle(),
         );
+        if res != ash::vk::Result::SUCCESS {
+            return -1;
+        }
         self.submit_fence_pending = true;
 
-        -1
+        match self.render_semaphore.as_ref() {
+            Some(render_semaphore) => render_semaphore.export(parent_pid),
+            None => -1,
+        }
     }
 }
 
@@ -554,10 +578,9 @@ impl ImportedVkImage {
 /// The caller must not use `handle` after this call; ownership is transferred to
 /// the Vulkan driver.
 pub unsafe fn import_vk_image_raw(
-    instance: Arc<Instance>,
     physical_device: Arc<PhysicalDevice>,
     device: Arc<Device>,
-    handle: File,
+    handle: u64,
     width: u32,
     height: u32,
     format: Format,
@@ -615,68 +638,60 @@ pub unsafe fn import_vk_image_raw(
 
 #[cfg(windows)]
 unsafe fn import_memory(
-    instance: &ash::Instance,
-    physical_device: ash::vk::PhysicalDevice,
-    device: &ash::Device,
-    image: ash::vk::Image,
+    physical_device: Arc<PhysicalDevice>,
+    device: Arc<Device>,
     handle: u64,
     alloc_size: u64,
-    mem_reqs: &ash::vk::MemoryRequirements,
-) -> Result<ash::vk::DeviceMemory, String> {
-    use ash::khr::external_memory_win32;
+    mem_reqs: Vec<MemoryRequirements>,
+) -> Result<DeviceMemory, String> {
+    let mem_reqs = mem_reqs
+        .last()
+        .ok_or_else(|| "Vulkan returned no memory requirements for imported image".to_string())?;
 
-    let ext = external_memory_win32::Device::new(instance, device);
-
-    let mut handle_props = ash::vk::MemoryWin32HandlePropertiesKHR::default();
-    ext.get_memory_win32_handle_properties(
-        ash::vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32,
-        handle as ash::vk::HANDLE,
-        &mut handle_props,
-    )
-    .map_err(|e| format!("vkGetMemoryWin32HandlePropertiesKHR failed: {:?}", e))?;
-
-    let combined_bits = mem_reqs.memory_type_bits & handle_props.memory_type_bits;
     let mem_type_index = find_memory_type(
-        instance,
-        physical_device,
-        combined_bits,
-        ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        physical_device.clone(),
+        mem_reqs.memory_type_bits,
+        MemoryPropertyFlags::DEVICE_LOCAL,
     )
+    .or_else(|| {
+        find_memory_type(
+            physical_device.clone(),
+            mem_reqs.memory_type_bits,
+            MemoryPropertyFlags::empty(),
+        )
+    })
     .ok_or_else(|| {
-        unsafe { device.destroy_image(image, None) };
-        "No compatible memory type for import (win32)".to_string()
+        format!(
+            "No compatible memory type for import (win32): bits=0x{:x}",
+            mem_reqs.memory_type_bits
+        )
     })?;
 
-    let mut import_info = ash::vk::ImportMemoryWin32HandleInfoKHR::default()
-        .handle_type(ash::vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32)
-        .handle(handle as ash::vk::HANDLE);
+    let import_info = MemoryImportInfo::Win32 {
+        handle_type: ExternalMemoryHandleType::OpaqueWin32,
+        handle: handle as ash::vk::HANDLE,
+    };
 
-    let mut dedicated_alloc_info = ash::vk::MemoryDedicatedAllocateInfo::default()
-        .image(image);
+    let alloc_info = MemoryAllocateInfo {
+        allocation_size: alloc_size,
+        memory_type_index: mem_type_index,
+        dedicated_allocation: None,
+        ..Default::default()
+    };
 
-    let alloc_info = ash::vk::MemoryAllocateInfo::default()
-        .push_next(&mut import_info)
-        .push_next(&mut dedicated_alloc_info)
-        .allocation_size(alloc_size)
-        .memory_type_index(mem_type_index);
-
-    device
-        .allocate_memory(&alloc_info, None)
-        .map_err(|e| {
-            unsafe { device.destroy_image(image, None) };
-            format!("vkAllocateMemory (win32 import) failed: {:?}", e)
-        })
+    DeviceMemory::import(device, alloc_info, import_info)
+        .map_err(|e| format!("vkAllocateMemory (win32 import) failed: {:?}", e))
 }
 
 #[cfg(not(windows))]
 unsafe fn import_memory(
     physical_device: Arc<PhysicalDevice>,
     device: Arc<Device>,
-    handle: File,
+    handle: u64,
     alloc_size: u64,
     mem_reqs: Vec<MemoryRequirements>,
 ) -> Result<DeviceMemory, String> {
-    let fd = handle;
+    let fd = unsafe { File::from_raw_fd(handle as i32) };
     let mem_reqs = mem_reqs
         .last()
         .ok_or_else(|| "Vulkan returned no memory requirements for imported image".to_string())?;
@@ -744,18 +759,12 @@ pub fn find_memory_type(
 
 /// An exportable binary `VkSemaphore` owned by the tab process.
 pub struct TabVkSemaphore {
-    device: Arc<Device>,
     pub semaphore: Arc<Semaphore>,
-    // todo check
-    //#[cfg(windows)]
-    //ext_sem_win32: Arc<Device>,
-    //#[cfg(not(windows))]
-    //ext_sem_fd: Arc<Device>,
 }
 
 impl TabVkSemaphore {
     /// Create a new exportable binary semaphore.
-    pub unsafe fn new(instance: Arc<Instance>, device: Arc<Device>) -> Result<Self, String> {
+    pub unsafe fn new(device: Arc<Device>) -> Result<Self, String> {
         let handle_type = external_semaphore_handle_type();
 
         let create_info = SemaphoreCreateInfo {
@@ -775,7 +784,6 @@ impl TabVkSemaphore {
         //let ext_sem_fd = Device::new(instance, device);
 
         Ok(Self {
-            device: device.clone(),
             semaphore: Arc::new(semaphore),
             //#[cfg(windows)]
             //ext_sem_win32,
@@ -797,19 +805,49 @@ impl TabVkSemaphore {
         {
             return match self.semaphore.export_fd(handle_type) {
                 Ok(file) => file.into_raw_fd() as i64,
-                Err(_) => -1
-            }
+                Err(_) => -1,
+            };
         }
 
         #[cfg(windows)]
         {
-            return match self.semaphore.export_win32_handle(handle_type) {
-                Ok(handle) => handle as i64,
-                Err(_) => {
-                    eprintln!("Failed to export Win32 semaphore handle");
-                    0
-                }
+            use windows_sys::Win32::Foundation::{
+                CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE, INVALID_HANDLE_VALUE,
+            };
+            use windows_sys::Win32::System::Threading::{
+                GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE,
+            };
+
+            let local_handle = match self.semaphore.export_win32_handle(handle_type) {
+                Ok(handle) => handle as HANDLE,
+                Err(_) => return 0,
+            };
+
+            let parent_proc: HANDLE = OpenProcess(PROCESS_DUP_HANDLE, 0, parent_pid);
+            if parent_proc == 0 as HANDLE || parent_proc == INVALID_HANDLE_VALUE {
+                CloseHandle(local_handle);
+                return 0;
             }
+
+            let mut dup_handle: HANDLE = 0 as HANDLE;
+            let ok = DuplicateHandle(
+                GetCurrentProcess(),
+                local_handle,
+                parent_proc,
+                &mut dup_handle,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            );
+
+            CloseHandle(parent_proc);
+            CloseHandle(local_handle);
+
+            if ok == 0 {
+                return 0;
+            }
+
+            dup_handle as i64
         }
     }
 }

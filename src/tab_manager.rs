@@ -1,14 +1,12 @@
 // Tab Manager - manages tab processes from the parent process
 use crate::ipc::{IpcServer, ParentIpcChannel, ParentToTabMessage, TabToParentMessage};
 use crate::vk_shared::{import_vk_image_raw, ImportedVkImage, VulkanDeviceInfo};
-use ash::vk::{self, Handle};
+use ash::vk::Handle;
 use std::collections::HashMap;
-use std::fs::File;
 use std::io;
-use std::os::fd::{FromRawFd, RawFd};
 use std::process::{Child, Command};
-use std::thread;
 use std::sync::Arc;
+use std::thread;
 use taffy::Point;
 use vulkano::device::{Device, Queue};
 use vulkano::device::physical::PhysicalDevice;
@@ -220,11 +218,9 @@ impl TabManager {
                 }
                 TabToParentMessage::FrameRendered { mem_handle, width, height, vk_format, alloc_size, sem_handle } => {
                     let format = Format::try_from(ash::vk::Format::from_raw(vk_format)).expect("Invalid VkFormat from tab process");
-                    if let (Some(inst), Some(phys), Some(dev), Some(allocator)) = (
-                        self.vk_instance.as_ref(),
+                    if let (Some(phys), Some(dev)) = (
                         self.vk_physical_device.as_ref(),
                         self.vk_device.as_ref(),
-                        self.vk_allocator.as_ref(),
                     ) {
                         // On Linux, the mem_handle is a raw fd number from the
                         // child process — it's not valid in our fd table.  Use
@@ -301,10 +297,9 @@ impl TabManager {
 
                         match unsafe {
                             import_vk_image_raw(
-                                inst.clone(),
                                 phys.clone(),
                                 dev.clone(),
-                                File::from_raw_fd(local_handle as RawFd),
+                                local_handle,
                                 width,
                                 height,
                                 format,
