@@ -3,7 +3,9 @@ use crate::ipc::{IpcServer, ParentIpcChannel, ParentToTabMessage, TabToParentMes
 use crate::vk_shared::{import_vk_image_raw, ImportedVkImage, VulkanDeviceInfo};
 use ash::vk::{self, Handle};
 use std::collections::HashMap;
+use std::fs::File;
 use std::io;
+use std::os::fd::{FromRawFd, RawFd};
 use std::process::{Child, Command};
 use std::thread;
 use std::sync::Arc;
@@ -303,7 +305,7 @@ impl TabManager {
                                 phys.clone(),
                                 dev.clone(),
                                 allocator.clone(),
-                                local_handle,
+                                File::from_raw_fd(local_handle as RawFd),
                                 width,
                                 height,
                                 format,

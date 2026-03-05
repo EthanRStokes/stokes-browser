@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use ash::vk::Handle;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use vulkano::command_buffer::allocator::CommandBufferAllocator;
 use vulkano::device::physical::PhysicalDevice;
 use vulkano::format::Format;
 use vulkano::memory::allocator::{MemoryAllocator, StandardMemoryAllocator};
@@ -36,6 +37,7 @@ struct TabVulkanState {
     vk_device: Arc<vulkano::device::Device>,
     vk_queue_owner: Arc<vulkano::device::Queue>,
     vk_memory_allocator: Arc<dyn MemoryAllocator>,
+    vk_cm_buf_allocator: Arc<dyn CommandBufferAllocator>,
     vk_physical_device: Arc<PhysicalDevice>,
     /// Parent PID, cached at init to avoid re-parsing the env var each frame.
     parent_pid: u32,
@@ -178,6 +180,13 @@ impl TabProcess {
         let gr_context = sk_gpu::direct_contexts::make_vulkan(&backend_ctx, None)
             .ok_or("Failed to create Skia Vulkan DirectContext in tab")?;
 
+        let cm_buf_allocator = Arc::new(
+            vulkano::command_buffer::allocator::StandardCommandBufferAllocator::new(
+                vk_device.clone(),
+                vulkano::command_buffer::allocator::StandardCommandBufferAllocatorCreateInfo::default(),
+            )
+        );
+
         Ok(TabVulkanState {
             _entry: entry,
             instance,
@@ -189,6 +198,7 @@ impl TabProcess {
             vk_device,
             vk_queue_owner,
             vk_memory_allocator: memory_allocator,
+            vk_cm_buf_allocator: cm_buf_allocator,
             vk_physical_device: physical_device,
             parent_pid,
             vk_format,
@@ -233,20 +243,19 @@ impl TabProcess {
             None => return Ok(false),
         };
 
-        let queue = unsafe { vk.device.get_device_queue(vk.queue_family_index, 0) };
-
         let img = unsafe {
             TabVkImage::new(
-                &vk.instance,
-                vk.physical_device,
+                vk.vk_instance_owner.clone(),
+                vk.vk_physical_device.clone(),
                 vk.vk_device.clone(),
                 vk.vk_memory_allocator.clone(),
+                vk.vk_cm_buf_allocator.clone(),
                 &mut vk.gr_context,
                 width,
                 height,
                 vk.vk_format,
                 vk.queue_family_index,
-                queue,
+                vk.vk_queue_owner.clone(),
             )
         };
 
@@ -592,7 +601,7 @@ impl TabProcess {
         let vk_image = self.vk_image.as_ref().unwrap();
         let width = vk_image.width;
         let height = vk_image.height;
-        let vk_format = vk_image.format.as_raw();
+        let vk_format = vk_image.format as i32;
         let alloc_size = vk_image.alloc_size;
 
         // Export the backing memory as a cross-process handle.

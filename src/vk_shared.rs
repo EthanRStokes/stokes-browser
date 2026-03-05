@@ -31,11 +31,12 @@ use vulkano::format::Format;
 use vulkano::image::{Image, ImageCreateInfo, ImageLayout, ImageTiling, ImageType, ImageUsage, SampleCount};
 use vulkano::instance::Instance;
 use vulkano::memory::allocator::{AllocationCreateInfo, AllocationType, MemoryAllocator};
-use vulkano::memory::{DedicatedAllocation, DeviceMemory, ExternalMemoryHandleType, MemoryAllocateInfo, MemoryPropertyFlags, MemoryRequirements, ResourceMemory};
+use vulkano::memory::{DedicatedAllocation, DeviceMemory, ExternalMemoryHandleType, MemoryAllocateInfo, MemoryImportInfo, MemoryPropertyFlags, MemoryRequirements, ResourceMemory};
 use vulkano::sync::semaphore::{ExternalSemaphoreHandleType, ExternalSemaphoreHandleTypes, Semaphore, SemaphoreCreateInfo};
-use vulkano::sync::Sharing;
+use vulkano::sync::{DependencyInfo, ImageMemoryBarrier, Sharing};
 use vulkano::{Validated, VulkanError, VulkanObject};
-use vulkano::command_buffer::{CommandBuffer, CommandBufferLevel};
+use vulkano::command_buffer::{CommandBuffer, CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsage, RecordingCommandBuffer};
+use vulkano::command_buffer::allocator::CommandBufferAllocator;
 use vulkano::command_buffer::pool::{CommandBufferAllocateInfo, CommandPool, CommandPoolAlloc, CommandPoolCreateFlags, CommandPoolCreateInfo};
 use vulkano::device::physical::PhysicalDevice;
 use vulkano::image::sys::RawImage;
@@ -157,7 +158,7 @@ pub const COLOR_SUBRESOURCE_RANGE: ash::vk::ImageSubresourceRange = ash::vk::Ima
 /// current platform so the parent can import it.
 pub struct TabVkImage {
     device: Arc<Device>,
-    pub image: Image,
+    pub image: Arc<Image>,
     pub memory: Arc<DeviceMemory>,
     pub width: u32,
     pub height: u32,
@@ -171,6 +172,7 @@ pub struct TabVkImage {
     cmd_pool: Arc<CommandPool>,
     /// Pre-recorded command buffer: COLOR_ATTACHMENT_OPTIMAL → GENERAL barrier.
     cmd_buf: Arc<CommandPoolAlloc>,
+    cmd_buf_allocator: Arc<dyn CommandBufferAllocator>,
     pub queue: Arc<Queue>,
     queue_family_index: u32,
     /// Fence used to track the last `signal_and_export_semaphore` submission.
@@ -190,10 +192,11 @@ impl TabVkImage {
     ///
     /// `gr_context` must have been created against the same Vulkan device.
     pub unsafe fn new(
-        instance: &Arc<Instance>,
+        instance: Arc<Instance>,
         physical_device: Arc<PhysicalDevice>,
         device: Arc<Device>,
         memory_allocator: Arc<dyn MemoryAllocator>,
+        cmd_buf_allocator: Arc<dyn CommandBufferAllocator>,
         gr_context: &mut DirectContext,
         width: u32,
         height: u32,
@@ -338,7 +341,7 @@ impl TabVkImage {
 
         Ok(Self {
             device: device.clone(),
-            image,
+            image: Arc::new(image),
             memory,
             width,
             height,
@@ -348,6 +351,7 @@ impl TabVkImage {
             render_semaphore,
             cmd_pool: Arc::new(cmd_pool),
             cmd_buf: Arc::new(cmd_buf),
+            cmd_buf_allocator,
             queue,
             queue_family_index,
             submit_fence,
@@ -431,50 +435,43 @@ impl TabVkImage {
         // Wait for any prior submission to complete before reusing the command
         // buffer and fence.
         if self.submit_fence_pending {
-            let _ = self.device.wait_for_fences(&[self.submit_fence], true, 5_000_000_000);
-            let _ = self.device.reset_fences(&[self.submit_fence]);
+            self.submit_fence.wait(None).expect("Failed to wait for submit fence");
             self.submit_fence_pending = false;
         }
 
-        let begin_info = ash::vk::CommandBufferBeginInfo::default()
-            .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        if self.device.begin_command_buffer(self.cmd_buf, &begin_info).is_err() {
-            return -1;
-        }
+        let begin_info = CommandBufferBeginInfo {
+            usage: CommandBufferUsage::OneTimeSubmit,
+            ..Default::default()
+        };
+        let mut rec_cmd_buf = RecordingCommandBuffer::new(self.cmd_buf_allocator.clone(), self.queue_family_index, CommandBufferLevel::Primary, begin_info)
+            .expect("Failed to begin recording command buffer");
 
-        let barrier = ash::vk::ImageMemoryBarrier::default()
+        // todo check
+        let bruh = ash::vk::ImageMemoryBarrier::default()
             .src_access_mask(ash::vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
             .dst_access_mask(ash::vk::AccessFlags::empty())
             .old_layout(ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .new_layout(ash::vk::ImageLayout::GENERAL)
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(ash::vk::QUEUE_FAMILY_EXTERNAL)
-            .image(self.image)
+            .image(self.image.handle())
             .subresource_range(COLOR_SUBRESOURCE_RANGE);
 
-        self.device.cmd_pipeline_barrier(
-            self.cmd_buf,
-            ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            ash::vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-            ash::vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[barrier],
-        );
+        let barrier = DependencyInfo {
+            dependency_flags: Default::default(),
+            image_memory_barriers: vec![
+                ImageMemoryBarrier::image(self.image.clone())
+            ].into(),
+            ..Default::default()
+        };
 
-        if self.device.end_command_buffer(self.cmd_buf).is_err() {
-            return -1;
-        }
+        rec_cmd_buf.pipeline_barrier(&barrier).expect("Failed to record pipeline barrier");
 
-        let cmd_bufs = [self.cmd_buf];
+        rec_cmd_buf.end().expect("Failed to finish recording command buffer");
+
+        let cmd_bufs = [self.cmd_buf.handle()];
         let submit_info = ash::vk::SubmitInfo::default().command_buffers(&cmd_bufs);
-        if self
-            .device
-            .queue_submit(self.queue, &[submit_info], self.submit_fence)
-            .is_err()
-        {
-            return -1;
-        }
+        let res = (self.device.fns().v1_0.queue_submit)(self.queue.handle(), 1, &submit_info, self.submit_fence.handle());
         self.submit_fence_pending = true;
 
         -1
@@ -489,20 +486,17 @@ impl Drop for TabVkImage {
 
         unsafe {
             if self.submit_fence_pending {
-                let _ = self.device.wait_for_fences(&[self.submit_fence], true, 5_000_000_000);
+                self.submit_fence.wait(None).expect("Failed to wait for submit fence");
                 self.submit_fence_pending = false;
             }
 
-             // Also do a full device wait as a safety net — Skia may have
-             // submitted additional GPU work we don't track with our fence.
-             self.device.device_wait_idle().ok();
+            // Also do a full device wait as a safety net — Skia may have
+            // submitted additional GPU work we don't track with our fence.
+            self.device.wait_idle().ok();
 
-             // Now safe to destroy everything.
-             self.render_semaphore = None;
-             self.device.destroy_fence(self.submit_fence, None);
-             self.device.destroy_command_pool(self.cmd_pool, None);
-             self.device.free_memory(self.memory, None);
-         }
+            // Now safe to destroy everything.
+            self.render_semaphore = None;
+        }
      }
  }
 
@@ -519,16 +513,8 @@ pub struct ImportedVkImage {
 impl ImportedVkImage {
     /// The raw `VkImage` handle, needed for pipeline barriers.
     #[inline]
-    pub fn image(&self) -> ash::vk::Image {
-        self.image
-    }
-}
-
-impl Drop for ImportedVkImage {
-    fn drop(&mut self) {
-        unsafe {
-            self.device.destroy_image(self.image, None);
-        }
+    pub fn image(&self) -> Arc<Image> {
+        self.image.clone()
     }
 }
 
@@ -574,10 +560,15 @@ pub unsafe fn import_vk_image_raw(
         Default::default(),
     ).map_err(|e| format!("Failed to create image with external memory: {:?}", e))?;
 
+    let raw_image = RawImage::from_handle_borrowed(device.clone(), image.handle(), image_ci)
+        .map_err(|e| {
+            format!("Failed to create raw image: {:?}", e)
+        })?;
+
     let mem_reqs = image.memory_requirements();
 
     let imported_memory =
-        import_memory(instance, physical_device, device.clone(), image.clone(), handle, alloc_size, mem_reqs)?;
+        import_memory(instance, physical_device, device.clone(), image.clone(), raw_image, handle, alloc_size, mem_reqs)?;
 
     Ok(ImportedVkImage {
         device: device.clone(),
@@ -649,11 +640,14 @@ unsafe fn import_memory(
     physical_device: Arc<PhysicalDevice>,
     device: Arc<Device>,
     image: Arc<Image>,
+    raw_image: RawImage,
     handle: File,
     alloc_size: u64,
     mem_reqs: &[MemoryRequirements],
 ) -> Result<DeviceMemory, String> {
     let fd = handle;
+    // todo check
+    let mem_reqs = mem_reqs.last().unwrap();
 
     // todo check
     //let ext_fd = ash::khr::external_memory_fd::Device::new(instance, device);
@@ -662,11 +656,10 @@ unsafe fn import_memory(
     device
         .memory_fd_properties(
             ExternalMemoryHandleType::DmaBuf,
-            fd,
+            fd.try_clone().expect("Failed to clone fd"),
         )
         .map_err(|e| {
             unsafe { (device.fns().v1_0.destroy_image)(device.handle(), image.handle(), std::ptr::null()) };
-            drop(image);
             format!("vkGetMemoryFdPropertiesKHR failed: {:?}", e)
         })?;
 
@@ -674,16 +667,14 @@ unsafe fn import_memory(
     let candidate_bits = if combined_bits != 0 { combined_bits } else { fd_props.memory_type_bits };
 
     let mem_type_index = find_memory_type(
-        instance,
-        physical_device,
+        physical_device.clone(),
         candidate_bits,
-        ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        MemoryPropertyFlags::DEVICE_LOCAL,
     )
     .or_else(|| {
-        find_memory_type(instance, physical_device, candidate_bits, ash::vk::MemoryPropertyFlags::empty())
+        find_memory_type(physical_device.clone(), candidate_bits, MemoryPropertyFlags::empty())
     })
     .ok_or_else(|| {
-        unsafe { device.destroy_image(image, None) };
         format!(
             "No compatible memory type for import (dma-buf fd): \
              image bits=0x{:x}, fd bits=0x{:x}",
@@ -691,23 +682,24 @@ unsafe fn import_memory(
         )
     })?;
 
-    let mut import_info = ash::vk::ImportMemoryFdInfoKHR::default()
-        .handle_type(ash::vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
-        .fd(fd);
+    let import_info = MemoryImportInfo::Fd {
+        handle_type: ExternalMemoryHandleType::DmaBuf,
+        file: fd,
+    };
 
-    let mut dedicated_alloc_info = ash::vk::MemoryDedicatedAllocateInfo::default()
-        .image(image);
+    let alloc_info = MemoryAllocateInfo {
+        allocation_size: alloc_size,
+        memory_type_index: mem_type_index,
+        dedicated_allocation: Some(
+            DedicatedAllocation::Image(&raw_image)
+        ),
+        ..Default::default()
+    };
 
-    let alloc_info = ash::vk::MemoryAllocateInfo::default()
-        .push_next(&mut import_info)
-        .push_next(&mut dedicated_alloc_info)
-        .allocation_size(alloc_size)
-        .memory_type_index(mem_type_index);
-
-    device
-        .allocate_memory(&alloc_info, None)
+    let image2 = image.clone();
+    DeviceMemory::import(device.clone(), alloc_info, import_info)
         .map_err(|e| {
-            unsafe { device.destroy_image(image, None) };
+            unsafe { (device.fns().v1_0.destroy_image)(device.handle(), image2.handle(), std::ptr::null()) };
             format!("vkAllocateMemory (dma-buf fd import) failed: {:?}", e)
         })
 }
@@ -719,7 +711,8 @@ pub fn find_memory_type(
     type_filter: u32,
     properties: MemoryPropertyFlags,
 ) -> Option<u32> {
-    let mem_types = physical_device.memory_properties().memory_types;
+    let mem_props = physical_device.memory_properties();
+    let mem_types = &mem_props.memory_types;
     for (i, ty) in mem_types.iter().enumerate() {
         if (type_filter & (1 << i)) != 0 && ty.property_flags.contains(properties) {
             return Some(i as u32);

@@ -7,6 +7,7 @@ use skia_safe::{ColorType, Surface};
 use std::ffi::CStr;
 use std::sync::Arc;
 use vulkano::command_buffer::PrimaryCommandBufferAbstract;
+use vulkano::device::{Device, Queue};
 use vulkano::device::physical::PhysicalDevice;
 use vulkano::format::Format;
 use vulkano::image::ImageUsage;
@@ -70,19 +71,19 @@ impl Env {
 /// Vulkan-specific state.
 pub(crate) struct VkState {
     pub(crate) entry: ash::Entry,
-    pub(crate) instance: ash::Instance,
-    pub(crate) physical_device: ash::vk::PhysicalDevice,
-    pub(crate) device: ash::Device,
-    pub(crate) queue: ash::vk::Queue,
+    pub(crate) ash_instance: ash::Instance,
+    pub(crate) ash_physical_device: ash::vk::PhysicalDevice,
+    pub(crate) ash_device: ash::Device,
+    pub(crate) ash_queue: ash::vk::Queue,
     pub(crate) queue_family_index: u32,
 
     // Keep the vulkano objects alive while ash wrappers are used by the renderer.
-    pub(crate) vk_instance: Arc<vulkano::instance::Instance>,
-    pub(crate) vk_device: Arc<vulkano::device::Device>,
-    pub(crate) vk_physical_device: Arc<PhysicalDevice>,
-    pub(crate) vk_queue: Arc<vulkano::device::Queue>,
-    pub(crate) vk_allocator: Arc<dyn MemoryAllocator>,
-    pub(crate) vk_surface_owner: Arc<vulkano::swapchain::Surface>,
+    pub(crate) instance: Arc<Instance>,
+    pub(crate) device: Arc<Device>,
+    pub(crate) physical_device: Arc<PhysicalDevice>,
+    pub(crate) queue: Arc<Queue>,
+    pub(crate) allocator: Arc<dyn MemoryAllocator>,
+    pub(crate) surface: Arc<vulkano::swapchain::Surface>,
 
     // Surface
     surface_khr: ash::vk::SurfaceKHR,
@@ -129,7 +130,7 @@ impl VkState {
     /// same physical device and share VkImages with the parent.
     pub(crate) fn device_info(&self) -> VulkanDeviceInfo {
         let device_uuid = unsafe {
-            crate::vk_shared::physical_device_uuid(&self.instance, self.physical_device)
+            crate::vk_shared::physical_device_uuid(&self.ash_instance, self.ash_physical_device)
         };
         VulkanDeviceInfo {
             device_uuid,
@@ -143,13 +144,13 @@ impl VkState {
 impl Drop for VkState {
     fn drop(&mut self) {
         unsafe {
-            self.device.device_wait_idle().ok();
+            self.ash_device.device_wait_idle().ok();
             for sem in self.deferred_wait_semaphores.drain(..) {
-                self.device.destroy_semaphore(sem, None);
+                self.ash_device.destroy_semaphore(sem, None);
             }
-            self.device.destroy_command_pool(self.blit_cmd_pool, None);
-            self.device.destroy_semaphore(self.image_available_semaphore, None);
-            self.device.destroy_semaphore(self.render_finished_semaphore, None);
+            self.ash_device.destroy_command_pool(self.blit_cmd_pool, None);
+            self.ash_device.destroy_semaphore(self.image_available_semaphore, None);
+            self.ash_device.destroy_semaphore(self.render_finished_semaphore, None);
             self.swapchain_fn.destroy_swapchain(self.swapchain, None);
         }
     }
@@ -199,11 +200,11 @@ fn vk_prepare_swapchain(vk: &mut VkState, window: Arc<Box<dyn Window>>, gr_conte
     }
 
     unsafe {
-        vk.device.device_wait_idle().ok();
+        vk.ash_device.device_wait_idle().ok();
 
         let caps = match vk
             .surface_fn
-            .get_physical_device_surface_capabilities(vk.physical_device, vk.surface_khr)
+            .get_physical_device_surface_capabilities(vk.ash_physical_device, vk.surface_khr)
         {
             Ok(caps) => caps,
             Err(ash::vk::Result::ERROR_SURFACE_LOST_KHR) => {
@@ -345,7 +346,7 @@ fn vk_acquire(
     }
 
     // Let vulkano own queue synchronization and avoid manual fence lifecycle issues.
-    vk.vk_queue
+    vk.queue
         .with(|mut q| q.wait_idle())
         .map_err(|e| format!("queue_wait_idle: {:?}", e))?;
 
@@ -356,7 +357,7 @@ fn vk_acquire(
         // Previous submit is complete, so it is now safe to destroy per-frame
         // imported wait semaphores created for external tab sync.
         for sem in vk.deferred_wait_semaphores.drain(..) {
-            vk.device.destroy_semaphore(sem, None);
+            vk.ash_device.destroy_semaphore(sem, None);
         }
 
         let (image_index, suboptimal) = match vk.swapchain_fn.acquire_next_image(
@@ -485,7 +486,7 @@ fn vk_blit_tab_then_present(
         if let Some((tab, tab_w, tab_h, sem_handle)) = tab_frame {
             submitted_tab_image = Some(tab.clone());
 
-            if let Some(imported_wait) = import_wait_semaphore_for_frame(&vk.instance, device, sem_handle)? {
+            if let Some(imported_wait) = import_wait_semaphore_for_frame(&vk.ash_instance, device, sem_handle)? {
                 external_wait_semaphore = imported_wait;
             }
 
@@ -593,7 +594,7 @@ fn vk_blit_tab_then_present(
             .command_buffers(&cmd_bufs)
             .signal_semaphores(&signal_sems);
 
-        if let Err(e) = device.queue_submit(vk.queue, &[submit_info], ash::vk::Fence::null()) {
+        if let Err(e) = device.queue_submit(vk.ash_queue, &[submit_info], ash::vk::Fence::null()) {
             if external_wait_semaphore != ash::vk::Semaphore::null() {
                 device.destroy_semaphore(external_wait_semaphore, None);
             }
@@ -613,7 +614,7 @@ fn vk_blit_tab_then_present(
             .swapchains(&swapchains)
             .image_indices(&image_indices);
 
-        match vk.swapchain_fn.queue_present(vk.queue, &present_info) {
+        match vk.swapchain_fn.queue_present(vk.ash_queue, &present_info) {
             Ok(false) => {}
             Ok(true)
             | Err(ash::vk::Result::ERROR_OUT_OF_DATE_KHR)
@@ -629,7 +630,7 @@ fn vk_blit_tab_then_present(
 /// Recreate the Vulkan surface from the current native window handles.
 fn vk_recreate_surface(vk: &mut VkState, window: Arc<Box<dyn Window>>) -> Result<(), String> {
     unsafe {
-        vk.device.device_wait_idle().ok();
+        vk.ash_device.device_wait_idle().ok();
 
         if vk.swapchain != ash::vk::SwapchainKHR::null() {
             vk.swapchain_fn.destroy_swapchain(vk.swapchain, None);
@@ -639,13 +640,13 @@ fn vk_recreate_surface(vk: &mut VkState, window: Arc<Box<dyn Window>>) -> Result
         vk.skia_surfaces.clear();
 
         let new_surface = vulkano::swapchain::Surface::from_window_ref(
-            vk.vk_instance.clone(),
+            vk.instance.clone(),
             &*window,
         )
         .map_err(|e| format!("Surface::from_window_ref (recreate): {e:?}"))?;
 
         vk.surface_khr = new_surface.handle();
-        vk.vk_surface_owner = new_surface;
+        vk.surface = new_surface;
         vk.current_image_index = 0;
         vk.swapchain_valid = false;
     }
@@ -841,17 +842,17 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
 
     let vk = VkState {
         entry,
-        instance,
-        physical_device: ash_physical_device,
-        device,
-        queue,
+        ash_instance: instance,
+        ash_physical_device: ash_physical_device,
+        ash_device: device,
+        ash_queue: queue,
         queue_family_index,
-        vk_instance,
-        vk_device,
-        vk_physical_device: physical_device,
-        vk_queue: vk_queue_owner,
-        vk_allocator,
-        vk_surface_owner,
+        instance: vk_instance,
+        device: vk_device,
+        physical_device: physical_device,
+        queue: vk_queue_owner,
+        allocator: vk_allocator,
+        surface: vk_surface_owner,
         surface_khr,
         surface_fn,
         swapchain_fn,
