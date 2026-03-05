@@ -34,6 +34,7 @@ use style::servo_arc::Arc;
 use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, OutlineStyle, Overflow};
 use style::values::generics::color::{GenericColor, GenericColorOrAuto};
 use taffy::Layout;
+use crate::renderer::background::{to_image_quality, to_peniko_image};
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer<'dom> {
@@ -908,62 +909,46 @@ impl Element<'_> {
     }
 
     fn draw_image(&self, painter: &mut ScenePainter) {
-        // Check if this element has image data
-        if let Some(image_data) = self.element.image_data() {
-            // Use the element's transform (which includes position and scale)
-            // and the content box for positioning
-            let content_box = self.frame.content_box;
+        if let Some(image) = self.element.raster_image_data() {
+            let width = self.frame.content_box.width() as u32;
+            let height = self.frame.content_box.height() as u32;
+            let x = self.frame.content_box.origin().x;
+            let y = self.frame.content_box.origin().y;
 
-            match image_data {
-                ImageData::Raster(data) => {
-                    // Calculate scale factors to fit image into content box
-                    let scale_x = content_box.width() / data.width as f64;
-                    let scale_y = content_box.height() / data.height as f64;
+            let object_fit = self.style.clone_object_fit();
+            let object_position = self.style.clone_object_position();
+            let image_rendering = self.style.clone_image_rendering();
+            let quality = to_image_quality(image_rendering);
 
-                    // Apply the element's transform, then translate to content box origin, then scale the image
-                    let image_transform = self.transform
-                        * Affine::translate((content_box.x0, content_box.y0))
-                        * Affine::scale_non_uniform(scale_x, scale_y);
+            // Apply object-fit algorithm
+            let container_size = taffy::Size {
+                width: width as f32,
+                height: height as f32,
+            };
+            let object_size = taffy::Size {
+                width: image.width as f32,
+                height: image.height as f32,
+            };
+            let paint_size = compute_object_fit(container_size, Some(object_size), object_fit);
 
-                    let inherited_box = self.style.get_inherited_box();
-                    let image_rendering = inherited_box.image_rendering;
+            // Compute object-position
+            let x_offset = object_position.horizontal.resolve(
+                CSSPixelLength::new(container_size.width - paint_size.width) / self.scale_factor as f32,
+            ) * self.scale_factor as f32;
+            let y_offset = object_position.vertical.resolve(
+                CSSPixelLength::new(container_size.height - paint_size.height) / self.scale_factor as f32,
+            ) * self.scale_factor as f32;
+            let x = x + x_offset.px() as f64;
+            let y = y + y_offset.px() as f64;
 
-                    painter.draw_image(
-                        background::to_peniko_image(data, background::to_image_quality(image_rendering)).as_ref(),
-                        image_transform
-                    );
-                },
-                ImageData::Svg(_svg_tree) => {
-                    // SVG rendering - render placeholder for now
-                    let scroll_transform = Affine::translate((
-                        -self.context.dom.viewport_scroll.x,
-                        -self.context.dom.viewport_scroll.y,
-                    ));
-                    let layout = self.node.final_layout;
-                    let content_rect = skia_safe::Rect::from_xywh(
-                        layout.location.x,
-                        layout.location.y,
-                        layout.size.width,
-                        layout.size.height
-                    );
-                    image::render_image_placeholder(painter, self.context.dom, &content_rect, "SVG", self.scale_factor as f32, scroll_transform);
-                },
-                ImageData::None => {
-                    // Show placeholder
-                    let scroll_transform = Affine::translate((
-                        -self.context.dom.viewport_scroll.x,
-                        -self.context.dom.viewport_scroll.y,
-                    ));
-                    let layout = self.node.final_layout;
-                    let content_rect = skia_safe::Rect::from_xywh(
-                        layout.location.x,
-                        layout.location.y,
-                        layout.size.width,
-                        layout.size.height
-                    );
-                    image::render_image_placeholder(painter, self.context.dom, &content_rect, "No image", self.scale_factor as f32, scroll_transform);
-                }
-            }
+            let x_scale = paint_size.width as f64 / object_size.width as f64;
+            let y_scale = paint_size.height as f64 / object_size.height as f64;
+            let transform = self
+                .transform
+                .pre_translate(Vec2 { x, y })
+                .pre_scale_non_uniform(x_scale, y_scale);
+
+            painter.draw_image(to_peniko_image(image, quality).as_ref(), transform);
         }
     }
 
