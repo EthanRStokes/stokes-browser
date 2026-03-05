@@ -204,10 +204,10 @@ impl TabVkImage {
         queue_family_index: u32,
         queue: Arc<Queue>,
     ) -> Result<Self, String> {
-         let (skia_format, color_type) = vk_format_to_skia(format)
-             .ok_or_else(|| format!("Unsupported format {:?}", format))?;
+        let (skia_format, color_type) = vk_format_to_skia(format)
+            .ok_or_else(|| format!("Unsupported format {:?}", format))?;
 
-         let handle_type = external_handle_type();
+        let handle_type = external_handle_type();
 
         let create_info = ImageCreateInfo {
             flags: Default::default(),
@@ -219,100 +219,103 @@ impl TabVkImage {
             mip_levels: 1,
             samples: SampleCount::Sample1,
             tiling: ImageTiling::Optimal,
-            usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::SAMPLED | ImageUsage::TRANSFER_SRC | ImageUsage::TRANSFER_DST,
+            usage: ImageUsage::COLOR_ATTACHMENT
+                | ImageUsage::SAMPLED
+                | ImageUsage::TRANSFER_SRC
+                | ImageUsage::TRANSFER_DST,
             stencil_usage: None,
             sharing: Sharing::Exclusive,
             initial_layout: ImageLayout::Undefined,
             drm_format_modifiers: vec![],
             drm_format_modifier_plane_layouts: vec![],
-            external_memory_handle_types: Default::default(),
+            // Critical: declare that this image will be backed by exportable external memory.
+            external_memory_handle_types: handle_type.into(),
             ..Default::default()
         };
 
-         // -- Create image with external memory info chained in pNext ----------
-        let image = Image::new(
-            memory_allocator.clone(),
-            create_info.clone(),
-            // todo fix
-            AllocationCreateInfo {
-                ..Default::default()
-            }
-        ).expect("Failed to create image with external memory");
+        // Vulkano panics if we construct an allocator-backed `Image` but then try to
+        // manually allocate and bind memory. For external-memory export/import we
+        // keep the whole path manual: RawImage + DeviceMemory + bind.
+        let raw_image = RawImage::new(device.clone(), create_info.clone())
+            .map_err(|e| format!("Failed to create raw image: {:?}", e))?;
 
-         // -- Allocate memory with export info ---------------------------------
-         let mem_reqs = image.memory_requirements().last().unwrap();
+        let mem_reqs_list = raw_image.memory_requirements();
+        let mem_reqs = mem_reqs_list
+            .last()
+            .ok_or_else(|| "Vulkan returned no memory requirements for image".to_string())?;
+        let mem_req_size = mem_reqs.layout.size();
 
-         let mem_type_index = find_memory_type(
-             physical_device.clone(),
-             mem_reqs.memory_type_bits,
-             MemoryPropertyFlags::DEVICE_LOCAL,
-         )
-         .ok_or_else(|| {
-             (device.fns().v1_0.destroy_image)(device.handle(), image.handle(), std::ptr::null());
-             "No suitable memory type".to_string()
-         })?;
-
-        let raw_image = RawImage::from_handle_borrowed(device.clone(), image.handle(), create_info)
-            .expect("Failed to create raw image");
+        let mem_type_index = find_memory_type(
+            physical_device.clone(),
+            mem_reqs.memory_type_bits,
+            MemoryPropertyFlags::DEVICE_LOCAL,
+        )
+        .or_else(|| {
+            // Some drivers won't expose DEVICE_LOCAL for dma-buf-compatible memory.
+            find_memory_type(physical_device.clone(), mem_reqs.memory_type_bits, MemoryPropertyFlags::empty())
+        })
+        .ok_or_else(|| {
+            format!(
+                "No suitable memory type for image allocation (bits=0x{:x})",
+                mem_reqs.memory_type_bits
+            )
+        })?;
 
         let alloc_info = MemoryAllocateInfo {
             allocation_size: mem_reqs.layout.size(),
             memory_type_index: mem_type_index,
-            dedicated_allocation: Some(
-                DedicatedAllocation::Image(&raw_image)
-            ),
+            dedicated_allocation: Some(DedicatedAllocation::Image(&raw_image)),
             export_handle_types: handle_type.into(),
             ..Default::default()
         };
 
-        let memory = Arc::new(DeviceMemory::allocate(
-            device.clone(),
-            alloc_info
-        ).expect("Failed to allocate memory"));
+        let memory = Arc::new(
+            DeviceMemory::allocate(device.clone(), alloc_info)
+                .map_err(|e| format!("Failed to allocate exportable image memory: {:?}", e))?,
+        );
+
         let resource_memory = ResourceMemory::new_dedicated_unchecked(memory.clone());
 
-        let image = raw_image.bind_memory([resource_memory])
-            .ok()
-            .expect("Failed to bind image");
+        let image = raw_image
+            .bind_memory([resource_memory])
+            .map_err(|(e, img, iter)| {
+                // Ensure we don't leak the image handle on failure.
+                drop(img);
+                format!("Failed to bind image memory: {:?}", e)
+            })?;
 
-         // -- Build Skia surface -----------------------------------------------
-         let alloc = gpu::vk::Alloc::from_device_memory(
-             memory.handle().as_raw() as _,
-             0,
-             mem_reqs.layout.size(),
-             AllocFlag::empty(),
-         );
+        // -- Build Skia surface -----------------------------------------------
+        let alloc = gpu::vk::Alloc::from_device_memory(
+            memory.handle().as_raw() as _,
+            0,
+            mem_req_size,
+            AllocFlag::empty(),
+        );
 
-         let sk_image_info = gpu::vk::ImageInfo::new(
-             image.handle().as_raw() as _,
-             alloc,
-             gpu::vk::ImageTiling::OPTIMAL,
-             gpu::vk::ImageLayout::UNDEFINED,
-             skia_format,
-             1,
-             None, None, None, None,
-         );
+        let sk_image_info = gpu::vk::ImageInfo::new(
+            image.handle().as_raw() as _,
+            alloc,
+            gpu::vk::ImageTiling::OPTIMAL,
+            gpu::vk::ImageLayout::UNDEFINED,
+            skia_format,
+            1,
+            None,
+            None,
+            None,
+            None,
+        );
 
-         let render_target = gpu::backend_render_targets::make_vk(
-             (width as i32, height as i32),
-             &sk_image_info,
-         );
+        let render_target = gpu::backend_render_targets::make_vk((width as i32, height as i32), &sk_image_info);
 
-         let skia_surface = gpu::surfaces::wrap_backend_render_target(
-             gr_context,
-             &render_target,
-             gpu::SurfaceOrigin::TopLeft,
-             color_type,
-             None,
-             None,
-         )
-         .ok_or_else(|| {
-             unsafe {
-                 //device.free_memory(memory, None);
-                 //device.destroy_image(image, None);
-             }
-             "Failed to wrap Vulkan image as Skia surface".to_string()
-         })?;
+        let skia_surface = gpu::surfaces::wrap_backend_render_target(
+            gr_context,
+            &render_target,
+            gpu::SurfaceOrigin::TopLeft,
+            color_type,
+            None,
+            None,
+        )
+        .ok_or_else(|| "Failed to wrap Vulkan image as Skia surface".to_string())?;
 
         let pool_ci = CommandPoolCreateInfo {
             flags: CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
@@ -346,7 +349,7 @@ impl TabVkImage {
             width,
             height,
             format,
-            alloc_size: mem_reqs.layout.size(),
+            alloc_size: mem_req_size,
             skia_surface: Some(skia_surface),
             render_semaphore,
             cmd_pool: Arc::new(cmd_pool),
