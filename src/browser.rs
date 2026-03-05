@@ -520,11 +520,19 @@ impl BrowserApp {
             .round() as i32;
 
         let tab_frame = active_tab_id.as_ref()
-            .and_then(|id| self.tab_manager.get_tab(id))
-            .and_then(|tab| tab.rendered_frame.as_ref())
-            .map(|f| (&f.vk_guard, f.width, f.height, f.sem_handle));
+            .and_then(|id| self.tab_manager.get_tab_mut(id))
+            .and_then(|tab| tab.rendered_frame.as_mut())
+            .map(|f| {
+                // Linux sync_fd handles are one-shot once imported by Vulkan.
+                let sem_handle = std::mem::replace(&mut f.sem_handle, -1);
+                (f.vk_guard.clone(), f.width, f.height, sem_handle)
+            });
 
-        self.env.as_mut().unwrap().blit_tab_then_present(tab_frame, chrome_px)?;
+        let tab_frame_ref = tab_frame
+            .as_ref()
+            .map(|(vk_guard, width, height, sem_handle)| (vk_guard, *width, *height, *sem_handle));
+
+        self.env.as_mut().unwrap().blit_tab_then_present(tab_frame_ref, chrome_px)?;
 
         Ok(())
     }

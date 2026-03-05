@@ -367,6 +367,12 @@ fn vk_acquire(
             ash::vk::Fence::null(),
         ) {
             Ok(result) => result,
+            // Transient WSI state: no image is ready this instant. Skip this frame
+            // and schedule another redraw so the render loop retries quickly.
+            Err(ash::vk::Result::NOT_READY) => {
+                window.request_redraw();
+                return Ok(false);
+            }
             Err(ash::vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 vk.swapchain_valid = false;
                 return Ok(false);
@@ -413,12 +419,19 @@ unsafe fn import_wait_semaphore_for_frame(
         .handle_type(ash::vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD)
         .fd(sem_handle as libc::c_int);
 
-    if let Err(e) = ext_sem_fd.import_semaphore_fd(&import_info) {
-        device.destroy_semaphore(sem, None);
-        return Err(format!("vkImportSemaphoreFdKHR failed: {:?}", e));
+    match ext_sem_fd.import_semaphore_fd(&import_info) {
+        Ok(()) => Ok(Some(sem)),
+        // sync_fd handles are one-shot; if a stale/consumed fd is reused, skip
+        // GPU wait for this frame instead of failing the whole render path.
+        Err(ash::vk::Result::ERROR_INVALID_EXTERNAL_HANDLE) => {
+            device.destroy_semaphore(sem, None);
+            Ok(None)
+        }
+        Err(e) => {
+            device.destroy_semaphore(sem, None);
+            Err(format!("vkImportSemaphoreFdKHR failed: {:?}", e))
+        }
     }
-
-    Ok(Some(sem))
 }
 
 #[cfg(windows)]
