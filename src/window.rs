@@ -461,7 +461,7 @@ fn vk_blit_tab_then_present(
     chrome_px: i32,
 ) -> Result<(), String> {
     unsafe {
-        let device = &vk.device;
+        let device = &vk.ash_device;
         let swapchain_image = vk.swapchain_images[vk.current_image_index as usize];
         let mut submitted_tab_image: Option<Arc<ImportedVkImage>> = None;
 
@@ -513,7 +513,7 @@ fn vk_blit_tab_then_present(
                     .new_layout(ash::vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
                     .src_queue_family_index(ash::vk::QUEUE_FAMILY_EXTERNAL)
                     .dst_queue_family_index(vk.queue_family_index)
-                    .image(tab.image())
+                    .image(tab.image().handle())
                     .subresource_range(COLOR_SUBRESOURCE_RANGE),
             ];
             device.cmd_pipeline_barrier(
@@ -538,7 +538,7 @@ fn vk_blit_tab_then_present(
                 ]);
             device.cmd_blit_image(
                 vk.blit_cmd_buf,
-                tab.image(), ash::vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                tab.image().handle(), ash::vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 swapchain_image, ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[blit],
                 ash::vk::Filter::LINEAR,
@@ -564,7 +564,7 @@ fn vk_blit_tab_then_present(
                     .new_layout(ash::vk::ImageLayout::GENERAL)
                     .src_queue_family_index(vk.queue_family_index)
                     .dst_queue_family_index(ash::vk::QUEUE_FAMILY_EXTERNAL)
-                    .image(tab.image())
+                    .image(tab.image().handle())
                     .subresource_range(COLOR_SUBRESOURCE_RANGE),
             ];
             device.cmd_pipeline_barrier(
