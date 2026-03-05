@@ -399,7 +399,9 @@ unsafe fn import_wait_semaphore_for_frame(
         return Ok(None);
     }
 
-    let sem_ci = ash::vk::SemaphoreCreateInfo::default();
+    let mut export_ci = ash::vk::ExportSemaphoreCreateInfo::default()
+        .handle_types(ash::vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
+    let sem_ci = ash::vk::SemaphoreCreateInfo::default().push_next(&mut export_ci);
     let sem = device
         .create_semaphore(&sem_ci, None)
         .map_err(|e| format!("vkCreateSemaphore (import wait): {:?}", e))?;
@@ -429,7 +431,9 @@ unsafe fn import_wait_semaphore_for_frame(
         return Ok(None);
     }
 
-    let sem_ci = ash::vk::SemaphoreCreateInfo::default();
+    let mut export_ci = ash::vk::ExportSemaphoreCreateInfo::default()
+        .handle_types(ash::vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32);
+    let sem_ci = ash::vk::SemaphoreCreateInfo::default().push_next(&mut export_ci);
     let sem = device
         .create_semaphore(&sem_ci, None)
         .map_err(|e| format!("vkCreateSemaphore (import wait): {:?}", e))?;
@@ -461,17 +465,17 @@ fn vk_blit_tab_then_present(
     chrome_px: i32,
 ) -> Result<(), String> {
     unsafe {
-        let device = &vk.ash_device;
+        let ash_device = &vk.ash_device;
         let swapchain_image = vk.swapchain_images[vk.current_image_index as usize];
         let mut submitted_tab_image: Option<Arc<ImportedVkImage>> = None;
 
         // Reset the persistent command buffer for this frame.
-        device.reset_command_buffer(vk.blit_cmd_buf, ash::vk::CommandBufferResetFlags::empty())
+        ash_device.reset_command_buffer(vk.blit_cmd_buf, ash::vk::CommandBufferResetFlags::empty())
             .map_err(|e| format!("vkResetCommandBuffer (blit-present): {:?}", e))?;
 
         let begin_info = ash::vk::CommandBufferBeginInfo::default()
             .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        device.begin_command_buffer(vk.blit_cmd_buf, &begin_info)
+        ash_device.begin_command_buffer(vk.blit_cmd_buf, &begin_info)
             .map_err(|e| format!("vkBeginCommandBuffer (blit-present): {:?}", e))?;
 
         let mut external_wait_semaphore = ash::vk::Semaphore::null();
@@ -486,7 +490,7 @@ fn vk_blit_tab_then_present(
         if let Some((tab, tab_w, tab_h, sem_handle)) = tab_frame {
             submitted_tab_image = Some(tab.clone());
 
-            if let Some(imported_wait) = import_wait_semaphore_for_frame(&vk.ash_instance, device, sem_handle)? {
+            if let Some(imported_wait) = import_wait_semaphore_for_frame(&vk.ash_instance, ash_device, sem_handle)? {
                 external_wait_semaphore = imported_wait;
             }
 
@@ -494,31 +498,31 @@ fn vk_blit_tab_then_present(
             let sh = vk.swapchain_extent.height as i32;
             let dst_h = (sh - chrome_px).max(0);
 
-            // Transition swapchain image: PRESENT_SRC_KHR → TRANSFER_DST_OPTIMAL
-            // Transition tab image:       GENERAL          → TRANSFER_SRC_OPTIMAL
+            // Transition swapchain image: COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_DST_OPTIMAL
+            // Transition tab image:       GENERAL                 -> TRANSFER_SRC_OPTIMAL
             let barriers_pre = [
                 ash::vk::ImageMemoryBarrier::default()
                     .src_access_mask(ash::vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
                     .dst_access_mask(ash::vk::AccessFlags::TRANSFER_WRITE)
-                    .old_layout(ash::vk::ImageLayout::PRESENT_SRC_KHR)
+                    .old_layout(ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                     .new_layout(ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL)
                     .src_queue_family_index(ash::vk::QUEUE_FAMILY_IGNORED)
                     .dst_queue_family_index(ash::vk::QUEUE_FAMILY_IGNORED)
                     .image(swapchain_image)
                     .subresource_range(COLOR_SUBRESOURCE_RANGE),
                 ash::vk::ImageMemoryBarrier::default()
-                    .src_access_mask(ash::vk::AccessFlags::empty())
+                    .src_access_mask(ash::vk::AccessFlags::MEMORY_WRITE)
                     .dst_access_mask(ash::vk::AccessFlags::TRANSFER_READ)
                     .old_layout(ash::vk::ImageLayout::GENERAL)
                     .new_layout(ash::vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                    .src_queue_family_index(ash::vk::QUEUE_FAMILY_EXTERNAL)
-                    .dst_queue_family_index(vk.queue_family_index)
+                    .src_queue_family_index(ash::vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(ash::vk::QUEUE_FAMILY_IGNORED)
                     .image(tab.image().handle())
                     .subresource_range(COLOR_SUBRESOURCE_RANGE),
             ];
-            device.cmd_pipeline_barrier(
+            ash_device.cmd_pipeline_barrier(
                 vk.blit_cmd_buf,
-                ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | ash::vk::PipelineStageFlags::TRANSFER,
+                ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | ash::vk::PipelineStageFlags::ALL_COMMANDS,
                 ash::vk::PipelineStageFlags::TRANSFER,
                 ash::vk::DependencyFlags::empty(),
                 &[], &[], &barriers_pre,
@@ -536,7 +540,7 @@ fn vk_blit_tab_then_present(
                     ash::vk::Offset3D { x: 0, y: chrome_px, z: 0 },
                     ash::vk::Offset3D { x: sw, y: chrome_px + dst_h, z: 1 },
                 ]);
-            device.cmd_blit_image(
+            ash_device.cmd_blit_image(
                 vk.blit_cmd_buf,
                 tab.image().handle(), ash::vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 swapchain_image, ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -562,29 +566,29 @@ fn vk_blit_tab_then_present(
                     .dst_access_mask(ash::vk::AccessFlags::empty())
                     .old_layout(ash::vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
                     .new_layout(ash::vk::ImageLayout::GENERAL)
-                    .src_queue_family_index(vk.queue_family_index)
-                    .dst_queue_family_index(ash::vk::QUEUE_FAMILY_EXTERNAL)
+                    .src_queue_family_index(ash::vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(ash::vk::QUEUE_FAMILY_IGNORED)
                     .image(tab.image().handle())
                     .subresource_range(COLOR_SUBRESOURCE_RANGE),
             ];
-            device.cmd_pipeline_barrier(
+            ash_device.cmd_pipeline_barrier(
                 vk.blit_cmd_buf,
                 ash::vk::PipelineStageFlags::TRANSFER,
-                ash::vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                ash::vk::PipelineStageFlags::ALL_COMMANDS,
                 ash::vk::DependencyFlags::empty(),
                 &[], &[], &barriers_post,
             );
         }
 
-        device.end_command_buffer(vk.blit_cmd_buf)
+        ash_device.end_command_buffer(vk.blit_cmd_buf)
             .map_err(|e| format!("vkEndCommandBuffer (blit-present): {:?}", e))?;
 
         // Submit: wait image_available (+ optional tab frame semaphore), signal render_finished.
         let mut wait_sems = vec![vk.image_available_semaphore];
-        let mut wait_stages = vec![ash::vk::PipelineStageFlags::TRANSFER];
+        let mut wait_stages = vec![ash::vk::PipelineStageFlags::ALL_COMMANDS];
         if external_wait_semaphore != ash::vk::Semaphore::null() {
             wait_sems.push(external_wait_semaphore);
-            wait_stages.push(ash::vk::PipelineStageFlags::TRANSFER);
+            wait_stages.push(ash::vk::PipelineStageFlags::ALL_COMMANDS);
         }
         let signal_sems = [vk.render_finished_semaphore];
         let cmd_bufs = [vk.blit_cmd_buf];
@@ -594,9 +598,9 @@ fn vk_blit_tab_then_present(
             .command_buffers(&cmd_bufs)
             .signal_semaphores(&signal_sems);
 
-        if let Err(e) = device.queue_submit(vk.ash_queue, &[submit_info], ash::vk::Fence::null()) {
+        if let Err(e) = ash_device.queue_submit(vk.ash_queue, &[submit_info], ash::vk::Fence::null()) {
             if external_wait_semaphore != ash::vk::Semaphore::null() {
-                device.destroy_semaphore(external_wait_semaphore, None);
+                ash_device.destroy_semaphore(external_wait_semaphore, None);
             }
             return Err(format!("vkQueueSubmit (blit-present): {:?}", e));
         }

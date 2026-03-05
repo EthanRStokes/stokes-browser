@@ -483,10 +483,6 @@ impl TabVkImage {
                     src_stages: vulkano::sync::PipelineStages::COLOR_ATTACHMENT_OUTPUT,
                     dst_stages: vulkano::sync::PipelineStages::ALL_COMMANDS,
 
-                    // TODO check Queue family ownership transfer to external.
-                    //src_queue_family_index: self.queue_family_index,
-                    //dst_queue_family_index: vulkano::sync::QUEUE_FAMILY_EXTERNAL,
-
                     ..ImageMemoryBarrier::image(self.image.clone())
                 }
             ]
@@ -596,7 +592,10 @@ pub unsafe fn import_vk_image_raw(
         mip_levels: 1,
         samples: SampleCount::Sample1,
         tiling: ImageTiling::Optimal,
-        usage: ImageUsage::TRANSFER_SRC | ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
+        usage: ImageUsage::COLOR_ATTACHMENT
+            | ImageUsage::TRANSFER_SRC
+            | ImageUsage::TRANSFER_DST
+            | ImageUsage::SAMPLED,
         sharing: Sharing::Exclusive,
         initial_layout: ImageLayout::Undefined,
         external_memory_handle_types: handle_type.into(),
@@ -609,12 +608,25 @@ pub unsafe fn import_vk_image_raw(
         .map_err(|e| format!("Failed to create raw image for import: {:?}", e))?;
 
     let mem_reqs = raw_image.memory_requirements();
+    let required_alloc_size = mem_reqs
+        .last()
+        .ok_or_else(|| "Vulkan returned no memory requirements for imported image".to_string())?
+        .layout
+        .size();
+
+    if alloc_size != required_alloc_size {
+        return Err(format!(
+            "Imported handle allocation size mismatch: exported={}, import-required={}",
+            alloc_size, required_alloc_size
+        ));
+    }
 
     let imported_memory = import_memory(
         physical_device,
         device.clone(),
+        &raw_image,
         handle,
-        alloc_size,
+        required_alloc_size,
         Vec::from(mem_reqs),
     )?;
 
@@ -640,6 +652,7 @@ pub unsafe fn import_vk_image_raw(
 unsafe fn import_memory(
     physical_device: Arc<PhysicalDevice>,
     device: Arc<Device>,
+    raw_image: &RawImage,
     handle: u64,
     alloc_size: u64,
     mem_reqs: Vec<MemoryRequirements>,
@@ -675,7 +688,9 @@ unsafe fn import_memory(
     let alloc_info = MemoryAllocateInfo {
         allocation_size: alloc_size,
         memory_type_index: mem_type_index,
-        dedicated_allocation: None,
+        // Required by VUID-VkBindImageMemoryInfo-image-01445 when the image
+        // reports requires_dedicated_allocation.
+        dedicated_allocation: Some(DedicatedAllocation::Image(raw_image)),
         ..Default::default()
     };
 
@@ -687,6 +702,7 @@ unsafe fn import_memory(
 unsafe fn import_memory(
     physical_device: Arc<PhysicalDevice>,
     device: Arc<Device>,
+    raw_image: &RawImage,
     handle: u64,
     alloc_size: u64,
     mem_reqs: Vec<MemoryRequirements>,
@@ -730,7 +746,9 @@ unsafe fn import_memory(
     let alloc_info = MemoryAllocateInfo {
         allocation_size: alloc_size,
         memory_type_index: mem_type_index,
-        dedicated_allocation: None,
+        // Required by VUID-VkBindImageMemoryInfo-image-01445 when the image
+        // reports requires_dedicated_allocation.
+        dedicated_allocation: Some(DedicatedAllocation::Image(raw_image)),
         ..Default::default()
     };
 
