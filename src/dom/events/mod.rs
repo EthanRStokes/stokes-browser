@@ -8,7 +8,7 @@ use crate::dom::events::keyboard::handle_keypress;
 use crate::dom::events::pointer::{handle_click, handle_pointerdown, handle_pointermove, handle_pointerup, handle_wheel};
 // Event system for DOM nodes using mozjs
 use crate::dom::{Dom, DomNode, NodeData};
-use crate::events::{BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData, EventState, UiEvent};
+use crate::events::{BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData, EventState, PointerCoords, UiEvent};
 use crate::js::bindings::element_bindings::create_js_element_by_id;
 use crate::js::with_runtime_mut;
 use blitz_traits::shell::ShellProvider;
@@ -23,6 +23,19 @@ use std::collections::{HashMap, VecDeque};
 use std::os::raw::c_uint;
 use mozjs::rooted;
 use mozjs::rust::ValueArray;
+use taffy::Point;
+use crate::dom::events::focus::generate_focus_events;
+
+fn adjust_coords_for_subdocument(
+    coords: &mut PointerCoords,
+    offset: Point<f32>,
+    viewport_scroll: Point<f64>,
+) {
+    coords.page_x -= offset.x - viewport_scroll.x as f32;
+    coords.page_y -= offset.y - viewport_scroll.y as f32;
+    coords.client_x -= offset.x;
+    coords.client_y -= offset.y;
+}
 
 impl Dom {
     pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
@@ -33,6 +46,78 @@ impl Dom {
         let target_node_id = event.target;
 
         // Handle forwarding event sub-document
+        let node = &mut self.nodes[target_node_id];
+        let pos = node.absolute_position(0.0, 0.0);
+        let mut set_focus = false;
+        if let Some(sub_doc) = node.subdom_mut() {
+            let viewport_scroll = sub_doc.inner().viewport_scroll();
+            // TODO: eliminate clone
+            let ui_event = match event.data.clone() {
+                DomEventData::PointerMove(mut event) => {
+                    adjust_coords_for_subdocument(&mut event.coords, pos, viewport_scroll);
+                    Some(UiEvent::PointerMove(event))
+                }
+                DomEventData::PointerDown(mut event) => {
+                    adjust_coords_for_subdocument(&mut event.coords, pos, viewport_scroll);
+                    set_focus = true;
+                    Some(UiEvent::PointerDown(event))
+                }
+                DomEventData::PointerUp(mut event) => {
+                    adjust_coords_for_subdocument(&mut event.coords, pos, viewport_scroll);
+                    set_focus = true;
+                    Some(UiEvent::PointerUp(event))
+                }
+
+                // Enter/leave events will be recreated by sub-document's event driver
+                // based move events
+                DomEventData::PointerEnter(_) => None,
+                DomEventData::PointerLeave(_) => None,
+                DomEventData::PointerOver(_) => None,
+                DomEventData::PointerOut(_) => None,
+
+                // Mouse events will be recreated by sub-document's event driver
+                // based pointer events
+                DomEventData::MouseMove(_) => None,
+                DomEventData::MouseDown(_) => None,
+                DomEventData::MouseUp(_) => None,
+                DomEventData::MouseEnter(_) => None,
+                DomEventData::MouseLeave(_) => None,
+                DomEventData::MouseOver(_) => None,
+                DomEventData::MouseOut(_) => None,
+
+                DomEventData::KeyDown(data) => Some(UiEvent::KeyDown(data)),
+                DomEventData::KeyUp(data) => Some(UiEvent::KeyUp(data)),
+                DomEventData::Ime(data) => Some(UiEvent::Ime(data)),
+
+                DomEventData::KeyPress(_) => None,
+                DomEventData::Click(_) => None,
+                DomEventData::ContextMenu(_) => None,
+                DomEventData::DoubleClick(_) => None,
+                DomEventData::Input(_) => None,
+                DomEventData::Wheel(data) => Some(UiEvent::Wheel(data)),
+                DomEventData::Scroll(_) => None,
+                DomEventData::Focus(_) => None,
+                DomEventData::Blur(_) => None,
+                DomEventData::FocusIn(_) => None,
+                DomEventData::FocusOut(_) => None,
+            };
+
+            if let Some(ui_event) = ui_event {
+                sub_doc.handle_ui_event(ui_event);
+            }
+
+            if set_focus {
+                generate_focus_events(
+                    self,
+                    &mut |doc| {
+                        doc.set_focus_to(target_node_id);
+                    },
+                    &mut dispatch_event,
+                );
+            }
+
+            return;
+        }
 
         match &event.data {
             DomEventData::PointerMove(event) => {
@@ -924,13 +1009,6 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
             UiEvent::Ime(_) => focussed_node_id,
         };
         let target = target.unwrap_or_else(|| self.doc.root_element().id);
-
-        if self.doc.forward_ui_event_to_iframe(target, &event) {
-            if should_clear_hover {
-                self.doc.clear_hover();
-            }
-            return;
-        }
 
         match event {
             UiEvent::PointerMove(data) => {

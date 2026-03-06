@@ -17,6 +17,7 @@ mod state;
 mod selection;
 pub(crate) mod form;
 mod sub_dom;
+mod viewport;
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -99,6 +100,7 @@ use stylo_atoms::Atom;
 use taffy::Point;
 use crate::dom::events::{EventDriver, JsEventHandler};
 use crate::dom::parser::HtmlProvider;
+use crate::dom::viewport::ViewportMut;
 use crate::engine::js_provider::StokesJsProvider;
 
 const ZERO: Point<f64> = Point { x: 0.0, y: 0.0 };
@@ -1234,6 +1236,14 @@ impl Dom {
         }
     }
 
+    pub fn viewport(&self) -> &Viewport {
+        &self.viewport
+    }
+
+    pub fn viewport_mut(&mut self) -> ViewportMut<'_> {
+        ViewportMut::new(self)
+    }
+
     pub fn set_stylist_device(&mut self, device: Device) {
         let origins = {
             let lock = &self.lock;
@@ -1253,7 +1263,9 @@ impl Dom {
     pub fn get_cursor(&self) -> Option<CursorIcon> {
         let node = &self.nodes[self.get_hover_node_id()?];
 
-        // TODO subdoc
+        if let Some(subdom) = node.subdom().map(|doc| doc.inner()) {
+            return subdom.get_cursor();
+        }
 
         let style = node.primary_styles()?;
         let keyword = stylo_to_cursor_icon(style.clone_cursor().keyword);
@@ -1333,7 +1345,17 @@ impl Dom {
         let scroll_width = node.final_layout.scroll_width() as f64;
         let scroll_height = node.final_layout.scroll_height() as f64;
 
-        // Todo subdoc
+        // Handle sub document case
+        if let Some(mut sub_doc) = node.subdom_mut().map(|doc| doc.inner_mut()) {
+            let has_changed = if let Some(hover_node_id) = sub_doc.get_hover_node_id() {
+                sub_doc.scroll_node_by_has_changed(hover_node_id, x, y, dispatch_event)
+            } else {
+                sub_doc.scroll_viewport_by_has_changed(x, y)
+            };
+
+            // TODO: propagate remaining scroll to parent
+            return has_changed;
+        }
 
         if !can_x_scroll {
             bubble_x = x
@@ -1427,6 +1449,14 @@ impl Dom {
         } else {
             self.scroll_viewport_by_has_changed(scroll_x, scroll_y)
         }
+    }
+
+    pub fn viewport_scroll(&self) -> Point<f64> {
+        self.viewport_scroll
+    }
+
+    pub fn set_viewport_scroll(&mut self, scroll: Point<f64>) {
+        self.viewport_scroll = scroll;
     }
 
     pub fn hit(&self, x: f32, y: f32) -> Option<HitResult> {
@@ -2207,133 +2237,6 @@ impl Dom {
     pub fn remove_sub_dom(&mut self, node_id: usize) {
         self.nodes[node_id].element_data_mut().unwrap().remove_sub_dom();
         self.sub_dom_nodes.remove(&node_id);
-    }
-
-    pub(crate) fn resolve_sub_doms(&mut self, now: f64) {
-        self.subdom_is_animating = false;
-        let node_ids: Vec<usize> = self.sub_dom_nodes.iter().copied().collect();
-
-        for node_id in node_ids {
-            let viewport = self.iframe_viewport(node_id);
-
-            let Some(element) = self.nodes.get_mut(node_id).and_then(|n| n.element_data_mut()) else {
-                continue;
-            };
-            let Some(sub_dom) = element.sub_dom_data_mut() else {
-                continue;
-            };
-
-            let mut inner = sub_dom.inner_mut();
-            inner.set_viewport(viewport);
-            inner.resolve(now);
-
-            if inner.animating() {
-                self.subdom_is_animating = true;
-            }
-        }
-    }
-
-    fn iframe_viewport(&self, node_id: usize) -> Viewport {
-        let mut viewport = self.viewport.clone();
-        if let Some(node) = self.nodes.get(node_id) {
-            viewport.window_size = (
-                node.final_layout.content_box_width().max(1.0) as u32,
-                node.final_layout.content_box_height().max(1.0) as u32,
-            );
-        }
-        viewport
-    }
-
-    fn iframe_host_ancestor(&self, mut node_id: usize) -> Option<usize> {
-        loop {
-            let node = self.nodes.get(node_id)?;
-            let is_iframe = node
-                .element_data()
-                .is_some_and(|el| el.name.local == local_name!("iframe") && el.sub_dom_data().is_some());
-            if is_iframe {
-                return Some(node_id);
-            }
-            node_id = node.parent?;
-        }
-    }
-
-    fn iframe_event_origin(&self, iframe_id: usize) -> Option<(f32, f32)> {
-        let node = self.nodes.get(iframe_id)?;
-        let pos = node.absolute_position(0.0, 0.0);
-        Some((
-            pos.x + node.final_layout.content_box_x(),
-            pos.y + node.final_layout.content_box_y(),
-        ))
-    }
-
-    pub(crate) fn forward_ui_event_to_iframe(&mut self, target: usize, event: &UiEvent) -> bool {
-        let Some(iframe_id) = self.iframe_host_ancestor(target) else {
-            return false;
-        };
-
-        let Some((origin_x, origin_y)) = self.iframe_event_origin(iframe_id) else {
-            return false;
-        };
-
-        let Some(element) = self.nodes.get_mut(iframe_id).and_then(|n| n.element_data_mut()) else {
-            return false;
-        };
-        let Some(sub_dom) = element.sub_dom_data_mut() else {
-            return false;
-        };
-
-        let mut remap_pointer = |evt: &crate::events::BlitzPointerEvent| {
-            let mut mapped = evt.clone();
-            let scroll = {
-                let inner = sub_dom.inner();
-                inner.viewport_scroll
-            };
-
-            let local_client_x = evt.page_x() - origin_x;
-            let local_client_y = evt.page_y() - origin_y;
-            mapped.coords = crate::events::PointerCoords {
-                page_x: local_client_x + scroll.x as f32,
-                page_y: local_client_y + scroll.y as f32,
-                client_x: local_client_x,
-                client_y: local_client_y,
-                screen_x: local_client_x,
-                screen_y: local_client_y,
-            };
-            mapped
-        };
-
-        let mut remap_wheel = |evt: &crate::events::BlitzWheelEvent| {
-            let mut mapped = evt.clone();
-            let scroll = {
-                let inner = sub_dom.inner();
-                inner.viewport_scroll
-            };
-
-            let local_client_x = evt.page_x() - origin_x;
-            let local_client_y = evt.page_y() - origin_y;
-            mapped.coords = crate::events::PointerCoords {
-                page_x: local_client_x + scroll.x as f32,
-                page_y: local_client_y + scroll.y as f32,
-                client_x: local_client_x,
-                client_y: local_client_y,
-                screen_x: local_client_x,
-                screen_y: local_client_y,
-            };
-            mapped
-        };
-
-        let mapped_event = match event {
-            UiEvent::PointerMove(e) => UiEvent::PointerMove(remap_pointer(e)),
-            UiEvent::PointerDown(e) => UiEvent::PointerDown(remap_pointer(e)),
-            UiEvent::PointerUp(e) => UiEvent::PointerUp(remap_pointer(e)),
-            UiEvent::Wheel(e) => UiEvent::Wheel(remap_wheel(e)),
-            UiEvent::KeyDown(e) => UiEvent::KeyDown(e.clone()),
-            UiEvent::KeyUp(e) => UiEvent::KeyUp(e.clone()),
-            UiEvent::Ime(e) => UiEvent::Ime(e.clone()),
-        };
-
-        sub_dom.handle_ui_event(mapped_event);
-        true
     }
 
     pub fn append_text_to_node(&mut self, node_id: usize, text: &str) -> Result<(), AppendTextErr> {

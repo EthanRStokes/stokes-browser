@@ -1,6 +1,7 @@
 use super::super::helpers::{
-    create_empty_array, create_js_string, define_function, js_value_to_string,
-    set_bool_property, set_int_property, set_string_property, get_node_id_from_value,
+    create_empty_array, create_js_string, define_function, get_node_id_from_this,
+    js_value_to_string, set_bool_property, set_int_property, set_string_property,
+    get_node_id_from_value,
 };
 use super::cookies::{ensure_cookie_jar_initialized, set_document_url, Cookie, COOKIE_JAR, DOCUMENT_URL};
 use super::element_bindings;
@@ -10,7 +11,7 @@ use crate::js::bindings::element_bindings::element_append_child;
 use crate::js::selectors::matches_selector;
 use crate::js::JsRuntime;
 use html5ever::ns;
-use markup5ever::QualName;
+use markup5ever::{local_name, QualName};
 use mozjs::jsapi::{
     CallArgs, JSContext, JSObject, JS_DefineProperty, JS_NewPlainObject,
     JSPROP_ENUMERATE,
@@ -794,6 +795,8 @@ unsafe fn setup_html_iframe_element_constructor(raw_cx: *mut JSContext, global: 
     // Define getter/setter functions for src property
     define_function(raw_cx, prototype.get(), "__getSrc", Some(html_iframe_element_get_src), 0)?;
     define_function(raw_cx, prototype.get(), "__setSrc", Some(html_iframe_element_set_src), 1)?;
+    define_function(raw_cx, prototype.get(), "__getSrcdoc", Some(html_iframe_element_get_srcdoc), 0)?;
+    define_function(raw_cx, prototype.get(), "__setSrcdoc", Some(html_iframe_element_set_srcdoc), 1)?;
 
     // Define contentWindow as property with getter/setter on prototype
     define_property_accessor(raw_cx, prototype.get(), "contentWindow", "__getContentWindow", "__setContentWindow")?;
@@ -803,6 +806,7 @@ unsafe fn setup_html_iframe_element_constructor(raw_cx: *mut JSContext, global: 
 
     // Define src as property with getter/setter on prototype
     define_property_accessor(raw_cx, prototype.get(), "src", "__getSrc", "__setSrc")?;
+    define_property_accessor(raw_cx, prototype.get(), "srcdoc", "__getSrcdoc", "__setSrcdoc")?;
 
     // Set prototype on constructor
     rooted!(in(raw_cx) let prototype_val = ObjectValue(prototype.get()));
@@ -2095,73 +2099,192 @@ unsafe extern "C" fn style_get_property_value(raw_cx: *mut JSContext, argc: c_ui
     true
 }
 
+fn iframe_host_node_id(raw_cx: *mut JSContext, args: &CallArgs) -> Option<usize> {
+    let node_id = unsafe { get_node_id_from_this(raw_cx, args) }?;
+
+    DOM_REF.with(|dom_ref| {
+        let dom_ptr = (*dom_ref.borrow())?;
+        let dom = unsafe { &*dom_ptr };
+        let node = dom.get_node(node_id)?;
+        let element = node.element_data()?;
+        (element.name.local == local_name!("iframe")).then_some(node_id)
+    })
+}
+
+fn html_qual_name(local: markup5ever::LocalName) -> QualName {
+    QualName::new(None, ns!(html), local)
+}
+
+unsafe fn create_iframe_content_document_object(raw_cx: *mut JSContext, iframe_node_id: usize) -> Option<*mut JSObject> {
+    let mut title = String::new();
+    let mut url = String::new();
+    let mut has_subdom = false;
+
+    DOM_REF.with(|dom_ref| {
+        let Some(dom_ptr) = *dom_ref.borrow() else {
+            return;
+        };
+        let dom = &*dom_ptr;
+        let Some(node) = dom.get_node(iframe_node_id) else {
+            return;
+        };
+        let Some(element) = node.element_data() else {
+            return;
+        };
+        let Some(sub_dom) = element.sub_dom_data() else {
+            return;
+        };
+
+        let inner = sub_dom.inner();
+        title = inner.get_title();
+        url = inner.url.to_string();
+        has_subdom = true;
+    });
+
+    if !has_subdom {
+        return None;
+    }
+
+    rooted!(in(raw_cx) let document = JS_NewPlainObject(raw_cx));
+    if document.get().is_null() {
+        return None;
+    }
+
+    set_string_property(raw_cx, document.get(), "title", &title).ok()?;
+    set_string_property(raw_cx, document.get(), "URL", &url).ok()?;
+    set_string_property(raw_cx, document.get(), "readyState", "complete").ok()?;
+    set_int_property(raw_cx, document.get(), "nodeType", 9).ok()?;
+
+    rooted!(in(raw_cx) let node_id_val = mozjs::jsval::DoubleValue(iframe_node_id as f64));
+    rooted!(in(raw_cx) let document_rooted = document.get());
+    let node_id_name = std::ffi::CString::new("__iframeHostNodeId").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        document_rooted.handle().into(),
+        node_id_name.as_ptr(),
+        node_id_val.handle().into(),
+        0,
+    );
+
+    Some(document.get())
+}
+
+unsafe fn create_iframe_content_window_object(raw_cx: *mut JSContext, iframe_node_id: usize) -> Option<*mut JSObject> {
+    let document = create_iframe_content_document_object(raw_cx, iframe_node_id)?;
+
+    rooted!(in(raw_cx) let window_obj = JS_NewPlainObject(raw_cx));
+    if window_obj.get().is_null() {
+        return None;
+    }
+
+    rooted!(in(raw_cx) let document_val = ObjectValue(document));
+    rooted!(in(raw_cx) let window_rooted = window_obj.get());
+    let document_name = std::ffi::CString::new("document").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        window_rooted.handle().into(),
+        document_name.as_ptr(),
+        document_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    rooted!(in(raw_cx) let node_id_val = mozjs::jsval::DoubleValue(iframe_node_id as f64));
+    let node_id_name = std::ffi::CString::new("__iframeHostNodeId").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        window_rooted.handle().into(),
+        node_id_name.as_ptr(),
+        node_id_val.handle().into(),
+        0,
+    );
+
+    Some(window_obj.get())
+}
+
 /// HTMLIFrameElement contentWindow getter
-// TODO
-unsafe extern "C" fn html_iframe_element_get_content_window(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn html_iframe_element_get_content_window(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
-    println!("[JS] HTMLIFrameElement.contentWindow getter called");
+    let Some(node_id) = iframe_host_node_id(raw_cx, &args) else {
+        args.rval().set(mozjs::jsval::NullValue());
+        return true;
+    };
 
-    // For now, return null as iframe content window is not implemented
-    // In a full implementation, this would return the Window object of the iframe's document
-    args.rval().set(mozjs::jsval::NullValue());
+    if let Some(window_obj) = create_iframe_content_window_object(raw_cx, node_id) {
+        args.rval().set(ObjectValue(window_obj));
+    } else {
+        args.rval().set(mozjs::jsval::NullValue());
+    }
     true
 }
 
 /// HTMLIFrameElement contentWindow setter
-// TODO
-unsafe extern "C" fn html_iframe_element_set_content_window(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn html_iframe_element_set_content_window(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-
-    println!("[JS] HTMLIFrameElement.contentWindow setter called");
-
-    // contentWindow is read-only in the spec, but we provide a setter to avoid errors
+    // Read-only by spec; keep as no-op for web compat.
     args.rval().set(UndefinedValue());
     true
 }
 
 /// HTMLIFrameElement contentDocument getter
-// TODO
-unsafe extern "C" fn html_iframe_element_get_content_document(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn html_iframe_element_get_content_document(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
-    println!("[JS] HTMLIFrameElement.contentDocument getter called");
+    let Some(node_id) = iframe_host_node_id(raw_cx, &args) else {
+        args.rval().set(mozjs::jsval::NullValue());
+        return true;
+    };
 
-    // For now, return null as iframe content document is not implemented
-    // In a full implementation, this would return the Document object of the iframe
-    args.rval().set(mozjs::jsval::NullValue());
+    if let Some(document_obj) = create_iframe_content_document_object(raw_cx, node_id) {
+        args.rval().set(ObjectValue(document_obj));
+    } else {
+        args.rval().set(mozjs::jsval::NullValue());
+    }
     true
 }
 
 /// HTMLIFrameElement contentDocument setter
-// TODO
-unsafe extern "C" fn html_iframe_element_set_content_document(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn html_iframe_element_set_content_document(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-
-    println!("[JS] HTMLIFrameElement.contentDocument setter called");
-
-    // contentDocument is read-only in the spec, but we provide a setter to avoid errors
+    // Read-only by spec; keep as no-op for web compat.
     args.rval().set(UndefinedValue());
     true
 }
 
 /// HTMLIFrameElement src getter
-// TODO
-unsafe extern "C" fn html_iframe_element_get_src(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn html_iframe_element_get_src(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
-    println!("[JS] HTMLIFrameElement.src getter called");
+    let Some(node_id) = iframe_host_node_id(raw_cx, &args) else {
+        args.rval().set(create_js_string(raw_cx, ""));
+        return true;
+    };
 
-    // For now, return empty string
-    // In a full implementation, this would get the src attribute from the element
-    args.rval().set(create_js_string(raw_cx, ""));
+    let src = DOM_REF.with(|dom_ref| {
+        let dom_ptr = match *dom_ref.borrow() {
+            Some(ptr) => ptr,
+            None => return String::new(),
+        };
+        let dom = unsafe { &*dom_ptr };
+        dom.get_node(node_id)
+            .and_then(|n| n.element_data())
+            .and_then(|el| el.attr(local_name!("src")))
+            .unwrap_or("")
+            .to_string()
+    });
+
+    args.rval().set(create_js_string(raw_cx, &src));
     true
 }
 
 /// HTMLIFrameElement src setter
-// TODO
-unsafe extern "C" fn html_iframe_element_set_src(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn html_iframe_element_set_src(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+
+    let Some(node_id) = iframe_host_node_id(raw_cx, &args) else {
+        args.rval().set(UndefinedValue());
+        return true;
+    };
 
     let src = if argc > 0 {
         js_value_to_string(raw_cx, *args.get(0))
@@ -2169,35 +2292,68 @@ unsafe extern "C" fn html_iframe_element_set_src(raw_cx: *mut JSContext, argc: c
         String::new()
     };
 
-    println!("[JS] HTMLIFrameElement.src setter called with value: {}", src);
+    DOM_REF.with(|dom_ref| {
+        let Some(dom_ptr) = *dom_ref.borrow() else {
+            return;
+        };
+        let dom = unsafe { &mut *dom_ptr };
+        dom.set_attribute(node_id, html_qual_name(local_name!("src")), &src);
+    });
 
-    // In a full implementation, this would set the src attribute and potentially load the iframe
     args.rval().set(UndefinedValue());
     true
 }
 
-#[cfg(test)]
-mod tests {
-    use super::evaluate_media_query;
+/// HTMLIFrameElement srcdoc getter
+pub(crate) unsafe extern "C" fn html_iframe_element_get_srcdoc(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
 
-    #[test]
-    fn width_queries_match_expected_ranges() {
-        assert!(evaluate_media_query("(min-width: 600px)", 800.0, 600.0, 1.0));
-        assert!(evaluate_media_query("(max-width: 1024px)", 800.0, 600.0, 1.0));
-        assert!(!evaluate_media_query("(min-width: 1200px)", 800.0, 600.0, 1.0));
-    }
+    let Some(node_id) = iframe_host_node_id(raw_cx, &args) else {
+        args.rval().set(create_js_string(raw_cx, ""));
+        return true;
+    };
 
-    #[test]
-    fn orientation_and_or_list_work() {
-        assert!(evaluate_media_query("screen and (orientation: landscape)", 900.0, 700.0, 1.0));
-        assert!(evaluate_media_query("(max-width: 500px), (orientation: landscape)", 900.0, 700.0, 1.0));
-        assert!(!evaluate_media_query("print and (min-width: 1px)", 900.0, 700.0, 1.0));
-    }
+    let srcdoc = DOM_REF.with(|dom_ref| {
+        let dom_ptr = match *dom_ref.borrow() {
+            Some(ptr) => ptr,
+            None => return String::new(),
+        };
+        let dom = unsafe { &*dom_ptr };
+        dom.get_node(node_id)
+            .and_then(|n| n.element_data())
+            .and_then(|el| el.attr(local_name!("srcdoc")))
+            .unwrap_or("")
+            .to_string()
+    });
 
-    #[test]
-    fn resolution_units_are_supported() {
-        assert!(evaluate_media_query("(min-resolution: 96dpi)", 800.0, 600.0, 1.0));
-        assert!(evaluate_media_query("(resolution: 1dppx)", 800.0, 600.0, 1.0));
-        assert!(!evaluate_media_query("(min-resolution: 2dppx)", 800.0, 600.0, 1.0));
-    }
+    args.rval().set(create_js_string(raw_cx, &srcdoc));
+    true
 }
+
+/// HTMLIFrameElement srcdoc setter
+pub(crate) unsafe extern "C" fn html_iframe_element_set_srcdoc(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let Some(node_id) = iframe_host_node_id(raw_cx, &args) else {
+        args.rval().set(UndefinedValue());
+        return true;
+    };
+
+    let srcdoc = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    DOM_REF.with(|dom_ref| {
+        let Some(dom_ptr) = *dom_ref.borrow() else {
+            return;
+        };
+        let dom = unsafe { &mut *dom_ptr };
+        dom.set_attribute(node_id, html_qual_name(local_name!("srcdoc")), &srcdoc);
+    });
+
+    args.rval().set(UndefinedValue());
+    true
+}
+

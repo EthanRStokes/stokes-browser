@@ -1381,6 +1381,14 @@ impl DomNode {
         self.set_restyle_hint(RestyleHint::restyle_subtree());
     }
 
+    pub fn subdom(&self) -> Option<&dyn AbstractDom> {
+        self.element_data().and_then(|el| el.sub_dom_data())
+    }
+
+    pub fn subdom_mut(&mut self) -> Option<&mut dyn AbstractDom> {
+        self.element_data_mut().and_then(|el| el.sub_dom_data_mut())
+    }
+
     pub fn primary_styles(&self) -> Option<AtomicRef<'_, StyloComputedValues>> {
         let stylo_data = self.stylo_data.borrow();
         if stylo_data.as_ref().and_then(|data| data.styles.get_primary()).is_some() {

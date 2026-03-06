@@ -1,6 +1,11 @@
 // Element bindings for JavaScript using mozjs
 use crate::dom::{AttributeMap, NodeData, ShadowRootMode};
-use crate::js::bindings::dom_bindings::DOM_REF;
+use crate::js::bindings::dom_bindings::{
+    html_iframe_element_get_content_document, html_iframe_element_get_content_window,
+    html_iframe_element_get_src, html_iframe_element_get_srcdoc,
+    html_iframe_element_set_content_document, html_iframe_element_set_content_window,
+    html_iframe_element_set_src, html_iframe_element_set_srcdoc, DOM_REF,
+};
 use crate::js::helpers::{create_empty_array, create_js_string, define_function, define_property_accessor, get_node_id_from_this, get_node_id_from_value, js_value_to_string, set_int_property, set_string_property, to_css_property_name};
 use crate::js::selectors::matches_selector;
 use html5ever::local_name;
@@ -97,6 +102,23 @@ pub unsafe fn create_js_element_by_id(
     define_property_accessor(raw_cx, element.get(), "id", "__getId", "__setId")?;
     define_property_accessor(raw_cx, element.get(), "className", "__getClassName", "__setClassName")?;
     define_property_accessor(raw_cx, element.get(), "shadowRoot", "__getShadowRoot", "__setShadowRoot")?;
+
+    if tag_name.eq_ignore_ascii_case("iframe") {
+        // Expose iframe-specific properties on element instances.
+        define_function(raw_cx, element.get(), "__getContentWindow", Some(html_iframe_element_get_content_window), 0)?;
+        define_function(raw_cx, element.get(), "__setContentWindow", Some(html_iframe_element_set_content_window), 1)?;
+        define_function(raw_cx, element.get(), "__getContentDocument", Some(html_iframe_element_get_content_document), 0)?;
+        define_function(raw_cx, element.get(), "__setContentDocument", Some(html_iframe_element_set_content_document), 1)?;
+        define_function(raw_cx, element.get(), "__getSrc", Some(html_iframe_element_get_src), 0)?;
+        define_function(raw_cx, element.get(), "__setSrc", Some(html_iframe_element_set_src), 1)?;
+        define_function(raw_cx, element.get(), "__getSrcdoc", Some(html_iframe_element_get_srcdoc), 0)?;
+        define_function(raw_cx, element.get(), "__setSrcdoc", Some(html_iframe_element_set_srcdoc), 1)?;
+
+        define_property_accessor(raw_cx, element.get(), "contentWindow", "__getContentWindow", "__setContentWindow")?;
+        define_property_accessor(raw_cx, element.get(), "contentDocument", "__getContentDocument", "__setContentDocument")?;
+        define_property_accessor(raw_cx, element.get(), "src", "__getSrc", "__setSrc")?;
+        define_property_accessor(raw_cx, element.get(), "srcdoc", "__getSrcdoc", "__setSrcdoc")?;
+    }
 
     if tag_name.eq_ignore_ascii_case("form") {
         setup_form_element_bindings(raw_cx, element.get())?;

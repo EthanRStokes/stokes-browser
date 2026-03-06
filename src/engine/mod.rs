@@ -220,7 +220,6 @@ impl Engine {
         self.resolve(now);
 
         let dom = self.dom.as_ref().unwrap();
-        let node = dom.root_node();
 
         let selection: HashMap<usize, (usize, usize)> = dom
             .get_text_selection_ranges()
@@ -240,7 +239,6 @@ impl Engine {
 
         renderer.render(
             painter,
-            node,
         );
     }
 

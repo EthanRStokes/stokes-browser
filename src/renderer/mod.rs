@@ -64,7 +64,6 @@ impl HtmlRenderer<'_> {
     pub fn render(
         &mut self,
         painter: &mut ScenePainter,
-        _node: &DomNode,
     ) {
         let scroll = self.dom.viewport_scroll;
 
@@ -381,13 +380,14 @@ impl HtmlRenderer<'_> {
         let overflow_x = styles.get_box().overflow_x;
         let overflow_y = styles.get_box().overflow_y;
         let is_image = node.element_data().and_then(|e| e.raster_image_data()).is_some();
-        let is_text_input = node.element_data().and_then(|e| e.text_input_data()).is_some();
-        let is_iframe = node
+        let is_sub_dom = node
             .element_data()
-            .is_some_and(|e| e.name.local == local_name!("iframe") && e.sub_dom_data().is_some());
+            .and_then(|el| el.sub_dom_data())
+            .is_some();
+        let is_text_input = node.element_data().and_then(|e| e.text_input_data()).is_some();
         let should_clip = is_image
+            || is_sub_dom
             || is_text_input
-            || is_iframe
             || !matches!(overflow_x, Overflow::Visible)
             || !matches!(overflow_y, Overflow::Visible);
 
@@ -436,7 +436,7 @@ impl HtmlRenderer<'_> {
                 element.draw_border(painter);
 
                 //let wants_layer = should_clip | has_opacity;
-                let clip = if is_text_input || is_iframe {
+                let clip = if is_text_input {
                     &element.frame.content_box_path()
                 } else {
                     &element.frame.padding_box_path()
@@ -457,7 +457,7 @@ impl HtmlRenderer<'_> {
                     element.draw_image(painter);
                     element.draw_svg(painter);
                     element.draw_canvas(painter);
-                    element.draw_iframe(painter);
+                    element.draw_sub_dom(painter);
                     element.draw_text_input_text(painter, position);
                     element.draw_inline_layout(painter, position);
                     element.draw_marker(painter, position);
@@ -989,42 +989,25 @@ impl Element<'_> {
         );
     }
 
-    fn draw_iframe(&self, painter: &mut ScenePainter) {
-        if self.element.name.local != local_name!("iframe") {
-            return;
+    fn draw_sub_dom(&self, painter: &mut ScenePainter) {
+        if let Some(sub_doc) = self.element.sub_dom_data().map(|doc| doc.inner()) {
+            let scale = self.scale_factor;
+            let width = self.frame.content_box.width() as u32;
+            let height = self.frame.content_box.height() as u32;
+            let initial_x = self.position.x + self.frame.content_box.origin().x;
+            let initial_y = self.position.y + self.frame.content_box.origin().y;
+            // let transform = self.transform.then_translate(Vec2 { x, y });
+
+            let mut renderer = HtmlRenderer {
+                dom: &sub_doc,
+                scale_factor: scale,
+                width,
+                height,
+                origin: Point { x: initial_x, y: initial_y },
+                selection_ranges: HashMap::new(),
+                debug_hitboxes: false
+            };
+            renderer.render(painter);
         }
-        let Some(sub_dom) = self.element.sub_dom_data() else {
-            return;
-        };
-
-        let inner = sub_dom.inner();
-        if inner.try_root_element().is_none() {
-            return;
-        }
-
-        let selection: HashMap<usize, (usize, usize)> = inner
-            .get_text_selection_ranges()
-            .into_iter()
-            .map(|(node_id, start, end)| (node_id, (start, end)))
-            .collect();
-
-        let content_origin = Point {
-            x: self.position.x
-                + (self.node.final_layout.padding.left + self.node.final_layout.border.left) as f64,
-            y: self.position.y
-                + (self.node.final_layout.padding.top + self.node.final_layout.border.top) as f64,
-        };
-
-        let mut renderer = HtmlRenderer {
-            dom: &inner,
-            scale_factor: self.scale_factor,
-            width: self.frame.content_box.width().max(0.0) as u32,
-            height: self.frame.content_box.height().max(0.0) as u32,
-            selection_ranges: selection,
-            origin: content_origin,
-            debug_hitboxes: self.context.debug_hitboxes,
-        };
-
-        renderer.render(painter, &inner.nodes[0]);
     }
 }
