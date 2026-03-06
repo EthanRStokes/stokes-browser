@@ -5,6 +5,7 @@ use ash::vk::Handle;
 use std::collections::HashMap;
 use std::io;
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use taffy::Point;
@@ -38,7 +39,29 @@ pub struct RenderedFrame {
     pub vk_guard: Arc<ImportedVkImage>,
     /// Exported render-complete semaphore handle from the tab frame.
     /// Linux: local duplicated fd (or -1 when unavailable). Windows: HANDLE value (or 0).
-    pub sem_handle: i64,
+    sem_handle: AtomicI64,
+}
+
+impl RenderedFrame {
+    /// Returns the semaphore handle exactly once for this frame.
+    /// Sync FDs are single-use; repeated imports lead to invalid-handle errors.
+    pub fn take_sem_handle(&self) -> i64 {
+        self.sem_handle.swap(-1, Ordering::AcqRel)
+    }
+}
+
+impl Drop for RenderedFrame {
+    fn drop(&mut self) {
+        #[cfg(not(windows))]
+        {
+            let sem_fd = *self.sem_handle.get_mut();
+            if sem_fd >= 0 {
+                unsafe {
+                    libc::close(sem_fd as libc::c_int);
+                }
+            }
+        }
+    }
 }
 
 /// Manages all tab processes
@@ -262,7 +285,7 @@ impl TabManager {
 
                         #[cfg(not(windows))]
                         let local_sem_handle: i64 = {
-                            if sem_handle == -1 {
+                            if sem_handle <= 0 {
                                 -1
                             } else {
                                 let child_pid = tab.process.id() as libc::pid_t;
@@ -317,7 +340,7 @@ impl TabManager {
                                     width,
                                     height,
                                     vk_guard: Arc::new(vk_guard),
-                                    sem_handle: local_sem_handle,
+                                    sem_handle: AtomicI64::new(local_sem_handle),
                                 });
                             }
                             Err(e) => {

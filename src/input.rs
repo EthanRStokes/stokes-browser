@@ -130,60 +130,6 @@ pub fn handle_middle_click(
     InputAction::None
 }
 
-/// Handles mouse wheel/scroll events
-pub fn handle_mouse_wheel(
-    delta: MouseScrollDelta,
-    cursor_position: (f64, f64),
-    modifiers: &Modifiers,
-    ui: &mut BrowserUI,
-    active_engine: &mut Engine,
-) -> InputAction {
-    // Check if mouse is over the tab bar (y < chrome height)
-    let chrome_height = ui.chrome_height() as f64;
-    let is_over_tabs = cursor_position.1 >= 48.0 && cursor_position.1 < chrome_height;
-
-    if is_over_tabs {
-        // Handle tab scrolling
-        match delta {
-            MouseScrollDelta::LineDelta(_x, y) => {
-                ui.handle_scroll(y);
-            }
-            MouseScrollDelta::PixelDelta(pos) => {
-                ui.handle_scroll(pos.y as f32 / 30.0);
-            }
-        }
-        return InputAction::RequestRedraw;
-    } else {
-        // Handle page content scrolling
-        let scroll_speed = 50.0;
-        let shift_held = modifiers.state().shift_key();
-
-        match delta {
-            MouseScrollDelta::LineDelta(x, y) => {
-                if shift_held {
-                    // Shift+scroll: convert vertical scroll to horizontal
-                    active_engine.scroll_horizontal(-y * scroll_speed);
-                } else {
-                    // Normal scrolling: both vertical and horizontal
-                    active_engine.scroll_vertical(-y * scroll_speed);
-                    active_engine.scroll_horizontal(-x * scroll_speed);
-                }
-            }
-            MouseScrollDelta::PixelDelta(pos) => {
-                if shift_held {
-                    // Shift+scroll: convert vertical scroll to horizontal
-                    active_engine.scroll_horizontal(-pos.y as f32);
-                } else {
-                    // Pixel-precise scrolling (trackpad)
-                    active_engine.scroll_vertical(-pos.y as f32);
-                    active_engine.scroll_horizontal(-pos.x as f32);
-                }
-            }
-        }
-        return InputAction::RequestRedraw;
-    }
-}
-
 /// Handles keyboard input events (multi-process version)
 pub fn handle_keyboard_input(
     event: &KeyEvent,

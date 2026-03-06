@@ -41,13 +41,19 @@ pub(crate) struct Env {
 }
 
 impl Env {
-    /// Recreate the Skia surface after a window resize.
-    pub fn recreate_surface(&mut self) {
+    /// Mark the swapchain as needing recreation on the next frame.
+    pub fn invalidate_swapchain(&mut self) {
         self.vk.swapchain_valid = false;
-        vk_prepare_swapchain(&mut self.vk, self.window.clone(), &mut self.gr_context);
+    }
+
+    /// Recreate the Skia surface after a window resize.
+    pub fn recreate_surface(&mut self) -> Result<(), String> {
+        self.vk.swapchain_valid = false;
+        vk_prepare_swapchain(&mut self.vk, self.window.clone(), &mut self.gr_context)?;
         if !self.vk.skia_surfaces.is_empty() {
             self.surface = self.vk.skia_surfaces[0].clone();
         }
+        Ok(())
     }
 
     /// Acquire the next swapchain image and point the Skia surface at it.
@@ -71,7 +77,7 @@ impl Env {
         tab_frame: Option<(&Arc<ImportedVkImage>, u32, u32, i64)>,
         chrome_px: i32,
     ) -> Result<(), String> {
-        vk_blit_tab_then_present(&mut self.vk, &**self.window, tab_frame, chrome_px)
+        vk_blit_tab_then_present(&mut self.vk, self.window.clone(), tab_frame, chrome_px)
     }
 }
 
@@ -189,11 +195,37 @@ fn vk_pick_format(
     panic!("No Skia-compatible Vulkan swapchain format found. Available: {formats:?}");
 }
 
+fn vk_error_is_out_of_date_message(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    lower.contains("outofdate") || lower.contains("out_of_date")
+}
+
+fn vk_error_is_surface_lost_message(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    lower.contains("surface_lost")
+        || lower.contains("surface lost")
+        || lower.contains("surface is no longer available")
+        || lower.contains("a surface is no longer available")
+}
+
+fn vk_error_is_recoverable_message(msg: &str) -> bool {
+    vk_error_is_out_of_date_message(msg) || vk_error_is_surface_lost_message(msg)
+}
+
+fn vk_error_is_not_ready_message(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    lower.contains("notready") || lower.contains("not_ready") || lower.contains("not yet ready")
+}
+
 /// Recreate the swapchain after a resize (sets `swapchain_valid = true`).
-fn vk_prepare_swapchain(vk: &mut VkState, window: Arc<Box<dyn Window>>, gr_context: &mut DirectContext) {
+fn vk_prepare_swapchain(
+    vk: &mut VkState,
+    window: Arc<Box<dyn Window>>,
+    gr_context: &mut DirectContext,
+) -> Result<(), String> {
     let sz = window.surface_size();
     if sz.width == 0 || sz.height == 0 || vk.swapchain_valid {
-        return;
+        return Ok(());
     }
 
     unsafe {
@@ -204,7 +236,17 @@ fn vk_prepare_swapchain(vk: &mut VkState, window: Arc<Box<dyn Window>>, gr_conte
             .surface_capabilities(&vk.surface, Default::default())
         {
             Ok(caps) => caps,
-            Err(e) => panic!("Failed to query surface capabilities: {e:?}"),
+            Err(e) => {
+                let msg = format!("surface_capabilities: {e:?}");
+                vk.swapchain_valid = false;
+                if vk_error_is_surface_lost_message(&msg) {
+                    vk_recreate_surface(vk, window.clone())?;
+                }
+                if vk_error_is_recoverable_message(&msg) {
+                    return Ok(());
+                }
+                return Err(msg);
+            }
         };
 
         let extent = if let Some(current_extent) = caps.current_extent {
@@ -219,7 +261,10 @@ fn vk_prepare_swapchain(vk: &mut VkState, window: Arc<Box<dyn Window>>, gr_conte
             }
         };
 
-        let min_image_count = caps.min_image_count.max(2).min(caps.max_image_count.unwrap_or(u32::MAX));
+        let min_image_count = caps
+            .min_image_count
+            .max(2)
+            .min(caps.max_image_count.unwrap_or(u32::MAX));
 
         let swapchain_ci = SwapchainCreateInfo {
             flags: Default::default(),
@@ -243,9 +288,27 @@ fn vk_prepare_swapchain(vk: &mut VkState, window: Arc<Box<dyn Window>>, gr_conte
             ..Default::default()
         };
 
-        let (new_swapchain, new_images) = match Swapchain::new(vk.device.clone(), vk.surface.clone(), swapchain_ci) {
+        let (new_swapchain, new_images) = match vk.vk_swapchain.recreate(swapchain_ci.clone()) {
             Ok(sc) => sc,
-            Err(e) => panic!("Failed to recreate swapchain: {e:?}"),
+            Err(e) => {
+                let recreate_msg = format!("swapchain_recreate: {e:?}");
+                vk.swapchain_valid = false;
+
+                if vk_error_is_surface_lost_message(&recreate_msg) {
+                    vk_recreate_surface(vk, window.clone())?;
+                }
+
+                match Swapchain::new(vk.device.clone(), vk.surface.clone(), swapchain_ci) {
+                    Ok(sc) => sc,
+                    Err(e2) => {
+                        let new_msg = format!("swapchain_new: {e2:?}");
+                        if vk_error_is_recoverable_message(&new_msg) {
+                            return Ok(());
+                        }
+                        return Err(format!("{recreate_msg}; {new_msg}"));
+                    }
+                }
+            }
         };
 
         vk.vk_swapchain = new_swapchain;
@@ -262,6 +325,8 @@ fn vk_prepare_swapchain(vk: &mut VkState, window: Arc<Box<dyn Window>>, gr_conte
         );
         vk.swapchain_valid = true;
     }
+
+    Ok(())
 }
 
 /// Build a Skia `Surface` that renders into a specific Vulkan swapchain image.
@@ -324,7 +389,7 @@ fn vk_acquire(
     gr_context: &mut DirectContext,
 ) -> Result<bool, String> {
     if !vk.swapchain_valid {
-        vk_prepare_swapchain(vk, window.clone(), gr_context);
+        vk_prepare_swapchain(vk, window.clone(), gr_context)?;
     }
     if !vk.swapchain_valid || vk.skia_surfaces.is_empty() {
         return Ok(false);
@@ -354,8 +419,16 @@ fn vk_acquire(
             Ok(result) => result,
             Err(err) => {
                 let msg = format!("acquire_next_image: {err:?}");
-                if msg.contains("OutOfDate") {
+                if vk_error_is_not_ready_message(&msg) {
+                    return Ok(false);
+                }
+                if vk_error_is_out_of_date_message(&msg) {
                     vk.swapchain_valid = false;
+                    return Ok(false);
+                }
+                if vk_error_is_surface_lost_message(&msg) {
+                    vk.swapchain_valid = false;
+                    vk_recreate_surface(vk, window.clone())?;
                     return Ok(false);
                 }
                 return Err(msg);
@@ -379,7 +452,7 @@ unsafe fn import_wait_semaphore_for_frame(
     device: &ash::Device,
     sem_handle: i64,
 ) -> Result<Option<ash::vk::Semaphore>, String> {
-    if sem_handle < 0 {
+    if sem_handle <= 0 {
         return Ok(None);
     }
 
@@ -399,6 +472,10 @@ unsafe fn import_wait_semaphore_for_frame(
 
     if let Err(e) = ext_sem_fd.import_semaphore_fd(&import_info) {
         device.destroy_semaphore(sem, None);
+        if e == ash::vk::Result::ERROR_INVALID_EXTERNAL_HANDLE {
+            // Cross-process sync fd handoff can fail transiently; fall back to presenting without this wait.
+            return Ok(None);
+        }
         return Err(format!("vkImportSemaphoreFdKHR failed: {:?}", e));
     }
 
@@ -444,7 +521,7 @@ unsafe fn import_wait_semaphore_for_frame(
 /// allocation or blocking fence wait for cleanup).
 fn vk_blit_tab_then_present(
     vk: &mut VkState,
-    _window: &dyn Window,
+    window: Arc<Box<dyn Window>>,
     tab_frame: Option<(&Arc<ImportedVkImage>, u32, u32, i64)>,
     chrome_px: i32,
 ) -> Result<(), String> {
@@ -562,6 +639,27 @@ fn vk_blit_tab_then_present(
                 ash::vk::DependencyFlags::empty(),
                 &[], &[], &barriers_post,
             );
+        } else {
+            // Skia wrote the swapchain image as a color attachment this frame.
+            // When no tab frame is blitted, we still must transition it for present.
+            let to_present_barrier = [ash::vk::ImageMemoryBarrier::default()
+                .src_access_mask(ash::vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .dst_access_mask(ash::vk::AccessFlags::empty())
+                .old_layout(ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .new_layout(ash::vk::ImageLayout::PRESENT_SRC_KHR)
+                .src_queue_family_index(ash::vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(ash::vk::QUEUE_FAMILY_IGNORED)
+                .image(swapchain_image)
+                .subresource_range(COLOR_SUBRESOURCE_RANGE)];
+            ash_device.cmd_pipeline_barrier(
+                vk.blit_cmd_buf.handle(),
+                ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                ash::vk::PipelineStageFlags::ALL_COMMANDS,
+                ash::vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &to_present_barrier,
+            );
         }
 
         ash_device.end_command_buffer(vk.blit_cmd_buf.handle())
@@ -602,14 +700,15 @@ fn vk_blit_tab_then_present(
             .swapchains(&swapchains)
             .image_indices(&image_indices);
 
-        let mut present_result = false;
         let swapchain_fn = ash::khr::swapchain::Device::new(&vk.ash_instance, ash_device);
         match swapchain_fn.queue_present(vk.ash_queue, &present_info) {
             Ok(false) => {}
-            Ok(true)
-            | Err(ash::vk::Result::ERROR_OUT_OF_DATE_KHR)
-            | Err(ash::vk::Result::ERROR_SURFACE_LOST_KHR) => {
+            Ok(true) | Err(ash::vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 vk.swapchain_valid = false;
+            }
+            Err(ash::vk::Result::ERROR_SURFACE_LOST_KHR) => {
+                vk.swapchain_valid = false;
+                vk_recreate_surface(vk, window.clone())?;
             }
             Err(e) => return Err(format!("queue_present: {:?}", e)),
         }

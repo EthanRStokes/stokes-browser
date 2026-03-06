@@ -38,8 +38,6 @@ pub struct Engine {
     page_title: String,
     is_loading: bool,
     pub(crate) dom: Option<Dom>,
-    scroll_y: f32,
-    scroll_x: f32,
     content_height: f32,
     content_width: f32,
     pub(crate) viewport: Viewport,
@@ -66,8 +64,6 @@ impl Engine {
             page_title: "New Tab".to_string(),
             is_loading: false,
             dom: None,
-            scroll_y: 0.0,
-            scroll_x: 0.0,
             content_height: 0.0,
             content_width: 0.0,
             viewport,
@@ -128,10 +124,6 @@ impl Engine {
                 drop(js);
                 self.js_runtime = None;
             }
-
-            // Reset scroll position
-            self.scroll_x = 0.0;
-            self.scroll_y = 0.0;
 
             // Parse and apply CSS styles from the document
             self.parse_document_styles().await;
@@ -312,63 +304,9 @@ impl Engine {
             .map(|s| s.to_string())
     }
 
-    /// Scroll the page by delta amounts
-    pub fn scroll(&mut self, delta_x: f32, delta_y: f32) {
-        self.scroll_horizontal(delta_x);
-        self.scroll_vertical(delta_y);
-    }
-
-    /// Scroll vertically by the given delta
-    pub fn scroll_vertical(&mut self, delta: f32) -> bool {
-        let delta = delta * 3.5;
-        let old_scroll_y = self.scroll_y;
-        self.scroll_y = (self.scroll_y + delta).max(0.0);
-
-        // Don't scroll past the bottom of the content
-        let max_scroll = (self.content_height - (self.viewport_height() / self.viewport.hidpi_scale)).max(0.0);
-        self.scroll_y = self.scroll_y.min(max_scroll);
-
-        self.update_dom_scroll();
-
-        // Return whether scroll position actually changed
-        old_scroll_y != self.scroll_y
-    }
-
-    /// Scroll horizontally by the given delta
-    pub fn scroll_horizontal(&mut self, delta: f32) -> bool {
-        let old_scroll_x = self.scroll_x;
-        self.scroll_x = (self.scroll_x + delta).max(0.0);
-
-        // Don't scroll past the right edge of the content
-        let max_scroll = (self.content_width - (self.viewport_width() / self.viewport.hidpi_scale)).max(0.0);
-        self.scroll_x = self.scroll_x.min(max_scroll);
-
-        self.update_dom_scroll();
-
-        // Return whether scroll position actually changed
-        old_scroll_x != self.scroll_x
-    }
-
     /// Get current scroll position
     pub fn scroll_position(&self) -> taffy::Point<f64> {
         self.dom().viewport_scroll
-    }
-
-    fn update_dom_scroll(&mut self) {
-        let x = self.scroll_x as f64;
-        let y = self.scroll_y as f64;
-
-        let dom = self.dom_mut();
-        dom.viewport_scroll.x = x;
-        dom.viewport_scroll.y = y;
-    }
-
-    /// Set scroll position directly
-    pub fn set_scroll_position(&mut self, x: f32, y: f32) {
-        self.scroll_x = x.max(0.0).min((self.content_width - self.viewport_width()).max(0.0));
-        self.scroll_y = y.max(0.0).min((self.content_height - self.viewport_height()).max(0.0));
-
-        self.update_dom_scroll();
     }
 
     /// Update content dimensions based on layout
