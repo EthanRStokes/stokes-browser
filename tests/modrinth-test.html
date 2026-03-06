@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en" class="dark-mode">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Modrinth Button CSS Test</title>
+
+    <style>
+        /* 1. Essential Modrinth CSS Variables for the environment */
+        :root {
+            --surface-1: #1e1e1e;
+            --surface-2: #2d2d2d;
+            --color-brand: #00af5c; /* Modrinth green */
+            --color-brand-highlight: #00c768;
+            --text-primary: #ffffff;
+        }
+
+        /* 2. Basic body reset to mimic the dark-mode layout */
+        body {
+            background-color: var(--surface-1);
+            color: var(--text-primary);
+            font-family: system-ui, -apple-system, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+
+        /* ========================================================= */
+        /* PASTE YOUR FULL COMPILED CSS BELOW THIS LINE              */
+        /* ========================================================= */
+
+        /* Fallback classes just in case your snippet is missing them */
+        .flex { display: flex; }
+        .items-center { align-items: center; }
+        .justify-center { justify-content: center; }
+        .gap-2 { gap: 0.5rem; }
+        .rounded-lg { border-radius: 0.5rem; }
+        .px-6 { padding-left: 1.5rem; padding-right: 1.5rem; }
+        .py-3 { padding-top: 0.75rem; padding-bottom: 0.75rem; }
+        .font-bold { font-weight: 700; }
+        .text-white { color: #ffffff; }
+        .bg-brand { background-color: var(--color-brand); }
+        .transition { transition: all 150ms ease; }
+        .cursor-pointer { cursor: pointer; }
+        .text-decoration-none { text-decoration: none; }
+        .hover\:bg-brand-highlight:hover { background-color: var(--color-brand-highlight); }
+        .size-5 { width: 1.25rem; height: 1.25rem; }
+    </style>
+</head>
+<body>
+
+<div style="padding: 3rem; background: var(--surface-2); border-radius: 1rem; border: 1px solid #444;">
+
+    <a href="#" class="flex items-center justify-center gap-2 bg-brand text-white font-bold py-3 px-6 rounded-lg hover:bg-brand-highlight transition cursor-pointer text-decoration-none">
+        <svg class="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+        </svg>
+        Discover mods
+    </a>
+
+</div>
+
+</body>
+</html>

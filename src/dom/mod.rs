@@ -417,6 +417,10 @@ impl Dom {
         stylo_config::set_bool("layout.legacy_layout", true);
         stylo_config::set_bool("layout.unimplemented", true);
         stylo_config::set_bool("layout.columns.enabled", true);
+        stylo_config::set_bool("layout.css.attr.enabled", true);
+        stylo_config::set_bool("layout.writing-mode.enabled", true);
+        stylo_config::set_bool("layout.variable_fonts.enabled", true);
+        stylo_config::set_bool("layout.container-queries.enabled", true);
 
         let viewport = config.viewport.unwrap_or_default();
         let font_ctx = config.font_ctx.unwrap_or_else(|| {
