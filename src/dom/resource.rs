@@ -11,6 +11,8 @@ use blitz_traits::shell::{ShellProvider, Viewport};
 use markup5ever::local_name;
 use peniko::Blob;
 use std::sync::Arc;
+use style::invalidation::element::restyle_hints::RestyleHint;
+use style::selector_parser::RestyleDamage;
 use style::stylesheets::OriginSet;
 
 impl Dom {
@@ -180,7 +182,7 @@ impl Dom {
         if let Some(html) = srcdoc {
             let base_url = self.url.to_string();
             let sub_dom = self.build_iframe_dom(&html, &base_url, viewport);
-            self.set_sub_dom(node_id, Box::new(sub_dom));
+            self.set_sub_dom(node_id, sub_dom);
             self.nodes[node_id].insert_damage(ALL_DAMAGE);
             self.nodes[node_id].mark_ancestors_dirty();
             self.shell_provider.request_redraw();
@@ -205,38 +207,13 @@ impl Dom {
         }
 
         // No src/srcdoc: load an empty same-origin document.
-        let base_url = self.url.to_string();
-        let sub_dom = self.build_iframe_dom("<html><head></head><body></body></html>", &base_url, viewport);
-        self.set_sub_dom(node_id, Box::new(sub_dom));
-        self.nodes[node_id].insert_damage(ALL_DAMAGE);
-        self.nodes[node_id].mark_ancestors_dirty();
+        println!("ERROR: Iframe with no src or srcdoc, loading empty document. Node ID: {}", node_id);
     }
 
     fn apply_iframe_html_response(&mut self, node_id: usize, resolved_url: &str, html: String) {
-        let Some(node) = self.nodes.get(node_id) else {
-            return;
-        };
-        let Some(element) = node.element_data() else {
-            return;
-        };
-
-        if element.name.local != local_name!("iframe") || element.attr(local_name!("srcdoc")).is_some() {
-            return;
-        }
-
-        let Some(current_src) = element.attr(local_name!("src")) else {
-            return;
-        };
-        let Some(current_resolved) = self.url.resolve_relative(current_src) else {
-            return;
-        };
-        if current_resolved.as_str() != resolved_url {
-            return;
-        }
-
         let viewport = self.iframe_viewport_from_host(node_id);
         let sub_dom = self.build_iframe_dom(&html, resolved_url, viewport);
-        self.set_sub_dom(node_id, Box::new(sub_dom));
+        self.set_sub_dom(node_id, sub_dom);
 
         self.nodes[node_id].cache.clear();
         self.nodes[node_id].insert_damage(ALL_DAMAGE);

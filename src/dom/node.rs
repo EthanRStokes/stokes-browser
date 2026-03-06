@@ -1,6 +1,6 @@
 use crate::dom::damage::{HoistedPaintChildren, ALL_DAMAGE};
 use crate::dom::events::EventListenerRegistry;
-use crate::dom::{AbstractDom, ZERO};
+use crate::dom::{AbstractDom, Dom, ZERO};
 use crate::events::{BlitzPointerEvent, BlitzPointerId, DomEventData, PointerCoords};
 use crate::layout::table::TableContext;
 use crate::ui::TextBrush;
@@ -296,7 +296,7 @@ impl TextInputData {
 /// Heterogeneous data that depends on the element's type.
 #[derive(Default)]
 pub enum SpecialElementData {
-    SubDom(Box<dyn AbstractDom>),
+    SubDom(Dom),
     Stylesheet(DocumentStyleSheet),
     /// An \<img\> element's image data
     Image(Box<ImageData>),
@@ -554,16 +554,16 @@ impl ElementData {
         }
     }
 
-    pub fn sub_dom_data(&self) -> Option<&dyn AbstractDom> {
+    pub fn sub_dom_data(&self) -> Option<&Dom> {
         match &self.special_data {
-            SpecialElementData::SubDom(data) => Some(data.as_ref()),
+            SpecialElementData::SubDom(data) => Some(data),
             _ => None,
         }
     }
 
-    pub fn sub_dom_data_mut(&mut self) -> Option<&mut dyn AbstractDom> {
+    pub fn sub_dom_data_mut(&mut self) -> Option<&mut Dom> {
         match &mut self.special_data {
-            SpecialElementData::SubDom(data) => Some(data.as_mut()),
+            SpecialElementData::SubDom(data) => Some(data),
             _ => None,
         }
     }
@@ -617,7 +617,7 @@ impl ElementData {
         }
     }
 
-    pub fn set_sub_dom(&mut self, sub_dom: Box<dyn AbstractDom>) {
+    pub fn set_sub_dom(&mut self, sub_dom: Dom) {
         self.special_data = SpecialElementData::SubDom(sub_dom);
     }
 
@@ -1381,11 +1381,11 @@ impl DomNode {
         self.set_restyle_hint(RestyleHint::restyle_subtree());
     }
 
-    pub fn subdom(&self) -> Option<&dyn AbstractDom> {
+    pub fn subdom(&self) -> Option<&Dom> {
         self.element_data().and_then(|el| el.sub_dom_data())
     }
 
-    pub fn subdom_mut(&mut self) -> Option<&mut dyn AbstractDom> {
+    pub fn subdom_mut(&mut self) -> Option<&mut Dom> {
         self.element_data_mut().and_then(|el| el.sub_dom_data_mut())
     }
 

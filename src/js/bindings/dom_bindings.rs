@@ -2135,9 +2135,8 @@ unsafe fn create_iframe_content_document_object(raw_cx: *mut JSContext, iframe_n
             return;
         };
 
-        let inner = sub_dom.inner();
-        title = inner.get_title();
-        url = inner.url.to_string();
+        title = sub_dom.get_title();
+        url = sub_dom.url.to_string();
         has_subdom = true;
     });
 

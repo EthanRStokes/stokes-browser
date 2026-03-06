@@ -175,9 +175,6 @@ impl Dom {
 
             if name.local == local_name!("id") {
                 element.id = None;
-                if let Some(id_attr) = removed_attr.as_ref() {
-                    self.nodes_to_id.remove(id_attr.value.as_str());
-                }
             }
 
             // Update text input value

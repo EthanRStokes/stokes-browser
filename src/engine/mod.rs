@@ -34,7 +34,6 @@ pub struct Engine {
     pub config: EngineConfig,
     new_http_client: Option<HttpClient>,
     current_url: String,
-    page_title: String,
     is_loading: bool,
     pub(crate) dom: Option<Dom>,
     content_height: f32,
@@ -60,7 +59,6 @@ impl Engine {
             config,
             new_http_client: None,
             current_url: String::new(),
-            page_title: "New Tab".to_string(),
             is_loading: false,
             dom: None,
             content_height: 0.0,
@@ -104,9 +102,6 @@ impl Engine {
                 self.navigation_provider.clone(),
                 self.js_provider.clone(),
             );
-
-            // Extract page title
-            self.page_title = dom.get_title();
 
             // set http client
             self.new_http_client = Some(HttpClient {
@@ -221,21 +216,14 @@ impl Engine {
 
         let dom = self.dom.as_ref().unwrap();
 
-        let selection: HashMap<usize, (usize, usize)> = dom
-            .get_text_selection_ranges()
-            .into_iter()
-            .map(|(node_id, start, end)| (node_id, (start, end)))
-            .collect();
-
-        let mut renderer = HtmlRenderer {
-            dom: &dom,
-            scale_factor: self.viewport.scale_f64(),
-            width: self.viewport_width() as u32,
-            height: self.viewport_height() as u32,
-            selection_ranges: selection,
-            origin: kurbo::Point::ZERO,
-            debug_hitboxes: self.config.debug_hitboxes,
-        };
+        let mut renderer = HtmlRenderer::new(
+            &dom,
+            self.viewport.scale_f64(),
+            self.viewport_width() as u32,
+            self.viewport_height() as u32,
+            0.0, 0.0,
+            self.config.debug_hitboxes,
+        );
 
         renderer.render(
             painter,
@@ -270,13 +258,6 @@ impl Engine {
         for css_content in style_contents {
             self.add_author_stylesheet(&css_content);
         }
-    }
-
-
-
-    /// Get the current page title
-    pub fn page_title(&self) -> &str {
-        &self.page_title
     }
 
     /// Get the current URL

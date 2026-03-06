@@ -7,7 +7,7 @@ use crate::dom::events::ime::handle_ime_event;
 use crate::dom::events::keyboard::handle_keypress;
 use crate::dom::events::pointer::{handle_click, handle_pointerdown, handle_pointermove, handle_pointerup, handle_wheel};
 // Event system for DOM nodes using mozjs
-use crate::dom::{Dom, DomNode, NodeData};
+use crate::dom::{AbstractDom, Dom, DomNode, NodeData};
 use crate::events::{BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData, EventState, PointerCoords, UiEvent};
 use crate::js::bindings::element_bindings::create_js_element_by_id;
 use crate::js::with_runtime_mut;
@@ -50,7 +50,7 @@ impl Dom {
         let pos = node.absolute_position(0.0, 0.0);
         let mut set_focus = false;
         if let Some(sub_doc) = node.subdom_mut() {
-            let viewport_scroll = sub_doc.inner().viewport_scroll();
+            let viewport_scroll = sub_doc.viewport_scroll();
             // TODO: eliminate clone
             let ui_event = match event.data.clone() {
                 DomEventData::PointerMove(mut event) => {

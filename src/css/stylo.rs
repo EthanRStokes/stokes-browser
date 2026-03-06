@@ -376,8 +376,8 @@ impl selectors::Element for Node<'_> {
         case_sensitivity: CaseSensitivity
     ) -> bool {
         self.element_data()
-            .and_then(|data| data.id())
-            .map(|id_attribute| case_sensitivity.eq(id_attribute.as_ref(), id.as_ref().as_ref()))
+            .and_then(|data| data.id.as_ref())
+            .map(|id_attribute| case_sensitivity.eq_atom(id_attribute, id))
             .unwrap_or(false)
     }
 

@@ -1,4 +1,3 @@
-use crate::renderer::layers::maybe_with_layer;
 use crate::renderer::painter::ToColorColor;
 use crate::renderer::Element;
 use anyrender::PaintScene;
@@ -26,7 +25,7 @@ impl Element<'_> {
             prev.union(rect)
         });
 
-        maybe_with_layer(
+        self.context.layer_manager.maybe_with_layer(
             painter,
             has_outset_shadow,
             1.0,

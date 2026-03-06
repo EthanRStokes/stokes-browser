@@ -12,7 +12,7 @@ pub mod painter;
 use crate::dom::node::{ListItemLayout, ListItemLayoutPosition, Marker, SpecialElementData, TextInputData};
 use crate::dom::{Dom, DomNode, ElementData, NodeData};
 use crate::renderer::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
-use crate::renderer::layers::maybe_with_layer;
+use crate::renderer::layers::LayerManager;
 use crate::renderer::painter::ToColorColor;
 use crate::renderer::sizing::compute_object_fit;
 use crate::renderer::text::{draw_text_selection, stroke_text, SELECTION_COLOR};
@@ -42,12 +42,45 @@ pub struct HtmlRenderer<'dom> {
     pub(crate) scale_factor: f64,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    pub(crate) layer_manager: LayerManager,
     pub(crate) selection_ranges: HashMap<usize, (usize, usize)>,
     /// CSS-pixel render offset used for embedded (iframe) rendering.
     pub(crate) origin: Point,
     /// Debug: Show hitboxes for all elements
     pub(crate) debug_hitboxes: bool,
 }
+
+impl<'dom> HtmlRenderer<'dom> {
+    pub fn new(
+        dom: &'dom Dom,
+        scale: f64,
+        width: u32,
+        height: u32,
+        initial_x: f64,
+        initial_y: f64,
+        debug_hitboxes: bool,
+    ) -> Self {
+        let selection_ranges: HashMap<usize, (usize, usize)> = dom
+            .get_text_selection_ranges()
+            .into_iter()
+            .map(|(node_id, start, end)| (node_id, (start, end)))
+            .collect();
+
+        let layer_manager = LayerManager::default();
+
+        Self {
+            dom: &dom,
+            scale_factor: scale,
+            width,
+            height,
+            origin: Point { x: initial_x, y: initial_y },
+            layer_manager,
+            selection_ranges,
+            debug_hitboxes,
+        }
+    }
+}
+
 
 impl HtmlRenderer<'_> {
     fn layout(&self, node: usize) -> Layout {
@@ -422,7 +455,7 @@ impl HtmlRenderer<'_> {
         element.draw_outline(painter);
         element.draw_outset_box_shadow(painter);
 
-        maybe_with_layer(
+        self.layer_manager.maybe_with_layer(
             painter,
             has_opacity,
             opacity,
@@ -441,7 +474,7 @@ impl HtmlRenderer<'_> {
                 } else {
                     &element.frame.padding_box_path()
                 };
-                maybe_with_layer(painter, should_clip, 1.0, element.transform, clip, |painter| {
+                self.layer_manager.maybe_with_layer(painter, should_clip, 1.0, element.transform, clip, |painter| {
                     let position = Point {
                         x: position.x - node.scroll_offset.x,
                         y: position.y - node.scroll_offset.y,
@@ -990,7 +1023,7 @@ impl Element<'_> {
     }
 
     fn draw_sub_dom(&self, painter: &mut ScenePainter) {
-        if let Some(sub_doc) = self.element.sub_dom_data().map(|doc| doc.inner()) {
+        if let Some(sub_doc) = self.element.sub_dom_data() {
             let scale = self.scale_factor;
             let width = self.frame.content_box.width() as u32;
             let height = self.frame.content_box.height() as u32;
@@ -998,15 +1031,14 @@ impl Element<'_> {
             let initial_y = self.position.y + self.frame.content_box.origin().y;
             // let transform = self.transform.then_translate(Vec2 { x, y });
 
-            let mut renderer = HtmlRenderer {
-                dom: &sub_doc,
-                scale_factor: scale,
+            let mut renderer = HtmlRenderer::new(
+                &sub_doc,
+                scale,
                 width,
                 height,
-                origin: Point { x: initial_x, y: initial_y },
-                selection_ranges: HashMap::new(),
-                debug_hitboxes: false
-            };
+                initial_x, initial_y,
+                false // todo
+            );
             renderer.render(painter);
         }
     }

@@ -42,7 +42,7 @@ impl Dom {
         for &node_id in &self.sub_dom_nodes {
             let node = &mut self.nodes[node_id];
             let size = node.final_layout.size;
-            if let Some(mut sub_doc) = node.subdom_mut().map(|doc| doc.inner_mut()) {
+            if let Some(sub_doc) = node.subdom_mut() {
                 // Set viewport
                 // viewport_mut handles change detection. So we just unconditionally set the values;
                 let mut sub_viewport = sub_doc.viewport_mut();

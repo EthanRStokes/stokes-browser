@@ -325,12 +325,9 @@ impl TabProcess {
                             self.engine.set_loading_state(true);
                             match self.engine.navigate(&url, contents, true, true).await {
                                 Ok(_) => {
-                                    let title = self.engine.page_title().to_string();
                                     let _ = self.channel.send(&TabToParentMessage::NavigationCompleted {
                                         url: url.clone(),
-                                        title: title.clone(),
                                     });
-                                    let _ = self.channel.send(&TabToParentMessage::TitleChanged(title));
                                     let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                                     self.render_frame()?;
                                 }
@@ -402,12 +399,9 @@ impl TabProcess {
                 });
                 match self.engine.navigate(&url, contents, true, true).await {
                     Ok(_) => {
-                        let title = self.engine.page_title().to_string();
                         let _ = self.channel.send(&TabToParentMessage::NavigationCompleted {
                             url: url.clone(),
-                            title: title.clone(),
                         });
-                        let _ = self.channel.send(&TabToParentMessage::TitleChanged(title));
                         let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                         should_render = true;
                     }
@@ -427,8 +421,7 @@ impl TabProcess {
                     });
                     match self.engine.navigate(&url, contents, true, true).await {
                         Ok(_) => {
-                            let title = self.engine.page_title().to_string();
-                            let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
+                            let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url });
                             let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                             should_render = true;
                         }
@@ -446,9 +439,8 @@ impl TabProcess {
                     self.engine.set_loading_state(true);
                     match self.engine.go_back().await {
                         Ok(_) => {
-                            let title = self.engine.page_title().to_string();
                             let url = self.engine.current_url().to_string();
-                            let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
+                            let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url });
                             let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                             should_render = true;
                         }
@@ -466,9 +458,8 @@ impl TabProcess {
                     self.engine.set_loading_state(true);
                     match self.engine.go_forward().await {
                         Ok(_) => {
-                            let title = self.engine.page_title().to_string();
                             let url = self.engine.current_url().to_string();
-                            let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
+                            let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url });
                             let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                             should_render = true;
                         }

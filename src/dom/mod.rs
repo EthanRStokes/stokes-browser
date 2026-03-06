@@ -2229,7 +2229,7 @@ impl Dom {
         }
     }
 
-    pub fn set_sub_dom(&mut self, node_id: usize, sub_dom: Box<dyn AbstractDom>) {
+    pub fn set_sub_dom(&mut self, node_id: usize, sub_dom: Dom) {
         self.nodes[node_id].element_data_mut().unwrap().set_sub_dom(sub_dom);
         self.sub_dom_nodes.insert(node_id);
     }

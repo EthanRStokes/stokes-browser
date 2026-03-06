@@ -1,7 +1,6 @@
 use crate::dom::node::{RasterImageData, SpecialElementData};
 use crate::dom::ImageData;
 use crate::renderer::gradient::to_peniko_gradient;
-use crate::renderer::layers::maybe_with_layer;
 use crate::renderer::painter::ToColorColor;
 use crate::renderer::Element;
 use anyrender::PaintScene;
@@ -53,7 +52,7 @@ impl Element<'_> {
                 ContentBox => self.frame.content_box_path(),
             };
 
-            maybe_with_layer(
+            self.context.layer_manager.maybe_with_layer(
                 scene,
                 true,
                 1.0,

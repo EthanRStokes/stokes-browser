@@ -58,9 +58,8 @@ pub enum ScrollDirection {
 pub enum TabToParentMessage {
     Navigate { url: String, retain_scroll_position: bool, is_md: bool },
     NavigationStarted(String),
-    NavigationCompleted { url: String, title: String },
+    NavigationCompleted { url: String },
     NavigationFailed(String),
-    TitleChanged(String),
     LoadingStateChanged(bool),
     /// A frame has been rendered into a Vulkan image whose backing device
     /// memory has been exported as a platform-specific handle.

@@ -242,10 +242,9 @@ impl TabManager {
                     tab.is_loading = true;
                     tab.url = url;
                 }
-                TabToParentMessage::NavigationCompleted { url, title } => {
+                TabToParentMessage::NavigationCompleted { url } => {
                     tab.is_loading = false;
                     tab.url = url;
-                    tab.title = title;
 
                     // todo conditional reset scroll
                     tab.viewport_scroll = Point::default();
@@ -253,9 +252,6 @@ impl TabManager {
                 TabToParentMessage::NavigationFailed(error) => {
                     tab.is_loading = false;
                     eprintln!("Navigation failed in tab {}: {}", tab_id, error);
-                }
-                TabToParentMessage::TitleChanged(title) => {
-                    tab.title = title;
                 }
                 TabToParentMessage::LoadingStateChanged(is_loading) => {
                     tab.is_loading = is_loading;

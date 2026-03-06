@@ -347,29 +347,19 @@ impl BrowserApp {
                 self.tab_manager.process_tab_message(&tab_id, message.clone());
             }
 
-            let env = self.env.as_ref().unwrap();
-
             // Update UI based on messages
             match message {
-                TabToParentMessage::TitleChanged(title) => {
-                    self.ui.as_mut().unwrap().update_tab_title(&tab_id, &title);
-                    if Some(&tab_id) == self.active_tab_id() {
-                        env.window.set_title(&format!("{} - Web Browser", title));
-                    }
-                }
-                TabToParentMessage::NavigationCompleted { url, title } => {
-                    self.ui.as_mut().unwrap().update_tab_title(&tab_id, &title);
+                TabToParentMessage::NavigationCompleted { url } => {
                     if Some(&tab_id) == self.active_tab_id() {
                         self.ui.as_mut().unwrap().update_address_bar(&url);
-                        env.window.set_title(&format!("{} - Web Browser", title));
                     }
                 }
                 TabToParentMessage::LoadingStateChanged(_is_loading) => {
                     // Update loading indicator
-                    env.window.request_redraw();
+                    self.env.as_ref().unwrap().window.request_redraw();
                 }
                 TabToParentMessage::FrameRendered { .. } => {
-                    env.window.request_redraw();
+                    self.env.as_ref().unwrap().window.request_redraw();
                 }
                 TabToParentMessage::NavigateRequest(url) => {
                     // Handle navigation request from web content (e.g., link clicks)
@@ -396,25 +386,30 @@ impl BrowserApp {
                 TabToParentMessage::ShellProvider(shell_msg) => {
                     match shell_msg {
                         ShellProviderMessage::RequestRedraw => {
-                            env.window.request_redraw();
+                            self.env.as_ref().unwrap().window.request_redraw();
                         }
                         ShellProviderMessage::SetCursor(cursor) => {
-                            env.window.set_cursor(Cursor::Icon(CursorIcon::from_str(&cursor).unwrap()));
+                            self.env.as_ref().unwrap().window.set_cursor(Cursor::Icon(CursorIcon::from_str(&cursor).unwrap()));
                         }
                         ShellProviderMessage::SetWindowTitle(title) => {
-                            env.window.set_title(&title);
+                            // todo per-tab shell messages should include the tab ID so we know which tab's title to update
+                            self.tab_mut().title = title.clone();
+                            self.ui.as_mut().unwrap().update_tab_title(&tab_id, &title);
+                            if Some(&tab_id) == self.active_tab_id() {
+                                self.env.as_ref().unwrap().window.set_title(&format!("{} - Stokes Browser", title));
+                            }
                         }
                         ShellProviderMessage::SetImeEnabled(enabled) => {
                             if enabled {
-                                let _ = env.window.request_ime_update(ImeRequest::Enable(
+                                let _ = self.env.as_ref().unwrap().window.request_ime_update(ImeRequest::Enable(
                                     ImeEnableRequest::new(ImeCapabilities::new(), ImeRequestData::default()).unwrap(),
                                 ));
                             } else {
-                                let _ = env.window.request_ime_update(ImeRequest::Disable);
+                                let _ = self.env.as_ref().unwrap().window.request_ime_update(ImeRequest::Disable);
                             }
                         }
                         ShellProviderMessage::SetImeCursorArea { x, y, width, height } => {
-                            let _ = env.window.request_ime_update(ImeRequest::Update(
+                            let _ = self.env.as_ref().unwrap().window.request_ime_update(ImeRequest::Update(
                                 ImeRequestData::default().with_cursor_area(
                                     LogicalPosition::new(x, y).into(),
                                     LogicalSize::new(width, height).into(),

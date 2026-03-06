@@ -167,8 +167,7 @@ impl Dom {
                         SpecialElementData::SubDom(sub_dom)
                             if *element_data.name.local == *"iframe" =>
                         {
-                            let inner = sub_dom.inner();
-                            let size = inner.root_element().final_layout.size;
+                            let size = sub_dom.root_element().final_layout.size;
                             taffy::Size {
                                 width: size.width.max(300.0),
                                 height: size.height.max(150.0),
