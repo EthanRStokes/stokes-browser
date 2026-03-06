@@ -132,6 +132,7 @@ impl Dom {
                 if *element_data.name.local == *"img"
                     || *element_data.name.local == *"canvas"
                     || *element_data.name.local == *"svg"
+                    || *element_data.name.local == *"iframe"
                 {
                     // Get width and height attributes on image element
                     //
@@ -163,6 +164,22 @@ impl Dom {
                             ImageData::None => taffy::Size::ZERO,
                         },
                         SpecialElementData::Canvas(_) => taffy::Size::ZERO,
+                        SpecialElementData::SubDom(sub_dom)
+                            if *element_data.name.local == *"iframe" =>
+                        {
+                            let inner = sub_dom.inner();
+                            let size = inner.root_element().final_layout.size;
+                            taffy::Size {
+                                width: size.width.max(300.0),
+                                height: size.height.max(150.0),
+                            }
+                        }
+                        SpecialElementData::None if *element_data.name.local == *"iframe" => {
+                            taffy::Size {
+                                width: 300.0,
+                                height: 150.0,
+                            }
+                        }
                         SpecialElementData::None => taffy::Size::ZERO,
                         _ => unreachable!(),
                     };

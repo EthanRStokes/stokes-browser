@@ -925,6 +925,13 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
         };
         let target = target.unwrap_or_else(|| self.doc.root_element().id);
 
+        if self.doc.forward_ui_event_to_iframe(target, &event) {
+            if should_clear_hover {
+                self.doc.clear_hover();
+            }
+            return;
+        }
+
         match event {
             UiEvent::PointerMove(data) => {
                 self.handle_pointer_event(

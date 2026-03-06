@@ -489,7 +489,7 @@ pub(crate) fn handle_click(
                         doc.label_bound_input_element(node_id).map(|n| n.id)
                     {
                         // Apply default click event action for target node
-                        let target_node = doc.get_node_mut(target_node_id).unwrap();
+                        let target_node = doc.nodes.get_mut(target_node_id).unwrap();
                         let syn_event = target_node.synthetic_click_event_data(event.mods);
                         handle_click(doc, target_node_id, &syn_event, dispatch_event);
                         break 'matched true;
@@ -555,6 +555,16 @@ pub(crate) fn handle_click(
                         .text_data_mut()
                         .expect("Text data not found");
                     text_data.content = text_content;
+                }
+                local_name!("iframe") => {
+                    generate_focus_events(
+                        doc,
+                        &mut |doc| {
+                            doc.set_focus_to(node_id);
+                        },
+                        dispatch_event,
+                    );
+                    break 'matched true;
                 }
                 _ => {}
             }

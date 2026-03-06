@@ -22,7 +22,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
-use style::dom::TNode;
 use style::thread_state::ThreadState;
 
 thread_local! {
@@ -235,6 +234,7 @@ impl Engine {
             width: self.viewport_width() as u32,
             height: self.viewport_height() as u32,
             selection_ranges: selection,
+            origin: kurbo::Point::ZERO,
             debug_hitboxes: self.config.debug_hitboxes,
         };
 
@@ -452,7 +452,7 @@ impl Engine {
         if let Some(index) = self.history_index {
             self.history_index = Some(index - 1);
             let url = self.history[index - 1].clone();
-            let contents = networking::fetch(&url, &self.config.user_agent).unwrap_or_else(|err| {
+            let contents = networking::fetch(&url, &self.config.user_agent).unwrap_or_else(|_err| {
                 include_str!("../../assets/404.html").to_string()
             });
             self.navigate(&url, contents, true, false).await
@@ -470,7 +470,7 @@ impl Engine {
         if let Some(index) = self.history_index {
             self.history_index = Some(index + 1);
             let url = self.history[index + 1].clone();
-            let contents = networking::fetch(&url, &self.config.user_agent).unwrap_or_else(|err| {
+            let contents = networking::fetch(&url, &self.config.user_agent).unwrap_or_else(|_err| {
                 include_str!("../../assets/404.html").to_string()
             });
             self.navigate(&url, contents, true, false).await

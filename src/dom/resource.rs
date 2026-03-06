@@ -1,8 +1,13 @@
+use crate::dom::config::DomConfig;
 use crate::dom::damage::ALL_DAMAGE;
 use crate::dom::node::{CanvasData, RasterImageData, SpecialElementData, Status};
-use crate::dom::{Dom, ImageData};
-use crate::networking::{ImageHandler, ImageType, Resource, ResourceHandler, ResourceLoadResponse, StylesheetHandler};
+use crate::dom::{Dom, HtmlParser, ImageData};
+use crate::networking::{
+    HtmlDocumentHandler, ImageHandler, ImageType, Resource, ResourceHandler, ResourceLoadResponse,
+    StylesheetHandler,
+};
 use blitz_traits::net::{NetProvider, Request};
+use blitz_traits::shell::{ShellProvider, Viewport};
 use markup5ever::local_name;
 use peniko::Blob;
 use std::sync::Arc;
@@ -127,6 +132,118 @@ impl Dom {
         self.nodes_to_stylesheet.remove(&node_id);
     }
 
+    fn iframe_viewport_from_host(&self, node_id: usize) -> Viewport {
+        let mut viewport = self.viewport.clone();
+        if let Some(node) = self.nodes.get(node_id) {
+            let width = node.final_layout.content_box_width().max(1.0) as u32;
+            let height = node.final_layout.content_box_height().max(1.0) as u32;
+            viewport.window_size = (width, height);
+        }
+        viewport
+    }
+
+    fn build_iframe_dom(&self, html: &str, base_url: &str, viewport: Viewport) -> Dom {
+        HtmlParser::new().parse(
+            html,
+            DomConfig {
+                viewport: Some(viewport),
+                base_url: Some(base_url.to_string()),
+                net_provider: Some(self.net_provider.clone()),
+                shell_provider: Some(self.shell_provider.clone()),
+                nav_provider: Some(self.nav_provider.clone()),
+                js_provider: Some(self.js_provider.clone()),
+                font_ctx: Some(self.font_ctx.lock().unwrap().clone()),
+                ..Default::default()
+            },
+        )
+    }
+
+    pub(crate) fn load_iframe(&mut self, node_id: usize) {
+        let Some(node) = self.nodes.get(node_id) else {
+            return;
+        };
+        let Some(element) = node.element_data() else {
+            return;
+        };
+        if element.name.local != local_name!("iframe") {
+            return;
+        }
+
+        let viewport = self.iframe_viewport_from_host(node_id);
+        let srcdoc = element
+            .attr(local_name!("srcdoc"))
+            .filter(|v| !v.is_empty())
+            .map(html_escape::decode_html_entities)
+            .map(|v| v.to_string());
+        let src = element.attr(local_name!("src")).filter(|v| !v.is_empty()).map(str::to_string);
+
+        if let Some(html) = srcdoc {
+            let base_url = self.url.to_string();
+            let sub_dom = self.build_iframe_dom(&html, &base_url, viewport);
+            self.set_sub_dom(node_id, Box::new(sub_dom));
+            self.nodes[node_id].insert_damage(ALL_DAMAGE);
+            self.nodes[node_id].mark_ancestors_dirty();
+            self.shell_provider.request_redraw();
+            return;
+        }
+
+        if let Some(raw_src) = src {
+            if let Some(resolved) = self.url.resolve_relative(&raw_src) {
+                self.net_provider.fetch(
+                    self.id(),
+                    Request::get(resolved),
+                    ResourceHandler::boxed(
+                        self.tx.clone(),
+                        self.id(),
+                        Some(node_id),
+                        self.shell_provider.clone(),
+                        HtmlDocumentHandler,
+                    ),
+                );
+                return;
+            }
+        }
+
+        // No src/srcdoc: load an empty same-origin document.
+        let base_url = self.url.to_string();
+        let sub_dom = self.build_iframe_dom("<html><head></head><body></body></html>", &base_url, viewport);
+        self.set_sub_dom(node_id, Box::new(sub_dom));
+        self.nodes[node_id].insert_damage(ALL_DAMAGE);
+        self.nodes[node_id].mark_ancestors_dirty();
+    }
+
+    fn apply_iframe_html_response(&mut self, node_id: usize, resolved_url: &str, html: String) {
+        let Some(node) = self.nodes.get(node_id) else {
+            return;
+        };
+        let Some(element) = node.element_data() else {
+            return;
+        };
+
+        if element.name.local != local_name!("iframe") || element.attr(local_name!("srcdoc")).is_some() {
+            return;
+        }
+
+        let Some(current_src) = element.attr(local_name!("src")) else {
+            return;
+        };
+        let Some(current_resolved) = self.url.resolve_relative(current_src) else {
+            return;
+        };
+        if current_resolved.as_str() != resolved_url {
+            return;
+        }
+
+        let viewport = self.iframe_viewport_from_host(node_id);
+        let sub_dom = self.build_iframe_dom(&html, resolved_url, viewport);
+        self.set_sub_dom(node_id, Box::new(sub_dom));
+
+        self.nodes[node_id].cache.clear();
+        self.nodes[node_id].insert_damage(ALL_DAMAGE);
+        self.nodes[node_id].mark_ancestors_dirty();
+        self.shell_provider.request_redraw();
+    }
+
     pub(crate) fn load_resource(&mut self, res: ResourceLoadResponse) {
         let Ok(resource) = res.result else {
             eprintln!("Failed to load resource: {:?}", res.resolved_url);
@@ -215,6 +332,15 @@ impl Dom {
                     }
                 }
             },
+            Resource::Html(html) => {
+                let Some(node_id) = res.node_id else {
+                    return;
+                };
+                let Some(resolved_url) = res.resolved_url.as_deref() else {
+                    return;
+                };
+                self.apply_iframe_html_response(node_id, resolved_url, html);
+            }
             Resource::Font(bytes) => {
                 //println!("Loaded Font resource: {:?}", res.resolved_url);
                 let font = Blob::new(Arc::new(bytes));
@@ -238,3 +364,4 @@ impl Dom {
         }
     }
 }
+

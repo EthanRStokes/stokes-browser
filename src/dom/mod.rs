@@ -2007,6 +2007,7 @@ impl Dom {
                 "title" => dom.shell_provider.set_window_title(dom.nodes[node_id].text_content()),
                 "link" => dom.load_linked_stylesheet(node_id),
                 "img" => dom.load_image(node_id),
+                "iframe" => dom.load_iframe(node_id),
                 "canvas" => dom.load_custom_paint_src(node_id),
                 "style" => dom.process_style_element(node_id),
                 "button" | "fieldset" | "input" | "select" | "textarea" | "object" | "output" => {
@@ -2124,7 +2125,10 @@ impl Dom {
             }
 
             match &element.special_data {
-                SpecialElementData::SubDom(_) => {}
+                SpecialElementData::SubDom(_) => {
+                    element.remove_sub_dom();
+                    doc.sub_dom_nodes.remove(&node_id);
+                }
                 SpecialElementData::Stylesheet(_) => {
                     stylesheets_to_unload.push(node_id);
                 }
@@ -2205,6 +2209,133 @@ impl Dom {
         self.sub_dom_nodes.remove(&node_id);
     }
 
+    pub(crate) fn resolve_sub_doms(&mut self, now: f64) {
+        self.subdom_is_animating = false;
+        let node_ids: Vec<usize> = self.sub_dom_nodes.iter().copied().collect();
+
+        for node_id in node_ids {
+            let viewport = self.iframe_viewport(node_id);
+
+            let Some(element) = self.nodes.get_mut(node_id).and_then(|n| n.element_data_mut()) else {
+                continue;
+            };
+            let Some(sub_dom) = element.sub_dom_data_mut() else {
+                continue;
+            };
+
+            let mut inner = sub_dom.inner_mut();
+            inner.set_viewport(viewport);
+            inner.resolve(now);
+
+            if inner.animating() {
+                self.subdom_is_animating = true;
+            }
+        }
+    }
+
+    fn iframe_viewport(&self, node_id: usize) -> Viewport {
+        let mut viewport = self.viewport.clone();
+        if let Some(node) = self.nodes.get(node_id) {
+            viewport.window_size = (
+                node.final_layout.content_box_width().max(1.0) as u32,
+                node.final_layout.content_box_height().max(1.0) as u32,
+            );
+        }
+        viewport
+    }
+
+    fn iframe_host_ancestor(&self, mut node_id: usize) -> Option<usize> {
+        loop {
+            let node = self.nodes.get(node_id)?;
+            let is_iframe = node
+                .element_data()
+                .is_some_and(|el| el.name.local == local_name!("iframe") && el.sub_dom_data().is_some());
+            if is_iframe {
+                return Some(node_id);
+            }
+            node_id = node.parent?;
+        }
+    }
+
+    fn iframe_event_origin(&self, iframe_id: usize) -> Option<(f32, f32)> {
+        let node = self.nodes.get(iframe_id)?;
+        let pos = node.absolute_position(0.0, 0.0);
+        Some((
+            pos.x + node.final_layout.content_box_x(),
+            pos.y + node.final_layout.content_box_y(),
+        ))
+    }
+
+    pub(crate) fn forward_ui_event_to_iframe(&mut self, target: usize, event: &UiEvent) -> bool {
+        let Some(iframe_id) = self.iframe_host_ancestor(target) else {
+            return false;
+        };
+
+        let Some((origin_x, origin_y)) = self.iframe_event_origin(iframe_id) else {
+            return false;
+        };
+
+        let Some(element) = self.nodes.get_mut(iframe_id).and_then(|n| n.element_data_mut()) else {
+            return false;
+        };
+        let Some(sub_dom) = element.sub_dom_data_mut() else {
+            return false;
+        };
+
+        let mut remap_pointer = |evt: &crate::events::BlitzPointerEvent| {
+            let mut mapped = evt.clone();
+            let scroll = {
+                let inner = sub_dom.inner();
+                inner.viewport_scroll
+            };
+
+            let local_client_x = evt.page_x() - origin_x;
+            let local_client_y = evt.page_y() - origin_y;
+            mapped.coords = crate::events::PointerCoords {
+                page_x: local_client_x + scroll.x as f32,
+                page_y: local_client_y + scroll.y as f32,
+                client_x: local_client_x,
+                client_y: local_client_y,
+                screen_x: local_client_x,
+                screen_y: local_client_y,
+            };
+            mapped
+        };
+
+        let mut remap_wheel = |evt: &crate::events::BlitzWheelEvent| {
+            let mut mapped = evt.clone();
+            let scroll = {
+                let inner = sub_dom.inner();
+                inner.viewport_scroll
+            };
+
+            let local_client_x = evt.page_x() - origin_x;
+            let local_client_y = evt.page_y() - origin_y;
+            mapped.coords = crate::events::PointerCoords {
+                page_x: local_client_x + scroll.x as f32,
+                page_y: local_client_y + scroll.y as f32,
+                client_x: local_client_x,
+                client_y: local_client_y,
+                screen_x: local_client_x,
+                screen_y: local_client_y,
+            };
+            mapped
+        };
+
+        let mapped_event = match event {
+            UiEvent::PointerMove(e) => UiEvent::PointerMove(remap_pointer(e)),
+            UiEvent::PointerDown(e) => UiEvent::PointerDown(remap_pointer(e)),
+            UiEvent::PointerUp(e) => UiEvent::PointerUp(remap_pointer(e)),
+            UiEvent::Wheel(e) => UiEvent::Wheel(remap_wheel(e)),
+            UiEvent::KeyDown(e) => UiEvent::KeyDown(e.clone()),
+            UiEvent::KeyUp(e) => UiEvent::KeyUp(e.clone()),
+            UiEvent::Ime(e) => UiEvent::Ime(e.clone()),
+        };
+
+        sub_dom.handle_ui_event(mapped_event);
+        true
+    }
+
     pub fn append_text_to_node(&mut self, node_id: usize, text: &str) -> Result<(), AppendTextErr> {
         let node = &mut self.nodes[node_id];
         node.insert_damage(ALL_DAMAGE);
@@ -2256,4 +2387,3 @@ pub enum AppendTextErr {
     /// The node is not a text node
     NotTextNode,
 }
-

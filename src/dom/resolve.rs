@@ -31,6 +31,8 @@ impl Dom {
 
         self.compute_layout();
 
+        self.resolve_sub_doms(now);
+
         {
             for (_, node) in self.nodes.iter_mut() {
                 node.clear_damage_mut();

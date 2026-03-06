@@ -120,6 +120,10 @@ impl Dom {
             self.load_custom_paint_src(node_id);
         } else if (tag, attr) == tag_attr!("link", "href") {
             self.load_linked_stylesheet(node_id);
+        } else if tag == &local_name!("iframe")
+            && (*attr == local_name!("src") || *attr == local_name!("srcdoc"))
+        {
+            self.load_iframe(node_id);
         }
 
         let is_form_associated = matches!(
@@ -143,6 +147,7 @@ impl Dom {
         let mut should_unload_stylesheet = false;
         let mut should_reset_form_owner = false;
         let mut should_reset_all_form_owners = false;
+        let mut should_reload_iframe = false;
 
         {
             let node = &mut self.nodes[node_id];
@@ -201,6 +206,8 @@ impl Dom {
 
             should_recompute_canvas = tag == local_name!("canvas") && attr == local_name!("src");
             should_unload_stylesheet = tag == local_name!("link") && attr == local_name!("href");
+            should_reload_iframe =
+                tag == local_name!("iframe") && (attr == local_name!("src") || attr == local_name!("srcdoc"));
 
             let is_form_associated = matches!(
                 tag.as_ref(),
@@ -215,6 +222,9 @@ impl Dom {
         }
         if should_unload_stylesheet {
             self.unload_stylesheet(node_id);
+        }
+        if should_reload_iframe {
+            self.load_iframe(node_id);
         }
         if should_reset_form_owner {
             self.reset_form_owner(node_id);

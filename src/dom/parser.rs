@@ -230,6 +230,7 @@ impl<'m> TreeSink for DomHtmlParser<'m> {
 
     fn get_template_contents(&self, target: &Self::Handle) -> Self::Handle {
         // todo
+        //self.dom().nodes[*target].element_data().unwrap().template_contents.unwrap()
         *target
     }
 

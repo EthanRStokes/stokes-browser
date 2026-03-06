@@ -78,6 +78,8 @@ pub enum Resource {
     Image(ImageType, u32, u32, Arc<Vec<u8>>),
     Svg(ImageType, Arc<usvg::Tree>),
     Css(DocumentStyleSheet),
+    /// UTF-8 HTML document source used for iframe/sub-document loading.
+    Html(String),
     Font(Bytes),
     None,
 }
@@ -638,4 +640,16 @@ pub fn fetch(url: &str, user_agent: &str) -> Result<String, NetworkError> {
         .map_err(|_| NetworkError::Utf8("Response contains invalid UTF-8".to_string()))?;
 
     Ok::<String, NetworkError>(html).map_err(|e| NetworkError::Curl(e.to_string()))
+}
+
+pub struct HtmlDocumentHandler;
+
+impl NetHandler for ResourceHandler<HtmlDocumentHandler> {
+    fn bytes(self: Box<Self>, resolved_url: String, bytes: Bytes) {
+        let Ok(html) = std::str::from_utf8(&bytes) else {
+            return self.respond(resolved_url, Err(String::from("Invalid UTF8")));
+        };
+
+        self.respond(resolved_url, Ok(Resource::Html(html.to_string())));
+    }
 }

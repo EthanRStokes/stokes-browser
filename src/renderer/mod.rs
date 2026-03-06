@@ -10,7 +10,7 @@ mod sizing;
 pub mod painter;
 
 use crate::dom::node::{ListItemLayout, ListItemLayoutPosition, Marker, SpecialElementData, TextInputData};
-use crate::dom::{Dom, DomNode, ElementData, ImageData, NodeData};
+use crate::dom::{Dom, DomNode, ElementData, NodeData};
 use crate::renderer::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
 use crate::renderer::layers::maybe_with_layer;
 use crate::renderer::painter::ToColorColor;
@@ -43,30 +43,32 @@ pub struct HtmlRenderer<'dom> {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) selection_ranges: HashMap<usize, (usize, usize)>,
+    /// CSS-pixel render offset used for embedded (iframe) rendering.
+    pub(crate) origin: Point,
     /// Debug: Show hitboxes for all elements
     pub(crate) debug_hitboxes: bool,
 }
 
 impl HtmlRenderer<'_> {
+    fn layout(&self, node: usize) -> Layout {
+        self.dom.nodes[node].final_layout
+    }
+
     fn node_position(&self, node: usize, location: Point) -> (Layout, Point) {
         let layout = self.layout(node);
         let position = location + Vec2::new(layout.location.x as f64, layout.location.y as f64);
         (layout, position)
     }
 
-    fn layout(&self, node: usize) -> Layout {
-        self.dom.tree()[node].final_layout
-    }
-
     /// Render a layout tree to the canvas with transition support
     pub fn render(
         &mut self,
         painter: &mut ScenePainter,
-        node: &DomNode,
+        _node: &DomNode,
     ) {
         let scroll = self.dom.viewport_scroll;
 
-        let root_element = self.dom.root_element();
+        let root_element = self.dom.try_root_element().unwrap();
         let root_id = root_element.id;
         let bg_width = (self.width as f32).max(root_element.final_layout.size.width);
         let bg_height = (self.height as f32).max(root_element.final_layout.size.height);
@@ -76,22 +78,24 @@ impl HtmlRenderer<'_> {
                 .primary_styles()
                 .map(|s| s.clone_background_color())
                 .unwrap_or(GenericColor::TRANSPARENT_BLACK);
+
             if html_color == GenericColor::TRANSPARENT_BLACK {
-                root_element
-                    .children
-                    .iter()
-                    .find_map(|id| {
-                        self.dom
-                            .get_node(*id)
-                            .filter(|node| node.data.is_element_with_tag_name(&local_name!("body")))
-                    })
-                    .and_then(|body| body.primary_styles())
-                    .map(|style| {
-                        let current_color = style.clone_color();
-                        style
-                            .clone_background_color()
-                            .resolve_to_absolute(&current_color)
-                    })
+                let mut body_style = None;
+                for id in &root_element.children {
+                    if let Some(node) = self.dom.nodes.get(*id) {
+                        if node.data.is_element_with_tag_name(&local_name!("body")) {
+                            body_style = node.primary_styles();
+                            break;
+                        }
+                    }
+                }
+
+                body_style.map(|style| {
+                    let current_color = style.clone_color();
+                    style
+                        .clone_background_color()
+                        .resolve_to_absolute(&current_color)
+                })
             } else {
                 let current_color = root_element.primary_styles().unwrap().clone_color();
                 Some(html_color.resolve_to_absolute(&current_color))
@@ -100,7 +104,10 @@ impl HtmlRenderer<'_> {
 
         if let Some(bg_color) = background_color {
             let bg_color = bg_color.as_color_color();
-            let rect = Rect::from_origin_size((0.0, 0.0), (bg_width as f64, bg_height as f64));
+            let rect = Rect::from_origin_size(
+                (self.origin.x * self.scale_factor, self.origin.y * self.scale_factor),
+                (bg_width as f64, bg_height as f64),
+            );
             painter.fill(Fill::NonZero, Affine::IDENTITY, bg_color, None, &rect);
         }
 
@@ -108,8 +115,8 @@ impl HtmlRenderer<'_> {
             painter,
             root_id,
             Point {
-                x: -scroll.x,
-                y: -scroll.y,
+                x: self.origin.x - scroll.x,
+                y: self.origin.y - scroll.y,
             },
         );
 
@@ -121,7 +128,7 @@ impl HtmlRenderer<'_> {
 
     /// Render debug hitboxes for all elements (showing click target areas)
     fn render_debug_hitboxes(&self, painter: &mut ScenePainter, node_id: usize, parent_x: f64, parent_y: f64) {
-        let node = &self.dom.tree()[node_id];
+        let node = &self.dom.nodes[node_id];
         let layout = node.final_layout;
 
         // Calculate absolute position (same logic as find_element_at_position)
@@ -192,7 +199,7 @@ impl HtmlRenderer<'_> {
                         match item {
                             PositionedLayoutItem::InlineBox(ibox) => {
                                 let box_id = ibox.id as usize;
-                                let box_node = &self.dom.tree()[box_id];
+                                let box_node = &self.dom.nodes[box_id];
 
                                 let box_x = content_x + ibox.x as f64;
                                 let box_y = content_y + ibox.y as f64;
@@ -269,7 +276,7 @@ impl HtmlRenderer<'_> {
             if depth > 50 { break; } // Prevent infinite loops
             depth += 1;
 
-            let node = &self.dom.tree()[id];
+            let node = &self.dom.nodes[id];
             if let NodeData::Element(elem) = &node.data {
                 if elem.name.local.as_ref() == "a" {
                     return true;
@@ -282,7 +289,7 @@ impl HtmlRenderer<'_> {
 
     /// Render debug hitboxes for inline box children
     fn render_debug_hitboxes_inline(&self, painter: &mut ScenePainter, node_id: usize, container_x: f64, container_y: f64) {
-        let node = &self.dom.tree()[node_id];
+        let node = &self.dom.nodes[node_id];
         let layout = node.final_layout;
 
         // For inline boxes, location is relative to the inline container
@@ -307,7 +314,7 @@ impl HtmlRenderer<'_> {
                     for item in line.items() {
                         if let PositionedLayoutItem::InlineBox(ibox) = item {
                             let box_id = ibox.id as usize;
-                            let box_node = &self.dom.tree()[box_id];
+                            let box_node = &self.dom.nodes[box_id];
 
                             let box_x = content_x + ibox.x as f64;
                             let box_y = content_y + ibox.y as f64;
@@ -347,7 +354,7 @@ impl HtmlRenderer<'_> {
         node_id: usize,
         location: Point,
     ) {
-        let node = &self.dom.tree()[node_id];
+        let node = &self.dom.nodes[node_id];
 
         if matches!(node.taffy_style.display, taffy::Display::None) {
             return; // Skip rendering for display: none
@@ -375,7 +382,14 @@ impl HtmlRenderer<'_> {
         let overflow_y = styles.get_box().overflow_y;
         let is_image = node.element_data().and_then(|e| e.raster_image_data()).is_some();
         let is_text_input = node.element_data().and_then(|e| e.text_input_data()).is_some();
-        let should_clip = is_image || is_text_input || !matches!(overflow_x, Overflow::Visible) || !matches!(overflow_y, Overflow::Visible);
+        let is_iframe = node
+            .element_data()
+            .is_some_and(|e| e.name.local == local_name!("iframe") && e.sub_dom_data().is_some());
+        let should_clip = is_image
+            || is_text_input
+            || is_iframe
+            || !matches!(overflow_x, Overflow::Visible)
+            || !matches!(overflow_y, Overflow::Visible);
 
         let (layout, position) = self.node_position(node_id, location);
         let taffy::Layout {
@@ -387,10 +401,6 @@ impl HtmlRenderer<'_> {
         } = node.final_layout;
 
         let scaled_padding_border = (padding + border).map(f64::from);
-        let content_pos = Point {
-            x: position.x + scaled_padding_border.left,
-            y: position.y + scaled_padding_border.top,
-        };
         let content_box_size = kurbo::Size {
             width: (size.width as f64 - scaled_padding_border.left - scaled_padding_border.right) * self.scale_factor,
             height: (size.height as f64 - scaled_padding_border.top - scaled_padding_border.bottom) * self.scale_factor,
@@ -426,7 +436,7 @@ impl HtmlRenderer<'_> {
                 element.draw_border(painter);
 
                 //let wants_layer = should_clip | has_opacity;
-                let clip = if is_text_input {
+                let clip = if is_text_input || is_iframe {
                     &element.frame.content_box_path()
                 } else {
                     &element.frame.padding_box_path()
@@ -447,6 +457,7 @@ impl HtmlRenderer<'_> {
                     element.draw_image(painter);
                     element.draw_svg(painter);
                     element.draw_canvas(painter);
+                    element.draw_iframe(painter);
                     element.draw_text_input_text(painter, position);
                     element.draw_inline_layout(painter, position);
                     element.draw_marker(painter, position);
@@ -457,7 +468,7 @@ impl HtmlRenderer<'_> {
     }
 
     fn render_node(&self, scene: &mut ScenePainter, node_id: usize, location: Point) {
-        let node = &self.dom.tree()[node_id];
+        let node = &self.dom.nodes[node_id];
 
         match &node.data {
             NodeData::Element(_) | NodeData::AnonymousBlock(_) => {
@@ -976,5 +987,44 @@ impl Element<'_> {
             None,
             &Rect::from_origin_size((0.0, 0.0), (width as f64, height as f64)),
         );
+    }
+
+    fn draw_iframe(&self, painter: &mut ScenePainter) {
+        if self.element.name.local != local_name!("iframe") {
+            return;
+        }
+        let Some(sub_dom) = self.element.sub_dom_data() else {
+            return;
+        };
+
+        let inner = sub_dom.inner();
+        if inner.try_root_element().is_none() {
+            return;
+        }
+
+        let selection: HashMap<usize, (usize, usize)> = inner
+            .get_text_selection_ranges()
+            .into_iter()
+            .map(|(node_id, start, end)| (node_id, (start, end)))
+            .collect();
+
+        let content_origin = Point {
+            x: self.position.x
+                + (self.node.final_layout.padding.left + self.node.final_layout.border.left) as f64,
+            y: self.position.y
+                + (self.node.final_layout.padding.top + self.node.final_layout.border.top) as f64,
+        };
+
+        let mut renderer = HtmlRenderer {
+            dom: &inner,
+            scale_factor: self.scale_factor,
+            width: self.frame.content_box.width().max(0.0) as u32,
+            height: self.frame.content_box.height().max(0.0) as u32,
+            selection_ranges: selection,
+            origin: content_origin,
+            debug_hitboxes: self.context.debug_hitboxes,
+        };
+
+        renderer.render(painter, &inner.nodes[0]);
     }
 }
