@@ -488,16 +488,23 @@ unsafe fn import_wait_semaphore_for_frame(
     device: &ash::Device,
     sem_handle: i64,
 ) -> Result<Option<ash::vk::Semaphore>, String> {
-    if sem_handle == 0 {
+    // Windows uses 0 as "no handle", but tolerate -1 from older frame-sentinel code paths.
+    if sem_handle <= 0 {
         return Ok(None);
     }
 
     let mut export_ci = ash::vk::ExportSemaphoreCreateInfo::default()
         .handle_types(ash::vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32);
     let sem_ci = ash::vk::SemaphoreCreateInfo::default().push_next(&mut export_ci);
-    let sem = device
-        .create_semaphore(&sem_ci, None)
-        .map_err(|e| format!("vkCreateSemaphore (import wait): {:?}", e))?;
+    let sem = match device.create_semaphore(&sem_ci, None) {
+        Ok(sem) => sem,
+        Err(ash::vk::Result::ERROR_INVALID_EXTERNAL_HANDLE) => {
+            // Driver rejected external-handle setup for this frame; continue without GPU wait.
+            println!("vkCreateSemaphore failed with ERROR_INVALID_EXTERNAL_HANDLE, skipping wait for this frame");
+            return Ok(None);
+        }
+        Err(e) => return Err(format!("vkCreateSemaphore (import wait): {:?}", e)),
+    };
 
     let ext_sem_win32 = ash::khr::external_semaphore_win32::Device::new(instance, device);
     let mut import_info = ash::vk::ImportSemaphoreWin32HandleInfoKHR::default()
@@ -508,6 +515,10 @@ unsafe fn import_wait_semaphore_for_frame(
 
     if let Err(e) = ext_sem_win32.import_semaphore_win32_handle(&mut import_info) {
         device.destroy_semaphore(sem, None);
+        if e == ash::vk::Result::ERROR_INVALID_EXTERNAL_HANDLE {
+            // Cross-process HANDLE handoff can fail transiently; fall back to presenting without this wait.
+            return Ok(None);
+        }
         return Err(format!("vkImportSemaphoreWin32HandleKHR failed: {:?}", e));
     }
 

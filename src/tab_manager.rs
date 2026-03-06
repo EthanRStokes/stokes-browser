@@ -46,7 +46,15 @@ impl RenderedFrame {
     /// Returns the semaphore handle exactly once for this frame.
     /// Sync FDs are single-use; repeated imports lead to invalid-handle errors.
     pub fn take_sem_handle(&self) -> i64 {
-        self.sem_handle.swap(-1, Ordering::AcqRel)
+        #[cfg(windows)]
+        {
+            // 0 is the Windows "no handle" sentinel.
+            self.sem_handle.swap(0, Ordering::AcqRel)
+        }
+        #[cfg(not(windows))]
+        {
+            self.sem_handle.swap(-1, Ordering::AcqRel)
+        }
     }
 }
 
@@ -58,6 +66,19 @@ impl Drop for RenderedFrame {
             if sem_fd >= 0 {
                 unsafe {
                     libc::close(sem_fd as libc::c_int);
+                }
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::CloseHandle;
+
+            // If the frame was never consumed, release the duplicated HANDLE.
+            let sem_handle = *self.sem_handle.get_mut();
+            if sem_handle > 0 {
+                unsafe {
+                    CloseHandle(sem_handle as windows_sys::Win32::Foundation::HANDLE);
                 }
             }
         }
