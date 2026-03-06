@@ -22,11 +22,9 @@ stacker = "0.1"
 serde_json = "1.0.149"
 shared_memory = "0.12.4"
 serde = { version = "1.0", features = ["derive"] }
-bincode-next = { version = "3.0.0-rc.2", features = ["serde"] }
-uds_windows = "1.1.0"
 rfd = "0.17.2"
 url = "2"
-taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "25759dad44d8350743a4e866fee54962f996895a" }
+taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "25759dad44d8350743a4e866fee54962f996895a", features = ["strict_provenance"] }
 slab = "0.4.12"
 markup5ever = "0.38.0"
 xml5ever = "0.38.0"
@@ -60,7 +58,7 @@ percent-encoding = "2.3.2"
 cssparser = "0.36.0"
 ipc-channel = { version = "0.21.0", features = ["async"] }
 raw-window-handle = "0.6.2"
-webdriver = "0.53.0"
+smallvec = "1.15.1"
 
 # Stylo
 stylo = "0.12.0"
