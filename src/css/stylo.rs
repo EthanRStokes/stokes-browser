@@ -645,7 +645,7 @@ impl<'a> TElement for Node<'a> {
     }
 
     fn lang_attr(&self) -> Option<AttrValue> {
-        None
+        self.attr(local_name!("lang")).map(|v| AttrValue::from(v))
     }
 
     fn match_element_lang(&self, override_lang: Option<Option<AttrValue>>, value: &Lang) -> bool {
@@ -829,6 +829,10 @@ where
     where
         F: FnMut(E::ConcreteNode)
     {
+        if node.is_text_node() {
+            return;
+        }
+
         if let Some(el) = node.as_element() {
             let mut data = unsafe { el.ensure_data() };
             recalc_style_at(self, traversal_data, context, el, &mut data, node_child);

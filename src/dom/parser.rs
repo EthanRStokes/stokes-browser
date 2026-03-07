@@ -150,7 +150,7 @@ impl<'m> TreeSink for DomHtmlParser<'m> {
 
     fn finish(self) -> Self::Output {
         for error in self.errors.borrow().iter() {
-            println!("ERROR: {error}");
+            println!("PARSE ERROR: {error}");
         }
     }
 
