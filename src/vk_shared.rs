@@ -357,7 +357,7 @@ impl TabVkImage {
     ///   target process (`parent_pid`). The parent process can use this value directly.
     ///
     /// **Linux**: returns a dup'd file-descriptor number (i64 cast to u64).
-    pub unsafe fn export_handle(&self, _parent_pid: u32) -> Result<u64, String> {
+    pub unsafe fn export_handle(&self, parent_pid: u32) -> Result<u64, String> {
         #[cfg(windows)]
         {
             use windows_sys::Win32::Foundation::{

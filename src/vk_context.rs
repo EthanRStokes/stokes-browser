@@ -61,12 +61,17 @@ pub(crate) fn create_parent_context(window: Arc<Box<dyn Window>>, el: &Box<&dyn 
         })
         .ok_or_else(|| "No suitable Vulkan physical device found (parent)".to_string())?;
 
+    #[cfg(target_os = "windows")]
+    let windows = true;
+    #[cfg(not(target_os = "windows"))]
+    let windows = false;
+
     let (device, mut queues) = Device::new(
         physical_device.clone(),
         DeviceCreateInfo {
             enabled_extensions: required_device_extensions,
             enabled_features: DeviceFeatures {
-                synchronization2: true,
+                synchronization2: !windows,
                 ..DeviceFeatures::empty()
             },
             queue_create_infos: vec![QueueCreateInfo {
