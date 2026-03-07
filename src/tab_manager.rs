@@ -4,7 +4,6 @@ use crate::vk_shared::{import_vk_image_raw, ImportedVkImage, VulkanDeviceInfo};
 use std::collections::HashMap;
 use std::io;
 use std::process::{Child, Command};
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use taffy::Point;
@@ -35,52 +34,10 @@ pub struct RenderedFrame {
     /// Shared owner of the imported VkImage + VkDeviceMemory.
     /// The renderer keeps an extra clone while a frame is in flight.
     pub vk_guard: Arc<ImportedVkImage>,
-    /// Exported render-complete semaphore handle from the tab frame.
-    /// Linux: local duplicated fd (or -1 when unavailable). Windows: HANDLE value (or 0).
-    sem_handle: AtomicI64,
-}
-
-impl RenderedFrame {
-    /// Returns the semaphore handle exactly once for this frame.
-    /// Sync FDs are single-use; repeated imports lead to invalid-handle errors.
-    pub fn take_sem_handle(&self) -> i64 {
-        #[cfg(windows)]
-        {
-            // 0 is the Windows "no handle" sentinel.
-            self.sem_handle.swap(0, Ordering::AcqRel)
-        }
-        #[cfg(not(windows))]
-        {
-            self.sem_handle.swap(-1, Ordering::AcqRel)
-        }
-    }
 }
 
 impl Drop for RenderedFrame {
-    fn drop(&mut self) {
-        #[cfg(not(windows))]
-        {
-            let sem_fd = *self.sem_handle.get_mut();
-            if sem_fd >= 0 {
-                unsafe {
-                    libc::close(sem_fd as libc::c_int);
-                }
-            }
-        }
-
-        #[cfg(windows)]
-        {
-            use windows_sys::Win32::Foundation::CloseHandle;
-
-            // If the frame was never consumed, release the duplicated HANDLE.
-            let sem_handle = *self.sem_handle.get_mut();
-            if sem_handle > 0 {
-                unsafe {
-                    CloseHandle(sem_handle as windows_sys::Win32::Foundation::HANDLE);
-                }
-            }
-        }
-    }
+    fn drop(&mut self) {}
 }
 
 /// Manages all tab processes
@@ -240,7 +197,7 @@ impl TabManager {
                 TabToParentMessage::LoadingStateChanged(is_loading) => {
                     tab.is_loading = is_loading;
                 }
-                TabToParentMessage::FrameRendered { mem_handle, width, height, vk_format, alloc_size, sem_handle } => {
+                TabToParentMessage::FrameRendered { mem_handle, width, height, vk_format, alloc_size } => {
                     let format = crate::vk_shared::raw_vk_format_to_vulkano(vk_format)
                         .expect("Invalid VkFormat from tab process");
                     if let (Some(phys), Some(dev)) = (
@@ -285,41 +242,6 @@ impl TabManager {
                         #[cfg(windows)]
                         let local_handle = mem_handle;
 
-                        #[cfg(not(windows))]
-                        let local_sem_handle: i64 = {
-                            if sem_handle <= 0 {
-                                -1
-                            } else {
-                                let child_pid = tab.process.id() as libc::pid_t;
-                                let target_fd = sem_handle as libc::c_int;
-
-                                const SYS_PIDFD_OPEN: libc::c_long = 434;
-                                const SYS_PIDFD_GETFD: libc::c_long = 438;
-
-                                let pidfd = unsafe { libc::syscall(SYS_PIDFD_OPEN, child_pid, 0 as libc::c_uint) } as libc::c_int;
-                                if pidfd < 0 {
-                                    let err = std::io::Error::last_os_error();
-                                    eprintln!("[TabManager] pidfd_open({}) for semaphore failed: {}", child_pid, err);
-                                    -1
-                                } else {
-                                    let local_fd = unsafe { libc::syscall(SYS_PIDFD_GETFD, pidfd, target_fd, 0 as libc::c_uint) } as libc::c_int;
-                                    unsafe { libc::close(pidfd) };
-                                    if local_fd < 0 {
-                                        let err = std::io::Error::last_os_error();
-                                        eprintln!(
-                                            "[TabManager] pidfd_getfd(pid={}, sem_fd={}) failed: {}",
-                                            child_pid, target_fd, err
-                                        );
-                                        -1
-                                    } else {
-                                        local_fd as i64
-                                    }
-                                }
-                            }
-                        };
-                        #[cfg(windows)]
-                        let local_sem_handle: i64 = sem_handle;
-
                         match unsafe {
                             import_vk_image_raw(
                                 phys.clone(),
@@ -332,17 +254,10 @@ impl TabManager {
                             )
                         } {
                             Ok(vk_guard) => {
-                                // The semaphore is intentionally NOT waited on here.
-                                // It is stored on the frame and consumed by the blit
-                                // path (vk_blit_tab_then_present) as an extra wait
-                                // semaphore on the same vkQueueSubmit that does the
-                                // blit — so the GPU handles synchronization without
-                                // any CPU stall on the main thread.
                                 tab.rendered_frame = Some(RenderedFrame {
                                     width,
                                     height,
                                     vk_guard: Arc::new(vk_guard),
-                                    sem_handle: AtomicI64::new(local_sem_handle),
                                 });
                             }
                             Err(e) => {

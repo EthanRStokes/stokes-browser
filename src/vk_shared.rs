@@ -32,6 +32,7 @@ use std::sync::Arc;
 use vulkano::device::{Device, Queue};
 use vulkano::device::physical::PhysicalDevice;
 use vulkano::format::Format;
+use vulkano::image::sys::RawImage;
 use vulkano::image::{Image, ImageCreateInfo, ImageLayout, ImageSubresourceRange, ImageTiling, ImageType, ImageUsage, SampleCount};
 use vulkano::instance::Instance;
 use vulkano::memory::allocator::MemoryAllocator;
@@ -39,13 +40,11 @@ use vulkano::memory::{
     DedicatedAllocation, DeviceMemory, ExternalMemoryHandleType, MemoryAllocateInfo, MemoryImportInfo,
     MemoryPropertyFlags, MemoryRequirements, ResourceMemory,
 };
-use vulkano::sync::semaphore::{ExternalSemaphoreHandleType, ExternalSemaphoreHandleTypes, Semaphore, SemaphoreCreateInfo};
-use vulkano::sync::{DependencyInfo, ImageMemoryBarrier, Sharing};
-use vulkano::{VulkanObject};
+use vulkano::sync::Sharing;
+use vulkano::VulkanObject;
 use vulkano::command_buffer::{CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsage, RecordingCommandBuffer};
 use vulkano::command_buffer::allocator::CommandBufferAllocator;
 use vulkano::command_buffer::pool::{CommandBufferAllocateInfo, CommandPool, CommandPoolCreateFlags, CommandPoolCreateInfo};
-use vulkano::image::sys::RawImage;
 use vulkano::sync::fence::{Fence, FenceCreateInfo};
 // ── VkFormat ↔ Skia mappings ────────────────────────────────────────────────
 
@@ -81,18 +80,6 @@ fn external_handle_type() -> ExternalMemoryHandleType {
 #[cfg(not(windows))]
 fn external_handle_type() -> ExternalMemoryHandleType {
     ExternalMemoryHandleType::DmaBuf
-}
-
-// ── Platform-specific external semaphore handle type ──────────────────────
-
-#[cfg(windows)]
-fn external_semaphore_handle_type() -> ExternalSemaphoreHandleType {
-    ExternalSemaphoreHandleType::OpaqueWin32
-}
-
-#[cfg(not(windows))]
-fn external_semaphore_handle_type() -> ExternalSemaphoreHandleType {
-    ExternalSemaphoreHandleType::SyncFd
 }
 
 // ── Shared Skia proc-loader ─────────────────────────────────────────────────
@@ -218,17 +205,7 @@ pub struct TabVkImage {
     /// Exact allocation size (bytes) — must be sent to the parent for import.
     pub alloc_size: u64,
     skia_surface: Option<skia_safe::Surface>,
-    /// Exportable semaphore signaled after each render to synchronize the parent.
-    pub render_semaphore: Option<TabVkSemaphore>,
-    /// Command pool for the layout-transition submit done after each render.
-    cmd_pool: Arc<CommandPool>,
-    cmd_buf_allocator: Arc<dyn CommandBufferAllocator>,
     pub queue: Arc<Queue>,
-    queue_family_index: u32,
-    /// Fence used to track the last `signal_and_export_semaphore` submission.
-    pub submit_fence: Arc<Fence>,
-    /// Whether `submit_fence` is currently in the submitted (unsignaled) state.
-    pub submit_fence_pending: bool,
 }
 
 impl TabVkImage {
@@ -240,12 +217,11 @@ impl TabVkImage {
         physical_device: Arc<PhysicalDevice>,
         device: Arc<Device>,
         _memory_allocator: Arc<dyn MemoryAllocator>,
-        cmd_buf_allocator: Arc<dyn CommandBufferAllocator>,
         gr_context: &mut DirectContext,
         width: u32,
         height: u32,
         format: Format,
-        queue_family_index: u32,
+        _queue_family_index: u32,
         queue: Arc<Queue>,
     ) -> Result<Self, String> {
         let (skia_format, color_type) = vk_format_to_skia(format)
@@ -263,10 +239,7 @@ impl TabVkImage {
             mip_levels: 1,
             samples: SampleCount::Sample1,
             tiling: ImageTiling::Optimal,
-            usage: ImageUsage::COLOR_ATTACHMENT
-                | ImageUsage::SAMPLED
-                | ImageUsage::TRANSFER_SRC
-                | ImageUsage::TRANSFER_DST,
+            usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_SRC,
             stencil_usage: None,
             sharing: Sharing::Exclusive,
             initial_layout: ImageLayout::Undefined,
@@ -328,7 +301,6 @@ impl TabVkImage {
                 format!("Failed to bind image memory: {:?}", e)
             })?;
 
-        // -- Build Skia surface -----------------------------------------------
         let alloc = gpu::vk::Alloc::from_device_memory(
             memory.handle().as_raw() as _,
             0,
@@ -361,30 +333,6 @@ impl TabVkImage {
         )
         .ok_or_else(|| "Failed to wrap Vulkan image as Skia surface".to_string())?;
 
-        let pool_ci = CommandPoolCreateInfo {
-            flags: CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
-            queue_family_index,
-            ..Default::default()
-        };
-        let cmd_pool = CommandPool::new(device.clone(), pool_ci).expect("Failed to create command pool");
-
-        let _cmd_buf = {
-            let ai = CommandBufferAllocateInfo {
-                level: CommandBufferLevel::Primary,
-                command_buffer_count: 1,
-                ..Default::default()
-            };
-            let bufs = cmd_pool.allocate_command_buffers(ai).expect("Failed to allocate command buffers");
-            bufs.into_iter().next().unwrap() // works bc the count is 1
-        };
-
-         // -- Exportable render-complete semaphore -----------------------------
-         let render_semaphore = TabVkSemaphore::new(device.clone()).ok();
-
-         // -- Fence for tracking signal_and_export_semaphore submissions ------
-        let submit_fence = Arc::new(Fence::new(device.clone(), FenceCreateInfo::default())
-            .expect("Failed to create Fence"));
-
         Ok(Self {
             device: device.clone(),
             image: Arc::new(image),
@@ -394,13 +342,7 @@ impl TabVkImage {
             format,
             alloc_size: mem_req_size,
             skia_surface: Some(skia_surface),
-            render_semaphore,
-            cmd_pool: Arc::new(cmd_pool),
-            cmd_buf_allocator,
             queue,
-            queue_family_index,
-            submit_fence,
-            submit_fence_pending: false,
         })
     }
 
@@ -475,117 +417,17 @@ impl TabVkImage {
                 .map_err(|e| format!("Failed to export memory fd: {:?}", e))
         }
     }
-
-    /// Submit a queue command that:
-    ///   1. Inserts a pipeline barrier transitioning the image from
-    ///      `COLOR_ATTACHMENT_OPTIMAL` → `GENERAL` (readable cross-process).
-    ///   2. Signals `render_semaphore`.
-    ///
-    /// Returns the exported semaphore handle, or -1/0 if unavailable.
-    /// Must be called *after* `gr_context.flush_and_submit()`.
-    pub unsafe fn signal_and_export_semaphore(&mut self, parent_pid: u32) -> i64 {
-        // Wait for any prior submission to complete before reusing the command
-        // buffer and fence.
-        if self.submit_fence_pending {
-            self.submit_fence.wait(None).expect("Failed to wait for submit fence");
-            self.submit_fence_pending = false;
-        }
-
-        let begin_info = CommandBufferBeginInfo {
-            usage: CommandBufferUsage::OneTimeSubmit,
-            ..Default::default()
-        };
-        let mut rec_cmd_buf = RecordingCommandBuffer::new(
-            self.cmd_buf_allocator.clone(),
-            self.queue_family_index,
-            CommandBufferLevel::Primary,
-            begin_info,
-        )
-        .expect("Failed to begin recording command buffer");
-
-        // Vulkano validates that the subresource range contains at least one aspect.
-        // Our shared images are color-only, so make that explicit.
-        let barrier = DependencyInfo {
-            image_memory_barriers: vec![
-                ImageMemoryBarrier {
-                    // Layout transition so the parent can read it.
-                    old_layout: ImageLayout::ColorAttachmentOptimal,
-                    new_layout: ImageLayout::General,
-
-                    // Color aspect, single mip level, single layer.
-                    subresource_range: self.image.subresource_range(),
-
-                    // Make writes by Skia (color attachment) visible to the external reader.
-                    src_access: vulkano::sync::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                    dst_access: vulkano::sync::AccessFlags::MEMORY_READ,
-
-                    // Conservative stage masks for cross-process handoff.
-                    src_stages: vulkano::sync::PipelineStages::COLOR_ATTACHMENT_OUTPUT,
-                    dst_stages: vulkano::sync::PipelineStages::ALL_COMMANDS,
-
-                    ..ImageMemoryBarrier::image(self.image.clone())
-                }
-            ]
-            .into(),
-            ..Default::default()
-        };
-
-        rec_cmd_buf
-            .pipeline_barrier(&barrier)
-            .expect("Failed to record pipeline barrier");
-
-        let cmd_buf = rec_cmd_buf.end().expect("Failed to finish recording command buffer");
-
-        let cmd_bufs = [cmd_buf.handle()];
-        let signal_semaphores_storage;
-        let mut submit_info = ash::vk::SubmitInfo::default().command_buffers(&cmd_bufs);
-
-        if let Some(render_semaphore) = self.render_semaphore.as_ref() {
-            signal_semaphores_storage = [render_semaphore.semaphore.handle()];
-            submit_info = submit_info.signal_semaphores(&signal_semaphores_storage);
-        }
-
-        self.submit_fence.reset().expect("Failed to reset submit fence");
-
-        let res = (self.device.fns().v1_0.queue_submit)(
-            self.queue.handle(),
-            1,
-            &submit_info,
-            self.submit_fence.handle(),
-        );
-        if res != ash::vk::Result::SUCCESS {
-            return -1;
-        }
-        self.submit_fence_pending = true;
-
-        match self.render_semaphore.as_ref() {
-            Some(render_semaphore) => render_semaphore.export(parent_pid),
-            None => -1,
-        }
-    }
 }
 
 impl Drop for TabVkImage {
     fn drop(&mut self) {
-        // Drop the Skia surface first — it may hold internal references to
-        // the VkImage / VkDeviceMemory through the Skia GPU backend.
         self.skia_surface = None;
 
         unsafe {
-            if self.submit_fence_pending {
-                self.submit_fence.wait(None).expect("Failed to wait for submit fence");
-                self.submit_fence_pending = false;
-            }
-
-            // Also do a full device wait as a safety net — Skia may have
-            // submitted additional GPU work we don't track with our fence.
             self.device.wait_idle().ok();
-
-            // Now safe to destroy everything.
-            self.render_semaphore = None;
         }
-     }
- }
+    }
+}
 
 // ── ImportedVkImage: RAII wrapper for resources imported by the parent ──────
 
@@ -632,10 +474,7 @@ pub unsafe fn import_vk_image_raw(
         mip_levels: 1,
         samples: SampleCount::Sample1,
         tiling: ImageTiling::Optimal,
-        usage: ImageUsage::COLOR_ATTACHMENT
-            | ImageUsage::TRANSFER_SRC
-            | ImageUsage::TRANSFER_DST
-            | ImageUsage::SAMPLED,
+        usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_SRC,
         sharing: Sharing::Exclusive,
         initial_layout: ImageLayout::Undefined,
         external_memory_handle_types: handle_type.into(),
@@ -813,94 +652,26 @@ pub fn find_memory_type(
     None
 }
 
-// ── TabVkSemaphore (child/tab side) ─────────────────────────────────────────
+// ── Device extension lists ──────────────────────────────────────────────────
 
-/// An exportable binary `VkSemaphore` owned by the tab process.
-pub struct TabVkSemaphore {
-    pub semaphore: Arc<Semaphore>,
+/// External-memory extensions shared by parent and tab.
+#[cfg(windows)]
+fn shared_external_device_extensions() -> Vec<*const c_char> {
+    vec![
+        ash::khr::external_memory::NAME.as_ptr(),
+        ash::khr::external_memory_win32::NAME.as_ptr(),
+    ]
 }
 
-impl TabVkSemaphore {
-    /// Create a new exportable binary semaphore.
-    pub unsafe fn new(device: Arc<Device>) -> Result<Self, String> {
-        let handle_type = external_semaphore_handle_type();
-
-        let create_info = SemaphoreCreateInfo {
-            export_handle_types: ExternalSemaphoreHandleTypes::from(handle_type),
-            ..Default::default()
-        };
-
-        let semaphore = Semaphore::new(
-            device.clone(),
-            create_info,
-        ).map_err(|e| format!("Failed to create exportable semaphore: {:?}", e))?;
-
-        Ok(Self {
-            semaphore: Arc::new(semaphore),
-        })
-    }
-
-    /// Export the semaphore as a platform handle to send to the parent.
-    ///
-    /// * Linux   – returns a `sync_fd` (i32 cast to i64).
-    /// * Windows – returns a Win32 HANDLE already duplicated into `parent_pid`.
-    ///
-    /// Returns -1 / 0 on failure (non-fatal; parent falls back to CPU wait).
-    pub unsafe fn export(&self, _parent_pid: u32) -> i64 {
-        let handle_type = external_semaphore_handle_type();
-
-        #[cfg(not(windows))]
-        {
-            return match self.semaphore.export_fd(handle_type) {
-                Ok(file) => file.into_raw_fd() as i64,
-                Err(_) => -1,
-            };
-        }
-
-        #[cfg(windows)]
-        {
-            use windows_sys::Win32::Foundation::{
-                CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE, INVALID_HANDLE_VALUE,
-            };
-            use windows_sys::Win32::System::Threading::{
-                GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE,
-            };
-
-            let local_handle = match self.semaphore.export_win32_handle(handle_type) {
-                Ok(handle) => handle as HANDLE,
-                Err(_) => return 0,
-            };
-
-            let parent_proc: HANDLE = OpenProcess(PROCESS_DUP_HANDLE, 0, parent_pid);
-            if parent_proc == 0 as HANDLE || parent_proc == INVALID_HANDLE_VALUE {
-                CloseHandle(local_handle);
-                return 0;
-            }
-
-            let mut dup_handle: HANDLE = 0 as HANDLE;
-            let ok = DuplicateHandle(
-                GetCurrentProcess(),
-                local_handle,
-                parent_proc,
-                &mut dup_handle,
-                0,
-                0,
-                DUPLICATE_SAME_ACCESS,
-            );
-
-            CloseHandle(parent_proc);
-            CloseHandle(local_handle);
-
-            if ok == 0 {
-                return 0;
-            }
-
-            dup_handle as i64
-        }
-    }
+/// External-memory extensions shared by parent and tab.
+#[cfg(not(windows))]
+fn shared_external_device_extensions() -> Vec<*const c_char> {
+    vec![
+        ash::khr::external_memory::NAME.as_ptr(),
+        ash::khr::external_memory_fd::NAME.as_ptr(),
+        ash::vk::EXT_EXTERNAL_MEMORY_DMA_BUF_NAME.as_ptr(),
+    ]
 }
-
-// ── VulkanDeviceInfo: serialisable info the parent passes to child via env ──
 
 /// The minimal Vulkan info the parent passes to each tab process so they can
 /// connect to the same physical device.
@@ -921,30 +692,6 @@ pub fn physical_device_uuid(physical_device: &Arc<PhysicalDevice>) -> [u8; 16] {
     physical_device.properties().device_uuid.unwrap_or_default()
 }
 
-// ── Device extension lists ──────────────────────────────────────────────────
-
-/// External-memory/semaphore extensions shared by parent and tab.
-#[cfg(windows)]
-fn shared_external_device_extensions() -> Vec<*const c_char> {
-    vec![
-        ash::khr::external_memory::NAME.as_ptr(),
-        ash::khr::external_memory_win32::NAME.as_ptr(),
-        ash::khr::external_semaphore::NAME.as_ptr(),
-        ash::khr::external_semaphore_win32::NAME.as_ptr(),
-    ]
-}
-
-/// External-memory/semaphore extensions shared by parent and tab.
-#[cfg(not(windows))]
-fn shared_external_device_extensions() -> Vec<*const c_char> {
-    vec![
-        ash::khr::external_memory::NAME.as_ptr(),
-        ash::khr::external_memory_fd::NAME.as_ptr(),
-        ash::vk::EXT_EXTERNAL_MEMORY_DMA_BUF_NAME.as_ptr(),
-        ash::khr::external_semaphore::NAME.as_ptr(),
-        ash::khr::external_semaphore_fd::NAME.as_ptr(),
-    ]
-}
 
 /// Device extension names for the browser (parent) Vulkan device.
 pub fn parent_device_extension_names() -> Vec<*const c_char> {

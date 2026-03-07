@@ -3,9 +3,6 @@ use crate::vk_shared::{self, ImportedVkImage, SkiaGetProc, VulkanDeviceInfo};
 use skia_safe::gpu::vk::GetProcOf;
 use skia_safe::gpu::{self, DirectContext};
 use skia_safe::{ColorType, Surface};
-use std::fs::File;
-#[cfg(not(windows))]
-use std::os::fd::FromRawFd;
 use std::sync::Arc;
 use vulkano::command_buffer::allocator::{CommandBufferAllocator, StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo};
 use vulkano::command_buffer::{
@@ -23,12 +20,7 @@ use vulkano::swapchain::{
     AcquireNextImageInfo, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentInfo,
     PresentMode, SemaphorePresentInfo, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
 };
-use vulkano::sync::semaphore::{
-    ExternalSemaphoreHandleType, ExternalSemaphoreHandleTypes, ImportSemaphoreFdInfo,
-    Semaphore, SemaphoreCreateInfo, SemaphoreImportFlags,
-};
-#[cfg(windows)]
-use vulkano::sync::semaphore::ImportSemaphoreWin32HandleInfo;
+use vulkano::sync::semaphore::{Semaphore, SemaphoreCreateInfo};
 use vulkano::sync::{AccessFlags, DependencyInfo, ImageMemoryBarrier, PipelineStages, Sharing};
 use vulkano::VulkanObject;
 use winit::dpi::LogicalSize;
@@ -82,7 +74,7 @@ impl Env {
     ///   4. `blit_tab_then_present()`  — blits tab, waits image_available, signals render_finished, presents
     pub fn blit_tab_then_present(
         &mut self,
-        tab_frame: Option<(&Arc<ImportedVkImage>, u32, u32, i64)>,
+        tab_frame: Option<(&Arc<ImportedVkImage>, u32, u32)>,
         chrome_px: i32,
     ) -> Result<(), String> {
         vk_blit_tab_then_present(&mut self.vk, self.window.clone(), tab_frame, chrome_px)
@@ -119,16 +111,12 @@ pub(crate) struct VkState {
     /// Skia/Vulkan format tag for `ImageInfo`.
     pub(crate) vk_format: skia_safe::gpu::vk::Format,
 
-    // Synchronisation (single frame-in-flight)
     image_available_semaphore: Arc<Semaphore>,
     render_finished_semaphore: Arc<Semaphore>,
     cmd_buf_allocator: Arc<dyn CommandBufferAllocator>,
 
-    /// Keep the submitted tab image alive until the next frame drain.
+    /// Keep the submitted tab image alive until the current frame finishes.
     in_flight_tab_image: Option<Arc<ImportedVkImage>>,
-
-    /// Imported external semaphores waited by the previous submit.
-    deferred_wait_semaphores: Vec<Arc<Semaphore>>,
 }
 
 impl VkState {
@@ -148,7 +136,6 @@ impl VkState {
 impl Drop for VkState {
     fn drop(&mut self) {
         let _ = self.queue.with(|mut q| q.wait_idle());
-        self.deferred_wait_semaphores.clear();
     }
 }
 
@@ -391,132 +378,46 @@ fn vk_acquire(
         return Ok(false);
     }
 
-    // Let vulkano own queue synchronization and avoid manual fence lifecycle issues.
     vk.queue
         .with(|mut q| q.wait_idle())
-        .map_err(|e| format!("queue_wait_idle: {:?}", e))?;
+        .map_err(|e| format!("queue_wait_idle: {e:?}"))?;
+    vk.in_flight_tab_image = None;
 
-    unsafe {
-        // Release previously submitted shared tab image after GPU completion.
-        vk.in_flight_tab_image = None;
-
-        // Previous submit is complete, so it is now safe to drop per-frame
-        // imported wait semaphores created for external tab sync.
-        vk.deferred_wait_semaphores.clear();
-
-        let acquired = match vk.vk_swapchain.acquire_next_image(&AcquireNextImageInfo {
+    let acquired = match unsafe {
+        vk.vk_swapchain.acquire_next_image(&AcquireNextImageInfo {
             timeout: None,
             semaphore: Some(vk.image_available_semaphore.clone()),
             fence: None,
             ..Default::default()
-        }) {
-            Ok(result) => result,
-            Err(err) => {
-                let msg = format!("acquire_next_image: {err:?}");
-                if vk_error_is_not_ready_message(&msg) {
-                    return Ok(false);
-                }
-                if vk_error_is_out_of_date_message(&msg) {
-                    vk.swapchain_valid = false;
-                    return Ok(false);
-                }
-                if vk_error_is_surface_lost_message(&msg) {
-                    vk.swapchain_valid = false;
-                    vk_recreate_surface(vk, window.clone())?;
-                    return Ok(false);
-                }
-                return Err(msg);
+        })
+    } {
+        Ok(result) => result,
+        Err(err) => {
+            let msg = format!("acquire_next_image: {err:?}");
+            if vk_error_is_not_ready_message(&msg) {
+                return Ok(false);
             }
-        };
-
-        if acquired.is_suboptimal {
-            vk.swapchain_valid = false;
-        }
-
-        vk.current_image_index = acquired.image_index;
-        *current_surface = vk.skia_surfaces[acquired.image_index as usize].clone();
-    }
-
-    Ok(true)
-}
-
-#[cfg(not(windows))]
-unsafe fn import_wait_semaphore_for_frame(
-    device: &Arc<Device>,
-    sem_handle: i64,
-) -> Result<Option<Arc<Semaphore>>, String> {
-    if sem_handle <= 0 {
-        return Ok(None);
-    }
-
-    let sem = Arc::new(
-        Semaphore::new(
-            device.clone(),
-            SemaphoreCreateInfo {
-                export_handle_types: ExternalSemaphoreHandleTypes::from(ExternalSemaphoreHandleType::SyncFd),
-                ..Default::default()
-            },
-        )
-        .map_err(|e| format!("Semaphore::new (import wait): {e:?}"))?,
-    );
-
-    let mut import_info: ImportSemaphoreFdInfo = ImportSemaphoreFdInfo::handle_type(ExternalSemaphoreHandleType::SyncFd);
-    import_info.flags = SemaphoreImportFlags::TEMPORARY;
-    import_info.file = Some(File::from_raw_fd(sem_handle as libc::c_int));
-
-    match unsafe { sem.import_fd(import_info) } {
-        Ok(()) => Ok(Some(sem)),
-        Err(e) => {
-            let msg = format!("{e:?}");
-            if msg.contains("InvalidExternalHandle") {
-                return Ok(None);
+            if vk_error_is_out_of_date_message(&msg) {
+                vk.swapchain_valid = false;
+                return Ok(false);
             }
-            Err(format!("Semaphore::import_fd failed: {e:?}"))
-        }
-    }
-}
-
-#[cfg(windows)]
-unsafe fn import_wait_semaphore_for_frame(
-    device: &Arc<Device>,
-    sem_handle: i64,
-) -> Result<Option<Arc<Semaphore>>, String> {
-    if sem_handle <= 0 {
-        return Ok(None);
-    }
-
-    let sem = match Semaphore::new(
-        device.clone(),
-        SemaphoreCreateInfo {
-            export_handle_types: ExternalSemaphoreHandleTypes::from(ExternalSemaphoreHandleType::OpaqueWin32),
-            ..Default::default()
-        },
-    ) {
-        Ok(sem) => Arc::new(sem),
-        Err(e) => {
-            let msg = format!("{e:?}");
-            if msg.contains("InvalidExternalHandle") {
-                return Ok(None);
+            if vk_error_is_surface_lost_message(&msg) {
+                vk.swapchain_valid = false;
+                vk_recreate_surface(vk, window.clone())?;
+                return Ok(false);
             }
-            return Err(format!("Semaphore::new (import wait): {e:?}"));
+            return Err(msg);
         }
     };
 
-    let mut import_info: ImportSemaphoreWin32HandleInfo = unsafe { std::mem::zeroed() };
-    import_info.flags = SemaphoreImportFlags::TEMPORARY;
-    import_info.handle_type = ExternalSemaphoreHandleType::OpaqueWin32;
-    import_info.handle = sem_handle as ash::vk::HANDLE;
-
-    match unsafe { sem.import_win32_handle(import_info) } {
-        Ok(()) => Ok(Some(sem)),
-        Err(e) => {
-            let msg = format!("{e:?}");
-            if msg.contains("InvalidExternalHandle") {
-                return Ok(None);
-            }
-            Err(format!("Semaphore::import_win32_handle failed: {e:?}"))
-        }
+    if acquired.is_suboptimal {
+        vk.swapchain_valid = false;
     }
+
+    vk.current_image_index = acquired.image_index;
+    *current_surface = vk.skia_surfaces[acquired.image_index as usize].clone();
+
+    Ok(true)
 }
 
 /// Flush Skia GPU work, optionally blit a tab frame into the page region of the
@@ -524,12 +425,11 @@ unsafe fn import_wait_semaphore_for_frame(
 fn vk_blit_tab_then_present(
     vk: &mut VkState,
     window: Arc<Box<dyn Window>>,
-    tab_frame: Option<(&Arc<ImportedVkImage>, u32, u32, i64)>,
+    tab_frame: Option<(&Arc<ImportedVkImage>, u32, u32)>,
     chrome_px: i32,
 ) -> Result<(), String> {
     let swapchain_image = vk.swapchain_images[vk.current_image_index as usize].clone();
     let mut submitted_tab_image: Option<Arc<ImportedVkImage>> = None;
-    let mut external_wait_semaphore: Option<Arc<Semaphore>> = None;
 
     let begin_info = CommandBufferBeginInfo {
         usage: CommandBufferUsage::OneTimeSubmit,
@@ -543,9 +443,8 @@ fn vk_blit_tab_then_present(
     )
     .map_err(|e| format!("RecordingCommandBuffer::new (blit-present): {e:?}"))?;
 
-    if let Some((tab, tab_w, tab_h, sem_handle)) = tab_frame {
+    if let Some((tab, tab_w, tab_h)) = tab_frame {
         submitted_tab_image = Some(tab.clone());
-        external_wait_semaphore = unsafe { import_wait_semaphore_for_frame(&vk.device, sem_handle)? };
 
         let sw = vk.swapchain_extent[0];
         let sh = vk.swapchain_extent[1] as i32;
@@ -565,11 +464,11 @@ fn vk_blit_tab_then_present(
                     ..ImageMemoryBarrier::image(swapchain_image.clone())
                 },
                 ImageMemoryBarrier {
-                    src_stages: PipelineStages::ALL_COMMANDS,
-                    src_access: AccessFlags::MEMORY_WRITE,
+                    src_stages: PipelineStages::COLOR_ATTACHMENT_OUTPUT | PipelineStages::ALL_COMMANDS,
+                    src_access: AccessFlags::COLOR_ATTACHMENT_WRITE,
                     dst_stages: PipelineStages::ALL_COMMANDS,
                     dst_access: AccessFlags::TRANSFER_READ,
-                    old_layout: ImageLayout::General,
+                    old_layout: ImageLayout::ColorAttachmentOptimal,
                     new_layout: ImageLayout::TransferSrcOptimal,
                     subresource_range: color_range.clone(),
                     ..ImageMemoryBarrier::image(tab.image())
@@ -629,10 +528,10 @@ fn vk_blit_tab_then_present(
                 ImageMemoryBarrier {
                     src_stages: PipelineStages::ALL_COMMANDS,
                     src_access: AccessFlags::TRANSFER_READ,
-                    dst_stages: PipelineStages::ALL_COMMANDS,
-                    dst_access: AccessFlags::empty(),
+                    dst_stages: PipelineStages::COLOR_ATTACHMENT_OUTPUT,
+                    dst_access: AccessFlags::COLOR_ATTACHMENT_WRITE,
                     old_layout: ImageLayout::TransferSrcOptimal,
-                    new_layout: ImageLayout::General,
+                    new_layout: ImageLayout::ColorAttachmentOptimal,
                     subresource_range: color_range,
                     ..ImageMemoryBarrier::image(tab.image())
                 },
@@ -670,11 +569,8 @@ fn vk_blit_tab_then_present(
     let command_buffer = unsafe { cmd_buf.end() }
         .map_err(|e| format!("end command buffer (blit-present): {e:?}"))?;
 
-    let mut wait_semaphore_handles = vec![vk.image_available_semaphore.handle()];
-    if let Some(wait) = external_wait_semaphore.clone() {
-        wait_semaphore_handles.push(wait.handle());
-    }
-    let wait_stage_masks = vec![ash::vk::PipelineStageFlags::ALL_COMMANDS; wait_semaphore_handles.len()];
+    let wait_semaphore_handles = [vk.image_available_semaphore.handle()];
+    let wait_stage_masks = [ash::vk::PipelineStageFlags::ALL_COMMANDS];
     let command_buffers = [command_buffer.handle()];
     let signal_semaphores = [vk.render_finished_semaphore.handle()];
     let submit_info = ash::vk::SubmitInfo::default()
@@ -695,9 +591,6 @@ fn vk_blit_tab_then_present(
         return Err(format!("queue_submit (blit-present): {submit_res:?}"));
     }
 
-    if let Some(wait) = external_wait_semaphore {
-        vk.deferred_wait_semaphores.push(wait);
-    }
     vk.in_flight_tab_image = submitted_tab_image;
 
     let present_results = vk
@@ -892,7 +785,7 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         queue_family_index,
         negotiated_api_version,
         instance: vk_instance,
-        device: vk_device,
+        device: vk_device.clone(),
         physical_device,
         queue: vk_queue_owner,
         allocator: vk_allocator,
@@ -910,7 +803,6 @@ pub(crate) fn create_window_vk(el: &Box<&dyn ActiveEventLoop>) -> Env {
         render_finished_semaphore,
         cmd_buf_allocator,
         in_flight_tab_image: None,
-        deferred_wait_semaphores: Vec::new(),
     };
 
     Env {

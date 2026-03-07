@@ -15,11 +15,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
-use vulkano::command_buffer::allocator::CommandBufferAllocator;
 use vulkano::device::physical::PhysicalDevice;
 use vulkano::format::Format;
 use vulkano::memory::allocator::{MemoryAllocator, StandardMemoryAllocator};
-use vulkano::VulkanObject;
 // ── Grouped Vulkan state for the tab process ────────────────────────────────
 
 /// All Vulkan handles owned by the tab process, grouped into a single struct.
@@ -32,7 +30,6 @@ struct TabVulkanState {
     vk_device: Arc<vulkano::device::Device>,
     vk_queue_owner: Arc<vulkano::device::Queue>,
     vk_memory_allocator: Arc<dyn MemoryAllocator>,
-    vk_cm_buf_allocator: Arc<dyn CommandBufferAllocator>,
     vk_physical_device: Arc<PhysicalDevice>,
     /// Parent PID, cached at init to avoid re-parsing the env var each frame.
     parent_pid: u32,
@@ -165,13 +162,6 @@ impl TabProcess {
         let gr_context = sk_gpu::direct_contexts::make_vulkan(&backend_ctx, None)
             .ok_or("Failed to create Skia Vulkan DirectContext in tab")?;
 
-        let cm_buf_allocator = Arc::new(
-            vulkano::command_buffer::allocator::StandardCommandBufferAllocator::new(
-                vk_device.clone(),
-                vulkano::command_buffer::allocator::StandardCommandBufferAllocatorCreateInfo::default(),
-            )
-        );
-
         Ok(TabVulkanState {
             queue_family_index,
             gr_context,
@@ -179,7 +169,6 @@ impl TabProcess {
             vk_device,
             vk_queue_owner,
             vk_memory_allocator: memory_allocator,
-            vk_cm_buf_allocator: cm_buf_allocator,
             vk_physical_device: physical_device,
             parent_pid,
             vk_format,
@@ -230,7 +219,6 @@ impl TabProcess {
                 vk.vk_physical_device.clone(),
                 vk.vk_device.clone(),
                 vk.vk_memory_allocator.clone(),
-                vk.vk_cm_buf_allocator.clone(),
                 &mut vk.gr_context,
                 width,
                 height,
@@ -554,29 +542,19 @@ impl TabProcess {
             }
         }
 
-        // Flush the Skia GPU commands so the image memory is ready to export
-        if let Some(ctx) = self.vk_state.as_mut().map(|s| &mut s.gr_context) {
-            ctx.flush_and_submit();
+        // Flush the Skia GPU commands so the image contents are ready to export.
+        // Cross-process work isn't visible to Vulkano's tracker, so we use a
+        // simple queue-idle handoff here and let Vulkano manage synchronization
+        // within each process.
+        if let Some(vk) = self.vk_state.as_mut() {
+            vk.gr_context.flush_and_submit();
+            let _ = vk.vk_queue_owner.with(|mut q| q.wait_idle());
         }
 
         self.scene_cache.next_gen();
 
         // Use cached parent_pid from TabVulkanState.
         let parent_pid = self.vk_state.as_ref().map(|s| s.parent_pid).unwrap_or(0);
-
-        // After Skia flush, submit a barrier (COLOR_ATTACHMENT_OPTIMAL → GENERAL)
-        // and signal the exportable semaphore for cross-process GPU sync.
-        let sem_handle: i64 = {
-            let vk_image = self.vk_image.as_mut().unwrap();
-            unsafe { vk_image.signal_and_export_semaphore(parent_pid) }
-        };
-
-        // If we couldn't get a semaphore, fall back to a CPU wait.
-        if sem_handle == -1 || sem_handle == 0 {
-            if let Some(vk) = self.vk_state.as_ref() {
-                let _ = vk.vk_queue_owner.with(|mut q| q.wait_idle());
-            }
-        }
 
         let vk_image = self.vk_image.as_ref().unwrap();
         let width = vk_image.width;
@@ -600,7 +578,6 @@ impl TabProcess {
             height,
             vk_format,
             alloc_size,
-            sem_handle,
         })?;
 
         Ok(())
