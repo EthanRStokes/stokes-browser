@@ -1,13 +1,5 @@
 use std::sync::Arc;
-use vulkano::device::{
-    physical::PhysicalDeviceType,
-    Device,
-    DeviceCreateInfo,
-    DeviceExtensions,
-    Queue,
-    QueueCreateInfo,
-    QueueFlags,
-};
+use vulkano::device::{physical::PhysicalDeviceType, Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo, QueueFlags};
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::swapchain::Surface;
 use vulkano::VulkanLibrary;
@@ -73,6 +65,10 @@ pub(crate) fn create_parent_context(window: Arc<Box<dyn Window>>, el: &Box<&dyn 
         physical_device.clone(),
         DeviceCreateInfo {
             enabled_extensions: required_device_extensions,
+            enabled_features: DeviceFeatures {
+                synchronization2: true,
+                ..DeviceFeatures::empty()
+            },
             queue_create_infos: vec![QueueCreateInfo {
                 queue_family_index,
                 ..Default::default()

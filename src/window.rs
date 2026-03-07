@@ -8,7 +8,10 @@ use std::fs::File;
 use std::os::fd::FromRawFd;
 use std::sync::Arc;
 use vulkano::command_buffer::allocator::{CommandBufferAllocator, StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo};
-use vulkano::command_buffer::{BlitImageInfo, CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsage, ImageBlit, RecordingCommandBuffer};
+use vulkano::command_buffer::{
+    BlitImageInfo, CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsage, ImageBlit,
+    RecordingCommandBuffer,
+};
 use vulkano::device::physical::PhysicalDevice;
 use vulkano::device::{Device, Queue};
 use vulkano::format::Format;
