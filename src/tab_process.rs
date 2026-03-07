@@ -14,7 +14,6 @@ use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use ash::vk::Handle;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use vulkano::command_buffer::allocator::CommandBufferAllocator;
 use vulkano::device::physical::PhysicalDevice;
@@ -27,10 +26,6 @@ use vulkano::VulkanObject;
 /// Stored as `Option<TabVulkanState>` on `TabProcess` — if `None`, Vulkan is
 /// unavailable and the tab falls back to CPU rendering.
 struct TabVulkanState {
-    _entry: ash::Entry,
-    instance: ash::Instance,
-    physical_device: ash::vk::PhysicalDevice,
-    device: ash::Device,
     queue_family_index: u32,
     gr_context: DirectContext,
     vk_instance_owner: Arc<vulkano::instance::Instance>,
@@ -47,12 +42,7 @@ struct TabVulkanState {
 
 impl Drop for TabVulkanState {
     fn drop(&mut self) {
-        // DirectContext must be dropped before the device.
-        // (Rust drops fields in declaration order, so gr_context is dropped
-        //  before device — but let's be explicit.)
-        unsafe {
-            self.device.device_wait_idle().ok();
-        }
+        let _ = self.vk_queue_owner.with(|mut q| q.wait_idle());
     }
 }
 
@@ -116,7 +106,7 @@ impl TabProcess {
         let parent_pid = vk_device_info.as_ref().map(|i| i.parent_pid).unwrap_or(0);
         let vk_format = vk_device_info
             .as_ref()
-            .map(|i| Format::try_from(ash::vk::Format::from_raw(i.image_format)).unwrap())
+            .and_then(|i| crate::vk_shared::raw_vk_format_to_vulkano(i.image_format))
             .unwrap_or(Format::R8G8B8A8_UNORM);
 
         // Initialise our private Vulkan device.
@@ -150,29 +140,24 @@ impl TabProcess {
     ) -> Result<TabVulkanState, String> {
         let bootstrap = vk_context::create_tab_context(parent_info)?;
 
-        let entry = bootstrap.ash_entry;
-        let instance = bootstrap.ash_instance;
-        let physical_device = bootstrap.physical_device;
-        let device = bootstrap.ash_device;
-        let ash_physical_device = bootstrap.ash_physical_device;
         let queue_family_index = bootstrap.queue_family_index;
-        let queue = bootstrap.queue;
         let negotiated_api_version = bootstrap.negotiated_api_version;
         let vk_instance_owner = bootstrap.instance_owner;
         let vk_device = bootstrap.device_owner;
         let vk_queue_owner = bootstrap.queue_owner;
+        let physical_device = bootstrap.physical_device;
 
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(vk_device.clone()));
 
         // Build Skia DirectContext using the shared proc loader.
-        let get_proc = SkiaGetProc::new(&entry, &instance);
+        let get_proc = SkiaGetProc::new(&vk_instance_owner, &vk_device);
         let get_proc_fn = |of: GetProcOf| get_proc.resolve(of);
 
         let mut backend_ctx = skia_safe::gpu::vk::BackendContext::new(
-            vk_instance_owner.handle().as_raw() as _,
-            physical_device.handle().as_raw() as _,
-            device.handle().as_raw() as _,
-            (queue.as_raw() as _, queue_family_index as usize),
+            crate::vk_shared::raw_instance_handle(&vk_instance_owner) as _,
+            crate::vk_shared::raw_physical_device_handle(&physical_device) as _,
+            crate::vk_shared::raw_device_handle(&vk_device) as _,
+            (crate::vk_shared::raw_queue_handle(&vk_queue_owner) as _, queue_family_index as usize),
             &get_proc_fn,
         );
         backend_ctx.set_max_api_version(negotiated_api_version);
@@ -188,10 +173,6 @@ impl TabProcess {
         );
 
         Ok(TabVulkanState {
-            _entry: entry,
-            instance,
-            physical_device: ash_physical_device,
-            device,
             queue_family_index,
             gr_context,
             vk_instance_owner,
@@ -232,7 +213,7 @@ impl TabProcess {
         // access violations if the image/memory is destroyed while still in use.
         if let Some(vk) = self.vk_state.as_mut() {
             vk.gr_context.flush_and_submit();
-            unsafe { vk.device.device_wait_idle().ok(); }
+            let _ = vk.vk_queue_owner.with(|mut q| q.wait_idle());
         }
 
         // Drop the old image (now safe — GPU is idle).
@@ -593,8 +574,7 @@ impl TabProcess {
         // If we couldn't get a semaphore, fall back to a CPU wait.
         if sem_handle == -1 || sem_handle == 0 {
             if let Some(vk) = self.vk_state.as_ref() {
-                let queue = unsafe { vk.device.get_device_queue(vk.queue_family_index, 0) };
-                unsafe { vk.device.queue_wait_idle(queue).ok() };
+                let _ = vk.vk_queue_owner.with(|mut q| q.wait_idle());
             }
         }
 

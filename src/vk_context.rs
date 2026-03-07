@@ -10,7 +10,7 @@ use vulkano::device::{
 };
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::swapchain::Surface;
-use vulkano::{Version, VulkanLibrary, VulkanObject};
+use vulkano::VulkanLibrary;
 use vulkano::device::physical::PhysicalDevice;
 use winit_core::event_loop::ActiveEventLoop;
 use winit_core::window::Window;
@@ -22,11 +22,6 @@ pub(crate) struct VulkanoOwnedContext {
     pub(crate) queue_owner: Arc<Queue>,
     pub(crate) surface_owner: Option<Arc<Surface>>,
     pub(crate) physical_device: Arc<PhysicalDevice>,
-    pub(crate) ash_entry: ash::Entry,
-    pub(crate) ash_instance: ash::Instance,
-    pub(crate) ash_device: ash::Device,
-    pub(crate) ash_physical_device: ash::vk::PhysicalDevice,
-    pub(crate) queue: ash::vk::Queue,
     pub(crate) queue_family_index: u32,
     pub(crate) negotiated_api_version: u32,
 }
@@ -91,12 +86,7 @@ pub(crate) fn create_parent_context(window: Arc<Box<dyn Window>>, el: &Box<&dyn 
         .next()
         .ok_or_else(|| "Device::new returned no queue (parent)".to_string())?;
 
-    let entry = unsafe { ash::Entry::load().map_err(|e| format!("ash::Entry::load: {e:?}"))? };
-    let ash_instance = unsafe { ash::Instance::load(entry.static_fn(), instance.handle()) };
-    let ash_device = unsafe { ash::Device::load(ash_instance.fp_v1_0(), device.handle()) };
-    let ash_physical_device = physical_device.handle();
-
-    let negotiated_api_version = to_api_version(std::cmp::min(instance.api_version(), physical_device.api_version()));
+    let negotiated_api_version = crate::vk_shared::negotiated_api_version(&instance, &physical_device);
 
     Ok(VulkanoOwnedContext {
         _library: library,
@@ -105,11 +95,6 @@ pub(crate) fn create_parent_context(window: Arc<Box<dyn Window>>, el: &Box<&dyn 
         queue_owner: queue.clone(),
         surface_owner: Some(surface),
         physical_device,
-        ash_entry: entry,
-        ash_instance,
-        ash_device,
-        ash_physical_device,
-        queue: queue.handle(),
         queue_family_index,
         negotiated_api_version,
     })
@@ -122,9 +107,6 @@ pub(crate) fn create_tab_context(
 
     let instance = Instance::new(library.clone(), InstanceCreateInfo::default())
         .map_err(|e| format!("Instance::new (tab): {e:?}"))?;
-
-    let entry = unsafe { ash::Entry::load().map_err(|e| format!("ash::Entry::load: {e:?}"))? };
-    let ash_instance = unsafe { ash::Instance::load(entry.static_fn(), instance.handle()) };
 
     let required_device_extensions = tab_device_extensions();
 
@@ -141,12 +123,7 @@ pub(crate) fn create_tab_context(
     let selected = if let Some(info) = parent_info {
         physical_devices
             .iter()
-            .find(|pd| {
-                let uuid = unsafe {
-                    crate::vk_shared::physical_device_uuid(&ash_instance, pd.handle())
-                };
-                uuid == info.device_uuid
-            })
+            .find(|pd| crate::vk_shared::physical_device_uuid(pd) == info.device_uuid)
             .cloned()
             .unwrap_or_else(|| physical_devices[0].clone())
     } else {
@@ -187,9 +164,7 @@ pub(crate) fn create_tab_context(
         .next()
         .ok_or_else(|| "Device::new returned no queue (tab)".to_string())?;
 
-    let ash_device = unsafe { ash::Device::load(ash_instance.fp_v1_0(), device.handle()) };
-    let negotiated_api_version = to_api_version(std::cmp::min(instance.api_version(), selected.api_version()));
-    let ash_physical_device = selected.handle();
+    let negotiated_api_version = crate::vk_shared::negotiated_api_version(&instance, &selected);
 
     Ok(VulkanoOwnedContext {
         _library: library,
@@ -198,18 +173,9 @@ pub(crate) fn create_tab_context(
         queue_owner: queue.clone(),
         surface_owner: None,
         physical_device: selected,
-        ash_entry: entry,
-        ash_instance,
-        ash_device,
-        ash_physical_device,
-        queue: queue.handle(),
         queue_family_index,
         negotiated_api_version,
     })
-}
-
-fn to_api_version(v: Version) -> u32 {
-    ash::vk::make_api_version(0, v.major, v.minor, v.patch)
 }
 
 fn parent_device_extensions() -> DeviceExtensions {

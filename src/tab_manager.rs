@@ -1,7 +1,6 @@
 // Tab Manager - manages tab processes from the parent process
 use crate::ipc::{IpcServer, ParentIpcChannel, ParentToTabMessage, TabToParentMessage};
 use crate::vk_shared::{import_vk_image_raw, ImportedVkImage, VulkanDeviceInfo};
-use ash::vk::Handle;
 use std::collections::HashMap;
 use std::io;
 use std::process::{Child, Command};
@@ -11,7 +10,6 @@ use std::thread;
 use taffy::Point;
 use vulkano::device::{Device, Queue};
 use vulkano::device::physical::PhysicalDevice;
-use vulkano::format::Format;
 use vulkano::instance::Instance;
 use vulkano::memory::allocator::MemoryAllocator;
 
@@ -90,12 +88,6 @@ pub struct TabManager {
     tabs: HashMap<String, ManagedTab>,
     next_tab_id: usize,
     vk_device_info: Option<VulkanDeviceInfo>,
-    /// ash Instance / PhysicalDevice / Device for importing VkImages
-    ash_instance: Option<ash::Instance>,
-    ash_physical_device: Option<ash::vk::PhysicalDevice>,
-    ash_device: Option<ash::Device>,
-    /// Queue used for semaphore-wait submits and image layout transitions.
-    ash_queue: Option<ash::vk::Queue>,
     vk_instance: Option<Arc<Instance>>,
     vk_physical_device: Option<Arc<PhysicalDevice>>,
     vk_device: Option<Arc<Device>>,
@@ -111,10 +103,6 @@ impl TabManager {
             tabs: HashMap::new(),
             next_tab_id: 1,
             vk_device_info: None,
-            ash_instance: None,
-            ash_physical_device: None,
-            ash_device: None,
-            ash_queue: None,
             vk_instance: None,
             vk_physical_device: None,
             vk_device: None,
@@ -129,10 +117,6 @@ impl TabManager {
     pub fn set_vulkan_context(
         &mut self,
         device_info: VulkanDeviceInfo,
-        ash_instance: ash::Instance,
-        ash_physical_device: ash::vk::PhysicalDevice,
-        ash_device: ash::Device,
-        ash_queue: ash::vk::Queue,
         vk_instance: Arc<Instance>,
         vk_physical_device: Arc<PhysicalDevice>,
         vk_device: Arc<Device>,
@@ -141,10 +125,6 @@ impl TabManager {
         ash_queue_family_index: u32,
     ) {
         self.vk_device_info = Some(device_info);
-        self.ash_instance = Some(ash_instance);
-        self.ash_physical_device = Some(ash_physical_device);
-        self.ash_device = Some(ash_device);
-        self.ash_queue = Some(ash_queue);
         self.vk_instance = Some(vk_instance);
         self.vk_physical_device = Some(vk_physical_device);
         self.vk_device = Some(vk_device);
@@ -261,7 +241,8 @@ impl TabManager {
                     tab.is_loading = is_loading;
                 }
                 TabToParentMessage::FrameRendered { mem_handle, width, height, vk_format, alloc_size, sem_handle } => {
-                    let format = Format::try_from(ash::vk::Format::from_raw(vk_format)).expect("Invalid VkFormat from tab process");
+                    let format = crate::vk_shared::raw_vk_format_to_vulkano(vk_format)
+                        .expect("Invalid VkFormat from tab process");
                     if let (Some(phys), Some(dev)) = (
                         self.vk_physical_device.as_ref(),
                         self.vk_device.as_ref(),

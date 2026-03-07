@@ -30,8 +30,9 @@ use std::os::fd::{FromRawFd, IntoRawFd};
 use std::os::windows::io::IntoRawHandle;
 use std::sync::Arc;
 use vulkano::device::{Device, Queue};
+use vulkano::device::physical::PhysicalDevice;
 use vulkano::format::Format;
-use vulkano::image::{Image, ImageCreateInfo, ImageLayout, ImageTiling, ImageType, ImageUsage, SampleCount};
+use vulkano::image::{Image, ImageCreateInfo, ImageLayout, ImageSubresourceRange, ImageTiling, ImageType, ImageUsage, SampleCount};
 use vulkano::instance::Instance;
 use vulkano::memory::allocator::MemoryAllocator;
 use vulkano::memory::{
@@ -40,11 +41,10 @@ use vulkano::memory::{
 };
 use vulkano::sync::semaphore::{ExternalSemaphoreHandleType, ExternalSemaphoreHandleTypes, Semaphore, SemaphoreCreateInfo};
 use vulkano::sync::{DependencyInfo, ImageMemoryBarrier, Sharing};
-use vulkano::{Validated, VulkanError, VulkanObject};
+use vulkano::{VulkanObject};
 use vulkano::command_buffer::{CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsage, RecordingCommandBuffer};
 use vulkano::command_buffer::allocator::CommandBufferAllocator;
-use vulkano::command_buffer::pool::{CommandBufferAllocateInfo, CommandPool, CommandPoolAlloc, CommandPoolCreateFlags, CommandPoolCreateInfo};
-use vulkano::device::physical::PhysicalDevice;
+use vulkano::command_buffer::pool::{CommandBufferAllocateInfo, CommandPool, CommandPoolCreateFlags, CommandPoolCreateInfo};
 use vulkano::image::sys::RawImage;
 use vulkano::sync::fence::{Fence, FenceCreateInfo};
 // ── VkFormat ↔ Skia mappings ────────────────────────────────────────────────
@@ -107,11 +107,14 @@ pub struct SkiaGetProc {
 }
 
 impl SkiaGetProc {
-    /// Build from ash Entry + Instance.
-    pub fn new(entry: &ash::Entry, instance: &ash::Instance) -> Self {
+    /// Build from vulkano instance + device.
+    pub fn new(instance: &Arc<Instance>, _device: &Arc<Device>) -> Self {
+        let entry = unsafe { ash::Entry::load().expect("Failed to load Vulkan entry for Skia proc resolution") };
+        let ash_instance = unsafe { ash::Instance::load(entry.static_fn(), instance.handle()) };
+
         Self {
             get_instance_proc_addr: entry.static_fn().get_instance_proc_addr,
-            get_device_proc_addr: instance.fp_v1_0().get_device_proc_addr,
+            get_device_proc_addr: ash_instance.fp_v1_0().get_device_proc_addr,
         }
     }
 
@@ -143,6 +146,49 @@ impl SkiaGetProc {
                 }
             }
         }
+    }
+}
+
+pub fn raw_instance_handle(instance: &Arc<Instance>) -> usize {
+    instance.handle().as_raw() as usize
+}
+
+pub fn raw_physical_device_handle(physical_device: &Arc<PhysicalDevice>) -> usize {
+    physical_device.handle().as_raw() as usize
+}
+
+pub fn raw_device_handle(device: &Arc<Device>) -> usize {
+    device.handle().as_raw() as usize
+}
+
+pub fn raw_queue_handle(queue: &Arc<Queue>) -> usize {
+    queue.handle().as_raw() as usize
+}
+
+pub fn raw_image_handle(image: &Arc<Image>) -> usize {
+    image.handle().as_raw() as usize
+}
+
+pub fn negotiated_api_version(instance: &Arc<Instance>, physical_device: &Arc<PhysicalDevice>) -> u32 {
+    let version = std::cmp::min(instance.api_version(), physical_device.api_version());
+    ash::vk::make_api_version(0, version.major, version.minor, version.patch)
+}
+
+pub fn color_subresource_range() -> ImageSubresourceRange {
+    ImageSubresourceRange {
+        aspects: vulkano::image::ImageAspects::COLOR,
+        mip_levels: 0..1,
+        array_layers: 0..1,
+    }
+}
+
+pub fn raw_vk_format_to_vulkano(raw: i32) -> Option<Format> {
+    match raw {
+        x if x == Format::B8G8R8A8_UNORM as i32 => Some(Format::B8G8R8A8_UNORM),
+        x if x == Format::R8G8B8A8_UNORM as i32 => Some(Format::R8G8B8A8_UNORM),
+        x if x == Format::B8G8R8A8_SRGB as i32 => Some(Format::B8G8R8A8_SRGB),
+        x if x == Format::R8G8B8A8_SRGB as i32 => Some(Format::R8G8B8A8_SRGB),
+        _ => None,
     }
 }
 
@@ -183,12 +229,6 @@ pub struct TabVkImage {
     pub submit_fence: Arc<Fence>,
     /// Whether `submit_fence` is currently in the submitted (unsignaled) state.
     pub submit_fence_pending: bool,
-
-    // todo check
-    //#[cfg(windows)]
-    //ext_mem_win32: ash::khr::external_memory_win32::Device,
-    //#[cfg(not(windows))]
-    //ext_mem_fd: ash::khr::external_memory_fd::Device,
 }
 
 impl TabVkImage {
@@ -328,7 +368,7 @@ impl TabVkImage {
         };
         let cmd_pool = CommandPool::new(device.clone(), pool_ci).expect("Failed to create command pool");
 
-        let cmd_buf = {
+        let _cmd_buf = {
             let ai = CommandBufferAllocateInfo {
                 level: CommandBufferLevel::Primary,
                 command_buffer_count: 1,
@@ -375,7 +415,7 @@ impl TabVkImage {
     ///   target process (`parent_pid`). The parent process can use this value directly.
     ///
     /// **Linux**: returns a dup'd file-descriptor number (i64 cast to u64).
-    pub unsafe fn export_handle(&self, parent_pid: u32) -> Result<u64, String> {
+    pub unsafe fn export_handle(&self, _parent_pid: u32) -> Result<u64, String> {
         #[cfg(windows)]
         {
             use windows_sys::Win32::Foundation::{
@@ -795,18 +835,8 @@ impl TabVkSemaphore {
             create_info,
         ).map_err(|e| format!("Failed to create exportable semaphore: {:?}", e))?;
 
-        // todo check
-        //#[cfg(windows)]
-        //let ext_sem_win32 = ash::khr::external_semaphore_win32::Device::new(instance, device);
-        //#[cfg(not(windows))]
-        //let ext_sem_fd = Device::new(instance, device);
-
         Ok(Self {
             semaphore: Arc::new(semaphore),
-            //#[cfg(windows)]
-            //ext_sem_win32,
-            //#[cfg(not(windows))]
-            //ext_sem_fd,
         })
     }
 
@@ -816,7 +846,7 @@ impl TabVkSemaphore {
     /// * Windows – returns a Win32 HANDLE already duplicated into `parent_pid`.
     ///
     /// Returns -1 / 0 on failure (non-fatal; parent falls back to CPU wait).
-    pub unsafe fn export(&self, parent_pid: u32) -> i64 {
+    pub unsafe fn export(&self, _parent_pid: u32) -> i64 {
         let handle_type = external_semaphore_handle_type();
 
         #[cfg(not(windows))]
@@ -887,14 +917,8 @@ pub struct VulkanDeviceInfo {
 }
 
 /// Query the `deviceUUID` for a physical device (requires Vulkan 1.1+).
-pub unsafe fn physical_device_uuid(
-    instance: &ash::Instance,
-    physical_device: ash::vk::PhysicalDevice,
-) -> [u8; 16] {
-    let mut id_props = ash::vk::PhysicalDeviceIDProperties::default();
-    let mut props2 = ash::vk::PhysicalDeviceProperties2::default().push_next(&mut id_props);
-    instance.get_physical_device_properties2(physical_device, &mut props2);
-    id_props.device_uuid
+pub fn physical_device_uuid(physical_device: &Arc<PhysicalDevice>) -> [u8; 16] {
+    physical_device.properties().device_uuid.unwrap_or_default()
 }
 
 // ── Device extension lists ──────────────────────────────────────────────────
