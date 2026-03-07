@@ -22,7 +22,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
-use style::dom::TNode;
 use style::thread_state::ThreadState;
 
 thread_local! {
