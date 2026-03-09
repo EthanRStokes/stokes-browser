@@ -7,6 +7,7 @@ use parley::{FontContext, LayoutContext};
 use std::num::NonZeroU32;
 use std::str::FromStr;
 use std::time::Instant;
+use anyrender_vello::VelloScenePainter;
 use taffy::Point;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};

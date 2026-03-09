@@ -42,6 +42,8 @@ hashbrown = "0.16.1"
 peniko = "0.6.0"
 anyrender = "0.7.0"
 anyrender_svg = "0.8.0"
+anyrender_vello = "0.7.1"
+anyrender_vello_cpu = "0.9.0"
 color = "0.3.2"
 html-escape = "0.2.13"
 lazy_static = "1.5.0"
@@ -61,6 +63,8 @@ cssparser = "0.36.0"
 ipc-channel = { version = "0.21.0", features = ["async"] }
 raw-window-handle = "0.6.2"
 webdriver = "0.53.0"
+vello = "0.7.0"
+vello_cpu = "0.0.6"
 
 # Stylo
 stylo = "0.12.0"
