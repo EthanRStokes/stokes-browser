@@ -1,11 +1,67 @@
 use crate::ipc::WgpuRendererInfo;
 use futures::executor::block_on;
 use vello::{AaConfig, AaSupport, Renderer as VelloRenderer, RendererOptions, Scene};
-use wgpu::{CompositeAlphaMode, DeviceDescriptor, ExperimentalFeatures, Features, Instance, InstanceDescriptor, Limits, MemoryHints, PresentMode, SurfaceConfiguration, TextureFormat, TextureUsages};
+use wgpu::util::TextureBlitter;
+use wgpu::{CompositeAlphaMode, DeviceDescriptor, ExperimentalFeatures, Features, Instance, InstanceDescriptor, Limits, MemoryHints, PresentMode, SurfaceCapabilities, SurfaceConfiguration, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages};
 use winit::dpi::LogicalSize;
 use winit::window::{Window, WindowAttributes};
 use winit_core::event_loop::ActiveEventLoop;
 use winit_core::icon::{Icon, RgbaIcon};
+
+fn supports_surface_target(adapter: &wgpu::Adapter, format: TextureFormat) -> bool {
+    adapter
+        .get_texture_format_features(format)
+        .allowed_usages
+        .contains(TextureUsages::RENDER_ATTACHMENT)
+}
+
+fn choose_surface_format(
+    adapter: &wgpu::Adapter,
+    capabilities: &SurfaceCapabilities,
+) -> TextureFormat {
+    const PREFERRED_FORMATS: &[TextureFormat] = &[
+        TextureFormat::Bgra8Unorm,
+        TextureFormat::Rgba8Unorm,
+        TextureFormat::Bgra8UnormSrgb,
+        TextureFormat::Rgba8UnormSrgb,
+    ];
+
+    if let Some(format) = PREFERRED_FORMATS.iter().copied().find(|format| {
+        capabilities.formats.contains(format) && supports_surface_target(adapter, *format)
+    }) {
+        return format;
+    }
+
+    capabilities
+        .formats
+        .iter()
+        .copied()
+        .find(|format| supports_surface_target(adapter, *format))
+        .unwrap_or(capabilities.formats[0])
+}
+
+fn create_vello_target(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&TextureDescriptor {
+        label: Some("stokes-browser-vello-target"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: TextureDimension::D2,
+        format: TextureFormat::Rgba8Unorm,
+        usage: TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
 
 pub(crate) struct Env {
     pub(crate) instance: Instance,
@@ -14,6 +70,9 @@ pub(crate) struct Env {
     pub(crate) device: wgpu::Device,
     pub(crate) queue: wgpu::Queue,
     pub(crate) surface_config: SurfaceConfiguration,
+    pub(crate) blitter: TextureBlitter,
+    pub(crate) vello_target: wgpu::Texture,
+    pub(crate) vello_target_view: wgpu::TextureView,
     pub(crate) renderer: VelloRenderer,
     pub(crate) scene: Scene,
     pub(crate) window: Box<dyn Window>,
@@ -84,12 +143,7 @@ pub(crate) fn create_window(el: &dyn ActiveEventLoop) -> Env {
 
     let size = window.surface_size();
     let capabilities = surface.get_capabilities(&adapter);
-    let format = capabilities
-        .formats
-        .iter()
-        .copied()
-        .find(|format| matches!(format, TextureFormat::Bgra8Unorm | TextureFormat::Rgba8Unorm))
-        .unwrap_or(capabilities.formats[0]);
+    let format = choose_surface_format(&adapter, &capabilities);
     let alpha_mode = capabilities
         .alpha_modes
         .iter()
@@ -109,6 +163,13 @@ pub(crate) fn create_window(el: &dyn ActiveEventLoop) -> Env {
     };
     surface.configure(&device, &surface_config);
 
+    let blitter = TextureBlitter::new(&device, surface_config.format);
+    let (vello_target, vello_target_view) = create_vello_target(
+        &device,
+        surface_config.width,
+        surface_config.height,
+    );
+
     let renderer = VelloRenderer::new(
         &device,
         RendererOptions {
@@ -127,6 +188,9 @@ pub(crate) fn create_window(el: &dyn ActiveEventLoop) -> Env {
         device,
         queue,
         surface_config,
+        blitter,
+        vello_target,
+        vello_target_view,
         renderer,
         scene: Scene::new(),
         window,
@@ -137,4 +201,11 @@ pub(crate) fn resize_surface(env: &mut Env, width: u32, height: u32) {
     env.surface_config.width = width.max(1);
     env.surface_config.height = height.max(1);
     env.surface.configure(&env.device, &env.surface_config);
+    let (vello_target, vello_target_view) = create_vello_target(
+        &env.device,
+        env.surface_config.width,
+        env.surface_config.height,
+    );
+    env.vello_target = vello_target;
+    env.vello_target_view = vello_target_view;
 }

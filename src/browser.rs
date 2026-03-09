@@ -527,8 +527,14 @@ impl BrowserApp {
         };
         let texture_view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         env.renderer
-            .render_to_texture(&env.device, &env.queue, &env.scene, &texture_view, &env.render_params())
+            .render_to_texture(&env.device, &env.queue, &env.scene, &env.vello_target_view, &env.render_params())
             .map_err(|e| format!("Failed to render Vello scene: {e}"))?;
+        let mut encoder = env.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("stokes-browser-present-blit"),
+        });
+        env.blitter
+            .copy(&env.device, &mut encoder, &env.vello_target_view, &texture_view);
+        env.queue.submit(Some(encoder.finish()));
         surface_texture.present();
         env.scene.reset();
 

@@ -464,6 +464,10 @@ impl BrowserUI {
             return String::new();
         }
 
+        if max_width <= 0.0 {
+            return String::new();
+        }
+
         // Measure full text
         if let Some(blob) = TextBlob::new(text, font) {
             if blob.bounds().width() <= max_width {
@@ -476,6 +480,10 @@ impl BrowserUI {
         let ellipsis_width = TextBlob::new(ellipsis, font)
             .map(|b| b.bounds().width())
             .unwrap_or(20.0);
+
+        if ellipsis_width >= max_width {
+            return ellipsis.to_string();
+        }
 
         let available_width = max_width - ellipsis_width;
 
@@ -804,6 +812,85 @@ impl BrowserUI {
         }
     }
 
+    fn create_ui_font(&self, font_size: f32) -> Font {
+        let font_mgr = skia_safe::FontMgr::new();
+        let typeface = font_mgr.match_family_style("DejaVu Sans", FontStyle::default())
+            .or_else(|| font_mgr.match_family_style("Noto Sans", FontStyle::default()))
+            .or_else(|| font_mgr.match_family_style("Arial Unicode MS", FontStyle::default()))
+            .or_else(|| font_mgr.match_family_style("Segoe UI Symbol", FontStyle::default()))
+            .or_else(|| font_mgr.legacy_make_typeface(None, FontStyle::default()))
+            .unwrap_or_else(|| font_mgr.legacy_make_typeface(None, FontStyle::default()).unwrap());
+
+        Font::new(typeface, font_size * self.viewport.hidpi_scale)
+    }
+
+    fn truncate_text_for_layout(&self, text: &str, font_size: f32, max_width: f32) -> String {
+        if max_width <= 0.0 {
+            return String::new();
+        }
+
+        let font = self.create_ui_font(font_size);
+        Self::truncate_text_to_width(text, max_width, &font)
+    }
+
+    fn build_single_line_text_layout(
+        &self,
+        font_ctx: &mut FontContext,
+        layout_ctx: &mut LayoutContext<TextBrush>,
+        text: &str,
+        font_size: f32,
+        max_width: f32,
+    ) -> parley::Layout<TextBrush> {
+        let max_width = max_width.max(1.0);
+        let full_layout = self.build_text_layout(font_ctx, layout_ctx, text, font_size, None);
+        if full_layout.width() <= max_width {
+            return full_layout;
+        }
+
+        let ellipsis = "...";
+        let ellipsis_layout = self.build_text_layout(font_ctx, layout_ctx, ellipsis, font_size, None);
+        let ellipsis_width = ellipsis_layout.width();
+        if ellipsis_width >= max_width {
+            return ellipsis_layout;
+        }
+
+        let available_width = max_width - ellipsis_width;
+        let mut low = 0;
+        let mut high = text.len();
+        let mut best_len = 0;
+
+        while low <= high {
+            let mut mid = (low + high) / 2;
+            while mid > 0 && mid < text.len() && !text.is_char_boundary(mid) {
+                mid -= 1;
+            }
+
+            if mid == 0 && low > 0 {
+                break;
+            }
+
+            let candidate_layout = self.build_text_layout(font_ctx, layout_ctx, &text[..mid], font_size, None);
+            if candidate_layout.width() <= available_width {
+                best_len = mid;
+                low = mid + 1;
+            } else {
+                high = mid.saturating_sub(1);
+            }
+        }
+
+        let mut truncate_at = best_len.min(text.len());
+        while truncate_at > 0 && !text.is_char_boundary(truncate_at) {
+            truncate_at -= 1;
+        }
+
+        let display_text = format!("{}{}", &text[..truncate_at], ellipsis);
+        self.build_text_layout(font_ctx, layout_ctx, &display_text, font_size, None)
+    }
+
+    fn centered_text_baseline(&self, layout: &parley::Layout<TextBrush>, top: f32, height: f32) -> f32 {
+        top + (height - layout.height()) / 2.0
+    }
+
     /// Calculate the cursor position (character index) from a click x-coordinate
     fn calculate_cursor_position_from_click(&self, text: &str, field_x: f32, click_x: f32) -> usize {
         if text.is_empty() {
@@ -819,17 +906,7 @@ impl BrowserUI {
         }
 
         // Create font for measuring (same as in render)
-        let font_mgr = skia_safe::FontMgr::new();
-        let typeface = font_mgr.match_family_style("DejaVu Sans", FontStyle::default())
-            .or_else(|| font_mgr.match_family_style("Noto Sans", FontStyle::default()))
-            .or_else(|| font_mgr.match_family_style("Arial Unicode MS", FontStyle::default()))
-            .or_else(|| font_mgr.match_family_style("Segoe UI Symbol", FontStyle::default()))
-            .or_else(|| font_mgr.legacy_make_typeface(None, FontStyle::default()))
-            .unwrap_or_else(|| font_mgr.legacy_make_typeface(None, FontStyle::default()).unwrap());
-
-        let base_font_size = 14.0;
-        let scaled_font_size = base_font_size * self.viewport.hidpi_scale;
-        let font = Font::new(typeface, scaled_font_size);
+        let font = self.create_ui_font(14.0);
 
         // Calculate relative click position from text start
         let relative_click_x = click_x - text_start_x;
@@ -1260,7 +1337,7 @@ impl BrowserUI {
 
         let brand_layout = self.build_text_layout(font_ctx, layout_ctx, "STOKES BROWSER", 14.0, Some(canvas_width));
         let brand_x = (canvas_width - brand_layout.width() - (20.0 * scale)).max(0.0);
-        let brand_y = brand_layout.height().max(14.0 * scale);
+        let brand_y = 14.0 * scale;
         self.draw_text_layout(painter, &brand_layout, brand_x, brand_y, AlphaColor::BLACK);
 
         let mut tooltips_to_render: Vec<(&Tooltip, f32, f32)> = Vec::new();
@@ -1303,7 +1380,7 @@ impl BrowserUI {
                     painter.stroke(&kurbo::Stroke::new(if *has_focus { 2.0 * scale as f64 } else { 1.0 * scale as f64 }), Affine::IDENTITY, border, None, &rect);
 
                     let text_layout = self.build_text_layout(font_ctx, layout_ctx, text, 14.0, Some((*width - text_padding * 2.0).max(1.0)));
-                    let text_y = *y + (*height - text_layout.height()) / 2.0 + text_layout.height();
+                    let text_y = self.centered_text_baseline(&text_layout, *y, *height);
                     self.draw_text_layout(painter, &text_layout, *x + text_padding, text_y, AlphaColor::BLACK);
 
                     if *has_focus {
@@ -1333,17 +1410,28 @@ impl BrowserUI {
 
                     let close_size = 16.0 * scale;
                     let close_padding = 8.0 * scale;
+                    let title_padding_left = 12.0 * scale;
+                    let title_to_close_gap = 6.0 * scale;
                     let close_rect = kurbo::Rect::new(
                         (*x + *width - close_size - close_padding) as f64,
                         (*y + (*height - close_size) / 2.0) as f64,
                         (*x + *width - close_padding) as f64,
                         (*y + (*height - close_size) / 2.0 + close_size) as f64,
                     );
+                    let close_background = kurbo::RoundedRect::from_rect(close_rect, 4.0 * scale as f64);
+                    let close_background_color = if *close_button_hover {
+                        AlphaColor::from_rgb8(241, 182, 182)
+                    } else {
+                        AlphaColor::from_rgb8(217, 217, 217)
+                    };
+                    let title_x = *x + title_padding_left;
+                    let title_max_width = ((close_rect.x0 as f32) - title_to_close_gap - title_x).max(1.0);
+                    painter.fill(Fill::NonZero, Affine::IDENTITY, close_background_color, None, &close_background);
                     self.draw_icon_vello(painter, &IconType::Close, close_rect, *close_button_hover, scale);
 
-                    let title_layout = self.build_text_layout(font_ctx, layout_ctx, title, 13.0, Some((*width - close_size - close_padding * 2.0 - 12.0 * scale).max(1.0)));
-                    let title_y = *y + (*height - title_layout.height()) / 2.0 + title_layout.height();
-                    self.draw_text_layout(painter, &title_layout, *x + 12.0 * scale, title_y, AlphaColor::from_rgb8(50, 50, 50));
+                    let title_layout = self.build_single_line_text_layout(font_ctx, layout_ctx, title, 13.0, title_max_width);
+                    let title_y = self.centered_text_baseline(&title_layout, *y, *height);
+                    self.draw_text_layout(painter, &title_layout, title_x, title_y, AlphaColor::from_rgb8(50, 50, 50));
 
                     if tooltip.is_visible {
                         tooltips_to_render.push((tooltip, *x, *y));
@@ -1610,19 +1698,19 @@ impl BrowserUI {
         painter.fill(Fill::NonZero, Affine::IDENTITY, AlphaColor::from_rgb8(250, 250, 252), None, &panel_rect);
         painter.stroke(&kurbo::Stroke::new(1.0 * s as f64), Affine::IDENTITY, AlphaColor::from_rgb8(200, 200, 210), None, &panel_rect);
         let title_layout = self.build_text_layout(font_ctx, layout_ctx, "Settings", 14.0, Some(pw));
-        self.draw_text_layout(painter, &title_layout, px + 16.0 * s, py + 16.0 * s + title_layout.height(), AlphaColor::from_rgb8(40, 40, 40));
+        self.draw_text_layout(painter, &title_layout, px + 16.0 * s, py + 16.0 * s, AlphaColor::from_rgb8(40, 40, 40));
         let separator = kurbo::Line::new(((px + 8.0 * s) as f64, (py + 40.0 * s) as f64), ((px + pw - 8.0 * s) as f64, (py + 40.0 * s) as f64));
         painter.stroke(&kurbo::Stroke::new(1.0 * s as f64), Affine::IDENTITY, AlphaColor::from_rgb8(220, 220, 220), None, &separator);
         let (bx, by, bw, bh) = self.default_browser_button_rect();
         let button_rect = kurbo::RoundedRect::from_rect(kurbo::Rect::new(bx as f64, by as f64, (bx + bw) as f64, (by + bh) as f64), 6.0 * s as f64);
         painter.fill(Fill::NonZero, Affine::IDENTITY, AlphaColor::from_rgb8(70, 130, 220), None, &button_rect);
         let label_layout = self.build_text_layout(font_ctx, layout_ctx, "Set as Default Browser", 13.0, Some(bw - 12.0 * s));
-        self.draw_text_layout(painter, &label_layout, bx + (bw - label_layout.width()) / 2.0, by + (bh - label_layout.height()) / 2.0 + label_layout.height(), AlphaColor::WHITE);
+        self.draw_text_layout(painter, &label_layout, bx + (bw - label_layout.width()) / 2.0, self.centered_text_baseline(&label_layout, by, bh), AlphaColor::WHITE);
     }
 
     fn draw_icon_vello(&self, painter: &mut impl PaintScene, icon_type: &IconType, rect: kurbo::Rect, is_hover: bool, hidpi_scale: f32) {
         let icon_color = AlphaColor::from_rgba8(60, 60, 60, 255);
-        let hover_color = AlphaColor::from_rgba8(200, 50, 50, 255);
+        let hover_color = AlphaColor::from_rgba8(198, 52, 52, 255);
         match icon_type {
             IconType::Back => Self::render_svg_vello(painter, &self.back_svg, rect, icon_color),
             IconType::Forward => Self::render_svg_vello(painter, &self.forward_svg, rect, icon_color),
@@ -1755,7 +1843,7 @@ impl BrowserUI {
         let tooltip_rect = kurbo::RoundedRect::from_rect(kurbo::Rect::new(tooltip_x as f64, tooltip_y as f64, (tooltip_x + tooltip_width) as f64, (tooltip_y + tooltip_height) as f64), 4.0);
         painter.fill(Fill::NonZero, Affine::IDENTITY, AlphaColor::from_rgba8(255, 255, 220, 255), None, &tooltip_rect);
         painter.stroke(&kurbo::Stroke::new(1.0 * self.viewport.hidpi_scale as f64), Affine::IDENTITY, AlphaColor::from_rgba8(180, 180, 140, 255), None, &tooltip_rect);
-        self.draw_text_layout(painter, &layout, tooltip_x + padding, tooltip_y + padding + layout.height(), AlphaColor::BLACK);
+        self.draw_text_layout(painter, &layout, tooltip_x + padding, tooltip_y + padding, AlphaColor::BLACK);
     }
 
     fn draw_spinner_vello(painter: &mut impl PaintScene, center_x: f32, center_y: f32, radius: f32, angle: f32, hidpi_scale: f32) {
@@ -1842,7 +1930,7 @@ impl BrowserUI {
         let mut target_index: Option<usize> = None;
         let mut current_tab_index = 0;
 
-        for comp in &self.components {
+        for comp in &mut self.components {
             if let UiComponent::TabButton { id, x: tab_x, width, .. } = comp {
                 if Some(id.clone()) == self.tab_drag_state.dragged_tab_id {
                     current_tab_index += 1;
