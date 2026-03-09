@@ -34,7 +34,15 @@ pub enum ParentToTabMessage {
     RequestFrame,
     SetScaleFactor(f32),
     SetZoom(f32),
+    UpdateRendererInfo(WgpuRendererInfo),
     Shutdown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WgpuRendererInfo {
+    pub backend: String,
+    pub device_type: String,
+    pub surface_format: String,
 }
 
 /// Type of keyboard input
@@ -63,7 +71,8 @@ pub enum TabToParentMessage {
     NavigationFailed(String),
     TitleChanged(String),
     LoadingStateChanged(bool),
-    FrameRendered { shmem_name: String, width: u32, height: u32 },
+    // todo rethink this entirely
+    SceneRendered { width: u32, height: u32 },
     Ready,
     NavigateRequest(String),
     NavigateRequestInNewTab(String),

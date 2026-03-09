@@ -2,12 +2,9 @@ use crate::dom::{AbstractDom, Dom};
 use crate::engine::nav_provider::{NavigationProviderMessage, StokesNavigationProvider};
 // Tab process module - runs the browser engine in a separate process
 use crate::engine::{Engine, EngineConfig, ENGINE_REF, USER_AGENT_REF};
-use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage};
-use crate::{js, networking};
-use crate::renderer::painter::{ScenePainter, SkiaCache};
+use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage, WgpuRendererInfo};
+use crate::{networking};
 use blitz_traits::shell::{ShellProvider, Viewport};
-use shared_memory::{Shmem, ShmemConf};
-use skia_safe::{AlphaType, ColorType, ImageInfo, Surface};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -19,25 +16,14 @@ use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
     pub(crate) engine: Engine,
-    scene_cache: SkiaCache,
     animation_time: Option<Instant>,
     channel: IpcChannel,
     tab_id: String,
-    shared_surface: Option<SharedSurface>,
-    surface_generation: u32,
     shell_receiver: UnboundedReceiver<ShellProviderMessage>,
     nav_receiver: UnboundedReceiver<NavigationProviderMessage>,
     redraw_request: AtomicBool,
     navigation_id: u64,
-}
-
-/// Shared memory surface for efficient rendering data transfer
-struct SharedSurface {
-    shmem: Shmem,
-    surface: Surface,
-    width: u32,
-    height: u32,
-    generation: u32,
+    renderer_info: Option<WgpuRendererInfo>,
 }
 
 impl TabProcess {
@@ -74,16 +60,14 @@ impl TabProcess {
 
         Ok(Self {
             engine,
-            scene_cache: SkiaCache::default(),
             animation_time: None,
             channel,
             tab_id,
-            shared_surface: None,
-            surface_generation: 0,
             shell_receiver: shell_rx,
             nav_receiver: nav_rx,
             redraw_request: AtomicBool::new(false),
             navigation_id: 0,
+            renderer_info: None,
         })
     }
 
@@ -95,50 +79,6 @@ impl TabProcess {
                 0.0
             }
         }
-    }
-
-    /// Initialize shared memory surface
-    fn init_shared_surface(&mut self, width: u32, height: u32) -> io::Result<()> {
-        // Drop the old shared memory surface first to avoid conflicts
-        if let Some(old_surface) = self.shared_surface.take() {
-            // Explicitly drop the old shmem to release the OS resource
-            drop(old_surface.shmem);
-        }
-
-        // Increment generation counter for unique ID
-        self.surface_generation = self.surface_generation.wrapping_add(1);
-
-        let shmem_name = format!("stokes_tab_{}_{}_{}", self.tab_id, std::process::id(), self.surface_generation);
-
-        // Calculate required size (RGBA8888 = 4 bytes per pixel)
-        let size = (width * height * 4) as usize;
-
-        let shmem = ShmemConf::new()
-            .size(size)
-            .os_id(&shmem_name)
-            .create()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-        // Create a reusable raster surface
-        let image_info = ImageInfo::new(
-            (width as i32, height as i32),
-            ColorType::RGBA8888,
-            AlphaType::Premul,
-            None,
-        );
-
-        let surface = skia_safe::surfaces::raster(&image_info, None, None)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to create surface"))?;
-
-        self.shared_surface = Some(SharedSurface {
-            shmem,
-            surface,
-            width,
-            height,
-            generation: self.surface_generation,
-        });
-
-        Ok(())
     }
 
     /// Main event loop for the tab process
@@ -365,7 +305,6 @@ impl TabProcess {
             }
             ParentToTabMessage::Resize { width, height } => {
                 self.engine.resize(width, height);
-                self.init_shared_surface(width as u32, height as u32)?;
                 should_render = true;
             }
             // todo ctrl+click nav new tab, middle click, Home + End keys, keyboard scrolling
@@ -411,6 +350,9 @@ impl TabProcess {
                 });
                 should_render = true;
             }
+            ParentToTabMessage::UpdateRendererInfo(info) => {
+                self.renderer_info = Some(info);
+            }
             ParentToTabMessage::Shutdown => {
                 return Ok((false, false));
             }
@@ -428,55 +370,25 @@ impl TabProcess {
         Ok(())
     }
 
-    /// Render a frame to the shared memory surface
+    /// Render a frame to a recorded scene for the parent Vello renderer
     fn render_frame(&mut self) -> io::Result<()> {
         let animation_time = self.animation_time();
-        if let Some(ref mut shared) = self.shared_surface {
-            let canvas = shared.surface.canvas();
-
-            // Clear the canvas to prevent old frames from showing through
-            canvas.restore_to_count(1);
-            canvas.clear(skia_safe::Color::WHITE);
-
-        let mut painter = ScenePainter {
-            inner: canvas,
-            cache: &mut self.scene_cache,
-        };
 
         let engine = &mut self.engine;
         if engine.dom.is_some() {
-            engine.render(&mut painter, animation_time);
+            //todo engine.render(&mut painter, animation_time);
 
             let dom = engine.dom.as_ref().unwrap();
-            // todo check if window is visible
             if dom.animating() {
                 dom.shell_provider.request_redraw();
             }
         }
 
-            // Copy the pixel data to shared memory
-            if let Some(pixmap) = shared.surface.peek_pixels() {
-                if let Some(src) = pixmap.bytes() {
-                    let dst = unsafe { shared.shmem.as_slice_mut() };
-
-                    // Copy all pixel data at once
-                    dst.copy_from_slice(src);
-                } else {
-                    return Err(io::Error::new(io::ErrorKind::Other, "Failed to get pixel bytes"));
-                }
-            } else {
-                return Err(io::Error::new(io::ErrorKind::Other, "Failed to peek pixels"));
-            }
-
-            self.scene_cache.next_gen();
-
-            // Notify parent that frame is ready
-            self.channel.send(&TabToParentMessage::FrameRendered {
-                shmem_name: format!("stokes_tab_{}_{}_{}", self.tab_id, std::process::id(), shared.generation),
-                width: shared.width,
-                height: shared.height,
-            })?;
-        }
+        let (width, height) = self.engine.viewport.window_size;
+        self.channel.send(&TabToParentMessage::SceneRendered {
+            width,
+            height,
+        })?;
         Ok(())
     }
 }

@@ -252,7 +252,7 @@ impl BrowserUI {
     const MIN_TAB_WIDTH: f32 = 80.0;   // Minimum width before scrolling kicks in
     const TAB_SPACING: f32 = 4.0;       // Spacing between tabs
 
-    pub fn new(_skia_context: &skia_safe::gpu::DirectContext, viewport: &Viewport) -> Self {
+    pub fn new(viewport: &Viewport) -> Self {
         // Default window width, will be updated on first resize
         let window_width = viewport.window_size.0 as f32;
         let scale_factor = viewport.hidpi_scale;
@@ -1241,354 +1241,128 @@ impl BrowserUI {
         }
     }
 
-    /// Render the UI
-    pub fn render(&self, canvas: &Canvas, font_ctx: &mut FontContext, layout_ctx: &mut LayoutContext<TextBrush>, painter: &mut ScenePainter) {
-        let canvas_width = canvas.image_info().width() as f32;
-        let canvas_height = canvas.image_info().height() as f32;
+    /// Render the UI directly into a Vello scene.
+    pub fn render_vello(
+        &self,
+        canvas_size: (u32, u32),
+        font_ctx: &mut FontContext,
+        layout_ctx: &mut LayoutContext<TextBrush>,
+        painter: &mut impl PaintScene,
+    ) {
+        let canvas_width = canvas_size.0 as f32;
+        let canvas_height = canvas_size.1 as f32;
         let chrome_height = self.chrome_height();
+        let scale = self.viewport.hidpi_scale;
 
-        // Draw browser chrome background bar at the top
-        let mut chrome_paint = Paint::default();
-        chrome_paint.set_color(Color::from_rgb(240, 240, 240)); // Light gray background
-        let chrome_rect = Rect::from_xywh(0.0, 0.0, canvas_width, chrome_height);
-        canvas.draw_rect(chrome_rect, &chrome_paint);
+        let chrome_rect = kurbo::Rect::new(0.0, 0.0, canvas_width as f64, chrome_height as f64);
+        painter.fill(Fill::NonZero, Affine::IDENTITY, AlphaColor::from_rgb8(240, 240, 240), None, &chrome_rect);
+        let border_rect = kurbo::Rect::new(0.0, (chrome_height - scale).max(0.0) as f64, canvas_width as f64, chrome_height as f64);
+        painter.fill(Fill::NonZero, Affine::IDENTITY, AlphaColor::from_rgb8(200, 200, 200), None, &border_rect);
 
-        // Draw a bottom border for the chrome
-        chrome_paint.set_color(Color::from_rgb(200, 200, 200));
-        let border_rect = Rect::from_xywh(0.0, chrome_height - 1.0, canvas_width, 1.0);
-        canvas.draw_rect(border_rect, &chrome_paint);
+        let brand_layout = self.build_text_layout(font_ctx, layout_ctx, "STOKES BROWSER", 14.0, Some(canvas_width));
+        let brand_x = (canvas_width - brand_layout.width() - (20.0 * scale)).max(0.0);
+        let brand_y = brand_layout.height().max(14.0 * scale);
+        self.draw_text_layout(painter, &brand_layout, brand_x, brand_y, AlphaColor::BLACK);
 
-        let mut paint = Paint::default();
-        let font_mgr = skia_safe::FontMgr::new();
-
-        // Try to create a font that supports Unicode symbols
-        let typeface = font_mgr.match_family_style("DejaVu Sans", FontStyle::default())
-            .or_else(|| font_mgr.match_family_style("Noto Sans", FontStyle::default()))
-            .or_else(|| font_mgr.match_family_style("Arial Unicode MS", FontStyle::default()))
-            .or_else(|| font_mgr.match_family_style("Segoe UI Symbol", FontStyle::default()))
-            .or_else(|| font_mgr.legacy_make_typeface(None, FontStyle::default()))
-            .expect("Failed to create any typeface");
-
-        // Apply scale factor to font size for proper DPI scaling
-        let base_font_size = 14.0;
-        let scaled_font_size = base_font_size * self.viewport.hidpi_scale;
-        let font = Font::new(typeface.clone(), scaled_font_size);
-
-        // Draw BROWSING WITH STOKES text in the top-right corner
-        {
-            let text = "STOKES BROWSER";
-            let mut builder = layout_ctx.ranged_builder(font_ctx, &text, self.viewport.hidpi_scale, true);
-
-            builder.push_default(GenericFamily::SystemUi);
-            builder.push_default(LineHeight::FontSizeRelative(1.3));
-            builder.push_default(StyleProperty::FontSize(base_font_size));
-
-            let mut layout = builder.build(&text);
-
-            layout.break_all_lines(Some(canvas_width));
-            layout.align(Alignment::Start, AlignmentOptions::default());
-            let width = layout.width().ceil() as u32;
-            let height = layout.height().ceil() as u32;
-            let padded_width = width + 40;
-            let padded_height = height + 40;
-
-            let text_x = canvas_width - width as f32 - (20.0 * self.viewport.hidpi_scale);
-            let text_y = height as f32;
-            let pos = kurbo::Point {
-                x: text_x as f64,
-                y: text_y as f64,
-            };
-            let transform = Affine::translate((pos.x, pos.y));
-
-            for line in layout.lines() {
-                for item in line.items() {
-                    match item {
-                        PositionedLayoutItem::GlyphRun(glyph_run) => {
-                            let mut run_x = glyph_run.offset();
-                            let run_y = glyph_run.baseline();
-
-                            let run = glyph_run.run();
-                            let font = run.font();
-                            let font_size = run.font_size();
-                            let metrics = run.metrics();
-                            let style = glyph_run.style();
-                            let synthesis = run.synthesis();
-                            let glyph_xform = synthesis.skew().map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
-
-
-
-                            painter.draw_glyphs(
-                                font,
-                                font_size,
-                                true,
-                                run.normalized_coords(),
-                                Fill::NonZero,
-                                &anyrender::Paint::from(AlphaColor::BLACK),
-                                1.0,
-                                transform,
-                                glyph_xform,
-                                glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
-                                    id: glyph.id as _,
-                                    x: glyph.x,
-                                    y: glyph.y,
-                                })
-                            );
-                        }
-                        PositionedLayoutItem::InlineBox(_) => {
-                        }
-                    }
-                }
-            }
-
-            // Draw "browsing the web" text in small-caps 18px Times New Roman
-            let times_typeface = font_mgr.match_family_style("Times New Roman", FontStyle::bold_italic())
-                .or_else(|| font_mgr.match_family_style("Liberation Serif", FontStyle::default()))
-                .or_else(|| font_mgr.match_family_style("Times", FontStyle::default()))
-                .or_else(|| font_mgr.match_family_style("serif", FontStyle::default()))
-                .unwrap_or(typeface);
-
-            let custom_font_size = 18.0 * self.viewport.hidpi_scale;
-            let mut custom_font = Font::new(times_typeface, custom_font_size);
-
-            // Enable small-caps by setting font features
-            custom_font.set_subpixel(true);
-
-            // Render text in small-caps style (manually convert to uppercase with smaller caps)
-            paint.set_color(Color::from_rgb(60, 60, 60));
-
-            if let Some(text_blob) = TextBlob::new(text, &custom_font) {
-                let text_bounds = text_blob.bounds();
-                let text_x = canvas_width - text_bounds.width() - (20.0 * self.viewport.hidpi_scale);
-                let text_y = 22.0 * self.viewport.hidpi_scale;
-                //canvas.draw_text_blob(&text_blob, (text_x, text_y), &paint);
-            }
-        }
-
-        // Reset the canvas matrix to identity before drawing UI components
-        // (the text rendering above may have modified it)
-        painter.set_matrix(Affine::IDENTITY);
-
-        // Scale other text rendering properties
-        let text_padding = 5.0 * self.viewport.hidpi_scale;
-        let cursor_margin = 6.0 * self.viewport.hidpi_scale;
-        let cursor_stroke_width = 1.5 * self.viewport.hidpi_scale;
-        let shadow_offset = 2.0 * self.viewport.hidpi_scale;
-
-        // Collect tooltips to render them above everything else at the end
         let mut tooltips_to_render: Vec<(&Tooltip, f32, f32)> = Vec::new();
+        let text_padding = 5.0 * scale;
+        let cursor_margin = 6.0 * scale;
+        let cursor_stroke_width = 1.5 * scale as f64;
+        let shadow_offset = 2.0 * scale;
 
         for comp in &self.components {
             match comp {
                 UiComponent::Button { x, y, width, height, color, hover_color, pressed_color, is_pressed, is_hover, tooltip, icon_type, .. } => {
-                    let rect = Rect::from_xywh(*x, *y, *width, *height);
+                    let rect = kurbo::RoundedRect::from_rect(kurbo::Rect::new(*x as f64, *y as f64, (*x + *width) as f64, (*y + *height) as f64), 4.0 * scale as f64);
+                    let shadow_rect = kurbo::RoundedRect::from_rect(kurbo::Rect::new((*x + shadow_offset) as f64, (*y + shadow_offset) as f64, (*x + *width + shadow_offset) as f64, (*y + *height + shadow_offset) as f64), 4.0 * scale as f64);
+                    painter.fill(Fill::NonZero, Affine::IDENTITY, AlphaColor::from_rgba8(0, 0, 0, 50), None, &shadow_rect);
 
-                    // Draw button shadow for depth
-                    let shadow_rect = Rect::from_xywh(*x + shadow_offset, *y + shadow_offset, *width, *height);
-                    paint.set_color(Color::from_argb(50, 0, 0, 0)); // Semi-transparent shadow
-                    canvas.draw_round_rect(shadow_rect, 4.0, 4.0, &paint);
-
-                    // Choose color based on state
-                    let current_color = if *is_pressed {
-                        pressed_color
-                    } else if *is_hover {
-                        hover_color
+                    let current_color = if *is_pressed { pressed_color } else if *is_hover { hover_color } else { color };
+                    painter.fill(Fill::NonZero, Affine::IDENTITY, AlphaColor::new([current_color[0], current_color[1], current_color[2], 1.0]), None, &rect);
+                    let border_color = if *is_hover {
+                        AlphaColor::from_rgb8(100, 150, 255)
                     } else {
-                        color
+                        AlphaColor::from_rgb8(180, 180, 180)
                     };
-
-                    // Draw button background with rounded corners
-                    paint.set_color(Color::from_rgb(
-                        (current_color[0] * 255.0) as u8,
-                        (current_color[1] * 255.0) as u8,
-                        (current_color[2] * 255.0) as u8,
-                    ));
-                    canvas.draw_round_rect(rect, 4.0, 4.0, &paint);
-
-                    // Draw button border
-                    paint.set_color(if *is_hover {
-                        Color::from_rgb(100, 150, 255)
-                    } else {
-                        Color::from_rgb(180, 180, 180)
-                    });
-                    paint.set_stroke(true);
-                    paint.set_stroke_width(1.0 * self.viewport.hidpi_scale);
-                    canvas.draw_round_rect(rect, 4.0, 4.0, &paint);
-                    paint.set_stroke(false);
-
-                    // Draw custom icon instead of text
-                    self.draw_icon(painter, icon_type, rect, *is_hover, self.viewport.hidpi_scale);
-
-                    // Collect tooltip for later rendering (to render above everything)
+                    painter.stroke(&kurbo::Stroke::new(1.0 * scale as f64), Affine::IDENTITY, border_color, None, &rect);
+                    self.draw_icon_vello(painter, icon_type, kurbo::Rect::new(*x as f64, *y as f64, (*x + *width) as f64, (*y + *height) as f64), *is_hover, scale);
                     if tooltip.is_visible {
                         tooltips_to_render.push((tooltip, *x, *y));
                     }
                 }
-                UiComponent::TextField { text, x, y, width, height, color, border_color, has_focus, cursor_position, .. } => {
-                    let rect = Rect::from_xywh(*x, *y, *width, *height);
-
-                    // Draw field shadow
-                    let shadow_rect = Rect::from_xywh(*x + 1.0, *y + 1.0, *width, *height);
-                    paint.set_color(Color::from_argb(30, 0, 0, 0));
-                    canvas.draw_round_rect(shadow_rect, 2.0, 2.0, &paint);
-
-                    // Draw field background (brighter when focused)
-                    let bg_color = if *has_focus {
-                        Color::WHITE
+                UiComponent::TextField { text, x, y, width, height, border_color, has_focus, cursor_position, .. } => {
+                    let rect = kurbo::RoundedRect::from_rect(kurbo::Rect::new(*x as f64, *y as f64, (*x + *width) as f64, (*y + *height) as f64), 2.0 * scale as f64);
+                    let shadow_rect = kurbo::RoundedRect::from_rect(kurbo::Rect::new((*x + 1.0) as f64, (*y + 1.0) as f64, (*x + *width + 1.0) as f64, (*y + *height + 1.0) as f64), 2.0 * scale as f64);
+                    painter.fill(Fill::NonZero, Affine::IDENTITY, AlphaColor::from_rgba8(0, 0, 0, 30), None, &shadow_rect);
+                    let bg_color = if *has_focus { AlphaColor::WHITE } else { AlphaColor::from_rgb8(250, 250, 250) };
+                    painter.fill(Fill::NonZero, Affine::IDENTITY, bg_color, None, &rect);
+                    let border = if *has_focus {
+                        AlphaColor::from_rgb8(100, 150, 255)
                     } else {
-                        Color::from_rgb(250, 250, 250)
+                        AlphaColor::new([border_color[0], border_color[1], border_color[2], 1.0])
                     };
-                    paint.set_color(bg_color);
-                    canvas.draw_round_rect(rect, 2.0, 2.0, &paint);
+                    painter.stroke(&kurbo::Stroke::new(if *has_focus { 2.0 * scale as f64 } else { 1.0 * scale as f64 }), Affine::IDENTITY, border, None, &rect);
 
-                    // Draw field border (blue when focused) with scaled stroke width
-                    let border_color = if *has_focus {
-                        Color::from_rgb(100, 150, 255)
-                    } else {
-                        Color::from_rgb(
-                            (border_color[0] * 255.0) as u8,
-                            (border_color[1] * 255.0) as u8,
-                            (border_color[2] * 255.0) as u8,
-                        )
-                    };
-                    paint.set_color(border_color);
-                    paint.set_stroke(true);
-                    paint.set_stroke_width(if *has_focus { 2.0 * self.viewport.hidpi_scale } else { 1.0 * self.viewport.hidpi_scale });
-                    canvas.draw_round_rect(rect, 2.0, 2.0, &paint);
-                    paint.set_stroke(false);
+                    let text_layout = self.build_text_layout(font_ctx, layout_ctx, text, 14.0, Some((*width - text_padding * 2.0).max(1.0)));
+                    let text_y = *y + (*height - text_layout.height()) / 2.0 + text_layout.height();
+                    self.draw_text_layout(painter, &text_layout, *x + text_padding, text_y, AlphaColor::BLACK);
 
-                    // Draw text content with scaled padding, centered vertically
-                    paint.set_color(Color::BLACK);
-                    if let Some(blob) = TextBlob::new(text, &font) {
-                        let text_bounds = blob.bounds();
-                        // Center the text vertically in the field
-                        let text_y = rect.top() + (rect.height() / 2.0) - (text_bounds.top + text_bounds.height() / 2.0);
-                        canvas.draw_text_blob(&blob, (rect.left() + text_padding, text_y), &paint);
-                    }
-
-                    // Draw cursor if focused
                     if *has_focus {
-                        // Calculate cursor position in pixels
-                        let text_before_cursor = if *cursor_position > 0 {
-                            &text[..*cursor_position.min(&text.len())]
-                        } else {
-                            ""
-                        };
-
-                        // Measure the actual width of text before cursor
-                        let text_width = if text_before_cursor.is_empty() {
-                            0.0
-                        } else {
-                            // Use font.measure_text to get the actual advance width
-                            let (width, _) = font.measure_str(text_before_cursor, None);
-                            width
-                        };
-
-                        let cursor_x = rect.left() + text_padding + text_width;
-
-                        // Draw cursor line with scaled stroke width and margins
-                        paint.set_color(Color::BLACK);
-                        paint.set_stroke(true);
-                        paint.set_stroke_width(cursor_stroke_width);
-                        canvas.draw_line(
-                            (cursor_x, rect.top() + cursor_margin),
-                            (cursor_x, rect.bottom() - cursor_margin),
-                            &paint
+                        let cursor_text = if *cursor_position > 0 { &text[..(*cursor_position).min(text.len())] } else { "" };
+                        let cursor_layout = self.build_text_layout(font_ctx, layout_ctx, cursor_text, 14.0, None);
+                        let cursor_x = *x + text_padding + cursor_layout.width();
+                        let cursor_line = kurbo::Line::new(
+                            (cursor_x as f64, (*y + cursor_margin) as f64),
+                            (cursor_x as f64, (*y + *height - cursor_margin) as f64),
                         );
-                        paint.set_stroke(false);
+                        painter.stroke(&kurbo::Stroke::new(cursor_stroke_width), Affine::IDENTITY, AlphaColor::BLACK, None, &cursor_line);
                     }
                 }
                 UiComponent::TabButton { title, x, y, width, height, color, hover_color, is_active, is_hover, tooltip, close_button_hover, close_button_tooltip, .. } => {
-                    let rect = Rect::from_xywh(*x, *y, *width, *height);
-
-                    // Draw tab shadow
-                    let shadow_rect = Rect::from_xywh(*x + 1.0, *y + 1.0, *width, *height);
-                    paint.set_color(Color::from_argb(30, 0, 0, 0));
-                    canvas.draw_round_rect(shadow_rect, 4.0, 4.0, &paint);
-
-                    // Choose color based on state
-                    let current_color = if *is_hover {
-                        hover_color
-                    } else {
-                        color
-                    };
-
-                    paint.set_color(Color::from_rgb(
-                        (current_color[0] * 255.0) as u8,
-                        (current_color[1] * 255.0) as u8,
-                        (current_color[2] * 255.0) as u8,
-                    ));
-                    canvas.draw_round_rect(rect, 4.0, 4.0, &paint);
-
-                    // Draw tab border (different for active tab)
-                    paint.set_color(if *is_active {
-                        Color::from_rgb(100, 150, 255)
+                    let shadow_rect = kurbo::RoundedRect::from_rect(kurbo::Rect::new((*x + 1.0) as f64, (*y + 1.0) as f64, (*x + *width + 1.0) as f64, (*y + *height + 1.0) as f64), 4.0 * scale as f64);
+                    painter.fill(Fill::NonZero, Affine::IDENTITY, AlphaColor::from_rgba8(0, 0, 0, 30), None, &shadow_rect);
+                    let rect = kurbo::RoundedRect::from_rect(kurbo::Rect::new(*x as f64, *y as f64, (*x + *width) as f64, (*y + *height) as f64), 4.0 * scale as f64);
+                    let current_color = if *is_active {
+                        AlphaColor::from_rgb8(255, 255, 255)
                     } else if *is_hover {
-                        Color::from_rgb(150, 180, 255)
+                        AlphaColor::new([hover_color[0], hover_color[1], hover_color[2], 1.0])
                     } else {
-                        Color::from_rgb(180, 180, 180)
-                    });
-                    paint.set_stroke(true);
-                    paint.set_stroke_width(if *is_active { 2.0 * self.viewport.hidpi_scale } else { 1.0 * self.viewport.hidpi_scale });
-                    canvas.draw_round_rect(rect, 4.0, 4.0, &paint);
-                    paint.set_stroke(false);
+                        AlphaColor::new([color[0], color[1], color[2], 1.0])
+                    };
+                    painter.fill(Fill::NonZero, Affine::IDENTITY, current_color, None, &rect);
+                    painter.stroke(&kurbo::Stroke::new(1.0 * scale as f64), Affine::IDENTITY, AlphaColor::from_rgb8(180, 180, 180), None, &rect);
 
-                    // Calculate space needed for close button if active
-                    let close_button_space = if *is_active { 20.0 * self.viewport.hidpi_scale } else { 0.0 };
+                    let close_size = 16.0 * scale;
+                    let close_padding = 8.0 * scale;
+                    let close_rect = kurbo::Rect::new(
+                        (*x + *width - close_size - close_padding) as f64,
+                        (*y + (*height - close_size) / 2.0) as f64,
+                        (*x + *width - close_padding) as f64,
+                        (*y + (*height - close_size) / 2.0 + close_size) as f64,
+                    );
+                    self.draw_icon_vello(painter, &IconType::Close, close_rect, *close_button_hover, scale);
 
-                    // Truncate tab text to fit within the tab width (leaving space for close button)
-                    let max_text_width = *width - (text_padding * 2.0) - close_button_space;
-                    let display_text = Self::truncate_text_to_width(title, max_text_width, &font);
+                    let title_layout = self.build_text_layout(font_ctx, layout_ctx, title, 13.0, Some((*width - close_size - close_padding * 2.0 - 12.0 * scale).max(1.0)));
+                    let title_y = *y + (*height - title_layout.height()) / 2.0 + title_layout.height();
+                    self.draw_text_layout(painter, &title_layout, *x + 12.0 * scale, title_y, AlphaColor::from_rgb8(50, 50, 50));
 
-                    // Draw tab text with scaled padding, centered vertically
-                    paint.set_color(Color::BLACK);
-                    if let Some(blob) = TextBlob::new(&display_text, &font) {
-                        let text_bounds = blob.bounds();
-                        // Center the text vertically in the tab
-                        let text_y = rect.top() + (rect.height() / 2.0) - (text_bounds.top + text_bounds.height() / 2.0);
-                        canvas.draw_text_blob(&blob, (rect.left() + text_padding, text_y), &paint);
-                    }
-
-                    // Draw close button for active tab
-                    if *is_active {
-                        let close_button_size = 16.0 * self.viewport.hidpi_scale;
-                        let close_button_x = rect.right() - close_button_size - (4.0 * self.viewport.hidpi_scale);
-                        let close_button_y = rect.center_y() - (close_button_size / 2.0);
-                        let close_button_rect = Rect::from_xywh(close_button_x, close_button_y, close_button_size, close_button_size);
-
-                        // Draw close button background with different color when hovering
-                        if *close_button_hover {
-                            paint.set_color(Color::from_argb(100, 255, 100, 100)); // Reddish highlight when hovering
-                        } else {
-                            paint.set_color(Color::from_argb(20, 0, 0, 0)); // Subtle background
-                        }
-                        canvas.draw_round_rect(close_button_rect, 2.0, 2.0, &paint);
-
-                        // Draw X icon with different color when hovering
-                        self.draw_icon(painter, &IconType::Close, close_button_rect, *close_button_hover, self.viewport.hidpi_scale);
-                    }
-
-                    // Collect tooltip for later rendering (to render above everything)
                     if tooltip.is_visible {
                         tooltips_to_render.push((tooltip, *x, *y));
                     }
-
-                    // Collect close button tooltip if visible
                     if close_button_tooltip.is_visible {
-                        let close_button_size = 16.0 * self.viewport.hidpi_scale;
-                        let close_button_x = *x + *width - close_button_size - (4.0 * self.viewport.hidpi_scale);
-                        tooltips_to_render.push((close_button_tooltip, close_button_x, *y));
+                        tooltips_to_render.push((close_button_tooltip, close_rect.x0 as f32, close_rect.y0 as f32));
                     }
                 }
             }
         }
 
-        // Render all tooltips last so they appear above everything else
-        for (tooltip, x, y) in tooltips_to_render {
-            Self::draw_tooltip(painter, tooltip, x, y, &font, self.viewport.hidpi_scale, canvas_width, canvas_height);
+        if self.show_settings {
+            self.render_settings_panel_vello(font_ctx, layout_ctx, painter);
         }
 
-        // Render settings panel on top of everything
-        self.render_settings_panel(canvas, &font);
+        for (tooltip, x, y) in tooltips_to_render {
+            self.draw_tooltip_vello(font_ctx, layout_ctx, painter, tooltip, x, y, canvas_width, canvas_height);
+        }
     }
 
     /// Update mouse hover state and handle tooltips
@@ -1624,7 +1398,7 @@ impl BrowserUI {
                         let close_button_x = *tab_x + *width - close_button_size - (4.0 * self.viewport.hidpi_scale);
                         let close_button_y = *tab_y + (*height / 2.0) - (close_button_size / 2.0);
                         x >= close_button_x && x <= close_button_x + close_button_size &&
-                        y >= close_button_y && y <= close_button_y + close_button_size
+                            y >= close_button_y && y <= close_button_y + close_button_size
                     } else {
                         false
                     };
@@ -1752,112 +1526,154 @@ impl BrowserUI {
         clicked_id
     }
 
-    /// Draw a custom icon based on icon type
-    fn draw_icon(&self, painter: &mut ScenePainter, icon_type: &IconType, rect: Rect, is_hover: bool, hidpi_scale: f32) {
-        let center_x = rect.center_x() as f64;
-        let center_y = rect.center_y() as f64;
-        let icon_size = (rect.width().min(rect.height()) * 0.6) as f64;
-        let half_size = icon_size / 2.0;
+    pub fn render_loading_indicator_vello(&self, painter: &mut impl PaintScene, is_loading: bool, angle: f32) {
+        if !is_loading {
+            return;
+        }
+        for comp in &self.components {
+            if let UiComponent::TextField { id, x, y, width, height, .. } = comp {
+                if id == "address_bar" {
+                    let spinner_size = 20.0 * self.viewport.hidpi_scale;
+                    let spinner_x = x + width - spinner_size - (8.0 * self.viewport.hidpi_scale);
+                    let spinner_y = y + (height / 2.0);
+                    Self::draw_spinner_vello(painter, spinner_x, spinner_y, spinner_size / 2.0, angle, self.viewport.hidpi_scale);
+                    break;
+                }
+            }
+        }
+    }
 
-        // Set up stroke style
-        let stroke_width = 2.0 * hidpi_scale as f64;
-        let stroke = kurbo::Stroke::new(stroke_width)
-            .with_caps(kurbo::Cap::Round)
-            .with_join(kurbo::Join::Round);
+    fn build_text_layout(
+        &self,
+        font_ctx: &mut FontContext,
+        layout_ctx: &mut LayoutContext<TextBrush>,
+        text: &str,
+        font_size: f32,
+        max_width: Option<f32>,
+    ) -> parley::Layout<TextBrush> {
+        let mut builder = layout_ctx.ranged_builder(font_ctx, text, self.viewport.hidpi_scale, true);
+        builder.push_default(GenericFamily::SystemUi);
+        builder.push_default(LineHeight::FontSizeRelative(1.2));
+        builder.push_default(StyleProperty::FontSize(font_size));
+        let mut layout = builder.build(text);
+        layout.break_all_lines(max_width.map(|width| width.max(1.0)));
+        layout.align(Alignment::Start, AlignmentOptions::default());
+        layout
+    }
 
-        // Icon color (dark gray for most icons)
+    fn draw_text_layout(
+        &self,
+        painter: &mut impl PaintScene,
+        layout: &parley::Layout<TextBrush>,
+        x: f32,
+        y: f32,
+        color: AlphaColor<Srgb>,
+    ) {
+        let transform = Affine::translate((x as f64, y as f64));
+        for line in layout.lines() {
+            for item in line.items() {
+                if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
+                    let run = glyph_run.run();
+                    let synthesis = run.synthesis();
+                    let glyph_xform = synthesis.skew().map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
+                    painter.draw_glyphs(
+                        run.font(),
+                        run.font_size(),
+                        true,
+                        run.normalized_coords(),
+                        Fill::NonZero,
+                        color,
+                        1.0,
+                        transform,
+                        glyph_xform,
+                        glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
+                            id: glyph.id as _,
+                            x: glyph.x,
+                            y: glyph.y,
+                        }),
+                    );
+                }
+            }
+        }
+    }
+
+    fn render_settings_panel_vello(
+        &self,
+        font_ctx: &mut FontContext,
+        layout_ctx: &mut LayoutContext<TextBrush>,
+        painter: &mut impl PaintScene,
+    ) {
+        let s = self.viewport.hidpi_scale;
+        let (px, py, pw, ph) = self.settings_panel_rect();
+        let shadow_rect = kurbo::RoundedRect::from_rect(kurbo::Rect::new((px + 3.0 * s) as f64, (py + 3.0 * s) as f64, (px + pw + 3.0 * s) as f64, (py + ph + 3.0 * s) as f64), 8.0 * s as f64);
+        painter.fill(Fill::NonZero, Affine::IDENTITY, AlphaColor::from_rgba8(0, 0, 0, 60), None, &shadow_rect);
+        let panel_rect = kurbo::RoundedRect::from_rect(kurbo::Rect::new(px as f64, py as f64, (px + pw) as f64, (py + ph) as f64), 8.0 * s as f64);
+        painter.fill(Fill::NonZero, Affine::IDENTITY, AlphaColor::from_rgb8(250, 250, 252), None, &panel_rect);
+        painter.stroke(&kurbo::Stroke::new(1.0 * s as f64), Affine::IDENTITY, AlphaColor::from_rgb8(200, 200, 210), None, &panel_rect);
+        let title_layout = self.build_text_layout(font_ctx, layout_ctx, "Settings", 14.0, Some(pw));
+        self.draw_text_layout(painter, &title_layout, px + 16.0 * s, py + 16.0 * s + title_layout.height(), AlphaColor::from_rgb8(40, 40, 40));
+        let separator = kurbo::Line::new(((px + 8.0 * s) as f64, (py + 40.0 * s) as f64), ((px + pw - 8.0 * s) as f64, (py + 40.0 * s) as f64));
+        painter.stroke(&kurbo::Stroke::new(1.0 * s as f64), Affine::IDENTITY, AlphaColor::from_rgb8(220, 220, 220), None, &separator);
+        let (bx, by, bw, bh) = self.default_browser_button_rect();
+        let button_rect = kurbo::RoundedRect::from_rect(kurbo::Rect::new(bx as f64, by as f64, (bx + bw) as f64, (by + bh) as f64), 6.0 * s as f64);
+        painter.fill(Fill::NonZero, Affine::IDENTITY, AlphaColor::from_rgb8(70, 130, 220), None, &button_rect);
+        let label_layout = self.build_text_layout(font_ctx, layout_ctx, "Set as Default Browser", 13.0, Some(bw - 12.0 * s));
+        self.draw_text_layout(painter, &label_layout, bx + (bw - label_layout.width()) / 2.0, by + (bh - label_layout.height()) / 2.0 + label_layout.height(), AlphaColor::WHITE);
+    }
+
+    fn draw_icon_vello(&self, painter: &mut impl PaintScene, icon_type: &IconType, rect: kurbo::Rect, is_hover: bool, hidpi_scale: f32) {
         let icon_color = AlphaColor::from_rgba8(60, 60, 60, 255);
-        let hover_color = AlphaColor::from_rgba8(200, 50, 50, 255); // Red for close icon when hovering
-
+        let hover_color = AlphaColor::from_rgba8(200, 50, 50, 255);
         match icon_type {
-            IconType::Back => {
-                Self::render_svg(painter, &self.back_svg, rect, icon_color, hidpi_scale);
-            }
-            IconType::Forward => {
-                Self::render_svg(painter, &self.forward_svg, rect, icon_color, hidpi_scale);
-            }
-            IconType::Refresh => {
-                Self::render_svg(painter, &self.reload_svg, rect, icon_color, hidpi_scale);
-            }
-            IconType::NewTab => {
-                Self::render_svg(painter, &self.new_tab_svg, rect, icon_color, hidpi_scale);
-            }
-            IconType::Close => {
-                let color = if is_hover { hover_color } else { icon_color };
-                Self::render_svg(painter, &self.close_tab_svg, rect, color, hidpi_scale);
-            }
-            IconType::Settings => {
-                Self::render_svg(painter, &self.settings_svg, rect, icon_color, hidpi_scale);
-            }
+            IconType::Back => Self::render_svg_vello(painter, &self.back_svg, rect, icon_color),
+            IconType::Forward => Self::render_svg_vello(painter, &self.forward_svg, rect, icon_color),
+            IconType::Refresh => Self::render_svg_vello(painter, &self.reload_svg, rect, icon_color),
+            IconType::NewTab => Self::render_svg_vello(painter, &self.new_tab_svg, rect, icon_color),
+            IconType::Close => Self::render_svg_vello(painter, &self.close_tab_svg, rect, if is_hover { hover_color } else { icon_color }),
+            IconType::Settings => Self::render_svg_vello(painter, &self.settings_svg, rect, icon_color),
         }
     }
 
-    /// Render an SVG tree into a rect
-    fn render_svg(painter: &mut ScenePainter, tree: &Tree, rect: Rect, color: AlphaColor<Srgb>, hidpi_scale: f32) {
-        // Save canvas state before SVG rendering
-        painter.inner.save();
-
+    fn render_svg_vello(painter: &mut impl PaintScene, tree: &Tree, rect: kurbo::Rect, color: AlphaColor<Srgb>) {
         let svg_size = tree.size();
-
-        // Calculate scale to fit the SVG into the rect
-        let scale_x = (rect.width() as f64 * 0.8) / svg_size.width() as f64;
-        let scale_y = (rect.height() as f64 * 0.8) / svg_size.height() as f64;
+        let scale_x = (rect.width() * 0.8) / svg_size.width() as f64;
+        let scale_y = (rect.height() * 0.8) / svg_size.height() as f64;
         let scale = scale_x.min(scale_y);
-
-        // Center the SVG in the rect
-        let offset_x = rect.left() as f64 + (rect.width() as f64 - svg_size.width() as f64 * scale) / 2.0;
-        let offset_y = rect.top() as f64 + (rect.height() as f64 - svg_size.height() as f64 * scale) / 2.0;
-
+        let offset_x = rect.x0 + (rect.width() - svg_size.width() as f64 * scale) / 2.0;
+        let offset_y = rect.y0 + (rect.height() - svg_size.height() as f64 * scale) / 2.0;
         let transform = Affine::translate((offset_x, offset_y)) * Affine::scale(scale);
-
-        // Render all paths in the SVG
         for node in tree.root().children() {
-            Self::render_svg_node(painter, node, transform, color);
+            Self::render_svg_node_vello(painter, node, transform, color);
         }
-
-        // Restore canvas state after SVG rendering
-        painter.inner.restore();
     }
 
-    /// Recursively render SVG nodes
-    fn render_svg_node(painter: &mut ScenePainter, node: &usvg::Node, transform: Affine, color: AlphaColor<Srgb>) {
+    fn render_svg_node_vello(painter: &mut impl PaintScene, node: &usvg::Node, transform: Affine, color: AlphaColor<Srgb>) {
         match node {
             usvg::Node::Group(group) => {
                 let group_transform = Self::usvg_transform_to_affine(&group.transform());
                 let combined_transform = transform * group_transform;
-
                 for child in group.children() {
-                    Self::render_svg_node(painter, child, combined_transform, color);
+                    Self::render_svg_node_vello(painter, child, combined_transform, color);
                 }
             }
             usvg::Node::Path(path) => {
                 let path_transform = Self::usvg_transform_to_affine(&path.abs_transform());
                 let combined_transform = transform * path_transform;
-
-                // Convert usvg path to kurbo path
                 let kurbo_path = Self::usvg_path_to_kurbo(path.data());
-
-                // Render based on paint type
-                if let Some(ref stroke) = path.stroke() {
-                    let stroke_width = stroke.width().get() as f64;
-                    let kurbo_stroke = kurbo::Stroke::new(stroke_width)
+                if let Some(stroke) = path.stroke() {
+                    let stroke = kurbo::Stroke::new(stroke.width().get() as f64)
                         .with_caps(kurbo::Cap::Round)
                         .with_join(kurbo::Join::Round);
-
-                    painter.stroke(&kurbo_stroke, combined_transform, color, None, &kurbo_path);
+                    painter.stroke(&stroke, combined_transform, color, None, &kurbo_path);
                 }
-
                 if path.fill().is_some() {
                     painter.fill(Fill::NonZero, combined_transform, color, None, &kurbo_path);
                 }
             }
-            usvg::Node::Image(_) | usvg::Node::Text(_) => {
-                // We don't need to handle images or text for simple icons
-            }
+            usvg::Node::Image(_) | usvg::Node::Text(_) => {}
         }
     }
 
-    /// Convert usvg Transform to kurbo Affine
     fn usvg_transform_to_affine(transform: &usvg::Transform) -> Affine {
         Affine::new([
             transform.sx as f64,
@@ -1902,130 +1718,61 @@ impl BrowserUI {
         kurbo_path
     }
 
-
-    /// Draw a tooltip
-    fn draw_tooltip(painter: &mut ScenePainter, tooltip: &Tooltip, x: f32, y: f32, font: &Font, hidpi_scale: f32, canvas_width: f32, canvas_height: f32) {
+    fn draw_tooltip_vello(
+        &self,
+        font_ctx: &mut FontContext,
+        layout_ctx: &mut LayoutContext<TextBrush>,
+        painter: &mut impl PaintScene,
+        tooltip: &Tooltip,
+        x: f32,
+        y: f32,
+        canvas_width: f32,
+        canvas_height: f32,
+    ) {
         if !tooltip.is_visible {
             return;
         }
-
-        let padding = 8.0 * hidpi_scale;
-
-        // Measure text
-        if let Some(text_blob) = TextBlob::new(&tooltip.text, font) {
-            let text_bounds = text_blob.bounds();
-            let tooltip_width = (text_bounds.width() + padding * 2.0) as f64;
-            let tooltip_height = (text_bounds.height() + padding * 2.0) as f64;
-
-            // Position tooltip above the component
-            let mut tooltip_x = x as f64;
-            let mut tooltip_y = y as f64 - tooltip_height - 5.0;
-
-            // Clamp tooltip position to keep it within canvas bounds
-            // Add some margin from the edge
-            let margin = (4.0 * hidpi_scale) as f64;
-
-            // Adjust horizontal position if tooltip would overflow right edge
-            if tooltip_x + tooltip_width > canvas_width as f64 - margin {
-                tooltip_x = canvas_width as f64 - tooltip_width - margin;
-            }
-
-            // Adjust horizontal position if tooltip would overflow left edge
-            if tooltip_x < margin {
-                tooltip_x = margin;
-            }
-
-            // Adjust vertical position if tooltip would overflow top edge
-            if tooltip_y < margin {
-                // If there's no room above, place it below the component
-                tooltip_y = y as f64 + 32.0 * hidpi_scale as f64 + 5.0; // Assuming button height ~32px
-            }
-
-            // Adjust vertical position if tooltip would overflow bottom edge
-            if tooltip_y + tooltip_height > canvas_height as f64 - margin {
-                tooltip_y = canvas_height as f64 - tooltip_height - margin;
-            }
-
-            let transform = Affine::IDENTITY;
-
-            // Draw tooltip background with shadow
-            let shadow_rect = kurbo::RoundedRect::from_rect(
-                kurbo::Rect::new(tooltip_x + 2.0, tooltip_y + 2.0, tooltip_x + tooltip_width + 2.0, tooltip_y + tooltip_height + 2.0),
-                4.0
-            );
-            let shadow_color = AlphaColor::from_rgba8(0, 0, 0, 100); // Semi-transparent black shadow
-            painter.fill(Fill::NonZero, transform, shadow_color, None, &shadow_rect);
-
-            // Draw tooltip background
-            let tooltip_rect = kurbo::RoundedRect::from_rect(
-                kurbo::Rect::new(tooltip_x, tooltip_y, tooltip_x + tooltip_width, tooltip_y + tooltip_height),
-                4.0
-            );
-            let bg_color = AlphaColor::from_rgba8(255, 255, 220, 255); // Light yellow background
-            painter.fill(Fill::NonZero, transform, bg_color, None, &tooltip_rect);
-
-            // Draw tooltip border
-            let stroke = kurbo::Stroke::new(1.0 * hidpi_scale as f64);
-            let border_color = AlphaColor::from_rgba8(180, 180, 140, 255);
-            painter.stroke(&stroke, transform, border_color, None, &tooltip_rect);
-
-            // Draw tooltip text using canvas directly (TextBlob is Skia-specific)
-            painter.set_matrix(transform);
-            let mut paint = Paint::default();
-            paint.set_color(Color::BLACK);
-            painter.inner.draw_text_blob(&text_blob, (tooltip_x as f32 + padding, tooltip_y as f32 + padding - text_bounds.top), &paint);
+        let padding = 8.0 * self.viewport.hidpi_scale;
+        let layout = self.build_text_layout(font_ctx, layout_ctx, &tooltip.text, 13.0, Some(canvas_width * 0.5));
+        let tooltip_width = layout.width() + padding * 2.0;
+        let tooltip_height = layout.height() + padding * 2.0;
+        let margin = 4.0 * self.viewport.hidpi_scale;
+        let mut tooltip_x = x;
+        let mut tooltip_y = y - tooltip_height - 5.0;
+        if tooltip_x + tooltip_width > canvas_width - margin {
+            tooltip_x = canvas_width - tooltip_width - margin;
         }
+        if tooltip_x < margin {
+            tooltip_x = margin;
+        }
+        if tooltip_y < margin {
+            tooltip_y = y + 32.0 * self.viewport.hidpi_scale + 5.0;
+        }
+        if tooltip_y + tooltip_height > canvas_height - margin {
+            tooltip_y = canvas_height - tooltip_height - margin;
+        }
+        let shadow_rect = kurbo::RoundedRect::from_rect(kurbo::Rect::new((tooltip_x + 2.0) as f64, (tooltip_y + 2.0) as f64, (tooltip_x + tooltip_width + 2.0) as f64, (tooltip_y + tooltip_height + 2.0) as f64), 4.0);
+        painter.fill(Fill::NonZero, Affine::IDENTITY, AlphaColor::from_rgba8(0, 0, 0, 100), None, &shadow_rect);
+        let tooltip_rect = kurbo::RoundedRect::from_rect(kurbo::Rect::new(tooltip_x as f64, tooltip_y as f64, (tooltip_x + tooltip_width) as f64, (tooltip_y + tooltip_height) as f64), 4.0);
+        painter.fill(Fill::NonZero, Affine::IDENTITY, AlphaColor::from_rgba8(255, 255, 220, 255), None, &tooltip_rect);
+        painter.stroke(&kurbo::Stroke::new(1.0 * self.viewport.hidpi_scale as f64), Affine::IDENTITY, AlphaColor::from_rgba8(180, 180, 140, 255), None, &tooltip_rect);
+        self.draw_text_layout(painter, &layout, tooltip_x + padding, tooltip_y + padding + layout.height(), AlphaColor::BLACK);
     }
 
-    /// Draw a loading spinner indicator
-    /// `angle` is the current rotation angle in radians (0 to 2*PI)
-    pub fn render_loading_indicator(&self, painter: &mut ScenePainter, is_loading: bool, angle: f32) {
-        if !is_loading {
-            return;
-        }
-
-        // Find the address bar to position the spinner
-        for comp in &self.components {
-            if let UiComponent::TextField { id, x, y, width, height, .. } = comp {
-                if id == "address_bar" {
-                    // Position spinner at the right side of the address bar
-                    let spinner_size = 20.0 * self.viewport.hidpi_scale;
-                    let spinner_x = x + width - spinner_size - (8.0 * self.viewport.hidpi_scale);
-                    let spinner_y = y + (height / 2.0);
-
-                    Self::draw_spinner(painter, spinner_x, spinner_y, spinner_size / 2.0, angle, self.viewport.hidpi_scale);
-                    break;
-                }
-            }
-        }
-    }
-
-    /// Draw an animated spinner
-    fn draw_spinner(painter: &mut ScenePainter, center_x: f32, center_y: f32, radius: f32, angle: f32, hidpi_scale: f32) {
-        let stroke_width = 2.5 * hidpi_scale as f64;
-        let stroke = kurbo::Stroke::new(stroke_width).with_caps(kurbo::Cap::Round);
-
-        // Draw multiple arcs with varying opacity for a smooth spinner effect
+    fn draw_spinner_vello(painter: &mut impl PaintScene, center_x: f32, center_y: f32, radius: f32, angle: f32, hidpi_scale: f32) {
+        let stroke = kurbo::Stroke::new(2.5 * hidpi_scale as f64).with_caps(kurbo::Cap::Round);
         let num_segments = 8;
         for i in 0..num_segments {
             let segment_angle = angle as f64 + (i as f64 * 2.0 * PI as f64 / num_segments as f64);
-            let start_angle = segment_angle.to_degrees();
-
-            // Fade out older segments
             let alpha = ((num_segments - i) as f32 / num_segments as f32 * 255.0) as u8;
             let color = AlphaColor::from_rgba8(50, 120, 255, alpha);
-
-            let sweep_angle = 30.0_f64.to_radians(); // Convert to radians for kurbo
-
-            // Create arc using kurbo
             let arc = kurbo::Arc {
                 center: kurbo::Point::new(center_x as f64, center_y as f64),
                 radii: kurbo::Vec2::new(radius as f64, radius as f64),
-                start_angle: start_angle.to_radians(),
-                sweep_angle,
+                start_angle: segment_angle,
+                sweep_angle: 30.0_f64.to_radians(),
                 x_rotation: 0.0,
             };
-
             painter.stroke(&stroke, Affine::IDENTITY, color, None, &arc);
         }
     }

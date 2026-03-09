@@ -1,10 +1,8 @@
 use anyrender::PaintScene;
 use blitz_traits::shell::Viewport;
-use glutin::surface::GlSurface;
 use kurbo::Affine;
 use cursor_icon::CursorIcon;
 use parley::{FontContext, LayoutContext};
-use std::num::NonZeroU32;
 use std::str::FromStr;
 use std::time::Instant;
 use anyrender_vello::VelloScenePainter;
@@ -18,10 +16,9 @@ use winit_core::cursor::Cursor;
 use winit_core::event::ButtonSource;
 use winit_core::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
 use crate::ipc::{ParentToTabMessage, TabToParentMessage};
-use crate::renderer::painter::{ScenePainter, SkiaCache};
 use crate::tab_manager::{ManagedTab, TabManager};
 use crate::ui::{BrowserUI, TextBrush};
-use crate::window::{create_surface, Env};
+use crate::window::{resize_surface, Env};
 use crate::{input, ipc};
 use crate::convert_events::{button_source_to_blitz, pointer_source_to_blitz, pointer_source_to_blitz_details, winit_ime_to_blitz, winit_key_event_to_blitz, winit_modifiers_to_kbt_modifiers};
 use crate::events::{BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent};
@@ -38,7 +35,6 @@ enum TabCloseResult {
 /// The main browser application (parent process)
 pub(crate) struct BrowserApp {
     env: Option<Env>,
-    skia_cache: SkiaCache,
     modifiers: Modifiers,
     tab_manager: TabManager,
     active_tab_index: usize,
@@ -62,7 +58,6 @@ impl BrowserApp {
 
         Self {
             env: None,
-            skia_cache: Default::default(),
             modifiers: Modifiers::default(),
             tab_manager,
             active_tab_index: 0,
@@ -153,6 +148,7 @@ impl BrowserApp {
                 height: height as f32
             });
             let _ = self.tab_manager.send_to_tab(&new_tab_id, ParentToTabMessage::SetScaleFactor(self.viewport.as_ref().unwrap().hidpi_scale));
+            let _ = self.tab_manager.send_to_tab(&new_tab_id, ParentToTabMessage::UpdateRendererInfo(env.renderer_info()));
 
             if let Some(u) = url {
                 // Navigate to the provided URL immediately
@@ -370,7 +366,7 @@ impl BrowserApp {
                     // Update loading indicator
                     env.window.request_redraw();
                 }
-                TabToParentMessage::FrameRendered { .. } => {
+                TabToParentMessage::SceneRendered { .. } => {
                     env.window.request_redraw();
                 }
                 TabToParentMessage::NavigateRequest(url) => {
@@ -474,17 +470,15 @@ impl BrowserApp {
     }
 
     fn render(&mut self) -> Result<(), String> {
-        let active_tab_id = self.active_tab_id().cloned();
-        let env = self.env.as_mut().unwrap();
-        let ui = self.ui.as_mut().unwrap();
-
-        // Check tooltip timeouts and request redraw if any tooltip should now be visible
-        if ui.update_tooltip_visibility(Instant::now()) {
+        let ui_needs_redraw = {
+            let ui = self.ui.as_mut().unwrap();
+            ui.update_tooltip_visibility(Instant::now())
+        };
+        if ui_needs_redraw {
             self.env.as_ref().unwrap().window.request_redraw();
         }
 
-        // Check if active tab is loading
-        let is_loading = active_tab_id.as_ref()
+        let is_loading = self.active_tab_id()
             .and_then(|id| self.tab_manager.get_tab(id))
             .map(|t| t.is_loading)
             .unwrap_or(false);
@@ -500,40 +494,44 @@ impl BrowserApp {
             self.env.as_ref().unwrap().window.request_redraw();
         }
 
-        // Get the rendered frame before borrowing canvas
-        let frame_to_render = active_tab_id.as_ref()
-            .and_then(|id| self.tab_manager.get_tab(id))
-            .and_then(|tab| tab.rendered_frame.as_ref())
-            .map(|frame| &frame.image);
-
-        let canvas = self.env.as_mut().unwrap().surface.canvas();
-
-        let mut painter = ScenePainter {
-            inner: canvas,
-            cache: &mut self.skia_cache,
+        let chrome_offset = BrowserUI::CHROME_HEIGHT * self.viewport.as_ref().unwrap().hidpi_scale;
+        let canvas_size = {
+            let env = self.env.as_ref().unwrap();
+            (env.surface_config.width, env.surface_config.height)
         };
 
-        painter.reset();
-
-        // Render the active tab's frame from shared memory
-        if let Some(image) = frame_to_render {
-            // Offset the page content so it renders below the chrome
-            let chrome_offset = BrowserUI::CHROME_HEIGHT * self.viewport.as_ref().unwrap().hidpi_scale;
-            painter.set_matrix(Affine::translate((0.0, 0.0)));
-
-            canvas.draw_image(image, (0.0, chrome_offset), None);
-        }
-
-        // Render UI on top
-        ui.render(canvas, &mut self.font_ctx, &mut self.layout_ctx, &mut painter);
-        ui.render_loading_indicator(&mut painter, is_loading, self.loading_spinner_angle);
-
-        self.env.as_mut().unwrap().gr_context.flush_and_submit();
         {
             let env = self.env.as_mut().unwrap();
-            env.gl_surface.swap_buffers(&env.gl_context)
-                .map_err(|e| format!("Failed to swap buffers: {}", e))?;
+            let mut painter = VelloScenePainter::new(&mut env.scene);
+            painter.reset();
+
+            // TODO Render tab content
+
+            let ui = self.ui.as_ref().unwrap();
+            ui.render_vello(canvas_size, &mut self.font_ctx, &mut self.layout_ctx, &mut painter);
+            ui.render_loading_indicator_vello(&mut painter, is_loading, self.loading_spinner_angle);
         }
+
+        let env = self.env.as_mut().unwrap();
+        let surface_texture = match env.surface.get_current_texture() {
+            Ok(texture) => texture,
+            Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
+                resize_surface(env, env.surface_config.width, env.surface_config.height);
+                return Ok(());
+            }
+            Err(wgpu::SurfaceError::Timeout) => {
+                return Ok(());
+            }
+            Err(err) => {
+                return Err(format!("Failed to acquire surface texture: {err}"));
+            }
+        };
+        let texture_view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        env.renderer
+            .render_to_texture(&env.device, &env.queue, &env.scene, &texture_view, &env.render_params())
+            .map_err(|e| format!("Failed to render Vello scene: {e}"))?;
+        surface_texture.present();
+        env.scene.reset();
 
         Ok(())
     }
@@ -583,7 +581,7 @@ impl ApplicationHandler for BrowserApp {
         };
 
         // Initialize UI
-        let mut ui = BrowserUI::new(&env.gr_context, &viewport);
+        let mut ui = BrowserUI::new(&viewport);
         ui.initialize_renderer();
         self.ui = Some(ui);
         self.viewport = Some(viewport);
@@ -621,20 +619,8 @@ impl ApplicationHandler for BrowserApp {
             }
             WindowEvent::SurfaceResized(new_size) => {
                 let env = self.env.as_mut().unwrap();
-                env.surface = create_surface(
-                    &env.window,
-                    env.fb_info,
-                    &mut env.gr_context,
-                    env.num_samples,
-                    env.stencil_size
-                );
-
                 let (width, height): (u32, u32) = new_size.into();
-                env.gl_surface.resize(
-                    &env.gl_context,
-                    NonZeroU32::new(width.max(1)).unwrap(),
-                    NonZeroU32::new(height.max(1)).unwrap()
-                );
+                resize_surface(env, width, height);
                 // Update viewport size
                 self.set_viewport(new_size.into());
                 let (width, height) = self.page_viewport.as_ref().unwrap().window_size;

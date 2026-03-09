@@ -35,11 +35,11 @@ euclid = "0.22.13"
 bitflags = { version = "2.11.0", features = ["serde"] }
 atomic_refcell = "0.1.13"
 skrifa = "0.40.0"
-kurbo = "0.13.0"
+kurbo = { version = "0.13.0", features = ["serde"] }
 bytes = "1.11.1"
 tracing = "0.1.44"
 hashbrown = "0.16.1"
-peniko = "0.6.0"
+peniko = { version = "0.6.0", features = ["serde"] }
 anyrender = "0.7.0"
 anyrender_svg = "0.8.0"
 anyrender_vello = "0.7.1"
@@ -65,6 +65,8 @@ raw-window-handle = "0.6.2"
 webdriver = "0.53.0"
 vello = "0.7.0"
 vello_cpu = "0.0.6"
+wgpu = "27"
+wgpu_context = "0.3.1"
 
 # Stylo
 stylo = "0.12.0"
