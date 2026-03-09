@@ -18,8 +18,8 @@ use crate::renderer::layers::maybe_with_layer;
 use crate::renderer::text::{draw_text_selection, stroke_text, SELECTION_COLOR};
 use crate::renderer::painter::ToColorColor;
 use anyrender::{CustomPaint, Paint, PaintScene};
-use color::AlphaColor;
-use kurbo::{Affine, Insets, Point, Rect, Stroke, Vec2};
+use color::{AlphaColor, Srgb};
+use kurbo::{Affine, BezPath, Insets, Point, Rect, Stroke, Vec2};
 use markup5ever::local_name;
 use parley::PositionedLayoutItem;
 use peniko::Fill;
@@ -33,6 +33,7 @@ use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, C
 use style::values::generics::color::{GenericColor, GenericColorOrAuto};
 use taffy::Layout;
 use painter::ScenePainter;
+use crate::renderer::background::{to_image_quality, to_peniko_image};
 use crate::renderer::sizing::compute_object_fit;
 
 /// HTML renderer that draws layout boxes to a canvas
@@ -709,39 +710,69 @@ impl Element<'_> {
     }
 
     fn draw_border(&self, painter: &mut ScenePainter) {
-        for edge in [Edge::Top, Edge::Right, Edge::Bottom, Edge::Left] {
-            self.draw_border_edge(painter, edge);
-        }
-    }
-
-    fn draw_border_edge(&self, painter: &mut ScenePainter, edge: Edge) {
         let style = &*self.style;
         let border = style.get_border();
-        let path = self.frame.border_edge_shape(edge);
-
         let current_color = style.clone_color();
-        let color = match edge {
-            Edge::Top => border
-                .border_top_color
-                .resolve_to_absolute(&current_color)
-                .as_color_color(),
-            Edge::Right => border
-                .border_right_color
-                .resolve_to_absolute(&current_color)
-                .as_color_color(),
-            Edge::Bottom => border
-                .border_bottom_color
-                .resolve_to_absolute(&current_color)
-                .as_color_color(),
-            Edge::Left => border
-                .border_left_color
-                .resolve_to_absolute(&current_color)
-                .as_color_color(),
-        };
 
-        let alpha = color.components[3];
-        if alpha != 0.0 {
-            painter.fill(Fill::NonZero, self.transform, color, None, &path);
+        let mut borders: [(AlphaColor<Srgb>, Option<BezPath>); 4] = [
+            (AlphaColor::TRANSPARENT, None),
+            (AlphaColor::TRANSPARENT, None),
+            (AlphaColor::TRANSPARENT, None),
+            (AlphaColor::TRANSPARENT, None),
+        ];
+        let mut count = 0;
+
+        for &edge in &[Edge::Top, Edge::Right, Edge::Bottom, Edge::Left] {
+            let color = match edge {
+                Edge::Top => &border.border_top_color,
+                Edge::Right => &border.border_right_color,
+                Edge::Bottom => &border.border_bottom_color,
+                Edge::Left => &border.border_left_color,
+            }
+                .resolve_to_absolute(&current_color)
+                .as_color_color();
+
+            if color.components[3] > 0.0 {
+                borders[count] = (color, Some(self.frame.border_edge_shape(edge)));
+                count += 1;
+            }
+        }
+
+        if count == 0 {
+            return;
+        }
+
+        // Group together identical colors by sorting.
+        let active_slice = &mut borders[0..count];
+        active_slice.sort_unstable_by(|a, b| {
+            a.0.components
+                .partial_cmp(&b.0.components)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let mut start_border_index = 0;
+        while start_border_index < count {
+            let color = borders[start_border_index].0;
+            let mut next_border_index = start_border_index + 1;
+            let has_multiple_edges =
+                next_border_index < count && borders[next_border_index].0 == color;
+            if has_multiple_edges {
+                let mut border_path = borders[start_border_index].1.take().unwrap();
+                while next_border_index < count && borders[next_border_index].0 == color {
+                    border_path.extend(&borders[next_border_index].1.take().unwrap());
+                    next_border_index += 1;
+                }
+                painter.fill(Fill::NonZero, self.transform, color, None, &border_path);
+            } else {
+                painter.fill(
+                    Fill::NonZero,
+                    self.transform,
+                    color,
+                    None,
+                    borders[start_border_index].1.as_ref().unwrap(),
+                );
+            }
+            start_border_index = next_border_index;
         }
     }
 

@@ -22,7 +22,6 @@ use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fmt, ptr};
-use bincode_next::serde::Compat;
 use blitz_traits::shell::ShellProvider;
 use cssparser::ParserInput;
 use keyboard_types::Modifiers;

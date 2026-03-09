@@ -1,7 +1,6 @@
 // Copyright DioxusLabs
 // Licensed under the Apache License, Version 2.0 or the MIT license.
 
-use bincode_next::serde::Compat;
 use blitz_traits::shell::ColorScheme;
 use keyboard_types::{Code, Key, Location, Modifiers};
 use winit::event::KeyEvent as WinitKeyEvent;
