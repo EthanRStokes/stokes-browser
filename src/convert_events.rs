@@ -1,7 +1,7 @@
 // Copyright DioxusLabs
 // Licensed under the Apache License, Version 2.0 or the MIT license.
 
-use bincode_next::serde::Compat;
+use crate::events::{BlitzImeEvent, BlitzKeyEvent, BlitzPointerId, KeyState, PointerDetails};
 use blitz_traits::shell::ColorScheme;
 use keyboard_types::{Code, Key, Location, Modifiers};
 use winit::event::KeyEvent as WinitKeyEvent;
@@ -14,7 +14,6 @@ use winit::keyboard::ModifiersState as WinitModifiers;
 use winit::keyboard::NamedKey as WinitNamedKey;
 use winit::keyboard::PhysicalKey as WinitPhysicalKey;
 use winit::window::Theme;
-use crate::events::{BlitzImeEvent, BlitzKeyEvent, BlitzPointerId, KeyState, PointerDetails};
 
 pub(crate) fn theme_to_color_scheme(theme: Theme) -> ColorScheme {
     match theme {

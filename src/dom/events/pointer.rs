@@ -4,15 +4,14 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use super::focus::generate_focus_events;
+use crate::dom::node::SpecialElementData;
+use crate::dom::Dom;
+use crate::events::{BlitzInputEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, DomEvent, DomEventData, MouseEventButton, MouseEventButtons};
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use blitz_traits::shell::ShellProvider;
 use keyboard_types::Modifiers;
 use markup5ever::local_name;
-use crate::dom::Dom;
-use crate::dom::node::SpecialElementData;
-use crate::events::{BlitzInputEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, DomEvent, DomEventData, MouseEventButton, MouseEventButtons};
-use crate::shell_provider::ShellProviderMessage;
-use super::focus::generate_focus_events;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FlingState {

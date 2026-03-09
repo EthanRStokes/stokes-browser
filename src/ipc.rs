@@ -12,13 +12,13 @@
 //   • A clean `IpcReceiverSet` API for polling *many* tab receivers at once
 //     without spawning per-tab threads.
 
-use std::io;
+use crate::events::{MouseEventButtons, UiEvent};
 use ipc_channel::ipc::{
     self, IpcOneShotServer, IpcReceiver, IpcSender,
 };
 use ipc_channel::TryRecvError;
 use serde::{Deserialize, Serialize};
-use crate::events::{MouseEventButtons, UiEvent};
+use std::io;
 
 // ── Wire message types ────────────────────────────────────────────────────────
 

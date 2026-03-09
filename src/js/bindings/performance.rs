@@ -1,14 +1,14 @@
 // Performance API implementation for JavaScript using mozjs
 use crate::js::JsRuntime;
-use mozjs::jsapi::{CallArgs, JSContext, JSNative, JSObject, JS_DefineFunction, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE, JSPROP_READONLY, HandleValueArray};
-use mozjs::jsval::{JSVal, UndefinedValue, DoubleValue, ObjectValue};
+use mozjs::conversions::jsstr_to_string;
+use mozjs::jsapi::{CallArgs, HandleValueArray, JSContext, JSNative, JSObject, JS_DefineFunction, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE, JSPROP_READONLY};
+use mozjs::jsval::{DoubleValue, JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::os::raw::c_uint;
 use std::ptr::NonNull;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use mozjs::conversions::jsstr_to_string;
 
 /// Performance mark entry
 #[derive(Debug, Clone)]

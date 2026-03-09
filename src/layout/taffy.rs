@@ -1,7 +1,7 @@
 use crate::dom::node::SpecialElementData;
 use crate::dom::{Dom, ImageData, NodeData};
 use crate::layout::replaced::{replaced_measure_function, ReplacedContext};
-use crate::layout::table::{TableContext, TableTreeWrapper};
+use crate::layout::table::TableTreeWrapper;
 use markup5ever::local_name;
 use std::cell::Ref;
 use std::sync::Arc;

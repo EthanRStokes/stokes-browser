@@ -3,6 +3,7 @@
 // Blitz was used as a reference because it's the only good example of how Stylo can be used
 
 use crate::css::parse::{parse_color, parse_size};
+use crate::dom::damage::compute_layout_damage;
 use crate::dom::{damage, DomNode, NodeData};
 use atomic_refcell::{AtomicRef, AtomicRefMut};
 use html5ever::ns;
@@ -35,10 +36,8 @@ use style::traversal::{recalc_style_at, DomTraversal, PerLevelTraversalData};
 use style::values::computed::{Au, Display};
 use style::values::{AtomIdent, AtomString, GenericAtomIdent};
 use style::CaseSensitivityExt;
-use style::servo::restyle_damage::ServoRestyleDamage;
 use stylo_atoms::Atom;
 use stylo_dom::ElementState;
-use crate::dom::damage::compute_layout_damage;
 
 type Node<'a> = &'a DomNode;
 

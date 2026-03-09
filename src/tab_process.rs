@@ -3,15 +3,14 @@ use crate::engine::nav_provider::{NavigationProviderMessage, StokesNavigationPro
 // Tab process module - runs the browser engine in a separate process
 use crate::engine::{Engine, EngineConfig, ENGINE_REF, USER_AGENT_REF};
 use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage, WgpuRendererInfo};
-use crate::{networking};
+use crate::shell_provider::{ShellProviderMessage, StokesShellProvider};
+use crate::networking;
 use blitz_traits::shell::{ShellProvider, Viewport};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use crate::shell_provider::{StokesShellProvider, ShellProviderMessage};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
-use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {

@@ -1,9 +1,14 @@
 use crate::dom::node::{RasterImageData, SpecialElementData};
+use crate::dom::ImageData;
+use crate::renderer::gradient::to_peniko_gradient;
+use crate::renderer::layers::maybe_with_layer;
+use crate::renderer::painter::ToColorColor;
+use crate::renderer::Element;
 use anyrender::PaintScene;
+use color::AlphaColor;
 use kurbo::{BezPath, Point, Rect, Shape, Size, Vec2};
 use peniko::{Fill, ImageAlphaType, ImageFormat, ImageSampler};
 use std::io::Cursor;
-use color::AlphaColor;
 use style::values::specified::ImageRendering;
 use style::{
     properties::{
@@ -20,11 +25,6 @@ use style::{
     },
 };
 use tracing::warn;
-use crate::dom::ImageData;
-use crate::renderer::Element;
-use crate::renderer::gradient::to_peniko_gradient;
-use crate::renderer::layers::maybe_with_layer;
-use crate::renderer::painter::ToColorColor;
 
 impl Element<'_> {
     pub(super) fn draw_background(&self, scene: &mut impl PaintScene) {

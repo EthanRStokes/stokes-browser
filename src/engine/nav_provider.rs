@@ -1,7 +1,5 @@
-use bincode_next::{Decode, Encode};
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use tokio::sync::mpsc::UnboundedSender;
-use crate::shell_provider::ShellProviderMessage;
 
 #[derive(Debug, Clone)]
 pub enum NavigationProviderMessage {

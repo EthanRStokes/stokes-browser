@@ -1,12 +1,12 @@
-use std::sync::Arc;
+use crate::dom::damage::ALL_DAMAGE;
+use crate::dom::node::{CanvasData, RasterImageData, SpecialElementData, Status};
+use crate::dom::{Dom, ImageData};
+use crate::networking::{ImageHandler, ImageType, Resource, ResourceHandler, ResourceLoadResponse, StylesheetHandler};
 use blitz_traits::net::{NetProvider, Request};
 use markup5ever::local_name;
 use peniko::Blob;
+use std::sync::Arc;
 use style::stylesheets::OriginSet;
-use crate::dom::damage::ALL_DAMAGE;
-use crate::dom::{Dom, ImageData};
-use crate::dom::node::{CanvasData, RasterImageData, SpecialElementData, Status};
-use crate::networking::{ImageHandler, ImageType, Resource, ResourceHandler, ResourceLoadResponse, StylesheetHandler};
 
 impl Dom {
     pub(crate) fn resolve_url(&self, raw: &str) -> url::Url {

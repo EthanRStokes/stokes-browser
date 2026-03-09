@@ -6,29 +6,24 @@ pub mod resolve;
 pub mod js_provider;
 
 pub use self::config::EngineConfig;
-use crate::dom::node::{RasterImageData, SpecialElementData};
-use crate::dom::{Dom, ImageData, NodeData};
+use crate::dom::{Dom, NodeData};
 use crate::dom::{EventDispatcher, EventType};
+use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
+use crate::engine::nav_provider::StokesNavigationProvider;
 use crate::js::JsRuntime;
 use crate::networking;
-use crate::networking::{NetworkError, HttpClient};
-use crate::renderer::painter::ScenePainter;
+use crate::networking::{HttpClient, NetworkError};
 use crate::renderer::HtmlRenderer;
 use crate::shell_provider::StokesShellProvider;
+use anyrender::PaintScene;
+use blitz_traits::net::Request;
 use blitz_traits::shell::Viewport;
 use markup5ever::local_name;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::Cursor;
-use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::mpsc::{channel, Receiver};
-use anyrender::PaintScene;
-use blitz_traits::net::Request;
-use style::dom::TNode;
+use std::sync::Arc;
 use style::thread_state::ThreadState;
-use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
-use crate::engine::nav_provider::StokesNavigationProvider;
 
 thread_local! {
     pub(crate) static ENGINE_REF: RefCell<Option<*mut Engine>> = RefCell::new(None);
@@ -43,10 +38,6 @@ pub struct Engine {
     page_title: String,
     is_loading: bool,
     pub(crate) dom: Option<Dom>,
-    scroll_y: f32,
-    scroll_x: f32,
-    content_height: f32,
-    content_width: f32,
     pub(crate) viewport: Viewport,
     // JavaScript runtime
     js_runtime: Option<JsRuntime>,
@@ -71,10 +62,6 @@ impl Engine {
             page_title: "New Tab".to_string(),
             is_loading: false,
             dom: None,
-            scroll_y: 0.0,
-            scroll_x: 0.0,
-            content_height: 0.0,
-            content_width: 0.0,
             viewport,
             js_runtime: None,
             history: Vec::new(),
@@ -134,10 +121,6 @@ impl Engine {
                 self.js_runtime = None;
             }
 
-            // Reset scroll position
-            self.scroll_x = 0.0;
-            self.scroll_y = 0.0;
-
             // Parse and apply CSS styles from the document
             self.parse_document_styles().await;
 
@@ -149,9 +132,6 @@ impl Engine {
             }
 
             self.resolve(0.0);
-
-            // Calculate layout with CSS styles applied
-            self.update_content_dimensions();
 
             Ok(())
         }.await;
@@ -190,32 +170,16 @@ impl Engine {
             );
             let _ = runtime.execute_script(&script);
         }
-
-        // Recalculate layout with new viewport
-        style::thread_state::enter(ThreadState::LAYOUT);
-        self.update_content_dimensions();
-        style::thread_state::exit(ThreadState::LAYOUT);
-    }
-
-    /// Get the viewport size
-    #[inline]
-    pub fn viewport_size(&self) -> (u32, u32) {
-        self.viewport.window_size
     }
 
     #[inline]
-    pub fn viewport_width(&self) -> f32 {
-        self.viewport.window_size.0 as f32
+    pub fn viewport_width(&self) -> u32 {
+        self.viewport.window_size.0
     }
 
     #[inline]
-    pub fn viewport_height(&self) -> f32 {
-        self.viewport.window_size.1 as f32
-    }
-
-    /// Get the content dimensions
-    pub fn content_size(&self) -> (f32, f32) {
-        (self.content_width, self.content_height)
+    pub fn viewport_height(&self) -> u32 {
+        self.viewport.window_size.1
     }
 
     /// Resize the viewport
@@ -224,9 +188,6 @@ impl Engine {
             window_size: (width as u32, height as u32),
             ..self.viewport
         });
-
-        // Update content dimensions after layout recalculation
-        self.update_content_dimensions();
     }
 
     /// Render the current page to a canvas
@@ -245,8 +206,8 @@ impl Engine {
         let mut renderer = HtmlRenderer {
             dom: &dom,
             scale_factor: self.viewport.scale_f64(),
-            width: self.viewport_width() as u32,
-            height: self.viewport_height() as u32,
+            width: self.viewport.window_size.0,
+            height: self.viewport.window_size.1,
             selection_ranges: selection,
             debug_hitboxes: self.config.debug_hitboxes,
         };
@@ -307,83 +268,6 @@ impl Engine {
     /// Set the loading state manually (useful for UI updates)
     pub fn set_loading_state(&mut self, loading: bool) {
         self.is_loading = loading;
-    }
-
-    /// Extract domain from URL
-    fn extract_domain_from_url(&self, url: &str) -> Option<String> {
-        url.split("://")
-            .nth(1)
-            .and_then(|s| s.split('/').next())
-            .map(|s| s.to_string())
-    }
-
-    /// Scroll the page by delta amounts
-    pub fn scroll(&mut self, delta_x: f32, delta_y: f32) {
-        self.scroll_horizontal(delta_x);
-        self.scroll_vertical(delta_y);
-    }
-
-    /// Scroll vertically by the given delta
-    pub fn scroll_vertical(&mut self, delta: f32) -> bool {
-        let delta = delta * 3.5;
-        let old_scroll_y = self.scroll_y;
-        self.scroll_y = (self.scroll_y + delta).max(0.0);
-
-        // Don't scroll past the bottom of the content
-        let max_scroll = (self.content_height - (self.viewport_height() / self.viewport.hidpi_scale)).max(0.0);
-        self.scroll_y = self.scroll_y.min(max_scroll);
-
-        self.update_dom_scroll();
-
-        // Return whether scroll position actually changed
-        old_scroll_y != self.scroll_y
-    }
-
-    /// Scroll horizontally by the given delta
-    pub fn scroll_horizontal(&mut self, delta: f32) -> bool {
-        let old_scroll_x = self.scroll_x;
-        self.scroll_x = (self.scroll_x + delta).max(0.0);
-
-        // Don't scroll past the right edge of the content
-        let max_scroll = (self.content_width - (self.viewport_width() / self.viewport.hidpi_scale)).max(0.0);
-        self.scroll_x = self.scroll_x.min(max_scroll);
-
-        self.update_dom_scroll();
-
-        // Return whether scroll position actually changed
-        old_scroll_x != self.scroll_x
-    }
-
-    /// Get current scroll position
-    pub fn scroll_position(&self) -> taffy::Point<f64> {
-        self.dom().viewport_scroll
-    }
-
-    fn update_dom_scroll(&mut self) {
-        let x = self.scroll_x as f64;
-        let y = self.scroll_y as f64;
-
-        let dom = self.dom_mut();
-        dom.viewport_scroll.x = x;
-        dom.viewport_scroll.y = y;
-    }
-
-    /// Set scroll position directly
-    pub fn set_scroll_position(&mut self, x: f32, y: f32) {
-        self.scroll_x = x.max(0.0).min((self.content_width - self.viewport_width()).max(0.0));
-        self.scroll_y = y.max(0.0).min((self.content_height - self.viewport_height()).max(0.0));
-
-        self.update_dom_scroll();
-    }
-
-    /// Update content dimensions based on layout
-    pub(crate) fn update_content_dimensions(&mut self) {
-        if let Some(dom) = &self.dom {
-            let root_element = dom.root_element();
-            let layout = root_element.final_layout;
-            self.content_width = layout.size.width;
-            self.content_height = layout.size.height;
-        }
     }
 
     /// Initialize JavaScript runtime for the current document
@@ -469,225 +353,7 @@ impl Engine {
         }
     }
 
-    /// Handle a mouse move at the given position (viewport coordinates)
-    pub fn handle_mouse_move(&mut self, x: f32, y: f32) {
-        // Adjust position for scroll offset
-        let adjusted_x = x + self.scroll_x;
-        let adjusted_y = y + self.scroll_y;
-
-        // Find the element at this position starting from root
-        if let Some(dom) = &mut self.dom {
-            dom.set_hover(adjusted_x, adjusted_y);
-
-            // Fire mouse move event on the element
-            self.fire_mouse_move_event(x as f64, y as f64);
-        }
-    }
-
-    /// Fire a mouse move event on a DOM node
-    fn fire_mouse_move_event(&mut self, x: f64, y: f64) {
-        let dom = self.dom.as_ref().unwrap();
-        let hover_node_id = match dom.hover_node_id {
-            Some(hover_node_id) => hover_node_id,
-            None => return,
-        };
-
-        let dom = self.dom.as_mut().unwrap();
-        let root = dom.root_node().get_node(hover_node_id);
-
-        let node = root.get_node(hover_node_id);
-        if let Some(runtime) = &mut self.js_runtime {
-            let context = runtime.cx();
-
-            if let Err(e) = EventDispatcher::dispatch_mouse_event(
-                &node,
-                EventType::MouseMove,
-                x,
-                y,
-                context,
-            ) {
-                eprintln!("Error dispatching mouse move event: {}", e);
-            }
-        }
-    }
-
-    /// Handle a mouse down event at the given position
-    pub fn handle_mouse_down(&mut self, x: f32, y: f32) {
-        if let Some(dom) = &self.dom {
-            if let Some(node_id) = dom.hover_node_id {
-                self.fire_mouse_event(node_id, EventType::MouseDown, x as f64, y as f64);
-            }
-        }
-    }
-
-    /// Handle a mouse up event at the given position
-    pub fn handle_mouse_up(&mut self, x: f32, y: f32) {
-        if let Some(dom) = &self.dom {
-            if let Some(node_id) = dom.hover_node_id {
-                self.fire_mouse_event(node_id, EventType::MouseUp, x as f64, y as f64);
-            }
-        }
-    }
-
-    /// Fire a generic mouse event on a DOM node
-    fn fire_mouse_event(&mut self, node_id: usize, event_type: EventType, x: f64, y: f64) {
-        let dom = self.dom.as_ref().unwrap();
-        let root = dom.root_node();
-
-        let node = root.get_node(node_id);
-        if let Some(runtime) = &mut self.js_runtime {
-            let context = runtime.cx();
-
-            println!("[Event] Firing {:?} event at ({}, {}) on node {}", event_type, x, y, node_id);
-
-            if let Err(e) = EventDispatcher::dispatch_mouse_event(
-                &node,
-                event_type,
-                x,
-                y,
-                context,
-            ) {
-                eprintln!("Error dispatching mouse event: {}", e);
-            }
-        }
-    }
-
-    /// Handle a keyboard event
-    pub fn handle_key_event(&mut self, event_type: EventType, key: String, key_code: u32) {
-        // For keyboard events, we typically fire them on the focused element
-        // For now, we'll fire on the document root
-        let dom = self.dom.as_ref().unwrap();
-
-        let root = dom.root_node();
-
-        if let Some(runtime) = &mut self.js_runtime {
-            let context = runtime.cx();
-
-            println!("[Event] Firing {:?} event with key: {} (code: {})", event_type, key, key_code);
-
-            if let Err(e) = EventDispatcher::dispatch_keyboard_event(
-                root,
-                event_type,
-                key,
-                key_code,
-                context,
-            ) {
-                eprintln!("Error dispatching keyboard event: {}", e);
-            }
-        }
-    }
-
-    /// Handle a scroll event
-    pub fn handle_scroll_event(&mut self) {
-        let dom = self.dom.as_ref().unwrap();
-        let root = dom.root_node();
-
-        if let Some(runtime) = &mut self.js_runtime {
-            let context = runtime.cx();
-
-            println!("[Event] Firing scroll event");
-
-            if let Err(e) = EventDispatcher::dispatch_simple_event(
-                root,
-                EventType::Scroll,
-                context,
-            ) {
-                eprintln!("Error dispatching scroll event: {}", e);
-            }
-        }
-    }
-
-    /// Handle a resize event
-    pub fn handle_resize_event(&mut self) {
-        let dom = self.dom.as_ref().unwrap();
-
-        let root = dom.root_node();
-
-        if let Some(runtime) = &mut self.js_runtime {
-            let context = runtime.cx();
-
-            println!("[Event] Firing resize event");
-
-            if let Err(e) = EventDispatcher::dispatch_simple_event(
-                &root,
-                EventType::Resize,
-                context,
-            ) {
-                eprintln!("Error dispatching resize event: {}", e);
-            }
-        }
-    }
-
-    /// Fire a load event (typically called after page is fully loaded)
-    pub fn fire_load_event(&mut self) {
-        let dom = self.dom.as_ref().unwrap();
-
-        let root = dom.root_node();
-
-        if let Some(runtime) = &mut self.js_runtime {
-            let context = runtime.cx();
-
-            println!("[Event] Firing load event");
-
-            if let Err(e) = EventDispatcher::dispatch_simple_event(
-                &root,
-                EventType::Load,
-                context,
-            ) {
-                eprintln!("Error dispatching load event: {}", e);
-            }
-        }
-    }
-
-    /// Find the href of a link element by checking the node and its ancestors
-    fn find_link_href(&self, node_id: usize) -> Option<String> {
-        // Walk up the DOM tree to find an anchor element
-        let mut visited = std::collections::HashSet::new();
-        let mut current_id = node_id;
-
-        // Limit depth to prevent infinite loops
-        let max_depth = 50;
-        let mut depth = 0;
-
-        let dom = self.dom.as_ref().unwrap();
-        let root = dom.root_node();
-
-        loop {
-            if depth >= max_depth || visited.contains(&current_id) {
-                break;
-            }
-            visited.insert(current_id);
-            depth += 1;
-
-            let node = root.get_node(current_id);
-            // Check if this is an anchor element with an href attribute
-            if let NodeData::Element(element_data) = &node.data {
-                if element_data.name.local.to_string() == "a" {
-                    if let Some(href) = element_data.attr(local_name!("href")) {
-                        return Some(href.to_string());
-                    }
-                }
-            }
-
-            // Move to parent
-            if let Some(parent) = node.parent_node() {
-                let parent_id = parent.id;
-                if parent_id == current_id {
-                    // Safety check: prevent infinite loop if node is its own parent
-                    break;
-                }
-                current_id = parent_id;
-            } else {
-                // No parent, we've reached the root
-                break;
-            }
-        }
-
-        None
-    }
-
-    // TODO reimplement javascript
-    /*/// Process pending JavaScript timers (setTimeout/setInterval)
+    /// Process pending JavaScript timers (setTimeout/setInterval)
     /// Returns true if any timers were executed
     #[inline]
     pub fn process_timers(&mut self) -> bool {
@@ -715,7 +381,7 @@ impl Engine {
         } else {
             None
         }
-    }*/
+    }
 
     /// Add a URL to the navigation history
     fn add_to_history(&mut self, url: String) {

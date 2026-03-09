@@ -1,12 +1,12 @@
+use crate::dom::node::DomNodeFlags;
+use crate::dom::Dom;
 use std::ops::Range;
 use style::properties::ComputedValues;
 use style::selector_parser::RestyleDamage;
+use style::values::generics::image::Image as StyloImage;
 use style::values::specified::align::AlignFlags;
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
-use style::values::generics::image::Image as StyloImage;
 use taffy::Rect;
-use crate::dom::Dom;
-use crate::dom::node::DomNodeFlags;
 
 pub(crate) const CONSTRUCT_BOX: RestyleDamage =
     RestyleDamage::from_bits_retain(0b_0000_0000_0001_0000);

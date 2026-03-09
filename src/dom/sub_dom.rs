@@ -1,6 +1,6 @@
+use crate::dom::{Dom, PlainDom};
 use std::cell::RefCell;
 use std::rc::Rc;
-use crate::dom::{Dom, PlainDom};
 
 pub struct SubDocumentAttr {
     id: usize,

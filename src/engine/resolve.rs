@@ -1,5 +1,5 @@
-use crate::engine::Engine;
 use crate::engine::js_provider::JsProviderMessage;
+use crate::engine::Engine;
 
 impl Engine {
     pub fn resolve(&mut self, now: f64) {

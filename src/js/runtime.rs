@@ -1,5 +1,6 @@
 use super::JsResult;
 use crate::dom::Dom;
+use crate::js::bindings::initialize_bindings;
 use crate::js::bindings::timers::TimerManager;
 use crate::js::jsapi::define_native_function::define_native_function;
 use crate::js::jsapi::objects::get_obj_prop_val_as_string;
@@ -15,7 +16,7 @@ use mozjs::jsapi::{CallArgs, JSContext as ApiJSContext};
 use mozjs::jsapi::{Compile1, Handle, Heap, JSAutoRealm, JSContext as RawJSContext, JSObject, JSScript, JS_ClearPendingException, JS_ExecuteScript, JS_GetPendingException, JS_IsExceptionPending, MutableHandleValue, OnNewGlobalHookOption, SetScriptPrivate};
 // JavaScript runtime management using Mozilla's SpiderMonkey (mozjs)
 use mozjs::jsval::{PrivateValue, UndefinedValue};
-use mozjs::panic::{maybe_resume_unwind};
+use mozjs::panic::maybe_resume_unwind;
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{JS_GetScriptPrivate, JS_NewGlobalObject, JS_ValueToSource};
 use mozjs::rust::{transform_str_to_source_text, CompileOptionsWrapper, JSEngine, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS};
@@ -27,7 +28,6 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::Duration;
 use url::Url;
-use crate::js::bindings::initialize_bindings;
 
 lazy_static! {
     static ref ENGINE_HANDLER_PRODUCER: EventLoop = EventLoop::new();

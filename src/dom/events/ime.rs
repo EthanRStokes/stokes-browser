@@ -1,6 +1,6 @@
-use blitz_traits::shell::ShellProvider;
 use crate::dom::Dom;
 use crate::events::{BlitzImeEvent, BlitzInputEvent, DomEvent, DomEventData};
+use blitz_traits::shell::ShellProvider;
 
 pub(crate) fn handle_ime_event<F: FnMut(DomEvent)>(
     doc: &mut Dom,

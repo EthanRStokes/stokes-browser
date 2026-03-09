@@ -1,5 +1,4 @@
 use crate::dom::Dom;
-use crate::renderer::painter::ScenePainter;
 use anyrender::PaintScene;
 use color::AlphaColor;
 // Image rendering functionality

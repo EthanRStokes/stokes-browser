@@ -1,11 +1,18 @@
+use crate::convert_events::{button_source_to_blitz, pointer_source_to_blitz, pointer_source_to_blitz_details, winit_ime_to_blitz, winit_key_event_to_blitz, winit_modifiers_to_kbt_modifiers};
+use crate::events::{BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent};
+use crate::ipc::{ParentToTabMessage, TabToParentMessage};
+use crate::shell_provider::ShellProviderMessage;
+use crate::tab_manager::{ManagedTab, TabManager};
+use crate::ui::{BrowserUI, TextBrush};
+use crate::window::{resize_surface, Env};
+use crate::{input, ipc};
 use anyrender::PaintScene;
+use anyrender_vello::VelloScenePainter;
 use blitz_traits::shell::Viewport;
-use kurbo::Affine;
 use cursor_icon::CursorIcon;
 use parley::{FontContext, LayoutContext};
 use std::str::FromStr;
 use std::time::Instant;
-use anyrender_vello::VelloScenePainter;
 use taffy::Point;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
@@ -15,14 +22,6 @@ use winit::window::WindowId;
 use winit_core::cursor::Cursor;
 use winit_core::event::ButtonSource;
 use winit_core::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
-use crate::ipc::{ParentToTabMessage, TabToParentMessage};
-use crate::tab_manager::{ManagedTab, TabManager};
-use crate::ui::{BrowserUI, TextBrush};
-use crate::window::{resize_surface, Env};
-use crate::{input, ipc};
-use crate::convert_events::{button_source_to_blitz, pointer_source_to_blitz, pointer_source_to_blitz_details, winit_ime_to_blitz, winit_key_event_to_blitz, winit_modifiers_to_kbt_modifiers};
-use crate::events::{BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent};
-use crate::shell_provider::ShellProviderMessage;
 
 /// Result of closing a tab
 #[derive(Debug, PartialEq)]

@@ -1,10 +1,10 @@
+use crate::engine::js_provider::StokesJsProvider;
 use crate::engine::nav_provider::StokesNavigationProvider;
 use crate::engine::net_provider::StokesNetProvider;
 use crate::shell_provider::StokesShellProvider;
 use blitz_traits::shell::Viewport;
 use parley::FontContext;
 use std::sync::Arc;
-use crate::engine::js_provider::StokesJsProvider;
 
 #[derive(Default)]
 pub struct DomConfig {

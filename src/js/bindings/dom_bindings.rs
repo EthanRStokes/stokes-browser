@@ -1,6 +1,6 @@
 use super::super::helpers::{
-    create_empty_array, create_js_string, define_function, js_value_to_string,
-    set_bool_property, set_int_property, set_string_property, get_node_id_from_value,
+    create_empty_array, create_js_string, define_function, get_node_id_from_value,
+    js_value_to_string, set_bool_property, set_int_property, set_string_property,
 };
 use super::cookies::{ensure_cookie_jar_initialized, set_document_url, Cookie, COOKIE_JAR, DOCUMENT_URL};
 use super::element_bindings;

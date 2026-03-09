@@ -1,6 +1,5 @@
 use crate::ipc::WgpuRendererInfo;
 use futures::executor::block_on;
-use std::num::NonZeroU32;
 use vello::{AaConfig, AaSupport, Renderer as VelloRenderer, RendererOptions, Scene};
 use wgpu::{CompositeAlphaMode, DeviceDescriptor, ExperimentalFeatures, Features, Instance, InstanceDescriptor, Limits, MemoryHints, PresentMode, SurfaceConfiguration, TextureFormat, TextureUsages};
 use winit::dpi::LogicalSize;

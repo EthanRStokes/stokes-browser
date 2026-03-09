@@ -1,4 +1,3 @@
-use crate::renderer::painter::ScenePainter;
 use anyrender::PaintScene;
 use blitz_traits::shell::Viewport;
 use color::{AlphaColor, Srgb};

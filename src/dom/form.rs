@@ -1,15 +1,14 @@
 // Copyright DioxusLabs
 // Licensed under the Apache License, Version 2.0 or the MIT license.
 
-use std::fmt::Display;
-use std::str::FromStr;
+use crate::dom::traverse::{AncestorTraverser, TreeTraverser};
+use crate::dom::{Dom, ElementData};
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
-use html5ever::serialize::Serializer;
 use blitz_traits::net::{Body, Entry, EntryValue, FormData, Method};
 use html5ever::local_name;
 use markup5ever::LocalName;
-use crate::dom::{Dom, ElementData};
-use crate::dom::traverse::{AncestorTraverser, TreeTraverser};
+use std::fmt::Display;
+use std::str::FromStr;
 
 const DEFAULT_ENCODE_SET: percent_encoding::AsciiSet = percent_encoding::CONTROLS
     // Query Set

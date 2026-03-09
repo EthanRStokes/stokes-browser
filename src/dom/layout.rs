@@ -1,16 +1,17 @@
 use crate::dom::damage::{HoistedPaintChild, HoistedPaintChildren, ALL_DAMAGE, CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC};
 use crate::dom::node::{BackgroundImageData, DomNodeFlags, ListItemLayout, ListItemLayoutPosition, Marker, NodeKind, SpecialElementData, Status, TextInputData, TextLayout};
 use crate::dom::{stylo_to_parley, AttributeMap, Dom, DomNode, ElementData, NodeData};
+use crate::layout::list::collect_list_item_children;
 use crate::layout::table::build_table_context;
 use crate::networking::{parse_svg, ImageHandler, ImageType, ResourceHandler};
 use crate::ui::TextBrush;
+use blitz_traits::net::{NetProvider, Request};
 use html5ever::local_name;
 use markup5ever::{ns, QualName};
 use parley::{FontContext, FontWeight, GenericFamily, InlineBox, InlineBoxKind, LayoutContext, LineHeight, StyleProperty, TextStyle, TreeBuilder, WhiteSpaceCollapse};
 use slab::Slab;
 use std::cell::RefCell;
 use std::sync::Arc;
-use blitz_traits::net::{NetProvider, Request};
 use style::data::ElementData as StyloElementData;
 use style::properties::generated::longhands::position::computed_value::T as Position;
 use style::selector_parser::RestyleDamage;
@@ -19,7 +20,6 @@ use style::shared_lock::StylesheetGuards;
 use style::values::computed::{Content, ContentItem, Display, Float, PositionProperty};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use taffy::{compute_root_layout, round_layout, AvailableSpace, NodeId};
-use crate::layout::list::collect_list_item_children;
 
 thread_local! {
     pub static LAYOUT_CTX: RefCell<Option<Box<LayoutContext<TextBrush>>>> = const { RefCell::new(None) };

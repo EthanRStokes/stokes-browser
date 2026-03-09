@@ -9,31 +9,30 @@ mod gradient;
 mod sizing;
 pub mod painter;
 
-use std::any::Any;
-use std::collections::HashMap;
 use crate::dom::node::{ListItemLayout, ListItemLayoutPosition, Marker, SpecialElementData, TextInputData};
 use crate::dom::{Dom, DomNode, ElementData, ImageData, NodeData};
 use crate::renderer::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
 use crate::renderer::layers::maybe_with_layer;
-use crate::renderer::text::{draw_text_selection, stroke_text, SELECTION_COLOR};
 use crate::renderer::painter::ToColorColor;
+use crate::renderer::sizing::compute_object_fit;
+use crate::renderer::text::{draw_text_selection, stroke_text, SELECTION_COLOR};
 use anyrender::{CustomPaint, Paint, PaintScene};
 use color::AlphaColor;
 use kurbo::{Affine, Insets, Point, Rect, Stroke, Vec2};
 use markup5ever::local_name;
 use parley::PositionedLayoutItem;
 use peniko::Fill;
+use std::any::Any;
+use std::collections::HashMap;
 use style::dom::TElement;
 use style::properties::generated::longhands::border_collapse::computed_value::T as BorderCollapse;
 use style::properties::generated::longhands::visibility::computed_value::T as Visibility;
 use style::properties::style_structs::Font;
 use style::properties::ComputedValues;
 use style::servo_arc::Arc;
-use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, Color, OutlineStyle, Overflow};
+use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, OutlineStyle, Overflow};
 use style::values::generics::color::{GenericColor, GenericColorOrAuto};
 use taffy::Layout;
-use painter::ScenePainter;
-use crate::renderer::sizing::compute_object_fit;
 
 /// HTML renderer that draws layout boxes to a canvas
 pub struct HtmlRenderer<'dom> {
