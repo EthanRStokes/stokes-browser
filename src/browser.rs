@@ -480,11 +480,6 @@ impl BrowserApp {
         let env = self.env.as_mut().unwrap();
         let ui = self.ui.as_mut().unwrap();
 
-        // Check tooltip timeouts and request redraw if any tooltip should now be visible
-        if ui.update_tooltip_visibility(Instant::now()) {
-            self.env.as_ref().unwrap().window.request_redraw();
-        }
-
         // Check if active tab is loading
         let is_loading = active_tab_id.as_ref()
             .and_then(|id| self.tab_manager.get_tab(id))
@@ -575,6 +570,14 @@ impl BrowserApp {
     fn request_redraw(&self) {
         self.env.as_ref().unwrap().window.request_redraw();
     }
+
+    fn update_tooltip_timeouts(&mut self) {
+        if let (Some(env), Some(ui)) = (self.env.as_ref(), self.ui.as_mut()) {
+            if ui.update_tooltip_visibility(Instant::now()) {
+                env.window.request_redraw();
+            }
+        }
+    }
 }
 
 impl ApplicationHandler for BrowserApp {
@@ -628,9 +631,7 @@ impl ApplicationHandler for BrowserApp {
         // a GPU frame to finish before we notice a new FrameRendered / title
         // change / navigation event from a tab.
         self.process_tab_messages();
-        if let Some(env) = self.env.as_ref() {
-            env.window.request_redraw();
-        }
+        self.update_tooltip_timeouts();
     }
 
     fn window_event(&mut self, event_loop: &dyn ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
