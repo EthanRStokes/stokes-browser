@@ -14,6 +14,7 @@
 
 use crate::display_list::{DisplayFontData, DisplayListFrame};
 use crate::events::{MouseEventButtons, UiEvent};
+use crate::fragment_tree::FragmentTree;
 use ipc_channel::ipc::{
     self, IpcOneShotServer, IpcReceiver, IpcSender,
 };
@@ -67,6 +68,11 @@ pub enum TabToParentMessage {
     DisplayListRendered {
         frame: DisplayListFrame,
         fonts: Vec<DisplayFontData>,
+    },
+    /// New: Fragment tree with pre-rendered display commands.
+    /// The main process composites from this instead of the raw display list.
+    FragmentTreeRendered {
+        tree: FragmentTree,
     },
     Ready,
     NavigateRequest(String),

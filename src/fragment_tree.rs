@@ -6,8 +6,10 @@
 //! equivalent of WebRender) for rasterization.
 //!
 //! The fragment tree captures exactly the data that `HtmlRenderer` needs from the
-//! DOM, without referencing live DOM nodes.
+//! DOM, without referencing live DOM nodes. Each node carries pre-rendered display
+//! commands so the main process can composite without needing ComputedValues.
 
+use crate::display_list::{DisplayCommand, DisplayFont, DisplayFontData, DisplayListRecorder};
 use crate::dom::node::{
     ImageData, ListItemLayoutPosition, Marker, SpecialElementData,
 };
@@ -18,6 +20,7 @@ use markup5ever::local_name;
 use parley::PositionedLayoutItem;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use anyrender::PaintScene;
 use style::properties::generated::longhands::border_collapse::computed_value::T as BorderCollapse;
 use style::properties::generated::longhands::visibility::computed_value::T as Visibility;
 use style::properties::{longhands, ComputedValues};
@@ -86,6 +89,41 @@ pub struct FragmentTree {
 
     /// Table row background colors, indexed by node ID.
     pub table_row_styles: HashMap<usize, ResolvedTableRowStyle>,
+
+    /// Per-node display commands drawn *before* the opacity/clip layer.
+    /// Includes outline and outset box shadow.
+    pub pre_layer_commands: HashMap<usize, Vec<DisplayCommand>>,
+
+    /// Per-node display commands drawn *inside* the opacity layer but
+    /// *before* the clip layer.  Includes background, inset box shadow,
+    /// table row backgrounds, table borders, and border.
+    pub element_commands: HashMap<usize, Vec<DisplayCommand>>,
+
+    /// Per-node display commands drawn *inside* the clip layer.
+    /// Includes images, SVG, canvas, text input text, inline text, and
+    /// list-item markers.
+    pub content_commands: HashMap<usize, Vec<DisplayCommand>>,
+
+    /// All unique fonts referenced by display commands.
+    pub fonts: Vec<DisplayFont>,
+
+    /// Font data payloads (bytes for each font).
+    pub font_payloads: Vec<DisplayFontData>,
+
+    /// Pre-resolved background color for the page.
+    pub background_color: Option<[f32; 4]>,
+
+    /// Scale factor used when building this tree.
+    pub scale_factor: f64,
+
+    /// Viewport width.
+    pub width: u32,
+
+    /// Viewport height.
+    pub height: u32,
+
+    /// Debug hitboxes flag.
+    pub debug_hitboxes: bool,
 }
 
 /// Pre-resolved text style data for a node, used by `stroke_text`.
@@ -433,7 +471,16 @@ pub struct FragmentTableRow {
 
 impl FragmentTree {
     /// Build a FragmentTree from a Dom, capturing all data the renderer needs.
-    pub fn build(dom: &Dom, selection_ranges: &HashMap<usize, (usize, usize)>) -> Self {
+    /// The tab process records per-node display commands (element appearance)
+    /// while the parent process handles tree traversal and compositing.
+    pub fn build(
+        dom: &Dom,
+        selection_ranges: &HashMap<usize, (usize, usize)>,
+        scale_factor: f64,
+        width: u32,
+        height: u32,
+        debug_hitboxes: bool,
+    ) -> Self {
         let root_element = dom.root_element();
         let root_id = root_element.id;
 
@@ -446,10 +493,24 @@ impl FragmentTree {
             },
             text_styles: HashMap::new(),
             table_row_styles: HashMap::new(),
+            pre_layer_commands: HashMap::new(),
+            element_commands: HashMap::new(),
+            content_commands: HashMap::new(),
+            fonts: Vec::new(),
+            font_payloads: Vec::new(),
+            background_color: None,
+            scale_factor,
+            width,
+            height,
+            debug_hitboxes,
         };
 
         // Walk the DOM tree and extract rendering data for each node
         tree.extract_node(dom, root_id);
+
+        // Record per-node display commands for each element.
+        // The parent process will handle tree traversal / compositing.
+        tree.record_per_node_commands(dom, selection_ranges, scale_factor, width, height);
 
         tree
     }
@@ -494,7 +555,7 @@ impl FragmentTree {
         // Extract element-specific data and resolved style
         let (element_data, resolved_style) = if let Some(elem) = node.element_data() {
             let styles = node.primary_styles();
-            let resolved = styles.map(|s| self.resolve_style(&s, elem, dom, node_id));
+            let resolved = styles.map(|s| self.resolve_style(&s, elem, dom, node_id, &node.final_layout));
             let elem_data = self.extract_element_data(elem, dom, node_id);
 
             // Extract text styles for inline layout nodes
@@ -598,6 +659,7 @@ impl FragmentTree {
         elem: &ElementData,
         dom: &Dom,
         node_id: usize,
+        layout: &taffy::Layout,
     ) -> ResolvedStyle {
         let current_color = style.clone_color().as_color_color();
         let border = style.get_border();
@@ -681,6 +743,23 @@ impl FragmentTree {
         let width = node_id; // placeholder
         let resolve_w = CSSPixelLength::new(style.get_border().border_top_left_radius.0.width.0.resolve(CSSPixelLength::new(0.0)).px());
 
+        // Resolve border radii using actual layout dimensions
+        let layout_width = layout.size.width as f64;
+        let layout_height = layout.size.height as f64;
+        let resolve_w_px = CSSPixelLength::new(layout_width as f32);
+        let resolve_h_px = CSSPixelLength::new(layout_height as f32);
+        let resolve_radii = |radius: &style::values::computed::BorderCornerRadius| -> (f64, f64) {
+            (
+                radius.0.width.0.resolve(resolve_w_px).px() as f64,
+                radius.0.height.0.resolve(resolve_h_px).px() as f64,
+            )
+        };
+        let s_border = style.get_border();
+        let border_top_left_radius = resolve_radii(&s_border.border_top_left_radius);
+        let border_top_right_radius = resolve_radii(&s_border.border_top_right_radius);
+        let border_bottom_right_radius = resolve_radii(&s_border.border_bottom_right_radius);
+        let border_bottom_left_radius = resolve_radii(&s_border.border_bottom_left_radius);
+
         // Table-specific
         let (border_collapse, table_border_width) =
             if let SpecialElementData::TableRoot(table) = &elem.special_data {
@@ -709,10 +788,10 @@ impl FragmentTree {
             border_right_color: resolve_border_color(&border.border_right_color),
             border_bottom_color: resolve_border_color(&border.border_bottom_color),
             border_left_color: resolve_border_color(&border.border_left_color),
-            border_top_left_radius: (0.0, 0.0), // Will be computed in renderer from layout
-            border_top_right_radius: (0.0, 0.0),
-            border_bottom_right_radius: (0.0, 0.0),
-            border_bottom_left_radius: (0.0, 0.0),
+            border_top_left_radius,
+            border_top_right_radius,
+            border_bottom_right_radius,
+            border_bottom_left_radius,
             outline_width: outline.outline_width.0.to_f64_px(),
             outline_color,
             outline_style,
@@ -929,5 +1008,161 @@ impl FragmentTree {
             }
         }
     }
+
+    /// Record per-node display commands.
+    ///
+    /// For every element node we render its appearance (backgrounds, borders,
+    /// shadows, text, images …) into three sets of display commands that
+    /// correspond to the three rendering phases the compositor walks:
+    ///
+    /// 1. **pre_layer_commands** – drawn before the opacity / clip layer
+    ///    (outline, outset box shadow).
+    /// 2. **element_commands** – drawn inside the opacity layer, before the
+    ///    clip layer (background, inset box shadow, table row backgrounds,
+    ///    table borders, border).
+    /// 3. **content_commands** – drawn inside the clip layer (images, SVG,
+    ///    canvas, text input, inline text, markers, **but not children** –
+    ///    children are handled by the compositor's tree walk).
+    fn record_per_node_commands(
+        &mut self,
+        dom: &Dom,
+        selection_ranges: &HashMap<usize, (usize, usize)>,
+        scale_factor: f64,
+        width: u32,
+        height: u32,
+    ) {
+        use crate::renderer::HtmlRenderer;
+
+        let renderer = HtmlRenderer {
+            dom,
+            scale_factor,
+            width,
+            height,
+            selection_ranges: selection_ranges.clone(),
+            debug_hitboxes: false, // debug hitboxes are handled by the compositor
+        };
+
+        // Collect all node IDs to iterate (avoid borrowing issues).
+        let node_ids: Vec<usize> = self.nodes.keys().copied().collect();
+
+        for node_id in node_ids {
+            let node = &dom.tree()[node_id];
+            // Only record commands for element / anonymous block nodes.
+            if node.element_data().is_none() {
+                continue;
+            }
+            let Some(styles) = node.primary_styles() else {
+                continue;
+            };
+
+            let layout = node.final_layout;
+
+            // We render each element at the origin (transform = IDENTITY).
+            // The compositor applies the real transform during tree walk.
+            let origin = kurbo::Point::ZERO;
+
+            let element = renderer.element(node, layout, origin);
+
+            // ── Phase 1: pre-layer (outline, outset box shadow) ────────
+            {
+                let mut rec = DisplayListRecorder::new(width, height, 0);
+                element.draw_outline(&mut rec);
+                element.draw_outset_box_shadow(&mut rec);
+                let (frame, font_data) = rec.into_frame_parts();
+                if !frame.commands.is_empty() {
+                    self.merge_fonts(&frame.fonts, &font_data);
+                    self.pre_layer_commands.insert(node_id, frame.commands);
+                }
+            }
+
+            // ── Phase 2: element commands (bg, inset shadow, table, border)
+            {
+                let mut rec = DisplayListRecorder::new(width, height, 0);
+                element.draw_background(&mut rec);
+                element.draw_inset_box_shadow(&mut rec);
+                element.draw_table_row_backgrounds(&mut rec);
+                element.draw_table_borders(&mut rec);
+                element.draw_border(&mut rec);
+                let (frame, font_data) = rec.into_frame_parts();
+                if !frame.commands.is_empty() {
+                    self.merge_fonts(&frame.fonts, &font_data);
+                    self.element_commands.insert(node_id, frame.commands);
+                }
+            }
+
+            // ── Phase 3: content commands (image, svg, canvas, text, marker)
+            {
+                let mut rec = DisplayListRecorder::new(width, height, 0);
+                element.draw_image(&mut rec);
+                element.draw_svg(&mut rec);
+                element.draw_canvas(&mut rec);
+
+                // Text input
+                let scroll_pos = kurbo::Point::ZERO; // position already factored
+                element.draw_text_input_text(&mut rec, scroll_pos);
+
+                // Inline layout
+                element.draw_inline_layout(&mut rec, scroll_pos);
+
+                // List marker
+                element.draw_marker(&mut rec, scroll_pos);
+
+                let (frame, font_data) = rec.into_frame_parts();
+                if !frame.commands.is_empty() {
+                    self.merge_fonts(&frame.fonts, &font_data);
+                    self.content_commands.insert(node_id, frame.commands);
+                }
+            }
+        }
+
+        // Resolve the background color.
+        let root_element = dom.root_element();
+        let background_color = {
+            let html_color = root_element
+                .primary_styles()
+                .map(|s| s.clone_background_color())
+                .unwrap_or(GenericColor::TRANSPARENT_BLACK);
+            if html_color == GenericColor::TRANSPARENT_BLACK {
+                root_element
+                    .children
+                    .iter()
+                    .find_map(|id| {
+                        dom.get_node(*id)
+                            .filter(|node| node.data.is_element_with_tag_name(&local_name!("body")))
+                    })
+                    .and_then(|body| body.primary_styles())
+                    .map(|style| {
+                        let current_color = style.clone_color();
+                        style
+                            .clone_background_color()
+                            .resolve_to_absolute(&current_color)
+                            .as_color_color()
+                            .components
+                    })
+            } else {
+                let current_color = root_element.primary_styles().unwrap().clone_color();
+                Some(html_color.resolve_to_absolute(&current_color).as_color_color().components)
+            }
+        };
+        self.background_color = background_color;
+    }
+
+    /// Merge font entries from a per-node recording into the tree-level font list.
+    fn merge_fonts(&mut self, new_fonts: &[DisplayFont], new_payloads: &[DisplayFontData]) {
+        for (font, payload) in new_fonts.iter().zip(new_payloads.iter()) {
+            if !self.fonts.contains(font) {
+                self.fonts.push(font.clone());
+                self.font_payloads.push(payload.clone());
+            }
+        }
+    }
 }
+
+impl FragmentTree {
+    /// Get a node by ID.
+    pub fn get_node(&self, id: usize) -> Option<&FragmentNode> {
+        self.nodes.get(&id)
+    }
+}
+
 

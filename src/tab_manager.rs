@@ -1,4 +1,5 @@
 use crate::display_list::{DisplayFont, DisplayListFrame};
+use crate::fragment_tree::FragmentTree;
 use crate::ipc::{IpcServer, ParentIpcChannel, ParentToTabMessage, TabToParentMessage};
 use std::collections::HashMap;
 use std::io;
@@ -19,6 +20,8 @@ pub struct ManagedTab {
     process: Child,
     channel: ParentIpcChannel,
     pub rendered_frame: Option<RenderedFrame>,
+    /// Fragment tree received from the tab process for compositor-side rendering.
+    pub fragment_tree: Option<FragmentTree>,
 }
 
 /// A compositable frame from a tab process.
@@ -74,6 +77,7 @@ impl TabManager {
             process: child,
             channel,
             rendered_frame: None,
+            fragment_tree: None,
         };
 
         self.tabs.insert(tab_id.clone(), managed_tab);
@@ -153,6 +157,13 @@ impl TabManager {
                     if should_replace {
                         tab.rendered_frame = Some(RenderedFrame { frame });
                     }
+                }
+                TabToParentMessage::FragmentTreeRendered { tree } => {
+                    // Cache font data from the fragment tree
+                    for font_data in &tree.font_payloads {
+                        tab.font_cache.insert(font_data.font.clone(), Arc::new(font_data.bytes.clone()));
+                    }
+                    tab.fragment_tree = Some(tree);
                 }
                 TabToParentMessage::Ready => {
                     println!("Tab {} is ready", tab_id);

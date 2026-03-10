@@ -1,13 +1,10 @@
-use crate::display_list::{DisplayFont, DisplayListRecorder};
 use crate::dom::{AbstractDom, Dom};
 use crate::engine::nav_provider::{NavigationProviderMessage, StokesNavigationProvider};
 // Tab process module - runs the browser engine in a separate process
 use crate::engine::{Engine, EngineConfig, ENGINE_REF, USER_AGENT_REF};
 use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage};
 use crate::networking;
-use crate::renderer::painter::SkiaCache;
 use blitz_traits::shell::{ShellProvider, Viewport};
-use std::collections::HashSet;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -18,7 +15,6 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
     pub(crate) engine: Engine,
-    scene_cache: SkiaCache,
     animation_time: Option<Instant>,
     channel: IpcChannel,
     tab_id: String,
@@ -27,7 +23,6 @@ pub struct TabProcess {
     redraw_request: AtomicBool,
     navigation_id: u64,
     frame_id: u64,
-    sent_fonts: HashSet<DisplayFont>,
 }
 
 impl TabProcess {
@@ -64,7 +59,6 @@ impl TabProcess {
 
         Ok(Self {
             engine,
-            scene_cache: SkiaCache::default(),
             animation_time: None,
             channel,
             tab_id,
@@ -73,7 +67,6 @@ impl TabProcess {
             redraw_request: AtomicBool::new(false),
             navigation_id: 0,
             frame_id: 0,
-            sent_fonts: HashSet::new(),
         })
     }
 
@@ -370,33 +363,50 @@ impl TabProcess {
         Ok(())
     }
 
-    /// Render a frame to a recorded scene for the parent Vello renderer
+    /// Render a frame: build a FragmentTree with pre-rendered display commands
+    /// and send it to the parent process for compositor-side rendering.
     fn render_frame(&mut self) -> io::Result<()> {
         let animation_time = self.animation_time();
         self.frame_id = self.frame_id.wrapping_add(1);
 
         let engine = &mut self.engine;
         let (width, height) = engine.viewport.window_size;
-        let mut recorder = DisplayListRecorder::new(width, height, self.frame_id);
 
         if engine.dom.is_some() {
-            engine.render(&mut recorder, animation_time);
+            // Resolve styles and layout
+            engine.resolve(animation_time);
 
             let dom = engine.dom.as_ref().unwrap();
-            // todo check if window is visible
+
+            // Build selection ranges
+            let selection: std::collections::HashMap<usize, (usize, usize)> = dom
+                .get_text_selection_ranges()
+                .into_iter()
+                .map(|(node_id, start, end)| (node_id, (start, end)))
+                .collect();
+
+            let scale_factor = engine.viewport.scale_f64();
+
+            // Build the fragment tree with pre-rendered display commands
+            let tree = crate::fragment_tree::FragmentTree::build(
+                dom,
+                &selection,
+                scale_factor,
+                width,
+                height,
+                engine.config.debug_hitboxes,
+            );
+
+            // Check if tab is animating
             if dom.animating() {
                 dom.shell_provider.request_redraw();
             }
+
+            // Send the fragment tree to the parent process
+            self.channel
+                .send(&TabToParentMessage::FragmentTreeRendered { tree })?;
         }
 
-        let (frame, font_payloads) = recorder.into_frame_parts();
-        let fonts = font_payloads
-            .into_iter()
-            .filter(|font| self.sent_fonts.insert(font.font.clone()))
-            .collect();
-
-        self.channel
-            .send(&TabToParentMessage::DisplayListRendered { frame, fonts })?;
         Ok(())
     }
 }

@@ -141,7 +141,7 @@ pub enum DisplayCommand {
 }
 
 impl DisplayCommand {
-    fn replay(
+    pub fn replay(
         &self,
         painter: &mut impl PaintScene,
         root_transform: Affine,
@@ -465,14 +465,14 @@ pub struct DisplayFont {
 }
 
 impl DisplayFont {
-    fn from_peniko(font: &peniko::FontData) -> Self {
+    pub fn from_peniko(font: &peniko::FontData) -> Self {
         Self {
             blob_id: font.data.id(),
             index: font.index,
         }
     }
 
-    fn to_peniko(&self, bytes: Arc<Vec<u8>>) -> peniko::FontData {
+    pub fn to_peniko(&self, bytes: Arc<Vec<u8>>) -> peniko::FontData {
         let blob = peniko::Blob::new(bytes);
         peniko::FontData::new(blob, self.index)
     }

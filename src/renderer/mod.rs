@@ -2,12 +2,13 @@ pub(crate) mod text;
 mod image;
 pub(crate) mod background;
 mod cache;
-mod kurbo_css;
+pub(crate) mod kurbo_css;
 mod layers;
 mod shadow;
 mod gradient;
 mod sizing;
 pub mod painter;
+pub(crate) mod fragment_renderer;
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -473,7 +474,7 @@ impl HtmlRenderer<'_> {
         }
     }
 
-    fn element<'a>(
+    pub(crate) fn element<'a>(
         &'a self,
         node: &'a DomNode,
         layout: Layout,
@@ -548,15 +549,51 @@ fn create_css_rect(style: &ComputedValues, layout: &Layout, scale: f64) -> CssBo
     CssBox::new(border_box, border, padding, outline_width, border_radii)
 }
 
-struct Element<'a> {
+/// Create a `CssBox` from the serializable `ResolvedStyle` and a `taffy::Layout`.
+/// Used by `FragmentTreeRenderer` on the parent process side.
+pub(crate) fn create_css_rect_from_fragment(
+    style: &crate::fragment_tree::ResolvedStyle,
+    layout: &Layout,
+    scale: f64,
+) -> CssBox {
+    let width: f64 = layout.size.width as f64;
+    let height: f64 = layout.size.height as f64;
+    let border_box = Rect::new(0.0, 0.0, width * scale, height * scale);
+    let border = insets_from_taffy_rect(layout.border.map(|p| p as f64 * scale));
+    let padding = insets_from_taffy_rect(layout.padding.map(|p| p as f64 * scale));
+    let outline_width = style.outline_width * scale;
+
+    let border_radii = NonUniformRoundedRectRadii {
+        top_left: Vec2 {
+            x: style.border_top_left_radius.0 * scale,
+            y: style.border_top_left_radius.1 * scale,
+        },
+        top_right: Vec2 {
+            x: style.border_top_right_radius.0 * scale,
+            y: style.border_top_right_radius.1 * scale,
+        },
+        bottom_right: Vec2 {
+            x: style.border_bottom_right_radius.0 * scale,
+            y: style.border_bottom_right_radius.1 * scale,
+        },
+        bottom_left: Vec2 {
+            x: style.border_bottom_left_radius.0 * scale,
+            y: style.border_bottom_left_radius.1 * scale,
+        },
+    };
+
+    CssBox::new(border_box, border, padding, outline_width, border_radii)
+}
+
+pub(crate) struct Element<'a> {
     context: &'a HtmlRenderer<'a>,
     frame: CssBox,
-    style: Arc<ComputedValues>,
-    position: Point,
-    scale_factor: f64,
-    node: &'a DomNode,
-    element: &'a ElementData,
-    transform: Affine,
+    pub(crate) style: Arc<ComputedValues>,
+    pub(crate) position: Point,
+    pub(crate) scale_factor: f64,
+    pub(crate) node: &'a DomNode,
+    pub(crate) element: &'a ElementData,
+    pub(crate) transform: Affine,
     svg: Option<&'a usvg::Tree>,
     text_input: Option<&'a TextInputData>,
     list_item: Option<&'a ListItemLayout>,
@@ -594,7 +631,7 @@ impl Element<'_> {
         }
     }
 
-    fn draw_marker(&self, painter: &mut impl PaintScene, pos: Point) {
+    pub(crate) fn draw_marker(&self, painter: &mut impl PaintScene, pos: Point) {
         if let Some(ListItemLayout {
                         marker,
                         position: ListItemLayoutPosition::Outside(layout),
@@ -633,7 +670,7 @@ impl Element<'_> {
         }
     }
 
-    fn draw_inline_layout(&self, painter: &mut impl PaintScene, pos: Point) {
+    pub(crate) fn draw_inline_layout(&self, painter: &mut impl PaintScene, pos: Point) {
         if self.node.flags.is_inline_root() {
             let text_layout = self.element.inline_layout_data.as_ref().unwrap_or_else(|| {
                 panic!("Tried to render node marked as inline root but has no inline layout data: {:?}", self.node)
@@ -661,7 +698,7 @@ impl Element<'_> {
         }
     }
 
-    fn draw_text_input_text(&self, painter: &mut impl PaintScene, pos: Point) {
+    pub(crate) fn draw_text_input_text(&self, painter: &mut impl PaintScene, pos: Point) {
         if let Some(input_data) = self.text_input {
             let y_offset = self.node.text_input_v_centering_offset(self.scale_factor);
             let pos = Point {
@@ -709,7 +746,7 @@ impl Element<'_> {
         }
     }
 
-    fn draw_border(&self, painter: &mut impl PaintScene) {
+    pub(crate) fn draw_border(&self, painter: &mut impl PaintScene) {
         let style = &*self.style;
         let border = style.get_border();
         let current_color = style.clone_color();
@@ -776,7 +813,7 @@ impl Element<'_> {
         }
     }
 
-    fn draw_outline(&self, painter: &mut impl PaintScene) {
+    pub(crate) fn draw_outline(&self, painter: &mut impl PaintScene) {
         let outline = self.style.get_outline();
 
         let current_color = self.style.clone_color();
@@ -800,7 +837,7 @@ impl Element<'_> {
         painter.fill(Fill::NonZero, self.transform, color, None, &path)
     }
 
-    fn draw_table_borders(&self, scene: &mut impl PaintScene) {
+    pub(crate) fn draw_table_borders(&self, scene: &mut impl PaintScene) {
         let SpecialElementData::TableRoot(table) = &self.element.special_data else {
             return;
         };
@@ -889,7 +926,7 @@ impl Element<'_> {
         }
     }
 
-    fn draw_svg(&self, scene: &mut impl PaintScene) {
+    pub(crate) fn draw_svg(&self, scene: &mut impl PaintScene) {
         use style::properties::generated::longhands::object_fit::computed_value::T as ObjectFit;
 
         let Some(svg) = self.svg else {
@@ -938,7 +975,7 @@ impl Element<'_> {
         anyrender_svg::render_svg_tree(scene, svg, transform);
     }
 
-    fn draw_image(&self, painter: &mut impl PaintScene) {
+    pub(crate) fn draw_image(&self, painter: &mut impl PaintScene) {
         if let Some(image) = self.element.raster_image_data() {
             let width = self.frame.content_box.width() as u32;
             let height = self.frame.content_box.height() as u32;
@@ -982,7 +1019,7 @@ impl Element<'_> {
         }
     }
 
-    fn draw_canvas(&self, painter: &mut impl PaintScene) {
+    pub(crate) fn draw_canvas(&self, painter: &mut impl PaintScene) {
         let Some(custom_paint_source) = self.element.canvas_data() else {
             return;
         };

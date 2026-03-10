@@ -27,7 +27,7 @@ use crate::renderer::layers::maybe_with_layer;
 use crate::renderer::painter::ToColorColor;
 
 impl Element<'_> {
-    pub(super) fn draw_background(&self, scene: &mut impl PaintScene) {
+    pub(crate) fn draw_background(&self, scene: &mut impl PaintScene) {
         use GenericImage::*;
         use StyloBackgroundClip::*;
 
@@ -90,7 +90,7 @@ impl Element<'_> {
         }
     }
 
-    pub(super) fn draw_table_row_backgrounds(&self, scene: &mut impl PaintScene) {
+    pub(crate) fn draw_table_row_backgrounds(&self, scene: &mut impl PaintScene) {
         let SpecialElementData::TableRoot(table) = &self.element.special_data else {
             return;
         };

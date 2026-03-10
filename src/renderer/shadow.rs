@@ -6,7 +6,7 @@ use kurbo::{Rect, Vec2};
 use peniko::{Color, Compose, Fill, Mix};
 
 impl Element<'_> {
-    pub(super) fn draw_outset_box_shadow(&self, painter: &mut impl PaintScene) {
+    pub(crate) fn draw_outset_box_shadow(&self, painter: &mut impl PaintScene) {
         let box_shadow = &self.style.get_effects().box_shadow.0;
 
         let has_outset_shadow = box_shadow.iter().any(|s| !s.inset);
@@ -60,7 +60,7 @@ impl Element<'_> {
         )
     }
 
-    pub(super) fn draw_inset_box_shadow(&self, scene: &mut impl PaintScene) {
+    pub(crate) fn draw_inset_box_shadow(&self, scene: &mut impl PaintScene) {
         let current_color = self.style.clone_color();
         let box_shadow = &self.style.get_effects().box_shadow.0;
         let has_inset_shadow = box_shadow.iter().any(|s| s.inset);

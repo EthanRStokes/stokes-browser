@@ -372,6 +372,10 @@ impl BrowserApp {
                 TabToParentMessage::DisplayListRendered { .. } => {
                     env.window.request_redraw();
                 }
+                TabToParentMessage::FragmentTreeRendered { .. } => {
+                    // Fragment tree received — compositor will render from it
+                    env.window.request_redraw();
+                }
                 TabToParentMessage::NavigateRequest(url) => {
                     // Handle navigation request from web content (e.g., link clicks)
                     println!("Handling navigation request to: {}", url);
@@ -430,9 +434,6 @@ impl BrowserApp {
                 },
                 TabToParentMessage::UpdateButtons(buttons) => {
                     self.buttons = buttons;
-                }
-                TabToParentMessage::DisplayListRendered { .. } => {
-                    env.window.request_redraw();
                 }
                 _ => {}
             }
@@ -526,9 +527,22 @@ impl BrowserApp {
 
             let active_tab_id = self.tab_order.get(self.active_tab_index);
             if let Some(tab) = active_tab_id.and_then(|id| self.tab_manager.get_tab(id)) {
-                if let Some(rendered_frame) = tab.rendered_frame.as_ref() {
-                    let page_offset = Affine::translate((0.0, chrome_offset));
-                    let page_clip = Rect::from_origin_size((0.0, 0.0), (page_viewport.window_size.0 as f64, page_viewport.window_size.1 as f64));
+                let page_offset = Affine::translate((0.0, chrome_offset));
+                let page_clip = Rect::from_origin_size((0.0, 0.0), (page_viewport.window_size.0 as f64, page_viewport.window_size.1 as f64));
+
+                // Prefer fragment tree (compositor-side rendering) over raw display list
+                if let Some(fragment_tree) = tab.fragment_tree.as_ref() {
+                    let ft_renderer = crate::renderer::fragment_renderer::FragmentTreeRenderer {
+                        tree: fragment_tree,
+                        scale_factor: fragment_tree.scale_factor,
+                        width: fragment_tree.width,
+                        height: fragment_tree.height,
+                        font_cache: &tab.font_cache,
+                    };
+                    painter.push_clip_layer(page_offset, &page_clip);
+                    ft_renderer.render(&mut painter);
+                    painter.pop_layer();
+                } else if let Some(rendered_frame) = tab.rendered_frame.as_ref() {
                     painter.push_clip_layer(page_offset, &page_clip);
                     rendered_frame.frame.replay(&mut painter, page_offset, &tab.font_cache);
                     painter.pop_layer();
