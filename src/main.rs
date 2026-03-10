@@ -17,6 +17,7 @@ mod window;
 mod shell_provider;
 mod default_browser;
 mod display_list;
+pub mod fragment_tree;
 
 use crate::browser::BrowserApp;
 use winit::event_loop::EventLoop;

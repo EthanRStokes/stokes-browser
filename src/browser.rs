@@ -632,6 +632,9 @@ impl ApplicationHandler for BrowserApp {
         // change / navigation event from a tab.
         self.process_tab_messages();
         self.update_tooltip_timeouts();
+        if let Some(env) = self.env.as_ref() {
+            env.window.request_redraw();
+        }
     }
 
     fn window_event(&mut self, event_loop: &dyn ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
