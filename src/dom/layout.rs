@@ -1088,6 +1088,10 @@ impl Dom {
 
         let root_element_id = NodeId::from(self.root_element().id);
 
+        // Clear the dirty-node set so `set_final_layout` only records nodes
+        // touched by *this* layout pass.
+        self.layout_dirty_nodes.clear();
+
         compute_root_layout(self, root_element_id, taffy::Size {
             width: AvailableSpace::Definite(size.width.to_f32_px()),
             height: AvailableSpace::Definite(size.height.to_f32_px()),

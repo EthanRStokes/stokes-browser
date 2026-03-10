@@ -1163,6 +1163,166 @@ impl FragmentTree {
     pub fn get_node(&self, id: usize) -> Option<&FragmentNode> {
         self.nodes.get(&id)
     }
+
+    /// Incrementally update only the nodes in `dirty_node_ids`.
+    ///
+    /// Each dirty node has its structural data (layout, children, stacking context,
+    /// element data, resolved style) and its per-phase display commands re-recorded.
+    /// Nodes that were not touched by the most recent layout pass are left unchanged.
+    pub fn update_dirty_nodes(
+        &mut self,
+        dom: &Dom,
+        dirty_node_ids: &std::collections::HashSet<usize>,
+        selection_ranges: &HashMap<usize, (usize, usize)>,
+        scale_factor: f64,
+        width: u32,
+        height: u32,
+    ) {
+        use crate::renderer::HtmlRenderer;
+        use style::values::generics::color::GenericColor;
+        use markup5ever::local_name;
+
+        // Update viewport-level metadata that may change every frame.
+        self.viewport_scroll = taffy::Point {
+            x: dom.viewport_scroll.x,
+            y: dom.viewport_scroll.y,
+        };
+        self.scale_factor = scale_factor;
+        self.width = width;
+        self.height = height;
+
+        // Ensure every dirty node exists in the tree (handles newly-created nodes).
+        for &node_id in dirty_node_ids {
+            if dom.get_node(node_id).is_none() {
+                // Node was removed from the DOM; drop it from the tree too.
+                self.remove_node(node_id);
+                continue;
+            }
+            self.extract_node(dom, node_id);
+        }
+
+        // Re-record display commands for all dirty nodes.
+        let renderer = HtmlRenderer {
+            dom,
+            scale_factor,
+            width,
+            height,
+            selection_ranges: selection_ranges.clone(),
+            debug_hitboxes: false,
+        };
+
+        for &node_id in dirty_node_ids {
+            let Some(node) = dom.get_node(node_id) else {
+                continue;
+            };
+            if node.element_data().is_none() {
+                continue;
+            }
+            if node.primary_styles().is_none() {
+                continue;
+            }
+
+            let layout = node.final_layout;
+            let origin = kurbo::Point::ZERO;
+            let element = renderer.element(node, layout, origin);
+
+            // Phase 1: pre-layer
+            {
+                let mut rec = DisplayListRecorder::new(width, height, 0);
+                element.draw_outline(&mut rec);
+                element.draw_outset_box_shadow(&mut rec);
+                let (frame, font_data) = rec.into_frame_parts();
+                if frame.commands.is_empty() {
+                    self.pre_layer_commands.remove(&node_id);
+                } else {
+                    self.merge_fonts(&frame.fonts, &font_data);
+                    self.pre_layer_commands.insert(node_id, frame.commands);
+                }
+            }
+
+            // Phase 2: element commands
+            {
+                let mut rec = DisplayListRecorder::new(width, height, 0);
+                element.draw_background(&mut rec);
+                element.draw_inset_box_shadow(&mut rec);
+                element.draw_table_row_backgrounds(&mut rec);
+                element.draw_table_borders(&mut rec);
+                element.draw_border(&mut rec);
+                let (frame, font_data) = rec.into_frame_parts();
+                if frame.commands.is_empty() {
+                    self.element_commands.remove(&node_id);
+                } else {
+                    self.merge_fonts(&frame.fonts, &font_data);
+                    self.element_commands.insert(node_id, frame.commands);
+                }
+            }
+
+            // Phase 3: content commands
+            {
+                let mut rec = DisplayListRecorder::new(width, height, 0);
+                element.draw_image(&mut rec);
+                element.draw_svg(&mut rec);
+                element.draw_canvas(&mut rec);
+                let scroll_pos = kurbo::Point::ZERO;
+                element.draw_text_input_text(&mut rec, scroll_pos);
+                element.draw_inline_layout(&mut rec, scroll_pos);
+                element.draw_marker(&mut rec, scroll_pos);
+                let (frame, font_data) = rec.into_frame_parts();
+                if frame.commands.is_empty() {
+                    self.content_commands.remove(&node_id);
+                } else {
+                    self.merge_fonts(&frame.fonts, &font_data);
+                    self.content_commands.insert(node_id, frame.commands);
+                }
+            }
+        }
+
+        // Update background color (cheap, always refresh).
+        let root_element = dom.root_element();
+        let background_color = {
+            let html_color = root_element
+                .primary_styles()
+                .map(|s| s.clone_background_color())
+                .unwrap_or(GenericColor::TRANSPARENT_BLACK);
+            if html_color == GenericColor::TRANSPARENT_BLACK {
+                root_element
+                    .children
+                    .iter()
+                    .find_map(|id| {
+                        dom.get_node(*id)
+                            .filter(|node| node.data.is_element_with_tag_name(&local_name!("body")))
+                    })
+                    .and_then(|body| body.primary_styles())
+                    .map(|style| {
+                        let current_color = style.clone_color();
+                        style
+                            .clone_background_color()
+                            .resolve_to_absolute(&current_color)
+                            .as_color_color()
+                            .components
+                    })
+            } else {
+                let current_color = root_element.primary_styles().unwrap().clone_color();
+                Some(
+                    html_color
+                        .resolve_to_absolute(&current_color)
+                        .as_color_color()
+                        .components,
+                )
+            }
+        };
+        self.background_color = background_color;
+    }
+
+    /// Remove a node and its display commands from the tree.
+    fn remove_node(&mut self, node_id: usize) {
+        self.nodes.remove(&node_id);
+        self.pre_layer_commands.remove(&node_id);
+        self.element_commands.remove(&node_id);
+        self.content_commands.remove(&node_id);
+        self.text_styles.remove(&node_id);
+        self.table_row_styles.remove(&node_id);
+    }
 }
 
 

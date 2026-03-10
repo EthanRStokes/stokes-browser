@@ -271,6 +271,14 @@ pub struct Dom {
     pub nav_provider: Arc<StokesNavigationProvider>,
     pub html_provider: Arc<HtmlProvider>,
     pub js_provider: Arc<StokesJsProvider>,
+
+    /// Incrementally-maintained fragment tree built during the layout phase.
+    /// Populated/updated by `build_or_update_fragment_tree` after each resolve.
+    pub fragment_tree: Option<crate::fragment_tree::FragmentTree>,
+
+    /// Set of node IDs whose `final_layout` was written during the most recent
+    /// `round_layout` pass.  Used to drive incremental fragment-tree updates.
+    pub(crate) layout_dirty_nodes: HashSet<usize>,
 }
 
 pub enum DomEvent {
@@ -483,6 +491,8 @@ impl Dom {
             nav_provider,
             html_provider: Arc::new(HtmlProvider),
             js_provider,
+            fragment_tree: None,
+            layout_dirty_nodes: HashSet::new(),
         };
 
         // Create the root document node
@@ -969,6 +979,51 @@ impl Dom {
             | self.has_active_animations
             | self.subdom_is_animating
             | (self.scroll_animation != ScrollAnimationState::None)
+    }
+
+    /// Build or incrementally update the fragment tree after a layout pass.
+    ///
+    /// On the first call (or after `fragment_tree` has been cleared) a full
+    /// build is performed via [`FragmentTree::build`].  On subsequent calls
+    /// only the nodes recorded in [`Dom::layout_dirty_nodes`] are re-extracted
+    /// and their display commands re-recorded, leaving unchanged nodes intact.
+    ///
+    /// After this call `self.layout_dirty_nodes` is cleared.
+    pub fn build_or_update_fragment_tree(
+        &mut self,
+        selection_ranges: &HashMap<usize, (usize, usize)>,
+        scale_factor: f64,
+        width: u32,
+        height: u32,
+        debug_hitboxes: bool,
+    ) {
+        // Take ownership of the dirty set to avoid borrow conflicts.
+        let dirty = std::mem::take(&mut self.layout_dirty_nodes);
+
+        if self.fragment_tree.is_none() {
+            // Full build on first call.
+            let tree = crate::fragment_tree::FragmentTree::build(
+                self,
+                selection_ranges,
+                scale_factor,
+                width,
+                height,
+                debug_hitboxes,
+            );
+            self.fragment_tree = Some(tree);
+        } else {
+            // Incremental update: extract the tree, update only dirty nodes,
+            // then put it back.  This avoids a simultaneous mutable + immutable
+            // borrow of `self`.
+            let mut tree = self.fragment_tree.take().unwrap();
+            tree.update_dirty_nodes(self, &dirty, selection_ranges, scale_factor, width, height);
+            self.fragment_tree = Some(tree);
+        }
+
+        // Restore the (now-cleared) set so we reuse its allocation next frame.
+        let mut dirty = dirty;
+        dirty.clear();
+        self.layout_dirty_nodes = dirty;
     }
 
     /// Find nodes by tag name

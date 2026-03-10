@@ -376,7 +376,7 @@ impl TabProcess {
             // Resolve styles and layout
             engine.resolve(animation_time);
 
-            let dom = engine.dom.as_ref().unwrap();
+            let dom = engine.dom.as_mut().unwrap();
 
             // Build selection ranges
             let selection: std::collections::HashMap<usize, (usize, usize)> = dom
@@ -386,25 +386,30 @@ impl TabProcess {
                 .collect();
 
             let scale_factor = engine.viewport.scale_f64();
+            let debug_hitboxes = engine.config.debug_hitboxes;
 
-            // Build the fragment tree with pre-rendered display commands
-            let tree = crate::fragment_tree::FragmentTree::build(
-                dom,
+            // Incrementally update (or fully build on first frame) the fragment tree
+            // using the set of nodes that were re-laid-out this pass.
+            dom.build_or_update_fragment_tree(
                 &selection,
                 scale_factor,
                 width,
                 height,
-                engine.config.debug_hitboxes,
+                debug_hitboxes,
             );
+
+            let dom = engine.dom.as_ref().unwrap();
 
             // Check if tab is animating
             if dom.animating() {
                 dom.shell_provider.request_redraw();
             }
 
-            // Send the fragment tree to the parent process
-            self.channel
-                .send(&TabToParentMessage::FragmentTreeRendered { tree })?;
+            // Clone and send the (incrementally-updated) fragment tree to the parent process
+            if let Some(tree) = dom.fragment_tree.clone() {
+                self.channel
+                    .send(&TabToParentMessage::FragmentTreeRendered { tree })?;
+            }
         }
 
         Ok(())
