@@ -34,11 +34,11 @@ euclid = "0.22.13"
 bitflags = { version = "2.11.0", features = ["serde"] }
 atomic_refcell = "0.1.13"
 skrifa = "0.40.0"
-kurbo = "0.13.0"
+kurbo = { version = "0.13.0", features = ["serde"] }
 bytes = "1.11.1"
 tracing = "0.1.44"
 hashbrown = "0.16.1"
-peniko = "0.6.0"
+peniko = { version = "0.6.0", features = ["serde"] }
 anyrender = "0.7.0"
 anyrender_svg = "0.8.0"
 color = "0.3.2"

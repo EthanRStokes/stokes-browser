@@ -61,7 +61,7 @@ impl HtmlRenderer<'_> {
     /// Render a layout tree to the canvas with transition support
     pub fn render(
         &mut self,
-        painter: &mut ScenePainter,
+        painter: &mut impl PaintScene,
         node: &DomNode,
     ) {
         let scroll = self.dom.viewport_scroll;
@@ -120,7 +120,7 @@ impl HtmlRenderer<'_> {
     }
 
     /// Render debug hitboxes for all elements (showing click target areas)
-    fn render_debug_hitboxes(&self, painter: &mut ScenePainter, node_id: usize, parent_x: f64, parent_y: f64) {
+    fn render_debug_hitboxes(&self, painter: &mut impl PaintScene , node_id: usize, parent_x: f64, parent_y: f64) {
         let node = &self.dom.tree()[node_id];
         let layout = node.final_layout;
 
@@ -281,7 +281,7 @@ impl HtmlRenderer<'_> {
     }
 
     /// Render debug hitboxes for inline box children
-    fn render_debug_hitboxes_inline(&self, painter: &mut ScenePainter, node_id: usize, container_x: f64, container_y: f64) {
+    fn render_debug_hitboxes_inline(&self, painter: &mut impl PaintScene, node_id: usize, container_x: f64, container_y: f64) {
         let node = &self.dom.tree()[node_id];
         let layout = node.final_layout;
 
@@ -343,7 +343,7 @@ impl HtmlRenderer<'_> {
 
     fn render_element(
         &self,
-        painter: &mut ScenePainter,
+        painter: &mut impl PaintScene,
         node_id: usize,
         location: Point,
     ) {
@@ -456,7 +456,7 @@ impl HtmlRenderer<'_> {
         );
     }
 
-    fn render_node(&self, scene: &mut ScenePainter, node_id: usize, location: Point) {
+    fn render_node(&self, scene: &mut impl PaintScene, node_id: usize, location: Point) {
         let node = &self.dom.tree()[node_id];
 
         match &node.data {
@@ -563,7 +563,7 @@ struct Element<'a> {
 }
 
 impl Element<'_> {
-    fn draw_children(&self, painter: &mut ScenePainter) {
+    fn draw_children(&self, painter: &mut impl PaintScene) {
         // Negative z_index hoisted nodes
         if let Some(hoisted) = &self.node.stacking_context {
             for child in hoisted.neg_z_hoisted_children() {
@@ -633,7 +633,7 @@ impl Element<'_> {
         }
     }
 
-    fn draw_inline_layout(&self, painter: &mut ScenePainter, pos: Point) {
+    fn draw_inline_layout(&self, painter: &mut impl PaintScene, pos: Point) {
         if self.node.flags.is_inline_root() {
             let text_layout = self.element.inline_layout_data.as_ref().unwrap_or_else(|| {
                 panic!("Tried to render node marked as inline root but has no inline layout data: {:?}", self.node)
@@ -661,7 +661,7 @@ impl Element<'_> {
         }
     }
 
-    fn draw_text_input_text(&self, painter: &mut ScenePainter, pos: Point) {
+    fn draw_text_input_text(&self, painter: &mut impl PaintScene, pos: Point) {
         if let Some(input_data) = self.text_input {
             let y_offset = self.node.text_input_v_centering_offset(self.scale_factor);
             let pos = Point {
@@ -709,7 +709,7 @@ impl Element<'_> {
         }
     }
 
-    fn draw_border(&self, painter: &mut ScenePainter) {
+    fn draw_border(&self, painter: &mut impl PaintScene) {
         let style = &*self.style;
         let border = style.get_border();
         let current_color = style.clone_color();
@@ -776,7 +776,7 @@ impl Element<'_> {
         }
     }
 
-    fn draw_outline(&self, painter: &mut ScenePainter) {
+    fn draw_outline(&self, painter: &mut impl PaintScene) {
         let outline = self.style.get_outline();
 
         let current_color = self.style.clone_color();
@@ -938,7 +938,7 @@ impl Element<'_> {
         anyrender_svg::render_svg_tree(scene, svg, transform);
     }
 
-    fn draw_image(&self, painter: &mut ScenePainter) {
+    fn draw_image(&self, painter: &mut impl PaintScene) {
         if let Some(image) = self.element.raster_image_data() {
             let width = self.frame.content_box.width() as u32;
             let height = self.frame.content_box.height() as u32;
@@ -982,7 +982,7 @@ impl Element<'_> {
         }
     }
 
-    fn draw_canvas(&self, painter: &mut ScenePainter) {
+    fn draw_canvas(&self, painter: &mut impl PaintScene) {
         let Some(custom_paint_source) = self.element.canvas_data() else {
             return;
         };

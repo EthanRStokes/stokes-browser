@@ -23,7 +23,6 @@ pub struct TabProcess {
     animation_time: Option<Instant>,
     channel: IpcChannel,
     tab_id: String,
-    surface_generation: u32,
     shell_receiver: UnboundedReceiver<ShellProviderMessage>,
     nav_receiver: UnboundedReceiver<NavigationProviderMessage>,
     redraw_request: AtomicBool,

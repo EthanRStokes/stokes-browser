@@ -23,6 +23,7 @@ use std::io::Cursor;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{channel, Receiver};
+use anyrender::PaintScene;
 use blitz_traits::net::Request;
 use style::dom::TNode;
 use style::thread_state::ThreadState;
@@ -229,7 +230,7 @@ impl Engine {
     }
 
     /// Render the current page to a canvas
-    pub fn render(&mut self, painter: &mut ScenePainter, now: f64) {
+    pub fn render(&mut self, painter: &mut impl PaintScene, now: f64) {
         self.resolve(now);
 
         let dom = self.dom.as_ref().unwrap();
