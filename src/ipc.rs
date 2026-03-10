@@ -56,6 +56,14 @@ pub enum ScrollDirection {
     Right,
 }
 
+/// Explicit font-cache sync from a tab process to the parent compositor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TabFontSync {
+    pub generation: u64,
+    pub replace_existing: bool,
+    pub fonts: Vec<DisplayFontData>,
+}
+
 /// Messages sent from child (tab process) to parent (browser UI)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TabToParentMessage {
@@ -69,9 +77,12 @@ pub enum TabToParentMessage {
         frame: DisplayListFrame,
         fonts: Vec<DisplayFontData>,
     },
+    SyncFonts(TabFontSync),
     /// New: Fragment tree with pre-rendered display commands.
     /// The main process composites from this instead of the raw display list.
     FragmentTreeRendered {
+        generation: u64,
+        frame_id: u64,
         tree: FragmentTree,
     },
     Ready,

@@ -6,6 +6,7 @@ use cursor_icon::CursorIcon;
 use parley::{FontContext, LayoutContext};
 use std::num::NonZeroU32;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use taffy::Point;
 use winit::application::ApplicationHandler;
@@ -25,6 +26,7 @@ use crate::{input, ipc};
 use crate::convert_events::{button_source_to_blitz, pointer_source_to_blitz, pointer_source_to_blitz_details, winit_ime_to_blitz, winit_key_event_to_blitz, winit_modifiers_to_kbt_modifiers};
 use crate::events::{BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent};
 use crate::shell_provider::ShellProviderMessage;
+use crate::main_process_render_context::MainProcessRenderContextSync;
 
 /// Result of closing a tab
 #[derive(Debug, PartialEq)]
@@ -48,8 +50,9 @@ pub(crate) struct BrowserApp {
     loading_spinner_angle: f32,
     last_spinner_update: Instant,
     tab_order: Vec<String>,
-    font_ctx: FontContext,
+    font_ctx: Arc<Mutex<FontContext>>,
     layout_ctx: LayoutContext<TextBrush>,
+    render_context_sync: MainProcessRenderContextSync,
     startup_url: Option<String>,
     buttons: MouseEventButtons,
 }
@@ -72,8 +75,9 @@ impl BrowserApp {
             loading_spinner_angle: 0.0,
             last_spinner_update: Instant::now(),
             tab_order: vec![],
-            font_ctx: FontContext::new(),
+            font_ctx: Arc::new(Mutex::new(FontContext::new())),
             layout_ctx: LayoutContext::new(),
+            render_context_sync: Default::default(),
             startup_url,
             buttons: MouseEventButtons::None,
         }
@@ -173,6 +177,7 @@ impl BrowserApp {
 
         if tab_index < self.tab_order.len() {
             let tab_id = self.tab_order.remove(tab_index);
+            self.render_context_sync.remove_tab(&tab_id);
             let _ = self.tab_manager.close_tab(&tab_id);
             self.ui.as_mut().unwrap().remove_tab(&tab_id);
 
@@ -369,7 +374,8 @@ impl BrowserApp {
                     // Update loading indicator
                     env.window.request_redraw();
                 }
-                TabToParentMessage::DisplayListRendered { .. } => {
+                TabToParentMessage::DisplayListRendered { fonts, .. } => {
+                    self.render_context_sync.sync_display_fonts(fonts, &self.font_ctx);
                     env.window.request_redraw();
                 }
                 TabToParentMessage::FragmentTreeRendered { .. } => {
@@ -434,6 +440,10 @@ impl BrowserApp {
                 },
                 TabToParentMessage::UpdateButtons(buttons) => {
                     self.buttons = buttons;
+                }
+                TabToParentMessage::SyncFonts(sync) => {
+                    self.render_context_sync.sync_tab_fonts(&tab_id, sync, &self.font_ctx);
+                    env.window.request_redraw();
                 }
                 _ => {}
             }
@@ -510,6 +520,33 @@ impl BrowserApp {
 
         painter.reset();
 
+        let fragment_fonts = active_tab_id
+            .as_ref()
+            .and_then(|tab_id| {
+                let generation = self
+                    .tab_manager
+                    .get_tab(tab_id)
+                    .map(|tab| tab.fragment_tree_generation)?;
+                let fonts = self
+                    .tab_manager
+                    .get_tab(tab_id)
+                    .and_then(|tab| tab.fragment_tree.as_ref().map(|tree| tree.fonts.clone()))?;
+                self.render_context_sync
+                    .sync_layout_ctx_for_fragment(tab_id, generation, &mut self.layout_ctx);
+                Some(self.render_context_sync.resolve_fonts(&fonts))
+            });
+        let display_list_fonts = active_tab_id
+            .as_ref()
+            .and_then(|tab_id| {
+                let fonts = self
+                    .tab_manager
+                    .get_tab(tab_id)
+                    .and_then(|tab| tab.rendered_frame.as_ref().map(|frame| frame.frame.fonts.clone()))?;
+                Some(self.render_context_sync.resolve_fonts(&fonts))
+            });
+        let empty_fonts: Vec<Option<peniko::FontData>> = Vec::new();
+        let mut font_ctx = self.font_ctx.lock().unwrap();
+
         {
             let Some(page_viewport) = self.page_viewport.as_ref() else {
                 return Err("Page viewport not initialized".to_string());
@@ -532,27 +569,31 @@ impl BrowserApp {
 
                 // Prefer fragment tree (compositor-side rendering) over raw display list
                 if let Some(fragment_tree) = tab.fragment_tree.as_ref() {
-                    let ft_renderer = crate::renderer::fragment_renderer::FragmentTreeRenderer {
+                    let mut ft_renderer = crate::renderer::fragment_renderer::FragmentTreeRenderer {
                         tree: fragment_tree,
                         scale_factor: fragment_tree.scale_factor,
                         width: fragment_tree.width,
                         height: fragment_tree.height,
                         root_transform: page_offset,
-                        font_cache: &tab.font_cache,
+                        font_ctx: &mut font_ctx,
+                        layout_ctx: &mut self.layout_ctx,
+                        resolved_fonts: fragment_fonts.as_deref().unwrap_or(&empty_fonts),
                     };
                     painter.push_clip_layer(page_offset, &page_clip);
                     ft_renderer.render(&mut painter);
                     painter.pop_layer();
                 } else if let Some(rendered_frame) = tab.rendered_frame.as_ref() {
                     painter.push_clip_layer(page_offset, &page_clip);
-                    rendered_frame.frame.replay(&mut painter, page_offset, &tab.font_cache);
+                    rendered_frame
+                        .frame
+                        .replay(&mut painter, page_offset, display_list_fonts.as_ref().unwrap_or(&empty_fonts));
                     painter.pop_layer();
                 }
             }
         }
 
         let ui = self.ui.as_ref().unwrap();
-        ui.render(canvas, &mut self.font_ctx, &mut self.layout_ctx, &mut painter);
+        ui.render(canvas, &mut font_ctx, &mut self.layout_ctx, &mut painter);
         ui.render_loading_indicator(&mut painter, is_loading, self.loading_spinner_angle);
 
         self.env.as_mut().unwrap().gr_context.flush_and_submit();

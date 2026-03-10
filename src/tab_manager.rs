@@ -1,10 +1,9 @@
-use crate::display_list::{DisplayFont, DisplayListFrame};
+use crate::display_list::DisplayListFrame;
 use crate::fragment_tree::FragmentTree;
 use crate::ipc::{IpcServer, ParentIpcChannel, ParentToTabMessage, TabToParentMessage};
 use std::collections::HashMap;
 use std::io;
 use std::process::{Child, Command};
-use std::sync::Arc;
 use std::thread;
 use taffy::Point;
 
@@ -16,12 +15,13 @@ pub struct ManagedTab {
     pub is_loading: bool,
     pub zoom: f32,
     pub viewport_scroll: Point<f64>,
-    pub font_cache: HashMap<DisplayFont, Arc<Vec<u8>>>,
     process: Child,
     channel: ParentIpcChannel,
     pub rendered_frame: Option<RenderedFrame>,
     /// Fragment tree received from the tab process for compositor-side rendering.
     pub fragment_tree: Option<FragmentTree>,
+    pub fragment_tree_generation: u64,
+    pub fragment_tree_frame_id: u64,
 }
 
 /// A compositable frame from a tab process.
@@ -49,21 +49,16 @@ impl TabManager {
         let tab_id = format!("tab{}", self.next_tab_id);
         self.next_tab_id += 1;
 
-        // Create a fresh one-shot server for this tab.
         let server = IpcServer::new()?;
         let server_name = server.server_name().to_string();
-
-        // Get the current executable path
         let exe_path = std::env::current_exe()?;
 
-        // Spawn the tab process, passing the server name instead of a path.
         let child = Command::new(exe_path)
             .arg("--tab-process")
             .arg(&tab_id)
             .arg(&server_name)
             .spawn()?;
 
-        // Block until the tab process completes the bootstrap handshake.
         let channel = server.accept()?;
 
         let managed_tab = ManagedTab {
@@ -73,11 +68,12 @@ impl TabManager {
             is_loading: false,
             zoom: 1.0,
             viewport_scroll: Point { x: 0.0, y: 0.0 },
-            font_cache: HashMap::new(),
             process: child,
             channel,
             rendered_frame: None,
             fragment_tree: None,
+            fragment_tree_generation: 0,
+            fragment_tree_frame_id: 0,
         };
 
         self.tabs.insert(tab_id.clone(), managed_tab);
@@ -143,11 +139,7 @@ impl TabManager {
                 TabToParentMessage::LoadingStateChanged(is_loading) => {
                     tab.is_loading = is_loading;
                 }
-                TabToParentMessage::DisplayListRendered { frame, fonts } => {
-                    for font in fonts {
-                        tab.font_cache.insert(font.font, Arc::new(font.bytes));
-                    }
-
+                TabToParentMessage::DisplayListRendered { frame, .. } => {
                     let should_replace = tab
                         .rendered_frame
                         .as_ref()
@@ -158,12 +150,21 @@ impl TabManager {
                         tab.rendered_frame = Some(RenderedFrame { frame });
                     }
                 }
-                TabToParentMessage::FragmentTreeRendered { tree } => {
-                    // Cache font data from the fragment tree
-                    for font_data in &tree.font_payloads {
-                        tab.font_cache.insert(font_data.font.clone(), Arc::new(font_data.bytes.clone()));
+                TabToParentMessage::SyncFonts(_) => {}
+                TabToParentMessage::FragmentTreeRendered {
+                    generation,
+                    frame_id,
+                    tree,
+                } => {
+                    let should_replace = generation > tab.fragment_tree_generation
+                        || (generation == tab.fragment_tree_generation
+                            && frame_id >= tab.fragment_tree_frame_id);
+
+                    if should_replace {
+                        tab.fragment_tree_generation = generation;
+                        tab.fragment_tree_frame_id = frame_id;
+                        tab.fragment_tree = Some(tree);
                     }
-                    tab.fragment_tree = Some(tree);
                 }
                 TabToParentMessage::Ready => {
                     println!("Tab {} is ready", tab_id);

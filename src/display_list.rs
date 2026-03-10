@@ -24,16 +24,10 @@ impl DisplayListFrame {
         &self,
         painter: &mut impl PaintScene,
         root_transform: Affine,
-        font_cache: &HashMap<DisplayFont, Arc<Vec<u8>>>,
+        resolved_fonts: &[Option<peniko::FontData>],
     ) {
-        let fonts = self
-            .fonts
-            .iter()
-            .map(|font| font_cache.get(font).map(|bytes| font.to_peniko(bytes.clone())))
-            .collect::<Vec<_>>();
-
         for command in &self.commands {
-            command.replay(painter, root_transform, &fonts);
+            command.replay(painter, root_transform, resolved_fonts);
         }
     }
 }
@@ -890,10 +884,13 @@ mod tests {
         );
 
         let (frame, font_payloads) = recorder.into_frame_parts();
-        let font_cache = font_payloads
+        let resolved_fonts = font_payloads
             .into_iter()
-            .map(|font| (font.font, Arc::new(font.bytes)))
-            .collect::<HashMap<_, _>>();
+            .map(|font| {
+                let blob = Blob::new(Arc::new(font.bytes));
+                Some(peniko::FontData::new(blob, font.font.index))
+            })
+            .collect::<Vec<_>>();
 
         struct CountingPainter {
             glyph_calls: usize,
@@ -957,7 +954,7 @@ mod tests {
         }
 
         let mut painter = CountingPainter { glyph_calls: 0 };
-        frame.replay(&mut painter, Affine::IDENTITY, &font_cache);
+        frame.replay(&mut painter, Affine::IDENTITY, &resolved_fonts);
         assert_eq!(painter.glyph_calls, 1);
     }
 }

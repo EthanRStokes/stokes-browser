@@ -1,8 +1,9 @@
+use crate::display_list::{DisplayFont, DisplayFontData};
 use crate::dom::{AbstractDom, Dom};
 use crate::engine::nav_provider::{NavigationProviderMessage, StokesNavigationProvider};
 // Tab process module - runs the browser engine in a separate process
 use crate::engine::{Engine, EngineConfig, ENGINE_REF, USER_AGENT_REF};
-use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage};
+use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabFontSync, TabToParentMessage};
 use crate::networking;
 use blitz_traits::shell::{ShellProvider, Viewport};
 use std::io;
@@ -11,6 +12,39 @@ use std::sync::Arc;
 use std::time::Instant;
 use crate::shell_provider::{StokesShellProvider, ShellProviderMessage};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use std::collections::HashSet;
+
+#[derive(Default)]
+struct FontSyncTracker {
+    generation: u64,
+    synced_fonts: HashSet<DisplayFont>,
+}
+
+impl FontSyncTracker {
+    fn prepare_sync(&mut self, generation: u64, fonts: &[DisplayFontData]) -> Option<TabFontSync> {
+        let replace_existing = self.generation != generation;
+        if replace_existing {
+            self.generation = generation;
+            self.synced_fonts.clear();
+        }
+
+        let fonts = fonts
+            .iter()
+            .filter(|font| replace_existing || self.synced_fonts.insert(font.font.clone()))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if replace_existing || !fonts.is_empty() {
+            Some(TabFontSync {
+                generation,
+                replace_existing,
+                fonts,
+            })
+        } else {
+            None
+        }
+    }
+}
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
@@ -23,6 +57,8 @@ pub struct TabProcess {
     redraw_request: AtomicBool,
     navigation_id: u64,
     frame_id: u64,
+    document_generation: u64,
+    font_sync: FontSyncTracker,
 }
 
 impl TabProcess {
@@ -67,7 +103,13 @@ impl TabProcess {
             redraw_request: AtomicBool::new(false),
             navigation_id: 0,
             frame_id: 0,
+            document_generation: 0,
+            font_sync: FontSyncTracker::default(),
         })
+    }
+
+    fn begin_document_navigation(&mut self) {
+        self.document_generation = self.document_generation.wrapping_add(1);
     }
 
     fn animation_time(&mut self) -> f64 {
@@ -110,6 +152,7 @@ impl TabProcess {
                                 // Only let the latest async navigation callback commit a document.
                                 self.navigation_id = self.navigation_id.wrapping_add(1);
                                 let navigation_id = self.navigation_id;
+                                self.begin_document_navigation();
 
                                 let nav_provider = self.engine.navigation_provider.clone();
                                 let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(true));
@@ -211,6 +254,7 @@ impl TabProcess {
             ParentToTabMessage::Navigate(url) => {
                 // Invalidate any in-flight async navigation callback.
                 self.navigation_id = self.navigation_id.wrapping_add(1);
+                self.begin_document_navigation();
                 let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                 self.engine.set_loading_state(true);
 
@@ -238,6 +282,7 @@ impl TabProcess {
                 self.navigation_id = self.navigation_id.wrapping_add(1);
                 let url = self.engine.current_url().to_string();
                 if !url.is_empty() {
+                    self.begin_document_navigation();
                     let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                     self.engine.set_loading_state(true);
                     let contents = networking::fetch(&url, &self.engine.config.user_agent).unwrap_or_else(|_| {
@@ -261,6 +306,7 @@ impl TabProcess {
                 self.navigation_id = self.navigation_id.wrapping_add(1);
                 if self.engine.can_go_back() {
                     let url = self.engine.current_url().to_string();
+                    self.begin_document_navigation();
                     let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                     self.engine.set_loading_state(true);
                     match self.engine.go_back().await {
@@ -282,6 +328,7 @@ impl TabProcess {
                 self.navigation_id = self.navigation_id.wrapping_add(1);
                 if self.engine.can_go_forward() {
                     let url = self.engine.current_url().to_string();
+                    self.begin_document_navigation();
                     let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                     self.engine.set_loading_state(true);
                     match self.engine.go_forward().await {
@@ -407,8 +454,15 @@ impl TabProcess {
 
             // Clone and send the (incrementally-updated) fragment tree to the parent process
             if let Some(tree) = dom.fragment_tree.clone() {
-                self.channel
-                    .send(&TabToParentMessage::FragmentTreeRendered { tree })?;
+                if let Some(sync) = self.font_sync.prepare_sync(self.document_generation, &tree.font_payloads) {
+                    self.channel.send(&TabToParentMessage::SyncFonts(sync))?;
+                }
+
+                self.channel.send(&TabToParentMessage::FragmentTreeRendered {
+                    generation: self.document_generation,
+                    frame_id: self.frame_id,
+                    tree,
+                })?;
             }
         }
 
@@ -420,4 +474,39 @@ impl TabProcess {
 pub async fn tab_process_main(tab_id: String, server_name: String) -> io::Result<()> {
     let mut process = TabProcess::new(tab_id, server_name)?;
     process.run().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FontSyncTracker;
+    use crate::display_list::{DisplayFont, DisplayFontData};
+
+    fn font(blob_id: u64) -> DisplayFontData {
+        DisplayFontData {
+            font: DisplayFont { blob_id, index: 0 },
+            bytes: vec![blob_id as u8],
+        }
+    }
+
+    #[test]
+    fn sends_full_snapshot_for_new_generation() {
+        let mut tracker = FontSyncTracker::default();
+        let sync = tracker.prepare_sync(1, &[font(1), font(2)]).expect("expected sync");
+
+        assert!(sync.replace_existing);
+        assert_eq!(sync.generation, 1);
+        assert_eq!(sync.fonts.len(), 2);
+    }
+
+    #[test]
+    fn only_sends_font_deltas_within_generation() {
+        let mut tracker = FontSyncTracker::default();
+        let _ = tracker.prepare_sync(1, &[font(1)]).expect("expected initial sync");
+
+        assert!(tracker.prepare_sync(1, &[font(1)]).is_none());
+
+        let sync = tracker.prepare_sync(1, &[font(1), font(2)]).expect("expected delta sync");
+        assert!(!sync.replace_existing);
+        assert_eq!(sync.fonts, vec![font(2)]);
+    }
 }

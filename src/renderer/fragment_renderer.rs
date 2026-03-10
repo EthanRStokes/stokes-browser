@@ -6,15 +6,12 @@
 //! (clipping, layers, transforms, child ordering) and replaying per-node
 //! display commands.
 
-use crate::display_list::DisplayFont;
-use crate::fragment_tree::{
-    FragmentNode, FragmentNodeKind, FragmentTree, SerializedOverflow,
-};
+use crate::fragment_tree::{FragmentNode, FragmentNodeKind, FragmentTree, SerializedOverflow};
+use crate::ui::TextBrush;
 use anyrender::PaintScene;
 use kurbo::{Affine, Point, Rect, Vec2};
 use peniko::{Color, Fill, Mix};
-use std::collections::HashMap;
-use std::sync::Arc;
+use parley::{FontContext, LayoutContext};
 
 /// Renderer that composites a `FragmentTree` on the parent process side.
 ///
@@ -22,18 +19,25 @@ use std::sync::Arc;
 /// (backgrounds, borders, shadows, text, images). This renderer handles the
 /// tree walk, clipping, layers, opacity, transforms, and child ordering —
 /// effectively the compositing logic that was previously in `HtmlRenderer`.
-pub struct FragmentTreeRenderer<'ft> {
+pub struct FragmentTreeRenderer<'ft, 'ctx> {
     pub tree: &'ft FragmentTree,
     pub scale_factor: f64,
     pub width: u32,
     pub height: u32,
     pub root_transform: Affine,
-    pub font_cache: &'ft HashMap<DisplayFont, Arc<Vec<u8>>>,
+    pub font_ctx: &'ctx mut FontContext,
+    pub layout_ctx: &'ctx mut LayoutContext<TextBrush>,
+    pub resolved_fonts: &'ft [Option<peniko::FontData>],
 }
 
-impl<'ft> FragmentTreeRenderer<'ft> {
+impl<'ft, 'ctx> FragmentTreeRenderer<'ft, 'ctx> {
     /// Render the entire fragment tree to the painter.
-    pub fn render(&self, painter: &mut impl PaintScene) {
+    pub fn render(&mut self, painter: &mut impl PaintScene) {
+        // Text display commands are already shaped in the tab process, but the
+        // compositor keeps the synced main-process font/layout contexts attached
+        // here so future renderer-side text work uses the same state.
+        let _ = (&mut *self.font_ctx, &mut *self.layout_ctx);
+
         let root_id = self.tree.root_element_id;
         let Some(root_node) = self.tree.get_node(root_id) else {
             return;
@@ -50,18 +54,6 @@ impl<'ft> FragmentTreeRenderer<'ft> {
             painter.fill(Fill::NonZero, self.root_transform, Color::new(bg_color), None, &rect);
         }
 
-        // Resolve fonts for display command replay
-        let fonts: Vec<Option<peniko::FontData>> = self
-            .tree
-            .fonts
-            .iter()
-            .map(|font| {
-                self.font_cache
-                    .get(font)
-                    .map(|bytes| font.to_peniko(bytes.clone()))
-            })
-            .collect();
-
         self.render_element(
             painter,
             root_id,
@@ -69,7 +61,7 @@ impl<'ft> FragmentTreeRenderer<'ft> {
                 x: -scroll.x,
                 y: -scroll.y,
             },
-            &fonts,
+            self.resolved_fonts,
         );
 
         // Debug hitboxes

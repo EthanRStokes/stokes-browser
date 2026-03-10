@@ -13,6 +13,7 @@ mod ipc;
 mod tab_process;
 mod tab_manager;
 mod browser;
+mod main_process_render_context;
 mod window;
 mod shell_provider;
 mod default_browser;
