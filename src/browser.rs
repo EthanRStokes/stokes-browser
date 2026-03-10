@@ -1,7 +1,7 @@
 use anyrender::PaintScene;
 use blitz_traits::shell::Viewport;
 use glutin::surface::GlSurface;
-use kurbo::Affine;
+use kurbo::{Affine, Rect};
 use cursor_icon::CursorIcon;
 use parley::{FontContext, LayoutContext};
 use std::num::NonZeroU32;
@@ -369,7 +369,7 @@ impl BrowserApp {
                     // Update loading indicator
                     env.window.request_redraw();
                 }
-                TabToParentMessage::FrameRendered { .. } => {
+                TabToParentMessage::DisplayListRendered { .. } => {
                     env.window.request_redraw();
                 }
                 TabToParentMessage::NavigateRequest(url) => {
@@ -430,6 +430,9 @@ impl BrowserApp {
                 },
                 TabToParentMessage::UpdateButtons(buttons) => {
                     self.buttons = buttons;
+                }
+                TabToParentMessage::DisplayListRendered { .. } => {
+                    env.window.request_redraw();
                 }
                 _ => {}
             }
@@ -499,28 +502,54 @@ impl BrowserApp {
             self.env.as_ref().unwrap().window.request_redraw();
         }
 
-        // Get the rendered frame before borrowing canvas
-        let frame_to_render = active_tab_id.as_ref()
-            .and_then(|id| self.tab_manager.get_tab(id))
-            .and_then(|tab| tab.rendered_frame.as_ref())
-            .map(|frame| &frame.image);
-
-        let canvas = self.env.as_mut().unwrap().surface.canvas();
-
-        let mut painter = ScenePainter {
-            inner: canvas,
-            cache: &mut self.skia_cache,
+        let chrome_offset = BrowserUI::CHROME_HEIGHT * self.viewport.as_ref().unwrap().hidpi_scale;
+        let canvas_size = {
+            let env = self.env.as_ref().unwrap();
+            (env.surface_config.width, env.surface_config.height)
         };
 
-        painter.reset();
+        {
+            let env = self.env.as_mut().unwrap();
+            let mut painter = ScenePainter {
+                inner: canvas,
+                cache: &mut self.skia_cache,
+            };
 
-        // Render the active tab's frame from shared memory
-        if let Some(image) = frame_to_render {
-            // Offset the page content so it renders below the chrome
-            let chrome_offset = BrowserUI::CHROME_HEIGHT * self.viewport.as_ref().unwrap().hidpi_scale;
-            painter.set_matrix(Affine::translate((0.0, 0.0)));
+            painter.reset();
 
-            canvas.draw_image(image, (0.0, chrome_offset), None);
+            {
+                let Some(page_viewport) = self.page_viewport.as_ref() else {
+                    return Err("Page viewport not initialized".to_string());
+                };
+                let Some(viewport) = self.viewport.as_ref() else {
+                    return Err("Viewport not initialized".to_string());
+                };
+
+                let chrome_offset = BrowserUI::CHROME_HEIGHT as f64 * viewport.hidpi_scale as f64;
+                let page_rect = Rect::from_origin_size(
+                    (0.0, chrome_offset),
+                    (page_viewport.window_size.0 as f64, page_viewport.window_size.1 as f64),
+                );
+                painter.fill(peniko::Fill::NonZero, Affine::IDENTITY, peniko::Color::WHITE, None, &page_rect);
+
+                let active_tab_id = self.tab_order.get(self.active_tab_index);
+                let Some(tab) = active_tab_id.and_then(|id| self.tab_manager.get_tab(id)) else {
+                    return Err("Tab not initialized".to_string());
+                };
+                let Some(rendered_frame) = tab.rendered_frame.as_ref() else {
+                    return Err("Rendered frame not initialized".to_string());
+                };
+
+                let page_offset = Affine::translate((0.0, chrome_offset));
+                let page_clip = Rect::from_origin_size((0.0, 0.0), (page_viewport.window_size.0 as f64, page_viewport.window_size.1 as f64));
+                painter.push_clip_layer(page_offset, &page_clip);
+                rendered_frame.frame.replay(&mut painter, page_offset, &tab.font_cache);
+                painter.pop_layer();
+            }
+
+            let ui = self.ui.as_ref().unwrap();
+            ui.render_vello(canvas_size, &mut self.font_ctx, &mut self.layout_ctx, &mut painter);
+            ui.render_loading_indicator_vello(&mut painter, is_loading, self.loading_spinner_angle);
         }
 
         // Render UI on top
@@ -528,11 +557,6 @@ impl BrowserApp {
         ui.render_loading_indicator(&mut painter, is_loading, self.loading_spinner_angle);
 
         self.env.as_mut().unwrap().gr_context.flush_and_submit();
-        {
-            let env = self.env.as_mut().unwrap();
-            env.gl_surface.swap_buffers(&env.gl_context)
-                .map_err(|e| format!("Failed to swap buffers: {}", e))?;
-        }
 
         Ok(())
     }

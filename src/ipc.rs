@@ -12,13 +12,14 @@
 //   • A clean `IpcReceiverSet` API for polling *many* tab receivers at once
 //     without spawning per-tab threads.
 
-use std::io;
+use crate::display_list::{DisplayFontData, DisplayListFrame};
+use crate::events::{MouseEventButtons, UiEvent};
 use ipc_channel::ipc::{
     self, IpcOneShotServer, IpcReceiver, IpcSender,
 };
 use ipc_channel::TryRecvError;
 use serde::{Deserialize, Serialize};
-use crate::events::{MouseEventButtons, UiEvent};
+use std::io;
 
 // ── Wire message types ────────────────────────────────────────────────────────
 
@@ -63,7 +64,10 @@ pub enum TabToParentMessage {
     NavigationFailed(String),
     TitleChanged(String),
     LoadingStateChanged(bool),
-    FrameRendered { shmem_name: String, width: u32, height: u32 },
+    DisplayListRendered {
+        frame: DisplayListFrame,
+        fonts: Vec<DisplayFontData>,
+    },
     Ready,
     NavigateRequest(String),
     NavigateRequestInNewTab(String),

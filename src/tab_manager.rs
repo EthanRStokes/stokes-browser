@@ -1,12 +1,10 @@
-// Tab Manager - manages tab processes from the parent process
+use crate::display_list::{DisplayFont, DisplayListFrame};
 use crate::ipc::{IpcServer, ParentIpcChannel, ParentToTabMessage, TabToParentMessage};
-use shared_memory::ShmemConf;
-use skia_safe::{AlphaType, ColorType, Data, Image, ImageInfo};
 use std::collections::HashMap;
 use std::io;
 use std::process::{Child, Command};
+use std::sync::Arc;
 use std::thread;
-use std::time::Instant;
 use taffy::Point;
 
 /// Represents a managed tab process
@@ -17,16 +15,15 @@ pub struct ManagedTab {
     pub is_loading: bool,
     pub zoom: f32,
     pub viewport_scroll: Point<f64>,
+    pub font_cache: HashMap<DisplayFont, Arc<Vec<u8>>>,
     process: Child,
     channel: ParentIpcChannel,
     pub rendered_frame: Option<RenderedFrame>,
 }
 
-/// A rendered frame from a tab process
+/// A compositable frame from a tab process.
 pub struct RenderedFrame {
-    pub image: Image,
-    pub width: u32,
-    pub height: u32,
+    pub frame: DisplayListFrame,
 }
 
 /// Manages all tab processes
@@ -73,6 +70,7 @@ impl TabManager {
             is_loading: false,
             zoom: 1.0,
             viewport_scroll: Point { x: 0.0, y: 0.0 },
+            font_cache: HashMap::new(),
             process: child,
             channel,
             rendered_frame: None,
@@ -141,10 +139,19 @@ impl TabManager {
                 TabToParentMessage::LoadingStateChanged(is_loading) => {
                     tab.is_loading = is_loading;
                 }
-                TabToParentMessage::FrameRendered { shmem_name, width, height } => {
-                    // Load the frame from shared memory
-                    if let Ok(frame) = Self::load_frame_from_shmem(&shmem_name, width, height) {
-                        tab.rendered_frame = Some(frame);
+                TabToParentMessage::DisplayListRendered { frame, fonts } => {
+                    for font in fonts {
+                        tab.font_cache.insert(font.font, Arc::new(font.bytes));
+                    }
+
+                    let should_replace = tab
+                        .rendered_frame
+                        .as_ref()
+                        .map(|current| frame.frame_id >= current.frame.frame_id)
+                        .unwrap_or(true);
+
+                    if should_replace {
+                        tab.rendered_frame = Some(RenderedFrame { frame });
                     }
                 }
                 TabToParentMessage::Ready => {
@@ -172,43 +179,6 @@ impl TabManager {
                 TabToParentMessage::Navigate { .. } => todo!(),
             }
         }
-    }
-
-    /// Load a rendered frame from shared memory
-    fn load_frame_from_shmem(shmem_name: &str, width: u32, height: u32) -> io::Result<RenderedFrame> {
-        let shmem = ShmemConf::new()
-            .os_id(shmem_name)
-            .open()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-        let size = (width * height * 4) as usize;
-
-        // Copy the data from shared memory
-        let data = unsafe {
-            let slice = std::slice::from_raw_parts(shmem.as_ptr() as *const u8, size);
-            Data::new_copy(slice)
-        };
-
-        // Create an image from the data
-        let image_info = ImageInfo::new(
-            (width as i32, height as i32),
-            ColorType::RGBA8888,
-            AlphaType::Premul,
-            None,
-        );
-
-        let row_bytes = width as usize * 4;
-        let image = Image::from_raster_data(
-            &image_info,
-            data,
-            row_bytes,
-        ).ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to create image"))?;
-
-        Ok(RenderedFrame {
-            image,
-            width,
-            height,
-        })
     }
 
     /// Close a tab
