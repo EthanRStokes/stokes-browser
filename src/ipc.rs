@@ -12,6 +12,7 @@
 //   • A clean `IpcReceiverSet` API for polling *many* tab receivers at once
 //     without spawning per-tab threads.
 
+use crate::display_list::{DisplayFontData, DisplayListFrame};
 use crate::events::{MouseEventButtons, UiEvent};
 use ipc_channel::ipc::{
     self, IpcOneShotServer, IpcReceiver, IpcSender,
@@ -71,8 +72,10 @@ pub enum TabToParentMessage {
     NavigationFailed(String),
     TitleChanged(String),
     LoadingStateChanged(bool),
-    // todo rethink this entirely
-    SceneRendered { width: u32, height: u32 },
+    DisplayListRendered {
+        frame: DisplayListFrame,
+        fonts: Vec<DisplayFontData>,
+    },
     Ready,
     NavigateRequest(String),
     NavigateRequestInNewTab(String),

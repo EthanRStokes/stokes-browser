@@ -1,8 +1,9 @@
-// Tab Manager - manages tab processes from the parent process
+use crate::display_list::{DisplayFont, DisplayListFrame};
 use crate::ipc::{IpcServer, ParentIpcChannel, ParentToTabMessage, TabToParentMessage};
 use std::collections::HashMap;
 use std::io;
 use std::process::{Child, Command};
+use std::sync::Arc;
 use std::thread;
 use taffy::Point;
 
@@ -14,16 +15,15 @@ pub struct ManagedTab {
     pub is_loading: bool,
     pub zoom: f32,
     pub viewport_scroll: Point<f64>,
+    pub font_cache: HashMap<DisplayFont, Arc<Vec<u8>>>,
     process: Child,
     channel: ParentIpcChannel,
     pub rendered_frame: Option<RenderedFrame>,
 }
 
-/// A rendered frame from a tab process
-/// todo potentially remove entirely and replace
+/// A compositable frame from a tab process.
 pub struct RenderedFrame {
-    pub width: u32,
-    pub height: u32,
+    pub frame: DisplayListFrame,
 }
 
 /// Manages all tab processes
@@ -70,6 +70,7 @@ impl TabManager {
             is_loading: false,
             zoom: 1.0,
             viewport_scroll: Point { x: 0.0, y: 0.0 },
+            font_cache: HashMap::new(),
             process: child,
             channel,
             rendered_frame: None,
@@ -138,11 +139,20 @@ impl TabManager {
                 TabToParentMessage::LoadingStateChanged(is_loading) => {
                     tab.is_loading = is_loading;
                 }
-                TabToParentMessage::SceneRendered { width, height } => {
-                    tab.rendered_frame = Some(RenderedFrame {
-                        width,
-                        height,
-                    });
+                TabToParentMessage::DisplayListRendered { frame, fonts } => {
+                    for font in fonts {
+                        tab.font_cache.insert(font.font, Arc::new(font.bytes));
+                    }
+
+                    let should_replace = tab
+                        .rendered_frame
+                        .as_ref()
+                        .map(|current| frame.frame_id >= current.frame.frame_id)
+                        .unwrap_or(true);
+
+                    if should_replace {
+                        tab.rendered_frame = Some(RenderedFrame { frame });
+                    }
                 }
                 TabToParentMessage::Ready => {
                     println!("Tab {} is ready", tab_id);

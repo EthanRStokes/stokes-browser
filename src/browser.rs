@@ -10,6 +10,7 @@ use anyrender::PaintScene;
 use anyrender_vello::VelloScenePainter;
 use blitz_traits::shell::Viewport;
 use cursor_icon::CursorIcon;
+use kurbo::{Affine, Rect};
 use parley::{FontContext, LayoutContext};
 use std::str::FromStr;
 use std::time::Instant;
@@ -365,7 +366,7 @@ impl BrowserApp {
                     // Update loading indicator
                     env.window.request_redraw();
                 }
-                TabToParentMessage::SceneRendered { .. } => {
+                TabToParentMessage::DisplayListRendered { .. } => {
                     env.window.request_redraw();
                 }
                 TabToParentMessage::NavigateRequest(url) => {
@@ -427,6 +428,9 @@ impl BrowserApp {
                 TabToParentMessage::UpdateButtons(buttons) => {
                     self.buttons = buttons;
                 }
+                TabToParentMessage::DisplayListRendered { .. } => {
+                    env.window.request_redraw();
+                }
                 _ => {}
             }
         }
@@ -468,6 +472,35 @@ impl BrowserApp {
         }
     }
 
+    fn render_active_tab(&self, painter: &mut impl PaintScene) {
+        let Some(page_viewport) = self.page_viewport.as_ref() else {
+            return;
+        };
+        let Some(viewport) = self.viewport.as_ref() else {
+            return;
+        };
+
+        let chrome_offset = BrowserUI::CHROME_HEIGHT as f64 * viewport.hidpi_scale as f64;
+        let page_rect = Rect::from_origin_size(
+            (0.0, chrome_offset),
+            (page_viewport.window_size.0 as f64, page_viewport.window_size.1 as f64),
+        );
+        painter.fill(peniko::Fill::NonZero, Affine::IDENTITY, peniko::Color::WHITE, None, &page_rect);
+
+        let Some(tab) = self.active_tab_id().and_then(|id| self.tab_manager.get_tab(id)) else {
+            return;
+        };
+        let Some(rendered_frame) = tab.rendered_frame.as_ref() else {
+            return;
+        };
+
+        let page_offset = Affine::translate((0.0, chrome_offset));
+        let page_clip = Rect::from_origin_size((0.0, 0.0), (page_viewport.window_size.0 as f64, page_viewport.window_size.1 as f64));
+        painter.push_clip_layer(page_offset, &page_clip);
+        rendered_frame.frame.replay(painter, page_offset, &tab.font_cache);
+        painter.pop_layer();
+    }
+
     fn render(&mut self) -> Result<(), String> {
         let ui_needs_redraw = {
             let ui = self.ui.as_mut().unwrap();
@@ -504,7 +537,35 @@ impl BrowserApp {
             let mut painter = VelloScenePainter::new(&mut env.scene);
             painter.reset();
 
-            // TODO Render tab content
+            {
+                let Some(page_viewport) = self.page_viewport.as_ref() else {
+                    return Err("Page viewport not initialized".to_string());
+                };
+                let Some(viewport) = self.viewport.as_ref() else {
+                    return Err("Viewport not initialized".to_string());
+                };
+
+                let chrome_offset = BrowserUI::CHROME_HEIGHT as f64 * viewport.hidpi_scale as f64;
+                let page_rect = Rect::from_origin_size(
+                    (0.0, chrome_offset),
+                    (page_viewport.window_size.0 as f64, page_viewport.window_size.1 as f64),
+                );
+                painter.fill(peniko::Fill::NonZero, Affine::IDENTITY, peniko::Color::WHITE, None, &page_rect);
+
+                let active_tab_id = self.tab_order.get(self.active_tab_index);
+                let Some(tab) = active_tab_id.and_then(|id| self.tab_manager.get_tab(id)) else {
+                    return Err("Tab not initialized".to_string());
+                };
+                let Some(rendered_frame) = tab.rendered_frame.as_ref() else {
+                    return Err("Rendered frame not initialized".to_string());
+                };
+
+                let page_offset = Affine::translate((0.0, chrome_offset));
+                let page_clip = Rect::from_origin_size((0.0, 0.0), (page_viewport.window_size.0 as f64, page_viewport.window_size.1 as f64));
+                painter.push_clip_layer(page_offset, &page_clip);
+                rendered_frame.frame.replay(&mut painter, page_offset, &tab.font_cache);
+                painter.pop_layer();
+            }
 
             let ui = self.ui.as_ref().unwrap();
             ui.render_vello(canvas_size, &mut self.font_ctx, &mut self.layout_ctx, &mut painter);

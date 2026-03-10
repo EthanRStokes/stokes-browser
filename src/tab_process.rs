@@ -1,3 +1,4 @@
+use crate::display_list::{DisplayFont, DisplayListRecorder};
 use crate::dom::{AbstractDom, Dom};
 use crate::engine::nav_provider::{NavigationProviderMessage, StokesNavigationProvider};
 // Tab process module - runs the browser engine in a separate process
@@ -6,6 +7,7 @@ use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage, Wg
 use crate::shell_provider::{ShellProviderMessage, StokesShellProvider};
 use crate::networking;
 use blitz_traits::shell::{ShellProvider, Viewport};
+use std::collections::HashSet;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -22,6 +24,8 @@ pub struct TabProcess {
     nav_receiver: UnboundedReceiver<NavigationProviderMessage>,
     redraw_request: AtomicBool,
     navigation_id: u64,
+    frame_id: u64,
+    sent_fonts: HashSet<DisplayFont>,
     renderer_info: Option<WgpuRendererInfo>,
 }
 
@@ -66,6 +70,8 @@ impl TabProcess {
             nav_receiver: nav_rx,
             redraw_request: AtomicBool::new(false),
             navigation_id: 0,
+            frame_id: 0,
+            sent_fonts: HashSet::new(),
             renderer_info: None,
         })
     }
@@ -372,10 +378,14 @@ impl TabProcess {
     /// Render a frame to a recorded scene for the parent Vello renderer
     fn render_frame(&mut self) -> io::Result<()> {
         let animation_time = self.animation_time();
+        self.frame_id = self.frame_id.wrapping_add(1);
 
         let engine = &mut self.engine;
+        let (width, height) = engine.viewport.window_size;
+        let mut recorder = DisplayListRecorder::new(width, height, self.frame_id);
+
         if engine.dom.is_some() {
-            //todo engine.render(&mut painter, animation_time);
+            engine.render(&mut recorder, animation_time);
 
             let dom = engine.dom.as_ref().unwrap();
             if dom.animating() {
@@ -383,11 +393,14 @@ impl TabProcess {
             }
         }
 
-        let (width, height) = self.engine.viewport.window_size;
-        self.channel.send(&TabToParentMessage::SceneRendered {
-            width,
-            height,
-        })?;
+        let (frame, font_payloads) = recorder.into_frame_parts();
+        let fonts = font_payloads
+            .into_iter()
+            .filter(|font| self.sent_fonts.insert(font.font.clone()))
+            .collect();
+
+        self.channel
+            .send(&TabToParentMessage::DisplayListRendered { frame, fonts })?;
         Ok(())
     }
 }
