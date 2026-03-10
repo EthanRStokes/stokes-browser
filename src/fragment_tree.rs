@@ -23,43 +23,30 @@ use style::properties::generated::longhands::visibility::computed_value::T as Vi
 use style::properties::{longhands, ComputedValues};
 use style::values::computed::{BorderStyle, CSSPixelLength, OutlineStyle, Overflow};
 use style::values::generics::color::{GenericColor, GenericColorOrAuto};
+use taffy::{Point, Rect, Size};
 
 /// Serializable version of `taffy::Layout` with only the fields the renderer needs.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct FragmentLayout {
-    pub location_x: f32,
-    pub location_y: f32,
-    pub width: f32,
-    pub height: f32,
-    pub content_width: f32,
-    pub content_height: f32,
-    pub padding_top: f32,
-    pub padding_right: f32,
-    pub padding_bottom: f32,
-    pub padding_left: f32,
-    pub border_top: f32,
-    pub border_right: f32,
-    pub border_bottom: f32,
-    pub border_left: f32,
+    pub location: Point<f32>,
+    pub size: Size<f32>,
+    pub content_size: Size<f32>,
+    pub scrollbar_size: Size<f32>,
+    pub border: Rect<f32>,
+    pub padding: Rect<f32>,
+    pub margin: Rect<f32>,
 }
 
 impl FragmentLayout {
     pub fn from_taffy(layout: &taffy::Layout) -> Self {
         Self {
-            location_x: layout.location.x,
-            location_y: layout.location.y,
-            width: layout.size.width,
-            height: layout.size.height,
-            content_width: layout.content_size.width,
-            content_height: layout.content_size.height,
-            padding_top: layout.padding.top,
-            padding_right: layout.padding.right,
-            padding_bottom: layout.padding.bottom,
-            padding_left: layout.padding.left,
-            border_top: layout.border.top,
-            border_right: layout.border.right,
-            border_bottom: layout.border.bottom,
-            border_left: layout.border.left,
+            location: layout.location,
+            size: layout.size,
+            content_size: layout.content_size,
+            scrollbar_size: layout.scrollbar_size,
+            border: layout.border,
+            padding: layout.padding,
+            margin: layout.margin,
         }
     }
 
@@ -67,32 +54,13 @@ impl FragmentLayout {
     pub fn to_taffy(&self) -> taffy::Layout {
         taffy::Layout {
             order: 0,
-            location: taffy::Point {
-                x: self.location_x,
-                y: self.location_y,
-            },
-            size: taffy::Size {
-                width: self.width,
-                height: self.height,
-            },
-            content_size: taffy::Size {
-                width: self.content_width,
-                height: self.content_height,
-            },
-            scrollbar_size: taffy::Size::ZERO,
-            border: taffy::Rect {
-                top: self.border_top,
-                right: self.border_right,
-                bottom: self.border_bottom,
-                left: self.border_left,
-            },
-            padding: taffy::Rect {
-                top: self.padding_top,
-                right: self.padding_right,
-                bottom: self.padding_bottom,
-                left: self.padding_left,
-            },
-            margin: Default::default(), // TODO impl
+            location: self.location,
+            size: self.size,
+            content_size: self.content_size,
+            scrollbar_size: self.scrollbar_size,
+            border: self.border,
+            padding: self.padding,
+            margin: self.margin,
         }
     }
 }
