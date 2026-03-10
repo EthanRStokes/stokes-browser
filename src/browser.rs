@@ -537,6 +537,7 @@ impl BrowserApp {
                         scale_factor: fragment_tree.scale_factor,
                         width: fragment_tree.width,
                         height: fragment_tree.height,
+                        root_transform: page_offset,
                         font_cache: &tab.font_cache,
                     };
                     painter.push_clip_layer(page_offset, &page_clip);

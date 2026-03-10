@@ -6,12 +6,11 @@
 //! (clipping, layers, transforms, child ordering) and replaying per-node
 //! display commands.
 
-use crate::display_list::{DisplayCommand, DisplayFont};
+use crate::display_list::DisplayFont;
 use crate::fragment_tree::{
     FragmentNode, FragmentNodeKind, FragmentTree, SerializedOverflow,
 };
 use anyrender::PaintScene;
-use color::AlphaColor;
 use kurbo::{Affine, Point, Rect, Vec2};
 use peniko::{Color, Fill, Mix};
 use std::collections::HashMap;
@@ -28,6 +27,7 @@ pub struct FragmentTreeRenderer<'ft> {
     pub scale_factor: f64,
     pub width: u32,
     pub height: u32,
+    pub root_transform: Affine,
     pub font_cache: &'ft HashMap<DisplayFont, Arc<Vec<u8>>>,
 }
 
@@ -47,7 +47,7 @@ impl<'ft> FragmentTreeRenderer<'ft> {
         // Draw background color
         if let Some(bg_color) = self.tree.background_color {
             let rect = Rect::from_origin_size((0.0, 0.0), (bg_width as f64, bg_height as f64));
-            painter.fill(Fill::NonZero, Affine::IDENTITY, Color::new(bg_color), None, &rect);
+            painter.fill(Fill::NonZero, self.root_transform, Color::new(bg_color), None, &rect);
         }
 
         // Resolve fonts for display command replay
@@ -164,7 +164,7 @@ impl<'ft> FragmentTreeRenderer<'ft> {
         // Replay the per-node display commands (outline + outset box shadow are
         // drawn before the opacity/clip layer, so they are stored in
         // `pre_layer_commands`; everything else is in `element_commands`).
-        let transform = Affine::translate(position.to_vec2() * self.scale_factor);
+        let transform = self.root_transform * Affine::translate(position.to_vec2() * self.scale_factor);
 
         // Replay pre-layer commands (outline, outset box shadow)
         if let Some(commands) = self.tree.pre_layer_commands.get(&node_id) {
@@ -214,7 +214,7 @@ impl<'ft> FragmentTreeRenderer<'ft> {
             x: position.x - node.scroll_offset.x,
             y: position.y - node.scroll_offset.y,
         };
-        let scroll_transform = Affine::translate(scrolled_position.to_vec2() * self.scale_factor);
+        let scroll_transform = self.root_transform * Affine::translate(scrolled_position.to_vec2() * self.scale_factor);
 
         // Replay content commands (images, SVG, canvas, text input, inline text, markers)
         if let Some(commands) = self.tree.content_commands.get(&node_id) {
@@ -323,13 +323,13 @@ impl<'ft> FragmentTreeRenderer<'ft> {
             let draw_h = layout.size.height as f64 * self.scale_factor;
 
             let rect = Rect::from_origin_size((draw_x, draw_y), (draw_w, draw_h));
-            painter.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
+            painter.fill(Fill::NonZero, self.root_transform, color, None, &rect);
 
             let border_color =
                 Color::new([color.components[0], color.components[1], color.components[2], 0.8]);
             painter.stroke(
                 &kurbo::Stroke::new(1.0),
-                Affine::IDENTITY,
+                self.root_transform,
                 border_color,
                 None,
                 &rect,
