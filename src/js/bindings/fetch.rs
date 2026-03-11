@@ -509,6 +509,7 @@ unsafe extern "C" fn response_json(cx: *mut JSContext, argc: c_uint, vp: *mut JS
 }
 
 /// Response.blob() - Returns a Promise that resolves to a Blob (simplified implementation)
+// TODO Check if it works
 unsafe extern "C" fn response_blob(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
@@ -542,11 +543,14 @@ unsafe extern "C" fn response_blob(cx: *mut JSContext, argc: c_uint, vp: *mut JS
         JSPROP_ENUMERATE as u32,
     );
 
-    // FIXME: Blob.type should be set from the response's Content-Type header instead of being
-    // hardcoded to "text/plain". Retrieve from PENDING_RESPONSE.headers["content-type"].
+    // Set type from Content-Type header, stripping parameters (e.g. "; charset=utf-8")
+    let content_type = headers
+        .get("content-type")
+        .and_then(|ct| ct.split(';').next())
+        .map(|ct| ct.trim().to_string())
+        .unwrap_or_else(|| "text/plain".to_string());
     let type_name = CString::new("type").unwrap();
-    let type_str = "text/plain";
-    let type_utf16: Vec<u16> = type_str.encode_utf16().collect();
+    let type_utf16: Vec<u16> = content_type.encode_utf16().collect();
     rooted!(in(cx) let type_js_str = JS_NewUCStringCopyN(cx, type_utf16.as_ptr(), type_utf16.len()));
     rooted!(in(cx) let type_val = StringValue(&*type_js_str.get()));
     JS_DefineProperty(
