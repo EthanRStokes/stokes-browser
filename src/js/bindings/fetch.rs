@@ -136,7 +136,9 @@ unsafe extern "C" fn js_fetch(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) 
         // Get headers
         if let Some(headers_val) = get_property_value(cx, options.handle().into(), "headers") {
             if headers_val.is_object() {
-                // TODO: Parse headers object
+                // FIXME: Request headers object is parsed here but never applied to the curl request.
+                // Should iterate over the object's own enumerable properties and add each as an
+                // HTTP header via curl's header_list.
             }
         }
 
@@ -538,7 +540,8 @@ unsafe extern "C" fn response_blob(cx: *mut JSContext, argc: c_uint, vp: *mut JS
         JSPROP_ENUMERATE as u32,
     );
 
-    // Set type property
+    // FIXME: Blob.type should be set from the response's Content-Type header instead of being
+    // hardcoded to "text/plain". Retrieve from PENDING_RESPONSE.headers["content-type"].
     let type_name = CString::new("type").unwrap();
     let type_str = "text/plain";
     let type_utf16: Vec<u16> = type_str.encode_utf16().collect();
@@ -580,6 +583,9 @@ unsafe extern "C" fn response_array_buffer(cx: *mut JSContext, argc: c_uint, vp:
 
     // Create an ArrayBuffer with the body size
     // Note: We're using NewArrayBuffer which creates an uninitialized buffer
+    // FIXME: The ArrayBuffer is allocated with the correct size but the body bytes are never
+    // copied into it. Use JS_GetArrayBufferData (or similar) to obtain a mutable pointer to the
+    // buffer's backing store and write body_bytes into it so callers receive actual response data.
     let body_bytes = body.as_bytes();
     rooted!(in(cx) let array_buffer = mozjs::jsapi::NewArrayBuffer(cx, body_bytes.len()));
 

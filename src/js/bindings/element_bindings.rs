@@ -40,8 +40,10 @@ pub unsafe fn create_js_element_by_id(
     set_int_property(raw_cx, element.get(), "nodeType", 1)?; // ELEMENT_NODE
     set_string_property(raw_cx, element.get(), "id", id_attr)?;
     set_string_property(raw_cx, element.get(), "className", class_attr)?;
-    // TODO: innerHTML, outerHTML are stub values - should serialize/deserialize actual DOM content
+    // FIXME: innerHTML always returns "" instead of serializing the element's child nodes as HTML.
     set_string_property(raw_cx, element.get(), "innerHTML", "")?;
+    // FIXME: outerHTML returns a stub "<tag></tag>" instead of the element's full serialized HTML
+    // including its attributes and child subtree.
     set_string_property(raw_cx, element.get(), "outerHTML", &format!("<{0}></{0}>", tag_name.to_lowercase()))?;
     // Note: textContent will be defined as a property accessor below
 
@@ -153,6 +155,7 @@ pub unsafe fn create_js_element_by_id(
         define_function(raw_cx, class_list.get(), "contains", Some(class_list_contains), 1)?;
         define_function(raw_cx, class_list.get(), "replace", Some(class_list_replace), 2)?;
         // FIXME: classList.length is hardcoded to 0 - should reflect actual number of classes and update dynamically
+        // when add/remove/toggle/replace mutate the class list.
         set_int_property(raw_cx, class_list.get(), "length", 0)?;
 
         rooted!(in(raw_cx) let class_list_val = ObjectValue(class_list.get()));
@@ -259,6 +262,8 @@ pub unsafe fn create_js_element_by_id(
     }
 
     // Set sibling properties to null initially
+    // FIXME: firstChild, lastChild, previousSibling, and nextSibling are always null. They should
+    // be populated by looking up the node's actual siblings and first/last children in the DOM.
     rooted!(in(raw_cx) let null_val = NullValue());
     for name in &["firstChild", "lastChild", "previousSibling", "nextSibling"] {
         let cname = std::ffi::CString::new(*name).unwrap();
@@ -272,6 +277,8 @@ pub unsafe fn create_js_element_by_id(
     }
 
     // Create empty children and childNodes arrays
+    // FIXME: children and childNodes are always empty arrays. They should be populated with JS
+    // element wrappers for each actual child of this node in the DOM tree.
     rooted!(in(raw_cx) let children_array = create_empty_array(raw_cx));
     if !children_array.get().is_null() {
         rooted!(in(raw_cx) let children_val = ObjectValue(children_array.get()));
@@ -294,6 +301,9 @@ pub unsafe fn create_js_element_by_id(
     }
 
     // Set dimension properties
+    // FIXME: All element dimension/scroll properties are hardcoded to 0. They should reflect the
+    // element's actual layout geometry from the renderer (offsetWidth, offsetHeight, clientWidth,
+    // clientHeight) and its scroll position (scrollLeft, scrollTop, scrollWidth, scrollHeight).
     set_int_property(raw_cx, element.get(), "offsetWidth", 0)?;
     set_int_property(raw_cx, element.get(), "offsetHeight", 0)?;
     set_int_property(raw_cx, element.get(), "offsetLeft", 0)?;
@@ -673,6 +683,10 @@ unsafe extern "C" fn element_insert_before(raw_cx: *mut JSContext, argc: c_uint,
 
     println!("[JS] element.insertBefore() called");
 
+    // FIXME: The new node (args.get(0)) is not actually inserted before the reference node
+    // (args.get(1)) in the DOM. The parent's child list is never modified. Should call a DOM
+    // method analogous to `append_children` but with an index derived from the reference node's
+    // position among the parent's children.
     if argc > 0 {
         args.rval().set(*args.get(0));
     } else {
@@ -687,6 +701,8 @@ unsafe extern "C" fn element_replace_child(raw_cx: *mut JSContext, argc: c_uint,
 
     println!("[JS] element.replaceChild() called");
 
+    // FIXME: The new node (args.get(0)) is never swapped in for the old node (args.get(1)) in the
+    // DOM. Should remove the old child and insert the new one in its place.
     if argc > 1 {
         // Return the old child that was replaced
         args.rval().set(*args.get(1));
@@ -892,6 +908,8 @@ unsafe extern "C" fn element_add_event_listener(raw_cx: *mut JSContext, argc: c_
     };
 
     println!("[JS] element.addEventListener('{}') called", event_type);
+    // FIXME: The event listener (args.get(1)) is silently discarded and never stored.
+    // Events fired via dispatchEvent will not reach listeners registered here.
     args.rval().set(UndefinedValue());
     true
 }
@@ -907,6 +925,7 @@ unsafe extern "C" fn element_remove_event_listener(raw_cx: *mut JSContext, argc:
     };
 
     println!("[JS] element.removeEventListener('{}') called", event_type);
+    // FIXME: No listener registry exists, so this is a no-op.
     args.rval().set(UndefinedValue());
     true
 }
@@ -915,6 +934,8 @@ unsafe extern "C" fn element_remove_event_listener(raw_cx: *mut JSContext, argc:
 unsafe extern "C" fn element_dispatch_event(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     println!("[JS] element.dispatchEvent() called");
+    // FIXME: Always returns true without dispatching the event to any registered listeners.
+    // Should invoke all matching listeners on this element and its ancestors (bubbling phase).
     args.rval().set(BooleanValue(true));
     true
 }
@@ -948,7 +969,9 @@ unsafe extern "C" fn element_get_bounding_client_rect(raw_cx: *mut JSContext, ar
     let args = CallArgs::from_vp(vp, argc);
     println!("[JS] element.getBoundingClientRect() called");
 
-    // Return a DOMRect-like object
+    // FIXME: All DOMRect values are hardcoded to 0. Should query the renderer for the element's
+    // actual bounding box in viewport coordinates and populate x, y, width, height, top, right,
+    // bottom, left accordingly.
     rooted!(in(raw_cx) let rect = JS_NewPlainObject(raw_cx));
     if !rect.get().is_null() {
         let _ = set_int_property(raw_cx, rect.get(), "x", 0);
@@ -971,6 +994,7 @@ unsafe extern "C" fn element_get_client_rects(raw_cx: *mut JSContext, argc: c_ui
     let args = CallArgs::from_vp(vp, argc);
     println!("[JS] element.getClientRects() called");
 
+    // FIXME: Always returns an empty DOMRectList instead of the element's per-line-box rects.
     rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
     args.rval().set(ObjectValue(array.get()));
     true

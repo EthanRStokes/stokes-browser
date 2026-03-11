@@ -330,6 +330,8 @@ unsafe extern "C" fn performance_mark(raw_cx: *mut JSContext, argc: c_uint, vp: 
         }
     });
 
+    // FIXME: Should return a PerformanceMark object (with name, startTime, entryType, duration
+    // properties) per the Web Performance API spec, not undefined.
     args.rval().set(UndefinedValue());
     true
 }
@@ -372,6 +374,8 @@ unsafe extern "C" fn performance_measure(raw_cx: *mut JSContext, argc: c_uint, v
         }
     });
 
+    // FIXME: Should return a PerformanceMeasure object (with name, startTime, duration,
+    // entryType properties) per the Web Performance API spec, not undefined.
     args.rval().set(UndefinedValue());
     true
 }
@@ -451,7 +455,9 @@ unsafe extern "C" fn performance_get_entries_by_type(raw_cx: *mut JSContext, arg
         return true;
     }
 
-    // Add entries to array (simplified - just returns empty array for now)
+    // FIXME: `_entries` is fetched above but never written into `array`. Each entry should be
+    // serialized as a PerformanceEntry-like object {name, entryType, startTime, duration} and
+    // pushed into the array before returning.
     args.rval().set(ObjectValue(array.get()));
     true
 }
@@ -490,6 +496,9 @@ unsafe extern "C" fn performance_get_entries_by_name(raw_cx: *mut JSContext, arg
         return true;
     }
 
+    // FIXME: `_entries` is fetched above but never written into `array`. Each entry should be
+    // serialized as a PerformanceEntry-like object {name, entryType, startTime, duration} and
+    // pushed into the array before returning.
     args.rval().set(ObjectValue(array.get()));
     true
 }
@@ -505,6 +514,8 @@ unsafe extern "C" fn performance_get_entries(raw_cx: *mut JSContext, argc: c_uin
         return true;
     }
 
+    // FIXME: Should return all recorded marks and measures as an array of PerformanceEntry-like
+    // objects instead of always returning an empty array.
     args.rval().set(ObjectValue(array.get()));
     true
 }

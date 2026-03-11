@@ -451,6 +451,8 @@ unsafe fn setup_window(
     set_int_property(raw_cx, global, "scrollY", get_scroll_y())?;
     set_int_property(raw_cx, global, "pageXOffset", get_scroll_x())?;
     set_int_property(raw_cx, global, "pageYOffset", get_scroll_y())?;
+    // FIXME: devicePixelRatio is hardcoded to 1 even though get_device_pixel_ratio() returns the
+    // real scale factor from the DOM viewport. Should use that value instead.
     set_int_property(raw_cx, global, "devicePixelRatio", 1)?;
 
     Ok(())
@@ -642,6 +644,8 @@ unsafe fn setup_storage(raw_cx: *mut JSContext, global: *mut JSObject) -> Result
     define_function(raw_cx, local_storage.get(), "removeItem", Some(local_storage_remove_item), 1)?;
     define_function(raw_cx, local_storage.get(), "clear", Some(local_storage_clear), 0)?;
     define_function(raw_cx, local_storage.get(), "key", Some(local_storage_key), 1)?;
+    // FIXME: localStorage.length is set to a static 0 and is never updated when items are added
+    // or removed. Should be a property accessor backed by LOCAL_STORAGE.with(|s| s.borrow().len()).
     set_int_property(raw_cx, local_storage.get(), "length", 0)?;
 
     rooted!(in(raw_cx) let local_storage_val = ObjectValue(local_storage.get()));
@@ -665,6 +669,8 @@ unsafe fn setup_storage(raw_cx: *mut JSContext, global: *mut JSObject) -> Result
     define_function(raw_cx, session_storage.get(), "removeItem", Some(session_storage_remove_item), 1)?;
     define_function(raw_cx, session_storage.get(), "clear", Some(session_storage_clear), 0)?;
     define_function(raw_cx, session_storage.get(), "key", Some(session_storage_key), 1)?;
+    // FIXME: sessionStorage.length is set to a static 0 and is never updated when items are added
+    // or removed. Should be a property accessor backed by SESSION_STORAGE.with(|s| s.borrow().len()).
     set_int_property(raw_cx, session_storage.get(), "length", 0)?;
 
     rooted!(in(raw_cx) let session_storage_val = ObjectValue(session_storage.get()));
@@ -1388,6 +1394,8 @@ unsafe extern "C" fn window_confirm(raw_cx: *mut JSContext, argc: c_uint, vp: *m
     };
 
     println!("[JS] window.confirm('{}') called - returning false", message);
+    // FIXME: window.confirm() always returns false instead of displaying a dialog to the user
+    // and returning their choice. Should dispatch a confirmation dialog via the browser UI.
     args.rval().set(BooleanValue(false));
     true
 }
@@ -1403,6 +1411,8 @@ unsafe extern "C" fn window_prompt(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
     };
 
     println!("[JS] window.prompt('{}') called - returning null", message);
+    // FIXME: window.prompt() always returns null (as if the user dismissed the dialog) instead of
+    // displaying a text-input dialog and returning the entered string, or null on cancel.
     args.rval().set(mozjs::jsval::NullValue());
     true
 }
@@ -1411,6 +1421,9 @@ unsafe extern "C" fn window_prompt(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
 unsafe extern "C" fn window_request_animation_frame(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     println!("[JS] requestAnimationFrame called");
+    // FIXME: The callback (args.get(0)) is never stored or invoked. requestAnimationFrame should
+    // schedule the callback to be called before the next paint, passing the current DOMHighResTimeStamp.
+    // The returned handle ID should also be unique so cancelAnimationFrame can identify it.
     args.rval().set(Int32Value(1));
     true
 }
@@ -1428,6 +1441,9 @@ unsafe extern "C" fn window_get_computed_style(raw_cx: *mut JSContext, argc: c_u
     let args = CallArgs::from_vp(vp, argc);
     println!("[JS] getComputedStyle called");
 
+    // FIXME: Returns a stub CSSStyleDeclaration whose getPropertyValue always returns "".
+    // A correct implementation must resolve the cascade (inherited styles, stylesheet rules,
+    // inline styles) for the target element and return the computed value for each property.
     rooted!(in(raw_cx) let style = JS_NewPlainObject(raw_cx));
     if !style.get().is_null() {
         let _ = define_function(raw_cx, style.get(), "getPropertyValue", Some(style_get_property_value), 1);
@@ -1449,6 +1465,8 @@ unsafe extern "C" fn window_add_event_listener(raw_cx: *mut JSContext, argc: c_u
     };
 
     println!("[JS] window.addEventListener('{}') called", event_type);
+    // FIXME: The event listener (args.get(1)) is silently discarded and never registered.
+    // Events like "resize", "scroll", "load", "DOMContentLoaded" will never fire.
     args.rval().set(UndefinedValue());
     true
 }
@@ -1464,6 +1482,7 @@ unsafe extern "C" fn window_remove_event_listener(raw_cx: *mut JSContext, argc: 
     };
 
     println!("[JS] window.removeEventListener('{}') called", event_type);
+    // FIXME: No listener registry exists, so nothing is removed. This is a no-op.
     args.rval().set(UndefinedValue());
     true
 }
@@ -1472,6 +1491,8 @@ unsafe extern "C" fn window_remove_event_listener(raw_cx: *mut JSContext, argc: 
 unsafe extern "C" fn window_scroll_to(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     println!("[JS] window.scrollTo called");
+    // FIXME: Does not update the DOM viewport scroll position or trigger scroll events.
+    // Should update DOM_REF viewport_scroll to the given (x, y) coordinates.
     args.rval().set(UndefinedValue());
     true
 }
@@ -1480,6 +1501,8 @@ unsafe extern "C" fn window_scroll_to(raw_cx: *mut JSContext, argc: c_uint, vp: 
 unsafe extern "C" fn window_scroll_by(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     println!("[JS] window.scrollBy called");
+    // FIXME: Does not update the DOM viewport scroll position or trigger scroll events.
+    // Should offset DOM_REF viewport_scroll by the given (dx, dy) values.
     args.rval().set(UndefinedValue());
     true
 }
@@ -1500,10 +1523,14 @@ unsafe extern "C" fn window_atob(raw_cx: *mut JSContext, argc: c_uint, vp: *mut 
             if let Ok(s) = String::from_utf8(decoded) {
                 args.rval().set(create_js_string(raw_cx, &s));
             } else {
+                // FIXME: Non-UTF-8 decoded bytes should be returned as a Latin-1 string (each byte
+                // as a code point), not silently replaced with an empty string.
                 args.rval().set(create_js_string(raw_cx, ""));
             }
         }
         Err(_) => {
+            // FIXME: Should throw a DOMException with name "InvalidCharacterError" instead of
+            // returning an empty string when the input is not valid base64.
             args.rval().set(create_js_string(raw_cx, ""));
         }
     }
@@ -1771,6 +1798,7 @@ fn approx_eq(a: f32, b: f32) -> bool {
 unsafe extern "C" fn location_reload(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     println!("[JS] location.reload() called");
+    // FIXME: Does not actually reload the page. Should trigger a navigation to the current URL.
     args.rval().set(UndefinedValue());
     true
 }
@@ -1786,6 +1814,8 @@ unsafe extern "C" fn location_assign(raw_cx: *mut JSContext, argc: c_uint, vp: *
     };
 
     println!("[JS] location.assign('{}') called", url);
+    // FIXME: Does not navigate to the given URL. Should trigger a browser navigation to `url`,
+    // pushing a new entry onto the session history.
     args.rval().set(UndefinedValue());
     true
 }
@@ -1801,6 +1831,8 @@ unsafe extern "C" fn location_replace(raw_cx: *mut JSContext, argc: c_uint, vp: 
     };
 
     println!("[JS] location.replace('{}') called", url);
+    // FIXME: Does not navigate to the given URL. Should replace the current history entry with
+    // `url` without adding a new entry to the session history.
     args.rval().set(UndefinedValue());
     true
 }

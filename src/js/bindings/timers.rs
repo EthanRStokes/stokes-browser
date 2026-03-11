@@ -167,6 +167,10 @@ pub fn setup_timers(runtime: &mut JsRuntime, timer_manager: Rc<TimerManager>) ->
         unsafe {
             let argc = args.argc_;
             // Get callback (first argument)
+            // FIXME: Only string callbacks are supported. When a function object is passed (the
+            // common case), it is converted to the literal string "[function]" which will throw a
+            // SyntaxError when executed. Function objects should be rooted and stored separately,
+            // then invoked via JS_CallFunctionValue when the timer fires.
             let callback_code = if argc > 0 {
                 let callback_val = *args.get(0);
                 if callback_val.is_string() {
@@ -234,6 +238,10 @@ pub fn setup_timers(runtime: &mut JsRuntime, timer_manager: Rc<TimerManager>) ->
         unsafe {
             let argc = args.argc_;
             // Get callback (first argument)
+            // FIXME: Only string callbacks are supported. When a function object is passed (the
+            // common case), it is converted to the literal string "[function]" which will throw a
+            // SyntaxError when executed. Function objects should be rooted and stored separately,
+            // then invoked via JS_CallFunctionValue each time the interval fires.
             let callback_code = if argc > 0 {
                 let callback_val = *args.get(0);
                 if callback_val.is_string() {
@@ -309,8 +317,9 @@ unsafe fn js_value_to_string(cx: *mut RawJSContext, val: JSVal) -> String {
 
         jsstr_to_string(cx, NonNull::new(str_val.get()).unwrap())
     } else if val.is_object() && !val.is_null() {
-        // For function objects, we'll just return a placeholder
-        // In a real implementation, we'd store the function object
+        // FIXME: Function objects are replaced with the inert string "[function]". This string
+        // cannot be eval'd, so setTimeout(fn, 0) will silently fail to execute the callback.
+        // Should store the JS function value (properly rooted) and call it directly.
         "[function]".to_string()
     } else {
         String::new()
