@@ -8,6 +8,7 @@ mod shadow;
 mod gradient;
 mod sizing;
 pub mod painter;
+mod form;
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -31,6 +32,8 @@ use style::properties::ComputedValues;
 use style::servo_arc::Arc;
 use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, OutlineStyle, Overflow};
 use style::values::generics::color::{GenericColor, GenericColorOrAuto};
+use style::values::generics::image::GenericImage;
+use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use taffy::Layout;
 use painter::ScenePainter;
 use crate::renderer::background::{to_image_quality, to_peniko_image};
@@ -449,6 +452,7 @@ impl HtmlRenderer<'_> {
                     element.draw_image(painter);
                     element.draw_svg(painter);
                     element.draw_canvas(painter);
+                    element.draw_input(painter);
                     element.draw_text_input_text(painter, position);
                     element.draw_inline_layout(painter, position);
                     element.draw_marker(painter, position);
