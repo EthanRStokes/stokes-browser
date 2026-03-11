@@ -2,13 +2,48 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
-use blitz_net::ProviderError;
 use blitz_traits::net::{AbortSignal, Body, Entry, NetHandler, NetProvider, Request};
 use bytes::Bytes;
 use curl::easy::{Easy2, Handler, List, WriteError};
+use curl::Error;
 use data_url::DataUrl;
 use log::warn;
 use tokio::runtime::Handle;
+
+#[derive(Debug)]
+pub enum ProviderError {
+    Abort,
+    Io(std::io::Error),
+    DataUrl(data_url::DataUrlError),
+    DataUrlBase64(data_url::forgiving_base64::InvalidBase64),
+    ReqwestError(Error),
+    #[cfg(feature = "cache")]
+    ReqwestMiddlewareError(reqwest_middleware::Error),
+}
+
+impl From<std::io::Error> for ProviderError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl From<data_url::DataUrlError> for ProviderError {
+    fn from(value: data_url::DataUrlError) -> Self {
+        Self::DataUrl(value)
+    }
+}
+
+impl From<data_url::forgiving_base64::InvalidBase64> for ProviderError {
+    fn from(value: data_url::forgiving_base64::InvalidBase64) -> Self {
+        Self::DataUrlBase64(value)
+    }
+}
+
+impl From<Error> for ProviderError {
+    fn from(value: Error) -> Self {
+        Self::ReqwestError(value)
+    }
+}
 
 pub struct StokesNetProvider {
     rt: Handle,
@@ -138,7 +173,12 @@ impl StokesNetProvider {
                 easy.follow_location(true).unwrap();
                 easy.useragent(user_agent).unwrap();
                 Self::apply_request_method(&mut easy, &request);
-                easy.perform().unwrap();
+                match easy.perform() {
+                    Ok(_) => {}
+                    Err(err) => {
+                        return Err(err.into());
+                    }
+                }
 
                 (request.url.to_string(), Bytes::from(easy.get_ref().0.clone()))
             }
