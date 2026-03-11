@@ -219,15 +219,6 @@ impl FragmentTreeWebRenderEncoder<'_> {
             return true;
         }
 
-        let is_text_input = node
-            .element_data
-            .as_ref()
-            .map(|e| e.has_text_input)
-            .unwrap_or(false);
-        if is_text_input {
-            return true;
-        }
-
         let layout = node.final_layout.to_taffy();
         let position = location + Vec2::new(layout.location.x as f64, layout.location.y as f64);
 
@@ -314,7 +305,7 @@ impl FragmentTreeWebRenderEncoder<'_> {
             return true;
         };
 
-        if commands_need_rasterization(commands) {
+        if commands_need_rasterization(commands, base_transform) {
             return self.rasterize_commands(commands, base_transform);
         }
 
@@ -443,7 +434,7 @@ impl FragmentTreeWebRenderEncoder<'_> {
                 };
                 let image_rect = Rect::new(0.0, 0.0, image.width as f64, image.height as f64);
                 let bounds = transform_rect_bbox(base_transform * *transform, image_rect);
-                self.push_image(bounds, image_key);
+                self.push_image(bounds, image_key, image_alpha_type(image));
                 true
             }
             _ => true, // skip all other command types
@@ -486,7 +477,7 @@ impl FragmentTreeWebRenderEncoder<'_> {
         let Some(image_key) = self.register_surface_image(&mut surface, width, height) else {
             return false;
         };
-        self.push_image(raster_bounds, image_key);
+        self.push_image(raster_bounds, image_key, AlphaType::PremultipliedAlpha);
         true
     }
 
@@ -538,7 +529,7 @@ impl FragmentTreeWebRenderEncoder<'_> {
         self.builder.push_rect(&common, bounds, color);
     }
 
-    fn push_image(&mut self, bounds: Rect, image_key: ImageKey) {
+    fn push_image(&mut self, bounds: Rect, image_key: ImageKey, alpha_type: AlphaType) {
         if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
             return;
         }
@@ -554,7 +545,7 @@ impl FragmentTreeWebRenderEncoder<'_> {
             &common,
             bounds,
             ImageRendering::Auto,
-            AlphaType::PremultipliedAlpha,
+            alpha_type,
             image_key,
             ColorF::WHITE,
         );
@@ -567,7 +558,7 @@ impl FragmentTreeWebRenderEncoder<'_> {
             peniko::ImageFormat::Bgra8 => ImageFormat::BGRA8,
             _ => return None,
         };
-        let flags = ImageDescriptorFlags::IS_OPAQUE;
+        let flags = ImageDescriptorFlags::empty();
         let descriptor = ImageDescriptor::new(
             image.width as i32,
             image.height as i32,
@@ -628,37 +619,101 @@ fn resolve_fonts(tree: &FragmentTree) -> Vec<Option<peniko::FontData>> {
         .collect()
 }
 
-fn commands_need_rasterization(commands: &[DisplayCommand]) -> bool {
-    commands.iter().any(|command| !supports_direct_encoding(command))
+fn commands_need_rasterization(commands: &[DisplayCommand], base_transform: Affine) -> bool {
+    commands
+        .iter()
+        .any(|command| !supports_direct_encoding(command, base_transform))
 }
 
-fn supports_direct_encoding(command: &DisplayCommand) -> bool {
+fn supports_direct_encoding(command: &DisplayCommand, base_transform: Affine) -> bool {
     match command {
         DisplayCommand::Fill {
             brush,
             brush_transform,
             shape,
+            transform,
             ..
-        } => {
-            matches!(brush, DisplayBrush::Solid(_))
-                && brush_transform.is_none()
-                && matches!(shape, DisplayShape::Rect(_) | DisplayShape::Path(_))
-        }
+        } => supports_direct_fill(brush, *brush_transform, shape, base_transform * *transform),
         DisplayCommand::DrawGlyphs {
             style,
             brush,
             glyph_transform,
             normalized_coords,
+            transform,
             ..
-        } => {
-            matches!(style, DisplayStyle::Fill(_))
-                && matches!(brush, DisplayBrush::Solid(_))
-                && glyph_transform.is_none()
-                && normalized_coords.is_empty()
+        } => supports_direct_glyphs(
+            style,
+            brush,
+            *glyph_transform,
+            normalized_coords,
+            base_transform * *transform,
+        ),
+        DisplayCommand::DrawImage { image, transform } => {
+            supports_direct_image(image, base_transform * *transform)
         }
-        DisplayCommand::DrawImage { .. } => true,
         _ => false,
     }
+}
+
+fn supports_direct_fill(
+    brush: &DisplayBrush,
+    brush_transform: Option<Affine>,
+    shape: &DisplayShape,
+    transform: Affine,
+) -> bool {
+    if !matches!(brush, DisplayBrush::Solid(_)) || brush_transform.is_some() {
+        return false;
+    }
+
+    let rect = match shape {
+        DisplayShape::Rect(rect) => Some(*rect),
+        DisplayShape::Path(path) => match classify_fill_path(path) {
+            FillPathSupport::NoOp | FillPathSupport::Rect(_) => Some(Rect::ZERO),
+            FillPathSupport::Unsupported => None,
+        },
+        DisplayShape::RoundedRect(_) => None,
+    };
+
+    rect.is_some() && translated_rect(transform, rect.unwrap_or(Rect::ZERO)).is_some()
+}
+
+fn supports_direct_glyphs(
+    style: &DisplayStyle,
+    brush: &DisplayBrush,
+    glyph_transform: Option<Affine>,
+    normalized_coords: &[anyrender::NormalizedCoord],
+    transform: Affine,
+) -> bool {
+    matches!(style, DisplayStyle::Fill(_))
+        && matches!(brush, DisplayBrush::Solid(_))
+        && glyph_transform.is_none()
+        && normalized_coords.is_empty()
+        && is_translation(transform)
+}
+
+fn supports_direct_image(image: &DisplayImageBrush, transform: Affine) -> bool {
+    matches!(image.format, peniko::ImageFormat::Rgba8 | peniko::ImageFormat::Bgra8)
+        && is_axis_aligned_scale_translate(transform)
+}
+
+fn image_alpha_type(image: &DisplayImageBrush) -> AlphaType {
+    match image.alpha_type {
+        peniko::ImageAlphaType::AlphaPremultiplied => AlphaType::PremultipliedAlpha,
+        peniko::ImageAlphaType::Alpha => AlphaType::Alpha,
+    }
+}
+
+fn is_translation(transform: Affine) -> bool {
+    let [a, b, c, d, _, _] = transform.as_coeffs();
+    (a - 1.0).abs() <= AFFINE_EPSILON
+        && b.abs() <= AFFINE_EPSILON
+        && c.abs() <= AFFINE_EPSILON
+        && (d - 1.0).abs() <= AFFINE_EPSILON
+}
+
+fn is_axis_aligned_scale_translate(transform: Affine) -> bool {
+    let [_, b, c, _, _, _] = transform.as_coeffs();
+    b.abs() <= AFFINE_EPSILON && c.abs() <= AFFINE_EPSILON
 }
 
 fn command_list_bounds(commands: &[DisplayCommand], base_transform: Affine) -> Option<Rect> {
@@ -1068,9 +1123,12 @@ fn glyph_bounds(
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_fill_path, FillPathSupport};
-    use crate::display_list::DisplayPathEl;
-    use kurbo::Rect;
+    use super::{
+        classify_fill_path, commands_need_rasterization, supports_direct_image, FillPathSupport,
+    };
+    use crate::display_list::{DisplayBrush, DisplayCommand, DisplayImageBrush, DisplayPathEl, DisplayShape};
+    use kurbo::{Affine, Rect};
+    use peniko::{Extend, Fill, ImageAlphaType, ImageFormat, ImageQuality};
 
     #[test]
     fn degenerate_page_edge_path_is_treated_as_no_op() {
@@ -1122,6 +1180,81 @@ mod tests {
         ];
 
         assert_eq!(classify_fill_path(&path), FillPathSupport::Unsupported);
+    }
+
+    #[test]
+    fn brush_transforms_force_raster_fallback() {
+        let commands = vec![DisplayCommand::Fill {
+            style: Fill::NonZero,
+            transform: Affine::IDENTITY,
+            brush: DisplayBrush::Solid([1.0, 0.0, 0.0, 1.0]),
+            brush_transform: Some(Affine::translate((5.0, 8.0))),
+            shape: DisplayShape::Rect(Rect::new(0.0, 0.0, 10.0, 10.0)),
+        }];
+
+        assert!(commands_need_rasterization(&commands, Affine::IDENTITY));
+    }
+
+    #[test]
+    fn unsupported_fill_paths_force_raster_fallback() {
+        let commands = vec![DisplayCommand::Fill {
+            style: Fill::NonZero,
+            transform: Affine::IDENTITY,
+            brush: DisplayBrush::Solid([1.0, 0.0, 0.0, 1.0]),
+            brush_transform: None,
+            shape: DisplayShape::Path(vec![
+                DisplayPathEl::MoveTo((0.0, 0.0)),
+                DisplayPathEl::LineTo((10.0, 10.0)),
+                DisplayPathEl::LineTo((0.0, 10.0)),
+                DisplayPathEl::ClosePath,
+            ]),
+        }];
+
+        assert!(commands_need_rasterization(&commands, Affine::IDENTITY));
+    }
+
+    #[test]
+    fn rotated_images_force_raster_fallback() {
+        let image = DisplayImageBrush {
+            data: vec![255; 4],
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::AlphaPremultiplied,
+            width: 1,
+            height: 1,
+            x_extend: Extend::Pad,
+            y_extend: Extend::Pad,
+            quality: ImageQuality::Low,
+            alpha: 1.0,
+        };
+
+        assert!(!supports_direct_image(&image, Affine::rotate(0.5)));
+
+        let commands = vec![DisplayCommand::DrawImage {
+            image,
+            transform: Affine::rotate(0.5),
+        }];
+
+        assert!(commands_need_rasterization(&commands, Affine::IDENTITY));
+    }
+
+    #[test]
+    fn axis_aligned_rgba_images_can_stay_direct() {
+        let image = DisplayImageBrush {
+            data: vec![255; 16],
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 2,
+            height: 2,
+            x_extend: Extend::Pad,
+            y_extend: Extend::Pad,
+            quality: ImageQuality::Low,
+            alpha: 1.0,
+        };
+
+        assert!(supports_direct_image(
+            &image,
+            Affine::scale_non_uniform(2.0, 3.0).then_translate((4.0, 5.0).into())
+        ));
     }
 }
 
