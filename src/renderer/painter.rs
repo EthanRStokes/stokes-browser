@@ -190,6 +190,56 @@ impl ScenePainter<'_> {
         }
     }
 
+    pub(crate) fn draw_glyphs_with_brush_transform<'a>(
+        &mut self,
+        #[allow(unused_mut)] mut font: &'a peniko::FontData,
+        font_size: f32,
+        hint: bool,
+        normalized_coords: &'a [anyrender::NormalizedCoord],
+        style: impl Into<peniko::StyleRef<'a>>,
+        brush: impl Into<anyrender::PaintRef<'a>>,
+        brush_transform: Option<kurbo::Affine>,
+        brush_alpha: f32,
+        transform: kurbo::Affine,
+        glyph_transform: Option<kurbo::Affine>,
+        glyphs: impl Iterator<Item = anyrender::Glyph>,
+    ) {
+        self.set_matrix(transform);
+
+        if let Some(glyph_transform) = glyph_transform {
+            self.concat_matrix(glyph_transform);
+        }
+
+        self.reset_paint();
+        self.set_paint_brush(brush, brush_transform);
+        self.set_paint_style(style);
+        self.set_paint_alpha(brush_alpha);
+
+        let Some(font) = self.get_or_cache_font(font, normalized_coords, font_size, hint) else {
+            return;
+        };
+
+        let (min_size, _) = glyphs.size_hint();
+        self.cache.glyph_id_buf.reserve(min_size);
+        self.cache.glyph_pos_buf.reserve(min_size);
+
+        for glyph in glyphs {
+            self.cache.glyph_id_buf.push(GlyphId::from(glyph.id as u16));
+            self.cache.glyph_pos_buf.push(skia_safe::Point::new(glyph.x, glyph.y));
+        }
+
+        self.inner.draw_glyphs_at(
+            &self.cache.glyph_id_buf[..],
+            GlyphPositions::Points(&self.cache.glyph_pos_buf[..]),
+            skia_safe::Point::new(0.0, 0.0),
+            &font,
+            &self.cache.paint,
+        );
+
+        self.cache.glyph_id_buf.clear();
+        self.cache.glyph_pos_buf.clear();
+    }
+
     pub(crate) fn get_or_cache_font(
         &mut self,
         font: &peniko::FontData,
@@ -449,40 +499,19 @@ impl PaintScene for ScenePainter<'_> {
         glyph_transform: Option<kurbo::Affine>,
         glyphs: impl Iterator<Item = anyrender::Glyph>,
     ) {
-        self.set_matrix(transform);
-
-        if let Some(glyph_transform) = glyph_transform {
-            self.concat_matrix(glyph_transform);
-        }
-
-        self.reset_paint();
-        self.set_paint_brush(brush, None);
-        self.set_paint_style(style);
-        self.set_paint_alpha(brush_alpha);
-
-        let Some(font) = self.get_or_cache_font(font, normalized_coords, font_size, hint) else {
-            return;
-        };
-
-        let (min_size, _) = glyphs.size_hint();
-        self.cache.glyph_id_buf.reserve(min_size);
-        self.cache.glyph_pos_buf.reserve(min_size);
-
-        for glyph in glyphs {
-            self.cache.glyph_id_buf.push(GlyphId::from(glyph.id as u16));
-            self.cache.glyph_pos_buf.push(skia_safe::Point::new(glyph.x, glyph.y));
-        }
-
-        self.inner.draw_glyphs_at(
-            &self.cache.glyph_id_buf[..],
-            GlyphPositions::Points(&self.cache.glyph_pos_buf[..]),
-            skia_safe::Point::new(0.0, 0.0),
-            &font,
-            &self.cache.paint,
+        self.draw_glyphs_with_brush_transform(
+            font,
+            font_size,
+            hint,
+            normalized_coords,
+            style,
+            brush,
+            None,
+            brush_alpha,
+            transform,
+            glyph_transform,
+            glyphs,
         );
-
-        self.cache.glyph_id_buf.clear();
-        self.cache.glyph_pos_buf.clear();
     }
 
     fn draw_box_shadow(

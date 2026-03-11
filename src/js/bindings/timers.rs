@@ -104,7 +104,7 @@ impl TimerManager {
         // Execute callbacks for ready timers
         for (id, callback_code, repeating) in ready_timers {
             // Execute the callback code
-            if let Err(e) = runtime.execute(&callback_code) {
+            if let Err(e) = runtime.execute(&callback_code, false) {
                 eprintln!("Timer callback error: {}", e);
             }
 

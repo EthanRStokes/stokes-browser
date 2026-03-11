@@ -12,7 +12,7 @@ pub mod painter;
 use std::any::Any;
 use std::collections::HashMap;
 use crate::dom::node::{ListItemLayout, ListItemLayoutPosition, Marker, SpecialElementData, TextInputData};
-use crate::dom::{Dom, DomNode, ElementData, ImageData, NodeData};
+use crate::dom::{Dom, DomNode, ElementData, NodeData};
 use crate::renderer::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
 use crate::renderer::layers::maybe_with_layer;
 use crate::renderer::text::{draw_text_selection, stroke_text, SELECTION_COLOR};
@@ -29,7 +29,7 @@ use style::properties::generated::longhands::visibility::computed_value::T as Vi
 use style::properties::style_structs::Font;
 use style::properties::ComputedValues;
 use style::servo_arc::Arc;
-use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, Color, OutlineStyle, Overflow};
+use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, OutlineStyle, Overflow};
 use style::values::generics::color::{GenericColor, GenericColorOrAuto};
 use taffy::Layout;
 use painter::ScenePainter;
@@ -594,7 +594,7 @@ impl Element<'_> {
         }
     }
 
-    fn draw_marker(&self, painter: &mut impl PaintScene, pos: Point) {
+    fn draw_marker(&self, painter: &mut ScenePainter, pos: Point) {
         if let Some(ListItemLayout {
                         marker,
                         position: ListItemLayoutPosition::Outside(layout),
@@ -629,7 +629,13 @@ impl Element<'_> {
             let transform =
                 Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor));
 
-            stroke_text(painter, layout.lines(), self.context.dom, transform);
+            stroke_text(
+                painter,
+                layout.lines(),
+                self.context.dom,
+                transform,
+                self.scale_factor,
+            );
         }
     }
 
@@ -657,6 +663,7 @@ impl Element<'_> {
                 text_layout.layout.lines(),
                 self.context.dom,
                 transform,
+                self.scale_factor,
             )
         }
     }
@@ -705,6 +712,7 @@ impl Element<'_> {
                 input_data.editor.try_layout().unwrap().lines(),
                 self.context.dom,
                 transform,
+                self.scale_factor,
             );
         }
     }

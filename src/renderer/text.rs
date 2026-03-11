@@ -1,18 +1,65 @@
+use crate::renderer::gradient::to_peniko_gradient;
+use crate::renderer::painter::ScenePainter;
 use crate::dom::Dom;
 use crate::ui::TextBrush;
-use anyrender::PaintScene;
-use kurbo::{Affine, Shape, Stroke};
+use anyrender::{Paint, PaintScene};
+use kurbo::{Affine, Rect, Stroke};
 use parley::{Affinity, Cursor, Layout, Line, PositionedLayoutItem, Selection};
 use peniko::{Color, Fill};
+use std::collections::HashMap;
+use style::values::generics::image::GenericImage;
 use style::values::specified::TextDecorationLine;
 use crate::renderer::painter::ToColorColor;
 
 pub fn stroke_text<'a>(
-    painter: &mut impl PaintScene,
+    painter: &mut ScenePainter,
     lines: impl Iterator<Item = Line<'a, TextBrush>>,
     dom: &Dom,
     transform: Affine,
+    scale_factor: f64,
 ) {
+    let lines: Vec<_> = lines.collect();
+    let mut inline_gradient_bounds: HashMap<usize, Rect> = HashMap::new();
+
+    for line in &lines {
+        for item in line.items() {
+            let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                continue;
+            };
+
+            let node_id = glyph_run.style().brush.id;
+            let Some(styles) = dom
+                .get_node(node_id)
+                .and_then(|node| node.primary_styles())
+            else {
+                continue;
+            };
+
+            let has_gradient = styles
+                .get_background()
+                .background_image
+                .0
+                .iter()
+                .any(|image| matches!(image, GenericImage::Gradient(_)));
+            if !has_gradient {
+                continue;
+            }
+
+            let metrics = glyph_run.run().metrics();
+            let run_rect = Rect::new(
+                glyph_run.offset() as f64,
+                (glyph_run.baseline() - metrics.ascent) as f64,
+                (glyph_run.offset() + glyph_run.advance()) as f64,
+                (glyph_run.baseline() + metrics.descent) as f64,
+            );
+
+            inline_gradient_bounds
+                .entry(node_id)
+                .and_modify(|bounds| *bounds = bounds.union(run_rect))
+                .or_insert(run_rect);
+        }
+    }
+
     for line in lines {
         for item in line.items() {
             if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
@@ -46,22 +93,65 @@ pub fn stroke_text<'a>(
                 let has_strikethrough =
                     text_decoration_line.contains(TextDecorationLine::LINE_THROUGH);
 
-                painter.draw_glyphs(
-                    font,
-                    font_size,
-                    true, // hint
-                    run.normalized_coords(),
-                    Fill::NonZero,
-                    &anyrender::Paint::from(text_color),
-                    1.0, // alpha
-                    transform,
-                    glyph_xform,
-                    glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
-                        id: glyph.id as _,
-                        x: glyph.x,
-                        y: glyph.y,
-                    }),
-                );
+                let gradient_bounds = inline_gradient_bounds.get(&style.brush.id).copied();
+                let mut painted_gradient_glyphs = false;
+
+                if let Some(bounds) = gradient_bounds {
+                    let current_color = styles.clone_color();
+
+                    for bg_image in styles.get_background().background_image.0.iter().rev() {
+                        let GenericImage::Gradient(gradient) = bg_image else {
+                            continue;
+                        };
+
+                        let (peniko_gradient, gradient_transform) = to_peniko_gradient(
+                            gradient,
+                            bounds,
+                            bounds,
+                            scale_factor,
+                            &current_color,
+                        );
+
+                        painter.draw_glyphs_with_brush_transform(
+                            font,
+                            font_size,
+                            true, // hint
+                            run.normalized_coords(),
+                            Fill::NonZero,
+                            Paint::Gradient(&peniko_gradient),
+                            gradient_transform,
+                            1.0, // alpha
+                            transform,
+                            glyph_xform,
+                            glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
+                                id: glyph.id as _,
+                                x: glyph.x,
+                                y: glyph.y,
+                            }),
+                        );
+
+                        painted_gradient_glyphs = true;
+                    }
+                }
+
+                if !painted_gradient_glyphs {
+                    painter.draw_glyphs(
+                        font,
+                        font_size,
+                        true, // hint
+                        run.normalized_coords(),
+                        Fill::NonZero,
+                        &anyrender::Paint::from(text_color),
+                        1.0, // alpha
+                        transform,
+                        glyph_xform,
+                        glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
+                            id: glyph.id as _,
+                            x: glyph.x,
+                            y: glyph.y,
+                        }),
+                    );
+                }
 
                 let mut draw_decoration_line =
                     |offset: f32, size: f32, brush: &anyrender::Paint| {

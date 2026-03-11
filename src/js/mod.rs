@@ -13,9 +13,9 @@ pub type JsResult<T> = Result<T, String>;
 const STACK_SIZE: usize = 16 * 1024 * 1024; // 16MB
 
 /// Execute JavaScript code in the runtime
-pub fn execute_script(runtime: &mut JsRuntime, code: &str) -> JsResult<()> {
+pub fn execute_script(runtime: &mut JsRuntime, code: &str, debug_js: bool) -> JsResult<()> {
     stacker::grow(STACK_SIZE, || {
-        runtime.execute_script(code)
+        runtime.execute_script(code, debug_js)
     })
 }
 

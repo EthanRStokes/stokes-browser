@@ -16,7 +16,7 @@ use style::properties::generated::longhands::position::computed_value::T as Posi
 use style::selector_parser::RestyleDamage;
 use style::servo::url::ComputedUrl;
 use style::shared_lock::StylesheetGuards;
-use style::values::computed::{Content, ContentItem, Display, Float, PositionProperty};
+use style::values::computed::{Content, ContentItem, Display, Float, Image, PositionProperty};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use taffy::{compute_root_layout, round_layout, AvailableSpace, NodeId};
 use crate::layout::list::collect_list_item_children;
@@ -1134,7 +1134,7 @@ impl Dom {
                 for idx in 0..len {
                     let background_image = &style_bgs[idx];
                     let new_bg_image = match background_image {
-                        style::values::computed::image::Image::Url(ComputedUrl::Valid(new_url)) => {
+                        Image::Url(ComputedUrl::Valid(new_url)) => {
                             let old_bg_image = elem_bgs[idx].as_ref();
                             let old_bg_image_url = old_bg_image.map(|data| &data.url);
                             if old_bg_image_url.is_some_and(|old_url| **new_url == **old_url) {
@@ -1174,6 +1174,12 @@ impl Dom {
 
                                 Some(BackgroundImageData::new(new_url.clone()))
                             }
+                        }
+                        Image::Gradient(_gradient) => {
+                            // Gradients are rendered directly from computed style data
+                            // in the renderer (see `draw_gradient_bg`), so no pre-fetching
+                            // or dedicated storage in `background_images` is needed.
+                            None
                         }
                         _ => None,
                     };

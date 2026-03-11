@@ -13,6 +13,8 @@ pub struct EngineConfig {
     pub block_ads: bool,
     /// Debug: Show hitboxes for clickable elements
     pub debug_hitboxes: bool,
+    /// Debug: log js scripts that have eval error and save in debug_js/
+    pub debug_js: bool,
 }
 
 impl Default for EngineConfig {
@@ -23,6 +25,7 @@ impl Default for EngineConfig {
             enable_javascript: true,
             block_ads: false,         // Not implemented yet
             debug_hitboxes: false, // Enable for debugging click issues
+            debug_js: false,
         }
     }
 }
