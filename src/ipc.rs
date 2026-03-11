@@ -21,6 +21,8 @@ use ipc_channel::ipc::{
 use ipc_channel::TryRecvError;
 use serde::{Deserialize, Serialize};
 use std::io;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 
 // ── Wire message types ────────────────────────────────────────────────────────
 
@@ -153,15 +155,27 @@ impl IpcChannel {
 // ── ParentIpcChannel (parent side) ────────────────────────────────────────────
 
 pub struct ParentIpcChannel {
-    pub sender: IpcSender<ParentToTabMessage>,
+    sender: mpsc::Sender<ParentToTabMessage>,
+    send_failure: Arc<Mutex<Option<String>>>,
     pub receiver: IpcReceiver<TabToParentMessage>,
 }
 
 impl ParentIpcChannel {
     pub fn send(&self, message: &ParentToTabMessage) -> io::Result<()> {
+        if let Some(error) = self.take_send_failure_message() {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, error));
+        }
+
         self.sender
             .send(message.clone())
-            .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e))
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    self.take_send_failure_message().unwrap_or_else(|| {
+                        "parent->tab IPC writer thread stopped".to_string()
+                    }),
+                )
+            })
     }
 
     pub fn try_receive(&self) -> io::Result<Option<TabToParentMessage>> {
@@ -170,6 +184,13 @@ impl ParentIpcChannel {
             Err(TryRecvError::Empty) => Ok(None),
             Err(e) => Err(io::Error::new(io::ErrorKind::BrokenPipe, e)),
         }
+    }
+
+    fn take_send_failure_message(&self) -> Option<String> {
+        self.send_failure
+            .lock()
+            .ok()
+            .and_then(|failure| failure.clone())
     }
 }
 
@@ -205,8 +226,28 @@ impl IpcServer {
             .accept()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
+        let (queued_sender, queued_receiver) = mpsc::channel::<ParentToTabMessage>();
+        let send_failure = Arc::new(Mutex::new(None));
+        let send_failure_for_thread = Arc::clone(&send_failure);
+        let sender = bootstrap.parent_to_tab_tx;
+
+        thread::Builder::new()
+            .name("parent-ipc-writer".to_string())
+            .spawn(move || {
+                while let Ok(message) = queued_receiver.recv() {
+                    if let Err(error) = sender.send(message) {
+                        if let Ok(mut failure) = send_failure_for_thread.lock() {
+                            *failure = Some(error.to_string());
+                        }
+                        break;
+                    }
+                }
+            })
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
         Ok(ParentIpcChannel {
-            sender: bootstrap.parent_to_tab_tx,
+            sender: queued_sender,
+            send_failure,
             receiver: bootstrap.tab_to_parent_rx,
         })
     }
