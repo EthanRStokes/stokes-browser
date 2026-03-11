@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use crate::dom::node::{ListItemLayout, ListItemLayoutPosition, Marker, SpecialElementData, TextInputData};
 use crate::dom::{Dom, DomNode, ElementData, NodeData};
 use crate::renderer::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
-use crate::renderer::layers::maybe_with_layer;
+use crate::renderer::layers::{maybe_with_layer, reset_layer_stats};
 use crate::renderer::text::{draw_text_selection, stroke_text, SELECTION_COLOR};
 use crate::renderer::painter::ToColorColor;
 use anyrender::{CustomPaint, Paint, PaintScene};
@@ -64,6 +64,8 @@ impl HtmlRenderer<'_> {
         painter: &mut ScenePainter,
         node: &DomNode,
     ) {
+        reset_layer_stats();
+
         let scroll = self.dom.viewport_scroll;
 
         let root_element = self.dom.root_element();
