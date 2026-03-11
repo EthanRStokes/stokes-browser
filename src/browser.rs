@@ -19,6 +19,7 @@ use winit_core::event::ButtonSource;
 use winit_core::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
 use crate::ipc::{ParentToTabMessage, TabToParentMessage};
 use crate::renderer::painter::{ScenePainter, SkiaCache};
+use crate::renderer::webrender_compositor::WebRenderCompositor;
 use crate::tab_manager::{ManagedTab, TabManager};
 use crate::ui::{BrowserUI, TextBrush};
 use crate::window::{create_surface, Env};
@@ -40,6 +41,7 @@ enum TabCloseResult {
 pub(crate) struct BrowserApp {
     env: Option<Env>,
     skia_cache: SkiaCache,
+    webrender_compositor: Option<WebRenderCompositor>,
     modifiers: Modifiers,
     tab_manager: TabManager,
     active_tab_index: usize,
@@ -65,6 +67,7 @@ impl BrowserApp {
         Self {
             env: None,
             skia_cache: Default::default(),
+            webrender_compositor: None,
             modifiers: Modifiers::default(),
             tab_manager,
             active_tab_index: 0,
@@ -119,6 +122,74 @@ impl BrowserApp {
         pvp.hidpi_scale = vp.hidpi_scale;
         pvp.zoom = vp.zoom;
         pvp.color_scheme = vp.color_scheme;
+    }
+
+    fn ensure_webrender_compositor(&mut self) {
+        if self.webrender_compositor.is_some() {
+            return;
+        }
+
+        let Some(env) = self.env.as_ref() else {
+            return;
+        };
+        let Some(viewport) = self.viewport.as_ref() else {
+            return;
+        };
+
+        let device_size = webrender_api::units::DeviceIntSize::new(
+            viewport.window_size.0 as i32,
+            viewport.window_size.1 as i32,
+        );
+
+        match WebRenderCompositor::new(env, device_size) {
+            Ok(compositor) => {
+                self.webrender_compositor = Some(compositor);
+            }
+            Err(error) => {
+                eprintln!("WebRender compositor initialization failed: {error}");
+            }
+        }
+    }
+
+    fn try_render_page_with_webrender(&mut self, active_tab_id: Option<&String>) -> bool {
+        self.ensure_webrender_compositor();
+
+        let Some(tab_id) = active_tab_id else {
+            return false;
+        };
+        let Some(tab) = self.tab_manager.get_tab(tab_id) else {
+            return false;
+        };
+        let Some(fragment_tree) = tab.fragment_tree.as_ref() else {
+            return false;
+        };
+        let Some(viewport) = self.viewport.as_ref() else {
+            return false;
+        };
+        let Some(page_viewport) = self.page_viewport.as_ref() else {
+            return false;
+        };
+        let Some(compositor) = self.webrender_compositor.as_mut() else {
+            return false;
+        };
+
+        let device_size = webrender_api::units::DeviceIntSize::new(
+            viewport.window_size.0 as i32,
+            viewport.window_size.1 as i32,
+        );
+        let page_origin = (0.0_f32, BrowserUI::CHROME_HEIGHT as f32 * viewport.hidpi_scale);
+        let page_size = (
+            page_viewport.window_size.0 as f32,
+            page_viewport.window_size.1 as f32,
+        );
+
+        match compositor.render_fragment_tree(fragment_tree, device_size, page_origin, page_size) {
+            Ok(rendered) => rendered,
+            Err(error) => {
+                eprintln!("WebRender page render failed, using fallback renderer: {error}");
+                false
+            }
+        }
     }
 
     #[inline]
@@ -488,8 +559,6 @@ impl BrowserApp {
 
     fn render(&mut self) -> Result<(), String> {
         let active_tab_id = self.active_tab_id().cloned();
-        let env = self.env.as_mut().unwrap();
-        let ui = self.ui.as_mut().unwrap();
 
         // Check if active tab is loading
         let is_loading = active_tab_id.as_ref()
@@ -508,17 +577,17 @@ impl BrowserApp {
             self.env.as_ref().unwrap().window.request_redraw();
         }
 
-        let canvas = {
-            let env = self.env.as_mut().unwrap();
-            env.surface.canvas()
-        };
+        let rendered_page_with_webrender = self.try_render_page_with_webrender(active_tab_id.as_ref());
 
+        let canvas = self.env.as_mut().unwrap().surface.canvas();
         let mut painter = ScenePainter {
             inner: canvas,
             cache: &mut self.skia_cache,
         };
 
-        painter.reset();
+        if !rendered_page_with_webrender {
+            painter.reset();
+        }
 
         let fragment_fonts = active_tab_id
             .as_ref()
@@ -560,7 +629,9 @@ impl BrowserApp {
                 (0.0, chrome_offset),
                 (page_viewport.window_size.0 as f64, page_viewport.window_size.1 as f64),
             );
-            painter.fill(peniko::Fill::NonZero, Affine::IDENTITY, peniko::Color::WHITE, None, &page_rect);
+            if !rendered_page_with_webrender {
+                painter.fill(peniko::Fill::NonZero, Affine::IDENTITY, peniko::Color::WHITE, None, &page_rect);
+            }
 
             let active_tab_id = self.tab_order.get(self.active_tab_index);
             if let Some(tab) = active_tab_id.and_then(|id| self.tab_manager.get_tab(id)) {
@@ -568,26 +639,28 @@ impl BrowserApp {
                 let page_clip = Rect::from_origin_size((0.0, 0.0), (page_viewport.window_size.0 as f64, page_viewport.window_size.1 as f64));
 
                 // Prefer fragment tree (compositor-side rendering) over raw display list
-                if let Some(fragment_tree) = tab.fragment_tree.as_ref() {
-                    let mut ft_renderer = crate::renderer::fragment_renderer::FragmentTreeRenderer {
-                        tree: fragment_tree,
-                        scale_factor: fragment_tree.scale_factor,
-                        width: fragment_tree.width,
-                        height: fragment_tree.height,
-                        root_transform: page_offset,
-                        font_ctx: &mut font_ctx,
-                        layout_ctx: &mut self.layout_ctx,
-                        resolved_fonts: fragment_fonts.as_deref().unwrap_or(&empty_fonts),
-                    };
-                    painter.push_clip_layer(page_offset, &page_clip);
-                    ft_renderer.render(&mut painter);
-                    painter.pop_layer();
-                } else if let Some(rendered_frame) = tab.rendered_frame.as_ref() {
-                    painter.push_clip_layer(page_offset, &page_clip);
-                    rendered_frame
-                        .frame
-                        .replay(&mut painter, page_offset, display_list_fonts.as_ref().unwrap_or(&empty_fonts));
-                    painter.pop_layer();
+                if !rendered_page_with_webrender {
+                    if let Some(fragment_tree) = tab.fragment_tree.as_ref() {
+                        let mut ft_renderer = crate::renderer::fragment_renderer::FragmentTreeRenderer {
+                            tree: fragment_tree,
+                            scale_factor: fragment_tree.scale_factor,
+                            width: fragment_tree.width,
+                            height: fragment_tree.height,
+                            root_transform: page_offset,
+                            font_ctx: &mut font_ctx,
+                            layout_ctx: &mut self.layout_ctx,
+                            resolved_fonts: fragment_fonts.as_deref().unwrap_or(&empty_fonts),
+                        };
+                        painter.push_clip_layer(page_offset, &page_clip);
+                        ft_renderer.render(&mut painter);
+                        painter.pop_layer();
+                    } else if let Some(rendered_frame) = tab.rendered_frame.as_ref() {
+                        painter.push_clip_layer(page_offset, &page_clip);
+                        rendered_frame
+                            .frame
+                            .replay(&mut painter, page_offset, display_list_fonts.as_ref().unwrap_or(&empty_fonts));
+                        painter.pop_layer();
+                    }
                 }
             }
         }
@@ -666,6 +739,7 @@ impl ApplicationHandler for BrowserApp {
         self.ui = Some(ui);
         self.viewport = Some(viewport);
         self.page_viewport = Some(page_viewport);
+        self.ensure_webrender_compositor();
 
         // Create initial tab, navigating to the startup URL if one was provided
         if let Some(url) = self.startup_url.clone() {
@@ -716,6 +790,7 @@ impl ApplicationHandler for BrowserApp {
                 );
                 // Update viewport size
                 self.set_viewport(new_size.into());
+                self.ensure_webrender_compositor();
                 let (width, height) = self.page_viewport.as_ref().unwrap().window_size;
 
                 self.ui.as_mut().unwrap().update_layout(&*self.viewport.as_ref().unwrap());

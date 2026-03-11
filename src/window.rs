@@ -8,10 +8,10 @@ use skia_safe::gpu::gl::{Format, FramebufferInfo, Interface};
 use skia_safe::gpu::surfaces::wrap_backend_render_target;
 use skia_safe::gpu::{backend_render_targets, DirectContext};
 use skia_safe::{gpu, ColorType, Surface};
+use std::ffi::c_void;
 use std::ffi::CString;
 use std::num::NonZeroU32;
 use winit::dpi::LogicalSize;
-use winit::event_loop::EventLoop;
 use winit::raw_window_handle::HasWindowHandle;
 use winit::window::{Window, WindowAttributes};
 use winit_core::event_loop::ActiveEventLoop;
@@ -26,6 +26,7 @@ pub(crate) struct Env {
     pub(crate) fb_info: FramebufferInfo,
     pub(crate) num_samples: usize,
     pub(crate) stencil_size: usize,
+    pub(crate) gl_proc_resolver: Box<dyn Fn(&str) -> *const c_void>,
 }
 
 pub(crate) fn create_window(el: &dyn ActiveEventLoop) -> Env {
@@ -113,20 +114,22 @@ pub(crate) fn create_window(el: &dyn ActiveEventLoop) -> Env {
             .get_proc_address(CString::new(s).unwrap().as_c_str())
     });
 
+    let proc_address_display = gl_config.display();
+    let gl_proc_resolver: Box<dyn Fn(&str) -> *const c_void> = Box::new(move |name| {
+        proc_address_display
+            .get_proc_address(CString::new(name).unwrap().as_c_str())
+    });
+
     let interface = Interface::new_load_with(|name| {
         if name == "eglGetCurrentDisplay" {
             return std::ptr::null();
         }
-        gl_config
-            .display()
-            .get_proc_address(CString::new(name).unwrap().as_c_str())
+        gl_proc_resolver(name)
     }).expect("Could not create interface");
 
     let context_options = gpu::ContextOptions::default();
     let mut gr_context = gpu::direct_contexts::make_gl(interface, Some(&context_options))
         .expect("Failed to create Skia GL context");
-
-    let size = window.surface_size();
 
     let fb_info = {
         let mut fboid: GLint = 0;
@@ -152,6 +155,7 @@ pub(crate) fn create_window(el: &dyn ActiveEventLoop) -> Env {
         fb_info,
         num_samples,
         stencil_size,
+        gl_proc_resolver,
     }
 }
 
