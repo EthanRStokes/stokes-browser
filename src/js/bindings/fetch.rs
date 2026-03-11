@@ -512,10 +512,12 @@ unsafe extern "C" fn response_json(cx: *mut JSContext, argc: c_uint, vp: *mut JS
 unsafe extern "C" fn response_blob(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
-    // Get the stored response body
-    let body = PENDING_RESPONSE.with(|pr| {
-        pr.borrow().as_ref().map(|r| r.body.clone()).unwrap_or_default()
+    let response = PENDING_RESPONSE.with(|pr| {
+        pr.borrow_mut().take().unwrap_or_default()
     });
+
+    let headers = response.headers;
+    let body = &response.body;
 
     // Create a promise
     rooted!(in(cx) let null_obj = std::ptr::null_mut::<JSObject>());
