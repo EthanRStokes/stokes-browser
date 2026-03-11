@@ -125,7 +125,7 @@ impl TabProcess {
     /// Main event loop for the tab process
     pub async fn run(&mut self) -> io::Result<()> {
         // Send ready message
-        self.channel.send(&TabToParentMessage::Ready)?;
+        self.channel.send(TabToParentMessage::Ready)?;
 
         loop {
 
@@ -133,7 +133,7 @@ impl TabProcess {
                 match self.shell_receiver.try_recv() {
                     Ok(msg) => {
                         let _ = self.handle_shell_provider_message(&msg).await;
-                        let _ = self.channel.send(&TabToParentMessage::ShellProvider(msg));
+                        let _ = self.channel.send(TabToParentMessage::ShellProvider(msg));
                     }
                     Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
                     Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
@@ -155,9 +155,9 @@ impl TabProcess {
                                 self.begin_document_navigation();
 
                                 let nav_provider = self.engine.navigation_provider.clone();
-                                let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(true));
+                                let _ = self.channel.send(TabToParentMessage::LoadingStateChanged(true));
                                 let url = options.url.as_str().to_string();
-                                let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
+                                let _ = self.channel.send(TabToParentMessage::NavigationStarted(url.clone()));
                                 self.dom().unwrap().net_provider.fetch_with_callback(
                                     options.into_request(),
                                     Box::new(move |result| {
@@ -192,17 +192,17 @@ impl TabProcess {
                                 match self.engine.navigate(&url, contents, true, true).await {
                                     Ok(_) => {
                                         let title = self.engine.page_title().to_string();
-                                        let _ = self.channel.send(&TabToParentMessage::NavigationCompleted {
+                                        let _ = self.channel.send(TabToParentMessage::NavigationCompleted {
                                             url: url.clone(),
                                             title: title.clone(),
                                         });
-                                        let _ = self.channel.send(&TabToParentMessage::TitleChanged(title));
-                                        let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                                        let _ = self.channel.send(TabToParentMessage::TitleChanged(title));
+                                        let _ = self.channel.send(TabToParentMessage::LoadingStateChanged(false));
                                         self.render_frame()?;
                                     }
                                     Err(e) => {
-                                        let _ = self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()));
-                                        let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                                        let _ = self.channel.send(TabToParentMessage::NavigationFailed(e.to_string()));
+                                        let _ = self.channel.send(TabToParentMessage::LoadingStateChanged(false));
                                     }
                                 }
                             }
@@ -233,9 +233,6 @@ impl TabProcess {
             if should_render_after_messages {
                 self.render_frame()?;
             }
-
-            // Small sleep to prevent CPU spinning
-            //tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
     }
 
@@ -255,7 +252,7 @@ impl TabProcess {
                 // Invalidate any in-flight async navigation callback.
                 self.navigation_id = self.navigation_id.wrapping_add(1);
                 self.begin_document_navigation();
-                let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
+                let _ = self.channel.send(TabToParentMessage::NavigationStarted(url.clone()));
                 self.engine.set_loading_state(true);
 
                 let contents = networking::fetch(&url, &self.engine.config.user_agent).unwrap_or_else(|_| {
@@ -264,17 +261,17 @@ impl TabProcess {
                 match self.engine.navigate(&url, contents, true, true).await {
                     Ok(_) => {
                         let title = self.engine.page_title().to_string();
-                        let _ = self.channel.send(&TabToParentMessage::NavigationCompleted {
+                        let _ = self.channel.send(TabToParentMessage::NavigationCompleted {
                             url: url.clone(),
                             title: title.clone(),
                         });
-                        let _ = self.channel.send(&TabToParentMessage::TitleChanged(title));
-                        let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                        let _ = self.channel.send(TabToParentMessage::TitleChanged(title));
+                        let _ = self.channel.send(TabToParentMessage::LoadingStateChanged(false));
                         should_render = true;
                     }
                     Err(e) => {
-                        let _ = self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()));
-                        let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                        let _ = self.channel.send(TabToParentMessage::NavigationFailed(e.to_string()));
+                        let _ = self.channel.send(TabToParentMessage::LoadingStateChanged(false));
                     }
                 }
             }
@@ -283,7 +280,7 @@ impl TabProcess {
                 let url = self.engine.current_url().to_string();
                 if !url.is_empty() {
                     self.begin_document_navigation();
-                    let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
+                    let _ = self.channel.send(TabToParentMessage::NavigationStarted(url.clone()));
                     self.engine.set_loading_state(true);
                     let contents = networking::fetch(&url, &self.engine.config.user_agent).unwrap_or_else(|_| {
                         include_str!("../assets/404.html").to_string()
@@ -291,13 +288,13 @@ impl TabProcess {
                     match self.engine.navigate(&url, contents, true, true).await {
                         Ok(_) => {
                             let title = self.engine.page_title().to_string();
-                            let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
-                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                            let _ = self.channel.send(TabToParentMessage::NavigationCompleted { url, title });
+                            let _ = self.channel.send(TabToParentMessage::LoadingStateChanged(false));
                             should_render = true;
                         }
                         Err(e) => {
-                            let _ = self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()));
-                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                            let _ = self.channel.send(TabToParentMessage::NavigationFailed(e.to_string()));
+                            let _ = self.channel.send(TabToParentMessage::LoadingStateChanged(false));
                         }
                     }
                 }
@@ -307,19 +304,19 @@ impl TabProcess {
                 if self.engine.can_go_back() {
                     let url = self.engine.current_url().to_string();
                     self.begin_document_navigation();
-                    let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
+                    let _ = self.channel.send(TabToParentMessage::NavigationStarted(url.clone()));
                     self.engine.set_loading_state(true);
                     match self.engine.go_back().await {
                         Ok(_) => {
                             let title = self.engine.page_title().to_string();
                             let url = self.engine.current_url().to_string();
-                            let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
-                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                            let _ = self.channel.send(TabToParentMessage::NavigationCompleted { url, title });
+                            let _ = self.channel.send(TabToParentMessage::LoadingStateChanged(false));
                             should_render = true;
                         }
                         Err(e) => {
                             eprintln!("Go back failed: {}", e);
-                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                            let _ = self.channel.send(TabToParentMessage::LoadingStateChanged(false));
                         }
                     }
                 }
@@ -329,19 +326,19 @@ impl TabProcess {
                 if self.engine.can_go_forward() {
                     let url = self.engine.current_url().to_string();
                     self.begin_document_navigation();
-                    let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
+                    let _ = self.channel.send(TabToParentMessage::NavigationStarted(url.clone()));
                     self.engine.set_loading_state(true);
                     match self.engine.go_forward().await {
                         Ok(_) => {
                             let title = self.engine.page_title().to_string();
                             let url = self.engine.current_url().to_string();
-                            let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
-                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                            let _ = self.channel.send(TabToParentMessage::NavigationCompleted { url, title });
+                            let _ = self.channel.send(TabToParentMessage::LoadingStateChanged(false));
                             should_render = true;
                         }
                         Err(e) => {
                             eprintln!("Go forward failed: {}", e);
-                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                            let _ = self.channel.send(TabToParentMessage::LoadingStateChanged(false));
                         }
                     }
                 }
@@ -455,10 +452,10 @@ impl TabProcess {
             // Clone and send the (incrementally-updated) fragment tree to the parent process
             if let Some(tree) = dom.fragment_tree.clone() {
                 if let Some(sync) = self.font_sync.prepare_sync(self.document_generation, &tree.font_payloads) {
-                    self.channel.send(&TabToParentMessage::SyncFonts(sync))?;
+                    self.channel.send(TabToParentMessage::SyncFonts(sync))?;
                 }
 
-                self.channel.send(&TabToParentMessage::FragmentTreeRendered {
+                self.channel.send(TabToParentMessage::FragmentTreeRendered {
                     generation: self.document_generation,
                     frame_id: self.frame_id,
                     tree,

@@ -131,9 +131,9 @@ pub struct IpcChannel {
 }
 
 impl IpcChannel {
-    pub fn send(&self, message: &TabToParentMessage) -> io::Result<()> {
+    pub fn send(&self, message: TabToParentMessage) -> io::Result<()> {
         self.sender
-            .send(message.clone())
+            .send(message)
             .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e))
     }
 
@@ -161,13 +161,13 @@ pub struct ParentIpcChannel {
 }
 
 impl ParentIpcChannel {
-    pub fn send(&self, message: &ParentToTabMessage) -> io::Result<()> {
+    pub fn send(&self, message: ParentToTabMessage) -> io::Result<()> {
         if let Some(error) = self.take_send_failure_message() {
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, error));
         }
 
         self.sender
-            .send(message.clone())
+            .send(message)
             .map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::BrokenPipe,

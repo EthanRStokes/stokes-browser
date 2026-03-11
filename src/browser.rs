@@ -351,22 +351,20 @@ impl BrowserApp {
         let messages = self.tab_manager.poll_messages();
 
         for (tab_id, message) in messages {
-            self.tab_manager.process_tab_message(&tab_id, message.clone());
-
             let env = self.env.as_ref().unwrap();
 
             // Update UI based on messages
-            match message {
+            match &message {
                 TabToParentMessage::TitleChanged(title) => {
-                    self.ui.as_mut().unwrap().update_tab_title(&tab_id, &title);
+                    self.ui.as_mut().unwrap().update_tab_title(&tab_id, title);
                     if Some(&tab_id) == self.active_tab_id() {
                         env.window.set_title(&format!("{} - Web Browser", title));
                     }
                 }
                 TabToParentMessage::NavigationCompleted { url, title } => {
-                    self.ui.as_mut().unwrap().update_tab_title(&tab_id, &title);
+                    self.ui.as_mut().unwrap().update_tab_title(&tab_id, title);
                     if Some(&tab_id) == self.active_tab_id() {
-                        self.ui.as_mut().unwrap().update_address_bar(&url);
+                        self.ui.as_mut().unwrap().update_address_bar(url);
                         env.window.set_title(&format!("{} - Web Browser", title));
                     }
                 }
@@ -375,7 +373,7 @@ impl BrowserApp {
                     env.window.request_redraw();
                 }
                 TabToParentMessage::DisplayListRendered { fonts, .. } => {
-                    self.render_context_sync.sync_display_fonts(fonts, &self.font_ctx);
+                    self.render_context_sync.sync_display_fonts(fonts.clone(), &self.font_ctx);
                     env.window.request_redraw();
                 }
                 TabToParentMessage::FragmentTreeRendered { .. } => {
@@ -387,7 +385,7 @@ impl BrowserApp {
                     println!("Handling navigation request to: {}", url);
                     let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Navigate(url.clone()));
                     if Some(&tab_id) == self.active_tab_id() {
-                        self.ui.as_mut().unwrap().update_address_bar(&url);
+                        self.ui.as_mut().unwrap().update_address_bar(url);
                     }
                 }
                 TabToParentMessage::NavigateRequestInNewTab(url) => {
@@ -395,14 +393,14 @@ impl BrowserApp {
                     println!("Handling navigation request in new tab to: {}", url);
                     let tab_index = self.active_tab_index;
                     self.add_tab();
-                    self.navigate_to_url(&*url);
+                    self.navigate_to_url(url);
 
                     self.switch_to_tab(tab_index);
                 }
                 TabToParentMessage::Alert(message) => {
                     // Display alert dialog using native dialog
                     println!("Alert from tab {}: {}", tab_id, message);
-                    self.show_alert(&message);
+                    self.show_alert(message);
                 }
                 TabToParentMessage::ShellProvider(shell_msg) => {
                     match shell_msg {
@@ -410,13 +408,13 @@ impl BrowserApp {
                             env.window.request_redraw();
                         }
                         ShellProviderMessage::SetCursor(cursor) => {
-                            env.window.set_cursor(Cursor::Icon(CursorIcon::from_str(&cursor).unwrap()));
+                            env.window.set_cursor(Cursor::Icon(CursorIcon::from_str(cursor).unwrap()));
                         }
                         ShellProviderMessage::SetWindowTitle(title) => {
-                            env.window.set_title(&title);
+                            env.window.set_title(title);
                         }
                         ShellProviderMessage::SetImeEnabled(enabled) => {
-                            if enabled {
+                            if *enabled {
                                 let _ = env.window.request_ime_update(ImeRequest::Enable(
                                     ImeEnableRequest::new(ImeCapabilities::new(), ImeRequestData::default()).unwrap(),
                                 ));
@@ -427,26 +425,28 @@ impl BrowserApp {
                         ShellProviderMessage::SetImeCursorArea { x, y, width, height } => {
                             let _ = env.window.request_ime_update(ImeRequest::Update(
                                 ImeRequestData::default().with_cursor_area(
-                                    LogicalPosition::new(x, y).into(),
-                                    LogicalSize::new(width, height).into(),
+                                    LogicalPosition::new(*x, *y).into(),
+                                    LogicalSize::new(*width, *height).into(),
                                 ),
                             ));
                         },
                         ShellProviderMessage::ViewportScroll((x, y)) => {
                             let tab = self.tab_mut();
-                            tab.viewport_scroll = Point { x, y }
+                            tab.viewport_scroll = Point { x: *x, y: *y }
                         }
                     }
                 },
                 TabToParentMessage::UpdateButtons(buttons) => {
-                    self.buttons = buttons;
+                    self.buttons = *buttons;
                 }
                 TabToParentMessage::SyncFonts(sync) => {
-                    self.render_context_sync.sync_tab_fonts(&tab_id, sync, &self.font_ctx);
+                    self.render_context_sync.sync_tab_fonts(&tab_id, sync.clone(), &self.font_ctx);
                     env.window.request_redraw();
                 }
                 _ => {}
             }
+
+            self.tab_manager.process_tab_message(&tab_id, message);
         }
     }
 

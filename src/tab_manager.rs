@@ -95,7 +95,7 @@ impl TabManager {
     /// Send a message to a tab
     pub fn send_to_tab(&mut self, tab_id: &str, message: ParentToTabMessage) -> io::Result<()> {
         if let Some(tab) = self.tabs.get(tab_id) {
-            tab.channel.send(&message)?;
+            tab.channel.send(message)?;
         }
         Ok(())
     }
@@ -196,7 +196,7 @@ impl TabManager {
     /// Close a tab
     pub fn close_tab(&mut self, tab_id: &str) -> io::Result<()> {
         if let Some(mut tab) = self.tabs.remove(tab_id) {
-            let _ = tab.channel.send(&ParentToTabMessage::Shutdown);
+            let _ = tab.channel.send(ParentToTabMessage::Shutdown);
             thread::sleep(std::time::Duration::from_millis(100));
             let _ = tab.process.kill();
         }
@@ -218,7 +218,7 @@ impl TabManager {
 impl Drop for TabManager {
     fn drop(&mut self) {
         for (_, tab) in self.tabs.drain() {
-            let _ = tab.channel.send(&ParentToTabMessage::Shutdown);
+            let _ = tab.channel.send(ParentToTabMessage::Shutdown);
             let mut process = tab.process;
             let _ = process.kill();
         }

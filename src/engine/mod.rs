@@ -242,7 +242,7 @@ impl Engine {
             .map(|(node_id, start, end)| (node_id, (start, end)))
             .collect();
 
-        let mut renderer = HtmlRenderer {
+        /*let mut renderer = HtmlRenderer {
             dom: &dom,
             scale_factor: self.viewport.scale_f64(),
             width: self.viewport_width() as u32,
@@ -254,7 +254,7 @@ impl Engine {
         renderer.render(
             painter,
             node,
-        );
+        );*/
     }
 
     /// Add a CSS stylesheet to the engine
