@@ -1,20 +1,25 @@
 use crate::display_list::{
-    DisplayBrush, DisplayCommand, DisplayFont, DisplayPathEl, DisplayShape, DisplayStyle,
+    DisplayBrush, DisplayCommand, DisplayFont, DisplayGlyph, DisplayImageBrush, DisplayPathEl,
+    DisplayShape, DisplayStyle,
 };
 use crate::fragment_tree::{
     FragmentNode, FragmentNodeKind, FragmentTree,
 };
+use crate::renderer::painter::{ScenePainter, SkiaCache};
 use crate::window::Env;
 use gleam::gl::GlFns;
 use kurbo::{Affine, Point, Rect, Vec2};
+use skia_safe::{surfaces, AlphaType as SkAlphaType, Color as SkColor, ColorType as SkColorType, ImageInfo};
 use std::collections::HashMap;
+use std::sync::Arc;
 use webrender::{
     create_webrender_instance, RenderApi, Renderer, Transaction, WebRenderOptions,
 };
 use webrender_api::units::{DeviceIntRect, DeviceIntSize, LayoutPoint, LayoutRect, LayoutSize};
 use webrender_api::{
-    ColorF, CommonItemProperties, DocumentId, Epoch, FontInstanceKey, FontKey, GlyphInstance,
-    GlyphOptions, PipelineId, PrimitiveFlags, RenderNotifier, SpaceAndClipInfo,
+    AlphaType, ColorF, CommonItemProperties, DocumentId, Epoch, FontInstanceKey, FontKey,
+    GlyphInstance, GlyphOptions, ImageData, ImageDescriptor, ImageDescriptorFlags, ImageFormat,
+    ImageKey, ImageRendering, PipelineId, PrimitiveFlags, RenderNotifier, SpaceAndClipInfo,
 };
 
 const AFFINE_EPSILON: f64 = 0.0001;
@@ -47,6 +52,8 @@ pub(crate) struct WebRenderCompositor {
     next_frame_id: u64,
     font_keys: HashMap<DisplayFont, FontKey>,
     font_instances: HashMap<FontInstanceCacheKey, FontInstanceKey>,
+    image_keys: Vec<ImageKey>,
+    skia_cache: SkiaCache,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -82,6 +89,8 @@ impl WebRenderCompositor {
             next_frame_id: 1,
             font_keys: HashMap::new(),
             font_instances: HashMap::new(),
+            image_keys: Vec::new(),
+            skia_cache: SkiaCache::default(),
         })
     }
 
@@ -107,6 +116,12 @@ impl WebRenderCompositor {
         let mut builder = webrender_api::DisplayListBuilder::new(self.pipeline_id);
         builder.begin();
         let mut txn = Transaction::new();
+        for image_key in self.image_keys.drain(..) {
+            txn.delete_image(image_key);
+        }
+
+        let resolved_fonts = resolve_fonts(tree);
+        self.skia_cache.next_gen();
 
         let mut encoder = FragmentTreeWebRenderEncoder {
             tree,
@@ -118,6 +133,9 @@ impl WebRenderCompositor {
             root_space_and_clip: SpaceAndClipInfo::root_scroll(self.pipeline_id),
             font_keys: &mut self.font_keys,
             font_instances: &mut self.font_instances,
+            image_keys: &mut self.image_keys,
+            resolved_fonts: &resolved_fonts,
+            skia_cache: &mut self.skia_cache,
         };
 
         encoder.encode();
@@ -153,6 +171,9 @@ struct FragmentTreeWebRenderEncoder<'a> {
     root_space_and_clip: SpaceAndClipInfo,
     font_keys: &'a mut HashMap<DisplayFont, FontKey>,
     font_instances: &'a mut HashMap<FontInstanceCacheKey, FontInstanceKey>,
+    image_keys: &'a mut Vec<ImageKey>,
+    resolved_fonts: &'a [Option<peniko::FontData>],
+    skia_cache: &'a mut SkiaCache,
 }
 
 impl FragmentTreeWebRenderEncoder<'_> {
@@ -198,18 +219,12 @@ impl FragmentTreeWebRenderEncoder<'_> {
             return true;
         }
 
-        let is_image = node
-            .element_data
-            .as_ref()
-            .map(|e| e.raster_image.is_some())
-            .unwrap_or(false);
         let is_text_input = node
             .element_data
             .as_ref()
             .map(|e| e.has_text_input)
             .unwrap_or(false);
-        // Images and text inputs can't be rendered by WebRender yet — skip entirely.
-        if is_image || is_text_input {
+        if is_text_input {
             return true;
         }
 
@@ -299,6 +314,10 @@ impl FragmentTreeWebRenderEncoder<'_> {
             return true;
         };
 
+        if commands_need_rasterization(commands) {
+            return self.rasterize_commands(commands, base_transform);
+        }
+
         for command in commands {
             if !self.encode_command(command, base_transform) {
                 return false;
@@ -351,6 +370,7 @@ impl FragmentTreeWebRenderEncoder<'_> {
                 font_id,
                 font_size,
                 hint,
+                normalized_coords,
                 style,
                 brush,
                 brush_alpha,
@@ -367,6 +387,9 @@ impl FragmentTreeWebRenderEncoder<'_> {
                 };
                 if glyph_transform.is_some() {
                     return true; // skip per-glyph transforms
+                }
+                if !normalized_coords.is_empty() {
+                    return true; // handled by raster fallback
                 }
 
                 let Some(font) = self.tree.fonts.get(*font_id as usize) else {
@@ -414,8 +437,57 @@ impl FragmentTreeWebRenderEncoder<'_> {
                 );
                 true
             }
+            DisplayCommand::DrawImage { image, transform } => {
+                let Some(image_key) = self.register_image(image) else {
+                    return true;
+                };
+                let image_rect = Rect::new(0.0, 0.0, image.width as f64, image.height as f64);
+                let bounds = transform_rect_bbox(base_transform * *transform, image_rect);
+                self.push_image(bounds, image_key);
+                true
+            }
             _ => true, // skip all other command types
         }
+    }
+
+    fn rasterize_commands(&mut self, commands: &[DisplayCommand], base_transform: Affine) -> bool {
+        let Some(bounds) = command_list_bounds(commands, base_transform) else {
+            return true;
+        };
+        let bounds = bounds.intersect(page_clip_rect(self.page_clip));
+        if bounds.is_zero_area() {
+            return true;
+        }
+
+        let raster_bounds = snap_rect_out(bounds);
+        let width = raster_bounds.width().ceil().max(1.0) as i32;
+        let height = raster_bounds.height().ceil().max(1.0) as i32;
+
+        let mut surface = match surfaces::raster_n32_premul((width, height)) {
+            Some(surface) => surface,
+            None => return false,
+        };
+        surface.canvas().clear(SkColor::TRANSPARENT);
+
+        let local_root_transform =
+            Affine::translate((-raster_bounds.x0, -raster_bounds.y0)) * base_transform;
+        {
+            let canvas = surface.canvas();
+            let mut painter = ScenePainter {
+                inner: canvas,
+                cache: self.skia_cache,
+            };
+
+            for command in commands {
+                command.replay(&mut painter, local_root_transform, self.resolved_fonts);
+            }
+        }
+
+        let Some(image_key) = self.register_surface_image(&mut surface, width, height) else {
+            return false;
+        };
+        self.push_image(raster_bounds, image_key);
+        true
     }
 
     fn ensure_font_instance(
@@ -465,6 +537,320 @@ impl FragmentTreeWebRenderEncoder<'_> {
         };
         self.builder.push_rect(&common, bounds, color);
     }
+
+    fn push_image(&mut self, bounds: Rect, image_key: ImageKey) {
+        if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+            return;
+        }
+
+        let bounds = layout_rect(bounds);
+        let common = CommonItemProperties {
+            clip_rect: self.page_clip,
+            clip_chain_id: self.root_space_and_clip.clip_chain_id,
+            spatial_id: self.root_space_and_clip.spatial_id,
+            flags: PrimitiveFlags::default(),
+        };
+        self.builder.push_image(
+            &common,
+            bounds,
+            ImageRendering::Auto,
+            AlphaType::PremultipliedAlpha,
+            image_key,
+            ColorF::WHITE,
+        );
+    }
+
+    fn register_image(&mut self, image: &DisplayImageBrush) -> Option<ImageKey> {
+        let image_key = self.api.generate_image_key();
+        let format = match image.format {
+            peniko::ImageFormat::Rgba8 => ImageFormat::RGBA8,
+            peniko::ImageFormat::Bgra8 => ImageFormat::BGRA8,
+            _ => return None,
+        };
+        let flags = ImageDescriptorFlags::IS_OPAQUE;
+        let descriptor = ImageDescriptor::new(
+            image.width as i32,
+            image.height as i32,
+            format,
+            flags,
+        );
+        self.txn.add_image(
+            image_key,
+            descriptor,
+            ImageData::new(image.data.clone()),
+            None,
+        );
+        self.image_keys.push(image_key);
+        Some(image_key)
+    }
+
+    fn register_surface_image(
+        &mut self,
+        surface: &mut skia_safe::Surface,
+        width: i32,
+        height: i32,
+    ) -> Option<ImageKey> {
+        let row_bytes = (width as usize) * 4;
+        let mut pixels = vec![0; row_bytes * (height as usize)];
+        let image_info = ImageInfo::new(
+            (width, height),
+            SkColorType::BGRA8888,
+            SkAlphaType::Premul,
+            None,
+        );
+        if !surface.read_pixels(&image_info, pixels.as_mut_slice(), row_bytes, (0, 0)) {
+            return None;
+        }
+
+        let image_key = self.api.generate_image_key();
+        let descriptor = ImageDescriptor::new(
+            width,
+            height,
+            ImageFormat::BGRA8,
+            ImageDescriptorFlags::empty(),
+        );
+        self.txn
+            .add_image(image_key, descriptor, ImageData::new(pixels), None);
+        self.image_keys.push(image_key);
+        Some(image_key)
+    }
+}
+
+fn resolve_fonts(tree: &FragmentTree) -> Vec<Option<peniko::FontData>> {
+    tree.fonts
+        .iter()
+        .map(|font| {
+            tree.font_payloads
+                .iter()
+                .find(|payload| payload.font == *font)
+                .map(|payload| font.to_peniko(Arc::new(payload.bytes.clone())))
+        })
+        .collect()
+}
+
+fn commands_need_rasterization(commands: &[DisplayCommand]) -> bool {
+    commands.iter().any(|command| !supports_direct_encoding(command))
+}
+
+fn supports_direct_encoding(command: &DisplayCommand) -> bool {
+    match command {
+        DisplayCommand::Fill {
+            brush,
+            brush_transform,
+            shape,
+            ..
+        } => {
+            matches!(brush, DisplayBrush::Solid(_))
+                && brush_transform.is_none()
+                && matches!(shape, DisplayShape::Rect(_) | DisplayShape::Path(_))
+        }
+        DisplayCommand::DrawGlyphs {
+            style,
+            brush,
+            glyph_transform,
+            normalized_coords,
+            ..
+        } => {
+            matches!(style, DisplayStyle::Fill(_))
+                && matches!(brush, DisplayBrush::Solid(_))
+                && glyph_transform.is_none()
+                && normalized_coords.is_empty()
+        }
+        DisplayCommand::DrawImage { .. } => true,
+        _ => false,
+    }
+}
+
+fn command_list_bounds(commands: &[DisplayCommand], base_transform: Affine) -> Option<Rect> {
+    let mut bounds: Option<Rect> = None;
+
+    for command in commands {
+        let Some(command_bounds) = command_bounds(command, base_transform) else {
+            continue;
+        };
+        bounds = Some(match bounds {
+            Some(existing) => existing.union(command_bounds),
+            None => command_bounds,
+        });
+    }
+
+    bounds
+}
+
+fn command_bounds(command: &DisplayCommand, base_transform: Affine) -> Option<Rect> {
+    match command {
+        DisplayCommand::PushLayer { .. }
+        | DisplayCommand::PushClipLayer { .. }
+        | DisplayCommand::PopLayer => None,
+        DisplayCommand::Stroke {
+            style,
+            transform,
+            shape,
+            ..
+        } => {
+            let bounds = transform_shape_bounds(base_transform * *transform, shape_bounds(shape)?);
+            let inflate = (style.width * max_affine_scale(base_transform * *transform) * 0.5) as f64;
+            Some(bounds.inflate(inflate, inflate))
+        }
+        DisplayCommand::Fill {
+            transform,
+            shape,
+            ..
+        } => Some(transform_shape_bounds(base_transform * *transform, shape_bounds(shape)?)),
+        DisplayCommand::DrawGlyphs {
+            transform,
+            glyph_transform,
+            glyphs,
+            font_size,
+            ..
+        } => {
+            let bounds = glyph_rect(glyphs, *font_size)?;
+            let transform = if let Some(glyph_transform) = glyph_transform {
+                base_transform * *transform * *glyph_transform
+            } else {
+                base_transform * *transform
+            };
+            Some(transform_rect_bbox(transform, bounds))
+        }
+        DisplayCommand::DrawBoxShadow {
+            transform,
+            rect,
+            std_dev,
+            ..
+        } => {
+            let inflate = std_dev.abs() * 3.0;
+            Some(transform_rect_bbox(
+                base_transform * *transform,
+                rect.inflate(inflate, inflate),
+            ))
+        }
+        DisplayCommand::DrawImage { image, transform } => Some(transform_rect_bbox(
+            base_transform * *transform,
+            Rect::new(0.0, 0.0, image.width as f64, image.height as f64),
+        )),
+    }
+}
+
+fn shape_bounds(shape: &DisplayShape) -> Option<Rect> {
+    match shape {
+        DisplayShape::Rect(rect) => Some(*rect),
+        DisplayShape::RoundedRect(rect) => Some(rect.rect()),
+        DisplayShape::Path(elements) => Some(build_path_bounds(elements)?),
+    }
+}
+
+fn build_path_bounds(elements: &[DisplayPathEl]) -> Option<Rect> {
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+
+    for element in elements {
+        match *element {
+            DisplayPathEl::MoveTo((x, y)) | DisplayPathEl::LineTo((x, y)) => {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+            DisplayPathEl::QuadTo((x1, y1), (x2, y2)) => {
+                for (x, y) in [(x1, y1), (x2, y2)] {
+                    min_x = min_x.min(x);
+                    min_y = min_y.min(y);
+                    max_x = max_x.max(x);
+                    max_y = max_y.max(y);
+                }
+            }
+            DisplayPathEl::CurveTo((x1, y1), (x2, y2), (x3, y3)) => {
+                for (x, y) in [(x1, y1), (x2, y2), (x3, y3)] {
+                    min_x = min_x.min(x);
+                    min_y = min_y.min(y);
+                    max_x = max_x.max(x);
+                    max_y = max_y.max(y);
+                }
+            }
+            DisplayPathEl::ClosePath => {}
+        }
+    }
+
+    if !min_x.is_finite() {
+        return None;
+    }
+
+    Some(Rect::new(min_x, min_y, max_x, max_y))
+}
+
+fn transform_shape_bounds(transform: Affine, rect: Rect) -> Rect {
+    transform_rect_bbox(transform, rect)
+}
+
+fn transform_rect_bbox(transform: Affine, rect: Rect) -> Rect {
+    let points = [
+        Point::new(rect.x0, rect.y0),
+        Point::new(rect.x1, rect.y0),
+        Point::new(rect.x1, rect.y1),
+        Point::new(rect.x0, rect.y1),
+    ];
+
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+
+    for point in points {
+        let point = transform * point;
+        min_x = min_x.min(point.x);
+        min_y = min_y.min(point.y);
+        max_x = max_x.max(point.x);
+        max_y = max_y.max(point.y);
+    }
+
+    Rect::new(min_x, min_y, max_x, max_y)
+}
+
+fn max_affine_scale(transform: Affine) -> f64 {
+    let [a, b, c, d, _, _] = transform.as_coeffs();
+    let sx = (a * a + b * b).sqrt();
+    let sy = (c * c + d * d).sqrt();
+    sx.max(sy)
+}
+
+fn snap_rect_out(rect: Rect) -> Rect {
+    Rect::new(rect.x0.floor(), rect.y0.floor(), rect.x1.ceil(), rect.y1.ceil())
+}
+
+fn page_clip_rect(rect: LayoutRect) -> Rect {
+    Rect::new(
+        rect.min.x as f64,
+        rect.min.y as f64,
+        rect.max.x as f64,
+        rect.max.y as f64,
+    )
+}
+
+fn glyph_rect(glyphs: &[DisplayGlyph], font_size: f32) -> Option<Rect> {
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+
+    for glyph in glyphs {
+        min_x = min_x.min(glyph.x);
+        min_y = min_y.min(glyph.y - font_size);
+        max_x = max_x.max(glyph.x + font_size);
+        max_y = max_y.max(glyph.y + font_size);
+    }
+
+    if !min_x.is_finite() {
+        return None;
+    }
+
+    Some(Rect::new(
+        min_x as f64,
+        min_y as f64,
+        max_x as f64,
+        max_y as f64,
+    ))
 }
 
 fn translated_rect(transform: Affine, rect: Rect) -> Option<Rect> {
