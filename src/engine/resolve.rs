@@ -26,8 +26,7 @@ impl Engine {
             JsProviderMessage::ExecuteScript(script) => {
                 println!("Executing script ({} bytes)", script.len());
                 // Save the script to a local file in debug_js/
-                #[cfg(debug_assertions)]
-                {
+                if self.config.debug_js {
                     use std::fs;
                     use std::path::Path;
 
@@ -53,7 +52,7 @@ impl Engine {
                     }
                 }
 
-                self.execute_javascript(&script);
+                self.execute_javascript(&script, self.config.debug_js);
             }
         }
     }

@@ -147,7 +147,7 @@ impl JsRuntime {
     }
 
     /// Execute JavaScript code
-    pub fn execute(&mut self, code: &str) -> JsResult<()> {
+    pub fn execute(&mut self, code: &str, print_error: bool) -> JsResult<()> {
         let cx = self.runtime.cx();
         let raw_cx = unsafe { cx.raw_cx() };
         let global_ptr = self.global.get();
@@ -181,7 +181,10 @@ impl JsRuntime {
                         rooted!(in(raw_cx) let exc_str = JS_ValueToSource(cx, exception.handle()));
                         if !exc_str.get().is_null() {
                             let msg = jsstr_to_string(raw_cx, NonNull::new(exc_str.handle().get()).unwrap());
-                            return Err(format!("JavaScript COMPILE error: {}\n{}", msg, code));
+                            if print_error {
+                                return Err(format!("JavaScript COMPILE error: {}\n{}", msg, code));
+                            }
+                            return Err(format!("JavaScript COMPILE error: {}", msg));
                         }
                     }
                 }
@@ -199,7 +202,10 @@ impl JsRuntime {
                         rooted!(in(raw_cx) let exc_str = JS_ValueToSource(cx, exception.handle()));
                         if !exc_str.get().is_null() {
                             let msg = jsstr_to_string(raw_cx, NonNull::new(exc_str.handle().get()).unwrap());
-                            return Err(format!("JavaScript EVAL error: {}\n{}", msg, code));
+                            if print_error {
+                                return Err(format!("JavaScript EVAL error: {}\n{}", msg, code));
+                            }
+                            return Err(format!("JavaScript EVAL error: {}", msg))
                         }
                     }
                 }
@@ -264,8 +270,8 @@ impl JsRuntime {
     }
 
     /// Execute JavaScript code from a script tag
-    pub fn execute_script(&mut self, code: &str) -> JsResult<()> {
-        match self.execute(code) {
+    pub fn execute_script(&mut self, code: &str, print_eval_error: bool) -> JsResult<()> {
+        match self.execute(code, print_eval_error) {
             Ok(_result) => {
                 // Process any remaining jobs after script execution
                 self.run_pending_jobs();

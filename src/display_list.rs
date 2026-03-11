@@ -5,7 +5,9 @@ use peniko::{
     ImageQuality, ImageSampler,
 };
 use serde::{Deserialize, Serialize};
+use rustc_hash::FxHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 const PATH_TOLERANCE: f64 = 0.1;
@@ -454,6 +456,11 @@ impl DisplayBrush {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DisplayFont {
+    /// Stable identifier for the font blob contents.
+    ///
+    /// This must be content-based rather than process-local because tab
+    /// processes serialize `DisplayFont` values back to the main process, which
+    /// keeps a single shared font cache across all tabs.
     pub blob_id: u64,
     pub index: u32,
 }
@@ -461,7 +468,7 @@ pub struct DisplayFont {
 impl DisplayFont {
     pub fn from_peniko(font: &peniko::FontData) -> Self {
         Self {
-            blob_id: font.data.id(),
+            blob_id: stable_font_blob_id(font.data.data()),
             index: font.index,
         }
     }
@@ -470,6 +477,12 @@ impl DisplayFont {
         let blob = peniko::Blob::new(bytes);
         peniko::FontData::new(blob, self.index)
     }
+}
+
+fn stable_font_blob_id(bytes: &[u8]) -> u64 {
+    let mut hasher = FxHasher::default();
+    bytes.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -862,6 +875,22 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(font_ids, vec![0, 0]);
+    }
+
+    #[test]
+    fn display_font_identity_is_stable_across_blob_instances() {
+        let first = peniko::FontData::new(Blob::new(Arc::new(vec![1, 2, 3, 4, 5])), 3);
+        let second = peniko::FontData::new(Blob::new(Arc::new(vec![1, 2, 3, 4, 5])), 3);
+
+        assert_eq!(DisplayFont::from_peniko(&first), DisplayFont::from_peniko(&second));
+    }
+
+    #[test]
+    fn display_font_identity_changes_when_blob_contents_change() {
+        let first = peniko::FontData::new(Blob::new(Arc::new(vec![1, 2, 3, 4, 5])), 3);
+        let second = peniko::FontData::new(Blob::new(Arc::new(vec![5, 4, 3, 2, 1])), 3);
+
+        assert_ne!(DisplayFont::from_peniko(&first), DisplayFont::from_peniko(&second));
     }
 
     #[test]

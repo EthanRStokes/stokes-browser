@@ -112,7 +112,7 @@ pub fn setup_cookie_property_deferred(runtime: &mut JsRuntime) -> Result<(), Str
     "#;
 
     // Use the runtime's execute method which handles realm entry properly
-    runtime.execute(script).map_err(|e| {
+    runtime.execute(script, false).map_err(|e| {
         println!("[JS] Warning: Failed to set up document.cookie property: {}", e);
         e
     })?;
@@ -134,7 +134,7 @@ pub fn setup_head_property_deferred(runtime: &mut JsRuntime) -> Result<(), Strin
     "#;
 
     // Use the runtime's execute method which handles realm entry properly
-    runtime.execute(script).map_err(|e| {
+    runtime.execute(script, false).map_err(|e| {
         println!("[JS] Warning: Failed to set up document.head property: {}", e);
         e
     })?;
@@ -158,7 +158,7 @@ pub fn setup_body_property_deferred(runtime: &mut JsRuntime) -> Result<(), Strin
         });
     "#;
 
-    runtime.execute(script).map_err(|e| {
+    runtime.execute(script, false).map_err(|e| {
         println!("[JS] Warning: Failed to set up document.body property: {}", e);
         e
     })?;
@@ -304,7 +304,7 @@ pub fn setup_match_media_deferred(runtime: &mut JsRuntime) -> Result<(), String>
         })();
     "#;
 
-    runtime.execute(script).map_err(|e| {
+    runtime.execute(script, false).map_err(|e| {
         println!("[JS] Warning: Failed to set up window.matchMedia: {}", e);
         e
     })?;

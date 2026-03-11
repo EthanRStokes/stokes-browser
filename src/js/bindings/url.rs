@@ -67,6 +67,7 @@ pub fn setup_url(runtime: &mut JsRuntime) -> Result<(), String> {
             };
         })();
         "#,
+        false,
     )?;
 
     Ok(())

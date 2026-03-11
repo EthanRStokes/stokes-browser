@@ -188,7 +188,7 @@ impl Engine {
                     }}\
                 }}"
             );
-            let _ = runtime.execute_script(&script);
+            let _ = runtime.execute_script(&script, self.config.debug_js);
         }
 
         // Recalculate layout with new viewport
@@ -403,9 +403,9 @@ impl Engine {
     }
 
     /// Execute JavaScript code in the current context
-    pub fn execute_javascript(&mut self, code: &str) {
+    pub fn execute_javascript(&mut self, code: &str, print_eval_error: bool) {
         if let Some(runtime) = &mut self.js_runtime {
-            if let Err(e) = runtime.execute_script(code) {
+            if let Err(e) = runtime.execute_script(code, print_eval_error) {
                 eprintln!("JavaScript execution error: {}", e);
             }
         } else {
