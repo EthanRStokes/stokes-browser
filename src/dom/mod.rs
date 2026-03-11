@@ -1016,6 +1016,7 @@ impl Dom {
             // then put it back.  This avoids a simultaneous mutable + immutable
             // borrow of `self`.
             let mut tree = self.fragment_tree.take().unwrap();
+            println!("Updating tree on nodes {:?}", dirty);
             tree.update_dirty_nodes(self, &dirty, selection_ranges, scale_factor, width, height);
             self.fragment_tree = Some(tree);
         }

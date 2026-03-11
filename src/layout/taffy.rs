@@ -381,10 +381,14 @@ impl RoundTree for Dom {
 
     fn set_final_layout(&mut self, node_id: NodeId, layout: &Layout) {
         let id: usize = node_id.into();
+        let node_from_id_mut = self.node_from_id_mut(node_id);
+        let same = node_from_id_mut.final_layout == *layout;
         self.node_from_id_mut(node_id).final_layout = *layout;
-        // Track which nodes were re-laid-out so the fragment tree can be updated
-        // incrementally rather than rebuilt from scratch each frame.
-        self.layout_dirty_nodes.insert(id);
+        if !same {
+            // Track which nodes were re-laid-out so the fragment tree can be updated
+            // incrementally rather than rebuilt from scratch each frame.
+            self.layout_dirty_nodes.insert(id);
+        }
     }
 }
 

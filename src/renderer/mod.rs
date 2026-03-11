@@ -8,8 +8,6 @@ mod shadow;
 mod gradient;
 mod sizing;
 pub mod painter;
-pub(crate) mod fragment_renderer;
-#[path = "webrender_compositor.rs"]
 pub(crate) mod webrender_compositor;
 
 use std::any::Any;

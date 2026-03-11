@@ -75,10 +75,6 @@ pub enum TabToParentMessage {
     NavigationFailed(String),
     TitleChanged(String),
     LoadingStateChanged(bool),
-    DisplayListRendered {
-        frame: DisplayListFrame,
-        fonts: Vec<DisplayFontData>,
-    },
     SyncFonts(TabFontSync),
     /// New: Fragment tree with pre-rendered display commands.
     /// The main process composites from this instead of the raw display list.

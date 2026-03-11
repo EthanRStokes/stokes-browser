@@ -177,19 +177,16 @@ impl BrowserApp {
             viewport.window_size.0 as i32,
             viewport.window_size.1 as i32,
         );
-        let page_origin = (0.0_f32, BrowserUI::CHROME_HEIGHT as f32 * viewport.hidpi_scale);
+        let page_origin = (0.0_f32, BrowserUI::CHROME_HEIGHT * viewport.hidpi_scale);
         let page_size = (
             page_viewport.window_size.0 as f32,
             page_viewport.window_size.1 as f32,
         );
 
-        match compositor.render_fragment_tree(fragment_tree, device_size, page_origin, page_size) {
-            Ok(rendered) => rendered,
-            Err(error) => {
-                eprintln!("WebRender page render failed, using fallback renderer: {error}");
-                false
-            }
-        }
+        compositor.render_fragment_tree(fragment_tree, device_size, page_origin, page_size).unwrap_or_else(|error| {
+            eprintln!("WebRender page render failed, using fallback renderer: {error}");
+            false
+        })
     }
 
     #[inline]
@@ -443,10 +440,6 @@ impl BrowserApp {
                     // Update loading indicator
                     env.window.request_redraw();
                 }
-                TabToParentMessage::DisplayListRendered { fonts, .. } => {
-                    self.render_context_sync.sync_display_fonts(fonts.clone(), &self.font_ctx);
-                    env.window.request_redraw();
-                }
                 TabToParentMessage::FragmentTreeRendered { .. } => {
                     // Fragment tree received — compositor will render from it
                     env.window.request_redraw();
@@ -577,7 +570,7 @@ impl BrowserApp {
             self.env.as_ref().unwrap().window.request_redraw();
         }
 
-        let rendered_page_with_webrender = self.try_render_page_with_webrender(active_tab_id.as_ref());
+        self.try_render_page_with_webrender(active_tab_id.as_ref());
 
         let canvas = self.env.as_mut().unwrap().surface.canvas();
         let mut painter = ScenePainter {
@@ -585,85 +578,8 @@ impl BrowserApp {
             cache: &mut self.skia_cache,
         };
 
-        if !rendered_page_with_webrender {
-            painter.reset();
-        }
-
-        let fragment_fonts = active_tab_id
-            .as_ref()
-            .and_then(|tab_id| {
-                let generation = self
-                    .tab_manager
-                    .get_tab(tab_id)
-                    .map(|tab| tab.fragment_tree_generation)?;
-                let fonts = self
-                    .tab_manager
-                    .get_tab(tab_id)
-                    .and_then(|tab| tab.fragment_tree.as_ref().map(|tree| tree.fonts.clone()))?;
-                self.render_context_sync
-                    .sync_layout_ctx_for_fragment(tab_id, generation, &mut self.layout_ctx);
-                Some(self.render_context_sync.resolve_fonts(&fonts))
-            });
-        let display_list_fonts = active_tab_id
-            .as_ref()
-            .and_then(|tab_id| {
-                let fonts = self
-                    .tab_manager
-                    .get_tab(tab_id)
-                    .and_then(|tab| tab.rendered_frame.as_ref().map(|frame| frame.frame.fonts.clone()))?;
-                Some(self.render_context_sync.resolve_fonts(&fonts))
-            });
-        let empty_fonts: Vec<Option<peniko::FontData>> = Vec::new();
+        painter.set_matrix(Affine::IDENTITY);
         let mut font_ctx = self.font_ctx.lock().unwrap();
-
-        {
-            let Some(page_viewport) = self.page_viewport.as_ref() else {
-                return Err("Page viewport not initialized".to_string());
-            };
-            let Some(viewport) = self.viewport.as_ref() else {
-                return Err("Viewport not initialized".to_string());
-            };
-
-            let chrome_offset = BrowserUI::CHROME_HEIGHT as f64 * viewport.hidpi_scale as f64;
-            let page_rect = Rect::from_origin_size(
-                (0.0, chrome_offset),
-                (page_viewport.window_size.0 as f64, page_viewport.window_size.1 as f64),
-            );
-            if !rendered_page_with_webrender {
-                painter.fill(peniko::Fill::NonZero, Affine::IDENTITY, peniko::Color::WHITE, None, &page_rect);
-            }
-
-            let active_tab_id = self.tab_order.get(self.active_tab_index);
-            if let Some(tab) = active_tab_id.and_then(|id| self.tab_manager.get_tab(id)) {
-                let page_offset = Affine::translate((0.0, chrome_offset));
-                let page_clip = Rect::from_origin_size((0.0, 0.0), (page_viewport.window_size.0 as f64, page_viewport.window_size.1 as f64));
-
-                // Prefer fragment tree (compositor-side rendering) over raw display list
-                if !rendered_page_with_webrender {
-                    if let Some(fragment_tree) = tab.fragment_tree.as_ref() {
-                        let mut ft_renderer = crate::renderer::fragment_renderer::FragmentTreeRenderer {
-                            tree: fragment_tree,
-                            scale_factor: fragment_tree.scale_factor,
-                            width: fragment_tree.width,
-                            height: fragment_tree.height,
-                            root_transform: page_offset,
-                            font_ctx: &mut font_ctx,
-                            layout_ctx: &mut self.layout_ctx,
-                            resolved_fonts: fragment_fonts.as_deref().unwrap_or(&empty_fonts),
-                        };
-                        painter.push_clip_layer(page_offset, &page_clip);
-                        ft_renderer.render(&mut painter);
-                        painter.pop_layer();
-                    } else if let Some(rendered_frame) = tab.rendered_frame.as_ref() {
-                        painter.push_clip_layer(page_offset, &page_clip);
-                        rendered_frame
-                            .frame
-                            .replay(&mut painter, page_offset, display_list_fonts.as_ref().unwrap_or(&empty_fonts));
-                        painter.pop_layer();
-                    }
-                }
-            }
-        }
 
         let ui = self.ui.as_ref().unwrap();
         ui.render(canvas, &mut font_ctx, &mut self.layout_ctx, &mut painter);

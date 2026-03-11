@@ -17,7 +17,6 @@ pub struct ManagedTab {
     pub viewport_scroll: Point<f64>,
     process: Child,
     channel: ParentIpcChannel,
-    pub rendered_frame: Option<RenderedFrame>,
     /// Fragment tree received from the tab process for compositor-side rendering.
     pub fragment_tree: Option<FragmentTree>,
     pub fragment_tree_generation: u64,
@@ -70,7 +69,6 @@ impl TabManager {
             viewport_scroll: Point { x: 0.0, y: 0.0 },
             process: child,
             channel,
-            rendered_frame: None,
             fragment_tree: None,
             fragment_tree_generation: 0,
             fragment_tree_frame_id: 0,
@@ -138,17 +136,6 @@ impl TabManager {
                 }
                 TabToParentMessage::LoadingStateChanged(is_loading) => {
                     tab.is_loading = is_loading;
-                }
-                TabToParentMessage::DisplayListRendered { frame, .. } => {
-                    let should_replace = tab
-                        .rendered_frame
-                        .as_ref()
-                        .map(|current| frame.frame_id >= current.frame.frame_id)
-                        .unwrap_or(true);
-
-                    if should_replace {
-                        tab.rendered_frame = Some(RenderedFrame { frame });
-                    }
                 }
                 TabToParentMessage::SyncFonts(_) => {}
                 TabToParentMessage::FragmentTreeRendered {
