@@ -1,11 +1,11 @@
 use crate::renderer::layers::maybe_with_layer;
 use crate::renderer::painter::ToColorColor;
-use crate::renderer::Element;
+use crate::renderer::{Element, ElementRenderContext};
 use anyrender::PaintScene;
 use kurbo::{Rect, Vec2};
 use peniko::{Color, Compose, Fill, Mix};
 
-impl Element<'_> {
+impl<C: ElementRenderContext + ?Sized> Element<'_, C> {
     pub(crate) fn draw_outset_box_shadow(&self, painter: &mut impl PaintScene) {
         let box_shadow = &self.style.get_effects().box_shadow.0;
 

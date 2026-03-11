@@ -17,8 +17,8 @@ use parley::{FontContext, LayoutContext};
 ///
 /// The tab process records per-node display commands for element appearance
 /// (backgrounds, borders, shadows, text, images). This renderer handles the
-/// tree walk, clipping, layers, opacity, transforms, and child ordering —
-/// effectively the compositing logic that was previously in `HtmlRenderer`.
+/// tree walk, clipping, layers, opacity, transforms, and child ordering on
+/// the compositor side.
 pub struct FragmentTreeRenderer<'ft, 'ctx> {
     pub tree: &'ft FragmentTree,
     pub scale_factor: f64,

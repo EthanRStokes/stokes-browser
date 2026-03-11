@@ -21,12 +21,12 @@ use style::{
 };
 use tracing::warn;
 use crate::dom::ImageData;
-use crate::renderer::Element;
+use crate::renderer::{Element, ElementRenderContext};
 use crate::renderer::gradient::to_peniko_gradient;
 use crate::renderer::layers::maybe_with_layer;
 use crate::renderer::painter::ToColorColor;
 
-impl Element<'_> {
+impl<C: ElementRenderContext + ?Sized> Element<'_, C> {
     pub(crate) fn draw_background(&self, scene: &mut impl PaintScene) {
         use GenericImage::*;
         use StyloBackgroundClip::*;
@@ -98,28 +98,25 @@ impl Element<'_> {
             return;
         };
 
-        let cols = &grid_info.columns;
-        let inner_width =
-            (cols.sizes.iter().sum::<f32>() + cols.gutters.iter().sum::<f32>()) as f64;
+        let table_width = self.frame.padding_box.width();
 
-        let rows = &grid_info.rows;
-        let mut y = rows.gutters.first().copied().unwrap_or_default() as f64;
-        for ((row, &height), &gutter) in table
-            .rows
-            .iter()
-            .zip(rows.sizes.iter())
-            .zip(rows.gutters.iter().skip(1))
-        {
-            let row_node = &self.context.dom.get_node(row.node_id).unwrap();
-            let Some(style) = row_node.primary_styles() else {
-                continue;
-            };
+        for row in &table.rows {
+            let row_node = self.context.dom().get_node(row.node_id).unwrap();
+            let row_style = row_node.style_arc();
+            let row_style: &style::properties::generated::ComputedValues = row_style.as_ref();
 
-            let shape =
-                Rect::new(0.0, y, inner_width, y + height as f64).scale_from_origin(self.scale_factor);
+            let row_layout = row_node.final_layout;
+            let row_top: f64 = row_layout.location.y as f64;
+            let row_bottom: f64 = row_top + row_layout.size.height as f64;
+            let shape = kurbo::Rect::new(
+                0.0,
+                row_top * self.scale_factor,
+                table_width,
+                row_bottom * self.scale_factor,
+            );
 
-            let current_color = style.clone_color();
-            let background_color = &style.get_background().background_color;
+            let current_color = row_style.clone_color();
+            let background_color = &row_style.get_background().background_color;
             let bg_color = background_color
                 .resolve_to_absolute(&current_color)
                 .as_color_color();
@@ -128,8 +125,6 @@ impl Element<'_> {
                 // Fill the color
                 scene.fill(Fill::NonZero, self.transform, bg_color, None, &shape);
             }
-
-            y += (height + gutter) as f64;
         }
     }
 

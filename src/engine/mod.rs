@@ -6,21 +6,15 @@ pub mod resolve;
 pub mod js_provider;
 
 pub use self::config::EngineConfig;
-use crate::dom::node::{RasterImageData, SpecialElementData};
-use crate::dom::{Dom, ImageData, NodeData};
+use crate::dom::{Dom, NodeData};
 use crate::dom::{EventDispatcher, EventType};
 use crate::js::JsRuntime;
 use crate::networking;
 use crate::networking::{NetworkError, HttpClient};
-use crate::renderer::painter::ScenePainter;
-use crate::renderer::HtmlRenderer;
 use crate::shell_provider::StokesShellProvider;
 use blitz_traits::shell::Viewport;
 use markup5ever::local_name;
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::io::Cursor;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{channel, Receiver};
 use anyrender::PaintScene;
@@ -230,31 +224,8 @@ impl Engine {
     }
 
     /// Render the current page to a canvas
-    pub fn render(&mut self, painter: &mut impl PaintScene, now: f64) {
+    pub fn render(&mut self, _painter: &mut impl PaintScene, now: f64) {
         self.resolve(now);
-
-        let dom = self.dom.as_ref().unwrap();
-        let node = dom.root_node();
-
-        let selection: HashMap<usize, (usize, usize)> = dom
-            .get_text_selection_ranges()
-            .into_iter()
-            .map(|(node_id, start, end)| (node_id, (start, end)))
-            .collect();
-
-        /*let mut renderer = HtmlRenderer {
-            dom: &dom,
-            scale_factor: self.viewport.scale_f64(),
-            width: self.viewport_width() as u32,
-            height: self.viewport_height() as u32,
-            selection_ranges: selection,
-            debug_hitboxes: self.config.debug_hitboxes,
-        };
-
-        renderer.render(
-            painter,
-            node,
-        );*/
     }
 
     /// Add a CSS stylesheet to the engine

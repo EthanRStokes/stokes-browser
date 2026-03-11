@@ -2,10 +2,9 @@
 //!
 //! Following the Servo architecture: the tab (content) process builds the fragment
 //! tree from the DOM after style resolution and layout. This tree is sent via IPC
-//! to the main (compositor) process, which hands it to the `HtmlRenderer` (our
-//! equivalent of WebRender) for rasterization.
+//! to the main (compositor) process for compositor-side rasterization.
 //!
-//! The fragment tree captures exactly the data that `HtmlRenderer` needs from the
+//! The fragment tree captures exactly the data that the compositor needs from the
 //! DOM, without referencing live DOM nodes. Each node carries pre-rendered display
 //! commands so the main process can composite without needing ComputedValues.
 
@@ -20,7 +19,6 @@ use markup5ever::local_name;
 use parley::PositionedLayoutItem;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use anyrender::PaintScene;
 use style::properties::generated::longhands::border_collapse::computed_value::T as BorderCollapse;
 use style::properties::generated::longhands::visibility::computed_value::T as Visibility;
 use style::properties::{longhands, ComputedValues};
@@ -249,7 +247,7 @@ pub struct FragmentHoistedChild {
 }
 
 /// Resolved style data needed for rendering, extracted from ComputedValues.
-/// Only the fields that HtmlRenderer actually reads.
+/// Only the fields that the fragment compositor currently reads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedStyle {
     // Visibility
@@ -555,7 +553,7 @@ impl FragmentTree {
         // Extract element-specific data and resolved style
         let (element_data, resolved_style) = if let Some(elem) = node.element_data() {
             let styles = node.primary_styles();
-            let resolved = styles.map(|s| self.resolve_style(&s, elem, dom, node_id, &node.final_layout));
+            let resolved = styles.map(|s| self.resolve_style(&s, elem, &node.final_layout));
             let elem_data = self.extract_element_data(elem, dom, node_id);
 
             // Extract text styles for inline layout nodes
@@ -657,8 +655,6 @@ impl FragmentTree {
         &self,
         style: &ComputedValues,
         elem: &ElementData,
-        dom: &Dom,
-        node_id: usize,
         layout: &taffy::Layout,
     ) -> ResolvedStyle {
         let current_color = style.clone_color().as_color_color();
@@ -710,7 +706,7 @@ impl FragmentTree {
             })
             .collect();
 
-        let caret_color = if let Some(text_input) = elem.text_input_data() {
+        let caret_color = if elem.text_input_data().is_some() {
             let itext_color = style.get_inherited_text().color;
             let caret = match &style.get_inherited_ui().caret_color.0 {
                 GenericColorOrAuto::Color(c) => c.resolve_to_absolute(&itext_color),
@@ -739,9 +735,6 @@ impl FragmentTree {
                 _ => SerializedBorderStyle::Other,
             }
         };
-
-        let width = node_id; // placeholder
-        let resolve_w = CSSPixelLength::new(style.get_border().border_top_left_radius.0.width.0.resolve(CSSPixelLength::new(0.0)).px());
 
         // Resolve border radii using actual layout dimensions
         let layout_width = layout.size.width as f64;
@@ -1031,16 +1024,7 @@ impl FragmentTree {
         width: u32,
         height: u32,
     ) {
-        use crate::renderer::HtmlRenderer;
-
-        let renderer = HtmlRenderer {
-            dom,
-            scale_factor,
-            width,
-            height,
-            selection_ranges: selection_ranges.clone(),
-            debug_hitboxes: false, // debug hitboxes are handled by the compositor
-        };
+        let renderer = crate::renderer::FragmentElementContext::new(dom, selection_ranges, scale_factor);
 
         // Collect all node IDs to iterate (avoid borrowing issues).
         let node_ids: Vec<usize> = self.nodes.keys().copied().collect();
@@ -1051,7 +1035,7 @@ impl FragmentTree {
             if node.element_data().is_none() {
                 continue;
             }
-            let Some(styles) = node.primary_styles() else {
+            let Some(_) = node.primary_styles() else {
                 continue;
             };
 
@@ -1061,7 +1045,7 @@ impl FragmentTree {
             // The compositor applies the real transform during tree walk.
             let origin = kurbo::Point::ZERO;
 
-            let element = renderer.element(node, layout, origin);
+            let element = crate::renderer::ElementRenderContext::element(&renderer, node, layout, origin);
 
             // ── Phase 1: pre-layer (outline, outset box shadow) ────────
             {
@@ -1178,7 +1162,6 @@ impl FragmentTree {
         width: u32,
         height: u32,
     ) {
-        use crate::renderer::HtmlRenderer;
         use style::values::generics::color::GenericColor;
         use markup5ever::local_name;
 
@@ -1202,14 +1185,7 @@ impl FragmentTree {
         }
 
         // Re-record display commands for all dirty nodes.
-        let renderer = HtmlRenderer {
-            dom,
-            scale_factor,
-            width,
-            height,
-            selection_ranges: selection_ranges.clone(),
-            debug_hitboxes: false,
-        };
+        let renderer = crate::renderer::FragmentElementContext::new(dom, selection_ranges, scale_factor);
 
         for &node_id in dirty_node_ids {
             let Some(node) = dom.get_node(node_id) else {
@@ -1224,7 +1200,7 @@ impl FragmentTree {
 
             let layout = node.final_layout;
             let origin = kurbo::Point::ZERO;
-            let element = renderer.element(node, layout, origin);
+            let element = crate::renderer::ElementRenderContext::element(&renderer, node, layout, origin);
 
             // Phase 1: pre-layer
             {

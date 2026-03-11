@@ -13,484 +13,48 @@ pub(crate) mod fragment_renderer;
 use std::any::Any;
 use std::collections::HashMap;
 use crate::dom::node::{ListItemLayout, ListItemLayoutPosition, Marker, SpecialElementData, TextInputData};
-use crate::dom::{Dom, DomNode, ElementData, ImageData, NodeData};
+use crate::dom::{Dom, DomNode, ElementData};
 use crate::renderer::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
-use crate::renderer::layers::maybe_with_layer;
 use crate::renderer::text::{draw_text_selection, stroke_text, SELECTION_COLOR};
 use crate::renderer::painter::ToColorColor;
 use anyrender::{CustomPaint, Paint, PaintScene};
 use color::{AlphaColor, Srgb};
-use kurbo::{Affine, BezPath, Insets, Point, Rect, Stroke, Vec2};
-use markup5ever::local_name;
-use parley::PositionedLayoutItem;
+use kurbo::{Affine, BezPath, Insets, Point, Rect, Vec2};
 use peniko::Fill;
-use style::dom::TElement;
 use style::properties::generated::longhands::border_collapse::computed_value::T as BorderCollapse;
-use style::properties::generated::longhands::visibility::computed_value::T as Visibility;
 use style::properties::style_structs::Font;
 use style::properties::ComputedValues;
 use style::servo_arc::Arc;
-use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, Color, OutlineStyle, Overflow};
-use style::values::generics::color::{GenericColor, GenericColorOrAuto};
+use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, OutlineStyle};
+use style::values::generics::color::GenericColorOrAuto;
 use taffy::Layout;
-use painter::ScenePainter;
 use crate::renderer::background::{to_image_quality, to_peniko_image};
 use crate::renderer::sizing::compute_object_fit;
 
-/// HTML renderer that draws layout boxes to a canvas
-pub struct HtmlRenderer<'dom> {
-    pub(crate) dom: &'dom Dom,
-    pub(crate) scale_factor: f64,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) selection_ranges: HashMap<usize, (usize, usize)>,
-    /// Debug: Show hitboxes for all elements
-    pub(crate) debug_hitboxes: bool,
-}
+pub(crate) trait ElementRenderContext {
+    fn dom(&self) -> &Dom;
+    fn selection_ranges(&self) -> &HashMap<usize, (usize, usize)>;
+    fn scale_factor(&self) -> f64;
 
-impl HtmlRenderer<'_> {
-    fn node_position(&self, node: usize, location: Point) -> (Layout, Point) {
-        let layout = self.layout(node);
-        let position = location + Vec2::new(layout.location.x as f64, layout.location.y as f64);
-        (layout, position)
-    }
-
-    fn layout(&self, node: usize) -> Layout {
-        self.dom.tree()[node].final_layout
-    }
-
-    /// Render a layout tree to the canvas with transition support
-    pub fn render(
-        &mut self,
-        painter: &mut impl PaintScene,
-        node: &DomNode,
-    ) {
-        let scroll = self.dom.viewport_scroll;
-
-        let root_element = self.dom.root_element();
-        let root_id = root_element.id;
-        let bg_width = (self.width as f32).max(root_element.final_layout.size.width);
-        let bg_height = (self.height as f32).max(root_element.final_layout.size.height);
-
-        let background_color = {
-            let html_color = root_element
-                .primary_styles()
-                .map(|s| s.clone_background_color())
-                .unwrap_or(GenericColor::TRANSPARENT_BLACK);
-            if html_color == GenericColor::TRANSPARENT_BLACK {
-                root_element
-                    .children
-                    .iter()
-                    .find_map(|id| {
-                        self.dom
-                            .get_node(*id)
-                            .filter(|node| node.data.is_element_with_tag_name(&local_name!("body")))
-                    })
-                    .and_then(|body| body.primary_styles())
-                    .map(|style| {
-                        let current_color = style.clone_color();
-                        style
-                            .clone_background_color()
-                            .resolve_to_absolute(&current_color)
-                    })
-            } else {
-                let current_color = root_element.primary_styles().unwrap().clone_color();
-                Some(html_color.resolve_to_absolute(&current_color))
-            }
-        };
-
-        if let Some(bg_color) = background_color {
-            let bg_color = bg_color.as_color_color();
-            let rect = Rect::from_origin_size((0.0, 0.0), (bg_width as f64, bg_height as f64));
-            painter.fill(Fill::NonZero, Affine::IDENTITY, bg_color, None, &rect);
-        }
-
-        self.render_element(
-            painter,
-            root_id,
-            Point {
-                x: -scroll.x,
-                y: -scroll.y,
-            },
-        );
-
-        // Draw debug hitboxes if enabled
-        if self.debug_hitboxes {
-            self.render_debug_hitboxes(painter, root_id, 0.0, 0.0);
-        }
-    }
-
-    /// Render debug hitboxes for all elements (showing click target areas)
-    fn render_debug_hitboxes(&self, painter: &mut impl PaintScene , node_id: usize, parent_x: f64, parent_y: f64) {
-        let node = &self.dom.tree()[node_id];
-        let layout = node.final_layout;
-
-        // Calculate absolute position (same logic as find_element_at_position)
-        let abs_x = parent_x + layout.location.x as f64;
-        let abs_y = parent_y + layout.location.y as f64;
-
-        // Only draw hitbox if node has non-zero size
-        if layout.size.width > 0.0 && layout.size.height > 0.0 {
-            // Determine hitbox color based on element type
-            let color = match &node.data {
-                NodeData::Element(elem) => {
-                    let tag = elem.name.local.as_ref();
-                    if tag == "a" {
-                        // Links are blue
-                        peniko::Color::new([0.0, 0.0, 1.0, 0.3])
-                    } else if tag == "button" || tag == "input" {
-                        // Interactive elements are green
-                        peniko::Color::new([0.0, 1.0, 0.0, 0.3])
-                    } else {
-                        // Other elements are red (very transparent)
-                        peniko::Color::new([1.0, 0.0, 0.0, 0.1])
-                    }
-                }
-                NodeData::Text { .. } => {
-                    // Text nodes are yellow
-                    peniko::Color::new([1.0, 1.0, 0.0, 0.3])
-                }
-                _ => {
-                    // Other nodes are gray
-                    peniko::Color::new([0.5, 0.5, 0.5, 0.1])
-                }
-            };
-
-            // Apply scroll offset for drawing
-            let scroll = self.dom.viewport_scroll;
-            let draw_x = (abs_x - scroll.x) * self.scale_factor;
-            let draw_y = (abs_y - scroll.y) * self.scale_factor;
-            let draw_w = layout.size.width as f64 * self.scale_factor;
-            let draw_h = layout.size.height as f64 * self.scale_factor;
-
-            let rect = Rect::from_origin_size((draw_x, draw_y), (draw_w, draw_h));
-
-            // Fill with semi-transparent color
-            painter.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
-
-            // Draw border
-            let border_color = peniko::Color::new([color.components[0], color.components[1], color.components[2], 0.8]);
-            painter.stroke(&Stroke::new(1.0), Affine::IDENTITY, border_color, None, &rect);
-        }
-
-        // Recursively draw hitboxes for layout children
-        if let Some(layout_children) = node.layout_children.borrow().as_ref() {
-            for &child_id in layout_children.iter() {
-                self.render_debug_hitboxes(painter, child_id, abs_x, abs_y);
-            }
-        }
-
-        // Draw hitboxes for inline boxes (hyperlinks and inline elements inside text)
-        if let Some(element_data) = node.element_data() {
-            if let Some(inline_layout) = &element_data.inline_layout_data {
-                // Get content offset (padding + border)
-                let padding_border = layout.padding + layout.border;
-                let content_x = abs_x + padding_border.left as f64;
-                let content_y = abs_y + padding_border.top as f64;
-
-                for line in inline_layout.layout.lines() {
-                    for item in line.items() {
-                        match item {
-                            PositionedLayoutItem::InlineBox(ibox) => {
-                                let box_id = ibox.id as usize;
-                                let box_node = &self.dom.tree()[box_id];
-
-                                let box_x = content_x + ibox.x as f64;
-                                let box_y = content_y + ibox.y as f64;
-                                let box_w = ibox.width as f64;
-                                let box_h = ibox.height as f64;
-
-                                let color = match &box_node.data {
-                                    NodeData::Element(elem) => {
-                                        let tag = elem.name.local.as_ref();
-                                        if tag == "a" {
-                                            peniko::Color::new([0.0, 0.5, 1.0, 0.4])
-                                        } else if tag == "button" || tag == "input" {
-                                            peniko::Color::new([0.0, 1.0, 0.0, 0.4])
-                                        } else {
-                                            peniko::Color::new([0.0, 1.0, 1.0, 0.3])
-                                        }
-                                    }
-                                    _ => peniko::Color::new([0.5, 0.5, 0.5, 0.2]),
-                                };
-
-                                let scroll = self.dom.viewport_scroll;
-                                let draw_x = (box_x - scroll.x) * self.scale_factor;
-                                let draw_y = (box_y - scroll.y) * self.scale_factor;
-                                let draw_w = box_w * self.scale_factor;
-                                let draw_h = box_h * self.scale_factor;
-
-                                let rect = Rect::from_origin_size((draw_x, draw_y), (draw_w, draw_h));
-                                painter.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
-
-                                let border_color = peniko::Color::new([color.components[0], color.components[1], color.components[2], 0.9]);
-                                painter.stroke(&Stroke::new(2.0), Affine::IDENTITY, border_color, None, &rect);
-
-                                self.render_debug_hitboxes_inline(painter, box_id, content_x, content_y);
-                            }
-                            PositionedLayoutItem::GlyphRun(glyph_run) => {
-                                // Draw hitbox for glyph runs - these represent text inside inline elements
-                                let brush_node_id = glyph_run.style().brush.id;
-
-                                // Check if this text belongs to a link
-                                let is_link = self.is_node_or_ancestor_link(brush_node_id);
-
-                                if is_link {
-                                    let run_x = content_x + glyph_run.offset() as f64;
-                                    let run_y = content_y + (glyph_run.baseline() - glyph_run.run().metrics().ascent) as f64;
-                                    let run_w = glyph_run.advance() as f64;
-                                    let run_h = (glyph_run.run().metrics().ascent + glyph_run.run().metrics().descent) as f64;
-                                    let scroll = self.dom.viewport_scroll;
-                                    let draw_x = (run_x - scroll.x) * self.scale_factor;
-                                    let draw_y = (run_y - scroll.y) * self.scale_factor;
-                                    let draw_w = run_w * self.scale_factor;
-                                    let draw_h = run_h * self.scale_factor;
-
-                                    // Blue for links
-                                    let color = peniko::Color::new([0.0, 0.5, 1.0, 0.4]);
-                                    let rect = Rect::from_origin_size((draw_x, draw_y), (draw_w, draw_h));
-                                    painter.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
-
-                                    let border_color = peniko::Color::new([0.0, 0.5, 1.0, 0.9]);
-                                    painter.stroke(&Stroke::new(2.0), Affine::IDENTITY, border_color, None, &rect);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Check if a node or any of its ancestors is a link (<a> tag)
-    fn is_node_or_ancestor_link(&self, node_id: usize) -> bool {
-        let mut current_id = Some(node_id);
-        let mut depth = 0;
-        while let Some(id) = current_id {
-            if depth > 50 { break; } // Prevent infinite loops
-            depth += 1;
-
-            let node = &self.dom.tree()[id];
-            if let NodeData::Element(elem) = &node.data {
-                if elem.name.local.as_ref() == "a" {
-                    return true;
-                }
-            }
-            current_id = node.parent;
-        }
-        false
-    }
-
-    /// Render debug hitboxes for inline box children
-    fn render_debug_hitboxes_inline(&self, painter: &mut impl PaintScene, node_id: usize, container_x: f64, container_y: f64) {
-        let node = &self.dom.tree()[node_id];
-        let layout = node.final_layout;
-
-        // For inline boxes, location is relative to the inline container
-        let abs_x = container_x + layout.location.x as f64;
-        let abs_y = container_y + layout.location.y as f64;
-
-        // Recursively check layout children
-        if let Some(layout_children) = node.layout_children.borrow().as_ref() {
-            for &child_id in layout_children.iter() {
-                self.render_debug_hitboxes(painter, child_id, abs_x, abs_y);
-            }
-        }
-
-        // Check for nested inline layouts
-        if let Some(element_data) = node.element_data() {
-            if let Some(inline_layout) = &element_data.inline_layout_data {
-                let padding_border = layout.padding + layout.border;
-                let content_x = abs_x + padding_border.left as f64;
-                let content_y = abs_y + padding_border.top as f64;
-
-                for line in inline_layout.layout.lines() {
-                    for item in line.items() {
-                        if let PositionedLayoutItem::InlineBox(ibox) = item {
-                            let box_id = ibox.id as usize;
-                            let box_node = &self.dom.tree()[box_id];
-
-                            let box_x = content_x + ibox.x as f64;
-                            let box_y = content_y + ibox.y as f64;
-                            let box_w = ibox.width as f64;
-                            let box_h = ibox.height as f64;
-
-                            let color = match &box_node.data {
-                                NodeData::Element(elem) if elem.name.local.as_ref() == "a" => {
-                                    peniko::Color::new([0.0, 0.5, 1.0, 0.4])
-                                }
-                                _ => peniko::Color::new([0.0, 1.0, 1.0, 0.3]),
-                            };
-
-                            let scroll = self.dom.viewport_scroll;
-                            let draw_x = (box_x - scroll.x) * self.scale_factor;
-                            let draw_y = (box_y - scroll.y) * self.scale_factor;
-                            let draw_w = box_w * self.scale_factor;
-                            let draw_h = box_h * self.scale_factor;
-
-                            let rect = Rect::from_origin_size((draw_x, draw_y), (draw_w, draw_h));
-                            painter.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
-
-                            let border_color = peniko::Color::new([color.components[0], color.components[1], color.components[2], 0.9]);
-                            painter.stroke(&Stroke::new(2.0), Affine::IDENTITY, border_color, None, &rect);
-
-                            self.render_debug_hitboxes_inline(painter, box_id, content_x, content_y);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn render_element(
-        &self,
-        painter: &mut impl PaintScene,
-        node_id: usize,
-        location: Point,
-    ) {
-        let node = &self.dom.tree()[node_id];
-
-        if matches!(node.taffy_style.display, taffy::Display::None) {
-            return; // Skip rendering for display: none
-        }
-
-        let Some(styles) = node.primary_styles() else {
-            return;
-        };
-
-        if node.local_name() == "input" && node.attr(local_name!("type")) == Some("hidden") {
-            return;
-        }
-
-        if styles.get_inherited_box().visibility != Visibility::Visible {
-            return;
-        }
-
-        let opacity = styles.get_effects().opacity;
-        if opacity == 0.0 {
-            return;
-        }
-        let has_opacity = opacity < 1.0;
-
-        let overflow_x = styles.get_box().overflow_x;
-        let overflow_y = styles.get_box().overflow_y;
-        let is_image = node.element_data().and_then(|e| e.raster_image_data()).is_some();
-        let is_text_input = node.element_data().and_then(|e| e.text_input_data()).is_some();
-        let should_clip = is_image || is_text_input || !matches!(overflow_x, Overflow::Visible) || !matches!(overflow_y, Overflow::Visible);
-
-        let (layout, position) = self.node_position(node_id, location);
-        let taffy::Layout {
-            size,
-            border,
-            padding,
-            content_size,
-            ..
-        } = node.final_layout;
-
-        let scaled_padding_border = (padding + border).map(f64::from);
-        let content_pos = Point {
-            x: position.x + scaled_padding_border.left,
-            y: position.y + scaled_padding_border.top,
-        };
-        let content_box_size = kurbo::Size {
-            width: (size.width as f64 - scaled_padding_border.left - scaled_padding_border.right) * self.scale_factor,
-            height: (size.height as f64 - scaled_padding_border.top - scaled_padding_border.bottom) * self.scale_factor,
-        };
-
-        let scaled_y = position.y * self.scale_factor;
-        let scaled_content_height = content_size.height.max(size.height) as f64 * self.scale_factor;
-        if scaled_y > self.height as f64 || scaled_y + scaled_content_height < 0.0 {
-            return; // Skip rendering boxes outside viewport
-        }
-
-        let clip_area = content_box_size.width * content_box_size.height;
-        if should_clip && clip_area < 0.01 {
-            return;
-        }
-
-        let mut element = self.element(node, layout, position);
-
-        element.draw_outline(painter);
-        element.draw_outset_box_shadow(painter);
-
-        maybe_with_layer(
-            painter,
-            has_opacity,
-            opacity,
-            element.transform,
-            &element.frame.border_box_path(),
-            |painter| {
-                element.draw_background(painter);
-                element.draw_inset_box_shadow(painter);
-                element.draw_table_row_backgrounds(painter);
-                element.draw_table_borders(painter);
-                element.draw_border(painter);
-
-                //let wants_layer = should_clip | has_opacity;
-                let clip = if is_text_input {
-                    &element.frame.content_box_path()
-                } else {
-                    &element.frame.padding_box_path()
-                };
-                maybe_with_layer(painter, should_clip, 1.0, element.transform, clip, |painter| {
-                    let position = Point {
-                        x: position.x - node.scroll_offset.x,
-                        y: position.y - node.scroll_offset.y,
-                    };
-                    element.position = Point {
-                        x: element.position.x - node.scroll_offset.x,
-                        y: element.position.y - node.scroll_offset.y,
-                    };
-                    element.transform = element.transform.then_translate(Vec2 {
-                        x: -node.scroll_offset.x,
-                        y: -node.scroll_offset.y
-                    });
-                    element.draw_image(painter);
-                    element.draw_svg(painter);
-                    element.draw_canvas(painter);
-                    element.draw_text_input_text(painter, position);
-                    element.draw_inline_layout(painter, position);
-                    element.draw_marker(painter, position);
-                    element.draw_children(painter);
-                });
-            }
-        );
-    }
-
-    fn render_node(&self, scene: &mut impl PaintScene, node_id: usize, location: Point) {
-        let node = &self.dom.tree()[node_id];
-
-        match &node.data {
-            NodeData::Element(_) | NodeData::AnonymousBlock(_) => {
-                self.render_element(scene, node_id, location)
-            }
-            NodeData::Text(text) => {
-                unreachable!()
-            }
-            NodeData::Document => {}
-            NodeData::ShadowRoot(_) => {}
-            // NodeData::Doctype => {}
-            NodeData::Comment => {}
-        }
-    }
-
-    pub(crate) fn element<'a>(
+    fn element<'a>(
         &'a self,
         node: &'a DomNode,
         layout: Layout,
         position: Point,
-    ) -> Element<'a> {
-        let style = node.stylo_data.borrow().as_ref().map(|elem_data| elem_data.styles.primary().clone())
-            .unwrap_or(
-                ComputedValues::initial_values_with_font_override(Font::initial_values())
-            );
+    ) -> Element<'a, Self>
+    where
+        Self: Sized,
+    {
+        let style = node
+            .stylo_data
+            .borrow()
+            .as_ref()
+            .map(|elem_data| elem_data.styles.primary().clone())
+            .unwrap_or(ComputedValues::initial_values_with_font_override(Font::initial_values()));
 
-        let scale = self.scale_factor;
-
+        let scale = self.scale_factor();
         let frame = create_css_rect(&style, &layout, scale);
-
         let transform = Affine::translate(position.to_vec2() * scale);
-
         let element = node.element_data().unwrap();
 
         Element {
@@ -506,6 +70,40 @@ impl HtmlRenderer<'_> {
             text_input: element.text_input_data(),
             list_item: element.list_item_data.as_deref(),
         }
+    }
+}
+
+pub(crate) struct FragmentElementContext<'dom, 'sel> {
+    dom: &'dom Dom,
+    selection_ranges: &'sel HashMap<usize, (usize, usize)>,
+    scale_factor: f64,
+}
+
+impl<'dom, 'sel> FragmentElementContext<'dom, 'sel> {
+    pub(crate) fn new(
+        dom: &'dom Dom,
+        selection_ranges: &'sel HashMap<usize, (usize, usize)>,
+        scale_factor: f64,
+    ) -> Self {
+        Self {
+            dom,
+            selection_ranges,
+            scale_factor,
+        }
+    }
+}
+
+impl ElementRenderContext for FragmentElementContext<'_, '_> {
+    fn dom(&self) -> &Dom {
+        self.dom
+    }
+
+    fn selection_ranges(&self) -> &HashMap<usize, (usize, usize)> {
+        self.selection_ranges
+    }
+
+    fn scale_factor(&self) -> f64 {
+        self.scale_factor
     }
 }
 
@@ -585,8 +183,8 @@ pub(crate) fn create_css_rect_from_fragment(
     CssBox::new(border_box, border, padding, outline_width, border_radii)
 }
 
-pub(crate) struct Element<'a> {
-    context: &'a HtmlRenderer<'a>,
+pub(crate) struct Element<'a, C: ElementRenderContext + ?Sized> {
+    context: &'a C,
     frame: CssBox,
     pub(crate) style: Arc<ComputedValues>,
     pub(crate) position: Point,
@@ -599,38 +197,7 @@ pub(crate) struct Element<'a> {
     list_item: Option<&'a ListItemLayout>,
 }
 
-impl Element<'_> {
-    fn draw_children(&self, painter: &mut impl PaintScene) {
-        // Negative z_index hoisted nodes
-        if let Some(hoisted) = &self.node.stacking_context {
-            for child in hoisted.neg_z_hoisted_children() {
-                let pos = Point {
-                    x: self.position.x + child.position.x as f64,
-                    y: self.position.y + child.position.y as f64,
-                };
-                self.context.render_node(painter, child.node_id, pos);
-            }
-        }
-
-        // regular
-        if let Some(children) = &*self.node.paint_children.borrow() {
-            for child_id in children {
-                self.context.render_node(painter, *child_id, self.position);
-            }
-        }
-
-        // Positive z_index hoisted nodes
-        if let Some(hoisted) = &self.node.stacking_context {
-            for child in hoisted.pos_z_hoisted_children() {
-                let pos = Point {
-                    x: self.position.x + child.position.x as f64,
-                    y: self.position.y + child.position.y as f64,
-                };
-                self.context.render_node(painter, child.node_id, pos);
-            }
-        }
-    }
-
+impl<C: ElementRenderContext + ?Sized> Element<'_, C> {
     pub(crate) fn draw_marker(&self, painter: &mut impl PaintScene, pos: Point) {
         if let Some(ListItemLayout {
                         marker,
@@ -666,7 +233,7 @@ impl Element<'_> {
             let transform =
                 Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor));
 
-            stroke_text(painter, layout.lines(), self.context.dom, transform);
+            stroke_text(painter, layout.lines(), self.context.dom(), transform);
         }
     }
 
@@ -679,7 +246,7 @@ impl Element<'_> {
             let transform =
                 Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor));
 
-            if let Some(&(start, end)) = self.context.selection_ranges.get(&self.node.id) {
+            if let Some(&(start, end)) = self.context.selection_ranges().get(&self.node.id) {
                 draw_text_selection(
                     painter,
                     &text_layout.layout,
@@ -692,7 +259,7 @@ impl Element<'_> {
             stroke_text(
                 painter,
                 text_layout.layout.lines(),
-                self.context.dom,
+                    self.context.dom(),
                 transform,
             )
         }
@@ -740,7 +307,7 @@ impl Element<'_> {
             stroke_text(
                 painter,
                 input_data.editor.try_layout().unwrap().lines(),
-                self.context.dom,
+                self.context.dom(),
                 transform,
             );
         }
