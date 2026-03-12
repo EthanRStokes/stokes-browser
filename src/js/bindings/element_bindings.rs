@@ -20,6 +20,20 @@ pub unsafe fn create_js_element_by_id(
     tag_name: &str,
     attributes: &AttributeMap,
 ) -> Result<JSVal, String> {
+    create_js_element_impl(raw_cx, node_id, tag_name, attributes, true)
+}
+
+/// Internal element wrapper builder.
+/// When `with_parent` is true, looks up the parent in the DOM and creates a full element
+/// wrapper for it (with `with_parent = false` so the parent itself doesn't recurse).
+/// When `with_parent` is false, `parentNode` and `parentElement` are set to null.
+unsafe fn create_js_element_impl(
+    raw_cx: *mut JSContext,
+    node_id: usize,
+    tag_name: &str,
+    attributes: &AttributeMap,
+    with_parent: bool,
+) -> Result<JSVal, String> {
     rooted!(in(raw_cx) let element = JS_NewPlainObject(raw_cx));
     if element.get().is_null() {
         return Err("Failed to create element object".to_string());
@@ -204,8 +218,11 @@ pub unsafe fn create_js_element_by_id(
         );
     }
 
-    // Look up the parent from the DOM
-    let parent_info: Option<(usize, String, AttributeMap)> = if node_id != 0 {
+    // Look up the parent from the DOM and expose it as parentNode/parentElement.
+    // When `with_parent` is true we build a full element wrapper for the parent (using
+    // `with_parent = false` so the parent's own parent is *not* traversed, avoiding infinite
+    // recursion).  When `with_parent` is false we short-circuit to null immediately.
+    let parent_info: Option<(usize, String, AttributeMap)> = if with_parent && node_id != 0 {
         DOM_REF.with(|dom_ref| {
             if let Some(ref dom) = *dom_ref.borrow() {
                 let dom = &**dom;
@@ -225,49 +242,35 @@ pub unsafe fn create_js_element_by_id(
         None
     };
 
-    if let Some((parent_id, parent_tag, _parent_attrs)) = parent_info {
-        // Create a parent element wrapper with insertBefore method
-        rooted!(in(raw_cx) let parent_elem = JS_NewPlainObject(raw_cx));
-        if !parent_elem.get().is_null() {
-            set_string_property(raw_cx, parent_elem.get(), "tagName", &parent_tag.to_uppercase())?;
-            set_string_property(raw_cx, parent_elem.get(), "nodeName", &parent_tag.to_uppercase())?;
-            set_int_property(raw_cx, parent_elem.get(), "nodeType", 1)?;
-
-            // Store the parent node_id
-            rooted!(in(raw_cx) let parent_ptr_val = mozjs::jsval::DoubleValue(parent_id as f64));
-            rooted!(in(raw_cx) let parent_elem_rooted = parent_elem.get());
-            let parent_id_name = std::ffi::CString::new("__nodeId").unwrap();
-            JS_DefineProperty(
-                raw_cx,
-                parent_elem_rooted.handle().into(),
-                parent_id_name.as_ptr(),
-                parent_ptr_val.handle().into(),
-                0,
-            );
-
-            // Add insertBefore method to parent
-            define_function(raw_cx, parent_elem.get(), "insertBefore", Some(element_insert_before), 2)?;
-            define_function(raw_cx, parent_elem.get(), "append", Some(element_append), 0)?;
-            define_function(raw_cx, parent_elem.get(), "appendChild", Some(element_append_child), 1)?;
-            define_function(raw_cx, parent_elem.get(), "removeChild", Some(element_remove_child), 1)?;
-
-            rooted!(in(raw_cx) let parent_val = ObjectValue(parent_elem.get()));
-            let cname = std::ffi::CString::new("parentNode").unwrap();
-            JS_DefineProperty(
-                raw_cx,
-                element_rooted.handle().into(),
-                cname.as_ptr(),
-                parent_val.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-            let cname = std::ffi::CString::new("parentElement").unwrap();
-            JS_DefineProperty(
-                raw_cx,
-                element_rooted.handle().into(),
-                cname.as_ptr(),
-                parent_val.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
+    if let Some((parent_id, parent_tag, parent_attrs)) = parent_info {
+        // Build a *full* element wrapper for the parent so that JS code can call any element
+        // method (e.g. hasAttribute, getAttribute, matches, …) on it without hitting a
+        // "not a function" error.  We pass `with_parent = false` to prevent the parent from
+        // also building its own parent and so on (no infinite recursion).
+        if let Ok(parent_val) = create_js_element_impl(raw_cx, parent_id, &parent_tag, &parent_attrs, false) {
+            for name in &["parentNode", "parentElement"] {
+                let cname = std::ffi::CString::new(*name).unwrap();
+                rooted!(in(raw_cx) let pv = parent_val);
+                JS_DefineProperty(
+                    raw_cx,
+                    element_rooted.handle().into(),
+                    cname.as_ptr(),
+                    pv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        } else {
+            rooted!(in(raw_cx) let null_val = NullValue());
+            for name in &["parentNode", "parentElement"] {
+                let cname = std::ffi::CString::new(*name).unwrap();
+                JS_DefineProperty(
+                    raw_cx,
+                    element_rooted.handle().into(),
+                    cname.as_ptr(),
+                    null_val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
         }
     } else {
         rooted!(in(raw_cx) let null_val = NullValue());
