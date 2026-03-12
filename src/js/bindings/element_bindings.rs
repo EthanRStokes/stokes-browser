@@ -639,7 +639,6 @@ pub(crate) unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, arg
 }
 
 /// element.removeChild implementation
-// TODO
 unsafe extern "C" fn element_remove_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
@@ -683,15 +682,48 @@ unsafe extern "C" fn element_insert_before(raw_cx: *mut JSContext, argc: c_uint,
 
     println!("[JS] element.insertBefore() called");
 
-    // FIXME: The new node (args.get(0)) is not actually inserted before the reference node
-    // (args.get(1)) in the DOM. The parent's child list is never modified. Should call a DOM
-    // method analogous to `append_children` but with an index derived from the reference node's
-    // position among the parent's children.
-    if argc > 0 {
-        args.rval().set(*args.get(0));
+    // insertBefore(newNode, referenceNode)
+    // First argument is required: the new node to insert.
+    let new_child_id = if argc > 0 {
+        match get_node_id_from_value(raw_cx, *args.get(0)) {
+            Some(id) => id,
+            None => {
+                args.rval().set(UndefinedValue());
+                return true;
+            }
+        }
     } else {
         args.rval().set(UndefinedValue());
-    }
+        return true;
+    };
+
+    // Second argument is the reference node. If null/undefined, fall back to appendChild.
+    let reference_id = if argc > 1 {
+        get_node_id_from_value(raw_cx, *args.get(1))
+    } else {
+        None
+    };
+
+    DOM_REF.with(|dom| {
+        if let Some(dom_ptr) = *dom.borrow() {
+            let dom = &mut *dom_ptr;
+            if let Some(parent_id) = get_node_id_from_this(raw_cx, &args) {
+                match reference_id {
+                    Some(ref_id) => {
+                        // Insert new_child immediately before the reference node.
+                        dom.insert_nodes_before(ref_id, &[new_child_id]);
+                    }
+                    None => {
+                        // Reference is null: append to end of parent's children.
+                        dom.append_children(parent_id, &[new_child_id]);
+                    }
+                }
+            }
+        }
+    });
+
+    // Return the inserted node.
+    args.rval().set(*args.get(0));
     true
 }
 
@@ -957,7 +989,7 @@ unsafe extern "C" fn element_blur(raw_cx: *mut JSContext, argc: c_uint, vp: *mut
 }
 
 /// element.click implementation
-unsafe extern "C" fn element_click(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn  element_click(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     println!("[JS] element.click() called");
     args.rval().set(UndefinedValue());

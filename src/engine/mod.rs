@@ -685,8 +685,7 @@ impl Engine {
         None
     }
 
-    // TODO reimplement javascript
-    /*/// Process pending JavaScript timers (setTimeout/setInterval)
+    /// Process pending JavaScript timers (setTimeout/setInterval)
     /// Returns true if any timers were executed
     #[inline]
     pub fn process_timers(&mut self) -> bool {
@@ -714,7 +713,7 @@ impl Engine {
         } else {
             None
         }
-    }*/
+    }
 
     /// Add a URL to the navigation history
     fn add_to_history(&mut self, url: String) {
