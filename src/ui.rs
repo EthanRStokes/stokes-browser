@@ -159,7 +159,7 @@ impl UiComponent {
             hover_color: [0.85, 0.9, 1.0],
             is_active: title == "New Tab",
             is_hover: false,
-            tooltip: Tooltip::new(&format!("Switch to {}", title)),
+            tooltip: Tooltip::new(&format_tab_tooltip_text(title)),
             close_button_hover: false,
             close_button_tooltip: Tooltip::new("Close tab"),
         }
@@ -201,6 +201,16 @@ impl UiComponent {
 fn load_svg(svg_data: &str) -> Option<Tree> {
     let options = usvg::Options::default();
     Tree::from_str(svg_data, &options).ok()
+}
+
+fn format_tab_tooltip_text(title: &str) -> String {
+    let normalized_title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    if normalized_title.is_empty() {
+        "Switch to tab".to_string()
+    } else {
+        format!("Switch to\n{}", normalized_title)
+    }
 }
 
 /// State for tab dragging
@@ -620,9 +630,10 @@ impl BrowserUI {
     /// Update tab title
     pub fn update_tab_title(&mut self, tab_id: &str, title: &str) {
         for comp in &mut self.components {
-            if let UiComponent::TabButton { id, title: tab_title, .. } = comp {
+            if let UiComponent::TabButton { id, title: tab_title, tooltip, .. } = comp {
                 if id == tab_id {
                     *tab_title = title.to_string();
+                    tooltip.text = format_tab_tooltip_text(title);
                 }
             }
         }
@@ -1277,13 +1288,13 @@ impl BrowserUI {
         // Draw BROWSING WITH STOKES text in the top-right corner
         {
             let text = "STOKES BROWSER";
-            let mut builder = layout_ctx.ranged_builder(font_ctx, &text, self.viewport.hidpi_scale, true);
+            let mut builder = layout_ctx.ranged_builder(font_ctx, text, self.viewport.hidpi_scale, true);
 
             builder.push_default(GenericFamily::SystemUi);
             builder.push_default(LineHeight::FontSizeRelative(1.3));
             builder.push_default(StyleProperty::FontSize(base_font_size));
 
-            let mut layout = builder.build(&text);
+            let mut layout = builder.build(text);
 
             layout.break_all_lines(Some(canvas_width));
             layout.align(Alignment::Start, AlignmentOptions::default());
@@ -1910,70 +1921,90 @@ impl BrowserUI {
         }
 
         let padding = 8.0 * hidpi_scale;
+        let lines: Vec<&str> = tooltip.text.lines().collect();
+        if lines.is_empty() {
+            return;
+        }
 
-        // Measure text
-        if let Some(text_blob) = TextBlob::new(&tooltip.text, font) {
-            let text_bounds = text_blob.bounds();
-            let tooltip_width = (text_bounds.width() + padding * 2.0) as f64;
-            let tooltip_height = (text_bounds.height() + padding * 2.0) as f64;
+        let (_, sample_bounds) = font.measure_str("Ag", None);
+        let line_height = sample_bounds.height().max(font.size());
+        let baseline_offset = -sample_bounds.top;
+        let line_spacing = 2.0 * hidpi_scale;
 
-            // Position tooltip above the component
-            let mut tooltip_x = x as f64;
-            let mut tooltip_y = y as f64 - tooltip_height - 5.0;
+        let max_line_width = lines.iter()
+            .map(|line| {
+                if line.is_empty() {
+                    0.0
+                } else {
+                    font.measure_str(line, None).0
+                }
+            })
+            .fold(0.0_f32, f32::max);
 
-            // Clamp tooltip position to keep it within canvas bounds
-            // Add some margin from the edge
-            let margin = (4.0 * hidpi_scale) as f64;
+        let tooltip_width = (max_line_width + padding * 2.0) as f64;
+        let tooltip_height = (line_height * lines.len() as f32
+            + line_spacing * lines.len().saturating_sub(1) as f32
+            + padding * 2.0) as f64;
 
-            // Adjust horizontal position if tooltip would overflow right edge
-            if tooltip_x + tooltip_width > canvas_width as f64 - margin {
-                tooltip_x = canvas_width as f64 - tooltip_width - margin;
+        let mut tooltip_x = x as f64;
+        let mut tooltip_y = y as f64 - tooltip_height - 5.0;
+
+        let margin = (4.0 * hidpi_scale) as f64;
+
+        if tooltip_x + tooltip_width > canvas_width as f64 - margin {
+            tooltip_x = canvas_width as f64 - tooltip_width - margin;
+        }
+
+        if tooltip_x < margin {
+            tooltip_x = margin;
+        }
+
+        if tooltip_y < margin {
+            tooltip_y = y as f64 + 32.0 * hidpi_scale as f64 + 5.0;
+        }
+
+        if tooltip_y + tooltip_height > canvas_height as f64 - margin {
+            tooltip_y = canvas_height as f64 - tooltip_height - margin;
+        }
+
+        let transform = Affine::IDENTITY;
+
+        // Draw tooltip background with shadow
+        let shadow_rect = kurbo::RoundedRect::from_rect(
+            kurbo::Rect::new(tooltip_x + 2.0, tooltip_y + 2.0, tooltip_x + tooltip_width + 2.0, tooltip_y + tooltip_height + 2.0),
+            4.0
+        );
+        let shadow_color = AlphaColor::from_rgba8(0, 0, 0, 100); // Semi-transparent black shadow
+        painter.fill(Fill::NonZero, transform, shadow_color, None, &shadow_rect);
+
+        // Draw tooltip background
+        let tooltip_rect = kurbo::RoundedRect::from_rect(
+            kurbo::Rect::new(tooltip_x, tooltip_y, tooltip_x + tooltip_width, tooltip_y + tooltip_height),
+            4.0
+        );
+        let bg_color = AlphaColor::from_rgba8(255, 255, 220, 255); // Light yellow background
+        painter.fill(Fill::NonZero, transform, bg_color, None, &tooltip_rect);
+
+        // Draw tooltip border
+        let stroke = kurbo::Stroke::new(1.0 * hidpi_scale as f64);
+        let border_color = AlphaColor::from_rgba8(180, 180, 140, 255);
+        painter.stroke(&stroke, transform, border_color, None, &tooltip_rect);
+
+        // Draw tooltip text using canvas directly (TextBlob is Skia-specific)
+        painter.set_matrix(transform);
+        let mut paint = Paint::default();
+        paint.set_color(Color::BLACK);
+
+        for (index, line) in lines.iter().enumerate() {
+            let draw_line = if line.is_empty() { " " } else { line };
+
+            if let Some(text_blob) = TextBlob::new(draw_line, font) {
+                let text_y = tooltip_y as f32
+                    + padding
+                    + baseline_offset
+                    + index as f32 * (line_height + line_spacing);
+                painter.inner.draw_text_blob(&text_blob, (tooltip_x as f32 + padding, text_y), &paint);
             }
-
-            // Adjust horizontal position if tooltip would overflow left edge
-            if tooltip_x < margin {
-                tooltip_x = margin;
-            }
-
-            // Adjust vertical position if tooltip would overflow top edge
-            if tooltip_y < margin {
-                // If there's no room above, place it below the component
-                tooltip_y = y as f64 + 32.0 * hidpi_scale as f64 + 5.0; // Assuming button height ~32px
-            }
-
-            // Adjust vertical position if tooltip would overflow bottom edge
-            if tooltip_y + tooltip_height > canvas_height as f64 - margin {
-                tooltip_y = canvas_height as f64 - tooltip_height - margin;
-            }
-
-            let transform = Affine::IDENTITY;
-
-            // Draw tooltip background with shadow
-            let shadow_rect = kurbo::RoundedRect::from_rect(
-                kurbo::Rect::new(tooltip_x + 2.0, tooltip_y + 2.0, tooltip_x + tooltip_width + 2.0, tooltip_y + tooltip_height + 2.0),
-                4.0
-            );
-            let shadow_color = AlphaColor::from_rgba8(0, 0, 0, 100); // Semi-transparent black shadow
-            painter.fill(Fill::NonZero, transform, shadow_color, None, &shadow_rect);
-
-            // Draw tooltip background
-            let tooltip_rect = kurbo::RoundedRect::from_rect(
-                kurbo::Rect::new(tooltip_x, tooltip_y, tooltip_x + tooltip_width, tooltip_y + tooltip_height),
-                4.0
-            );
-            let bg_color = AlphaColor::from_rgba8(255, 255, 220, 255); // Light yellow background
-            painter.fill(Fill::NonZero, transform, bg_color, None, &tooltip_rect);
-
-            // Draw tooltip border
-            let stroke = kurbo::Stroke::new(1.0 * hidpi_scale as f64);
-            let border_color = AlphaColor::from_rgba8(180, 180, 140, 255);
-            painter.stroke(&stroke, transform, border_color, None, &tooltip_rect);
-
-            // Draw tooltip text using canvas directly (TextBlob is Skia-specific)
-            painter.set_matrix(transform);
-            let mut paint = Paint::default();
-            paint.set_color(Color::BLACK);
-            painter.inner.draw_text_blob(&text_blob, (tooltip_x as f32 + padding, tooltip_y as f32 + padding - text_bounds.top), &paint);
         }
     }
 
