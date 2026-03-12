@@ -94,8 +94,6 @@ pub fn setup_dom_bindings(
         // Set up Event and CustomEvent constructors
         setup_event_constructors(cx, global_ptr)?;
 
-        // Set up XMLHttpRequest constructor
-        setup_xhr_constructor(cx, global_ptr)?;
 
         // Set up atob/btoa functions
         setup_base64_functions(cx, global_ptr)?;
@@ -1195,25 +1193,6 @@ unsafe fn setup_event_constructors(raw_cx: *mut JSContext, global: *mut JSObject
 }
 
 /// Set up XMLHttpRequest constructor
-unsafe fn setup_xhr_constructor(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
-    rooted!(in(raw_cx) let xhr = JS_NewPlainObject(raw_cx));
-    if xhr.get().is_null() {
-        return Err("Failed to create XMLHttpRequest constructor".to_string());
-    }
-
-    rooted!(in(raw_cx) let xhr_val = ObjectValue(xhr.get()));
-    rooted!(in(raw_cx) let global_rooted = global);
-    let name = std::ffi::CString::new("XMLHttpRequest").unwrap();
-    JS_DefineProperty(
-        raw_cx,
-        global_rooted.handle().into(),
-        name.as_ptr(),
-        xhr_val.handle().into(),
-        JSPROP_ENUMERATE as u32,
-    );
-
-    Ok(())
-}
 
 /// Set up atob/btoa functions
 unsafe fn setup_base64_functions(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
