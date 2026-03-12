@@ -181,9 +181,16 @@ pub unsafe fn create_js_element_by_id(
         );
     }
 
-    // Create dataset object
+    // Create dataset object populated with data-* attributes
     rooted!(in(raw_cx) let dataset = JS_NewPlainObject(raw_cx));
     if !dataset.get().is_null() {
+        for attr in attributes.iter() {
+            let attr_name = attr.name.local.as_ref();
+            if let Some(data_key) = attr_name.strip_prefix("data-") {
+                let camel_key = hyphen_to_camel_case(data_key);
+                let _ = set_string_property(raw_cx, dataset.get(), &camel_key, attr.value.as_ref());
+            }
+        }
         rooted!(in(raw_cx) let dataset_val = ObjectValue(dataset.get()));
         let cname = std::ffi::CString::new("dataset").unwrap();
         JS_DefineProperty(
@@ -339,6 +346,26 @@ pub unsafe fn create_stub_element(raw_cx: *mut JSContext, tag_name: &str) -> Res
 // ============================================================================
 // Local helper functions
 // ============================================================================
+
+/// Convert a hyphen-case string to camelCase (for dataset key conversion).
+/// E.g. "foo-bar-baz" → "fooBarBaz"
+fn hyphen_to_camel_case(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut capitalize_next = false;
+    for ch in s.chars() {
+        if ch == '-' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            for c in ch.to_uppercase() {
+                result.push(c);
+            }
+            capitalize_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
 
 /// Get the node ID from classList's parent element
 unsafe fn get_classlist_parent_node_id(raw_cx: *mut JSContext, args: &CallArgs) -> Option<usize> {

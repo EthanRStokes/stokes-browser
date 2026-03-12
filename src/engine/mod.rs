@@ -425,6 +425,7 @@ impl Engine {
 
         for script_element in script_elements {
             if let NodeData::Element(element_data) = &script_element.data {
+                let script_node_id = script_element.id;
                 // Check for external scripts
                 if let Some(src) = element_data.attr(local_name!("src")) {
                     println!("Found external script: {}", src);
@@ -438,7 +439,7 @@ impl Engine {
                             match result {
                                 Ok((_, bytes)) => {
                                     match String::from_utf8(Vec::from(bytes)) {
-                                        Ok(script) => js_provider.execute_script(script),
+                                        Ok(script) => js_provider.execute_script_with_node_id(script, script_node_id),
                                         Err(e) => eprintln!("[JS] External script at '{}' is not valid UTF-8: {}", url_str, e),
                                     }
                                 }
@@ -450,7 +451,7 @@ impl Engine {
                     // Get inline script content
                     let script_content = script_element.text_content();
                     if !script_content.trim().is_empty() {
-                        self.js_provider.execute_script(script_content);
+                        self.js_provider.execute_script_with_node_id(script_content, script_node_id);
                     }
                 }
             }

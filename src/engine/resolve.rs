@@ -25,7 +25,7 @@ impl Engine {
 
     fn handle_message(&mut self, message: JsProviderMessage) {
         match message {
-            JsProviderMessage::ExecuteScript(script) => {
+            JsProviderMessage::ExecuteScript { script, node_id } => {
                 println!("Executing script ({} bytes)", script.len());
                 // Save the script to a local file in debug_js/
                 if self.config.debug_js {
@@ -54,7 +54,13 @@ impl Engine {
                     }
                 }
 
+                // Set document.currentScript to the executing <script> element
+                crate::js::bindings::dom_bindings::set_current_script(node_id);
+
                 self.execute_javascript(&script, self.config.debug_js);
+
+                // Reset document.currentScript to null
+                crate::js::bindings::dom_bindings::set_current_script(None);
             }
         }
     }

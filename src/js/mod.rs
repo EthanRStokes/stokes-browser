@@ -2,7 +2,7 @@
 mod runtime;
 mod helpers;
 mod selectors;
-mod bindings;
+pub(crate) mod bindings;
 mod jsapi;
 
 pub use bindings::alert_callback::set_alert_callback;

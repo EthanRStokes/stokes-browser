@@ -26,6 +26,14 @@ thread_local! {
     pub(crate) static USER_AGENT: RefCell<String> = RefCell::new(String::new());
     pub(crate) static LOCAL_STORAGE: RefCell<std::collections::HashMap<String, String>> = RefCell::new(std::collections::HashMap::new());
     pub(crate) static SESSION_STORAGE: RefCell<std::collections::HashMap<String, String>> = RefCell::new(std::collections::HashMap::new());
+    /// Node ID of the currently-executing script element (for document.currentScript)
+    pub(crate) static CURRENT_SCRIPT_NODE_ID: RefCell<Option<usize>> = RefCell::new(None);
+}
+
+/// Set the node ID of the currently-executing script element.
+/// Call with `Some(node_id)` before executing a script and `None` afterwards.
+pub fn set_current_script(node_id: Option<usize>) {
+    CURRENT_SCRIPT_NODE_ID.with(|id| *id.borrow_mut() = node_id);
 }
 
 // ============================================================================
@@ -160,6 +168,27 @@ pub fn setup_body_property_deferred(runtime: &mut JsRuntime) -> Result<(), Strin
 
     runtime.execute(script, false).map_err(|e| {
         println!("[JS] Warning: Failed to set up document.body property: {}", e);
+        e
+    })?;
+
+    Ok(())
+}
+
+/// Set up the document.currentScript property with a live getter backed by the Rust thread-local.
+/// Must be called after DOM bindings are initialized.
+pub fn setup_current_script_deferred(runtime: &mut JsRuntime) -> Result<(), String> {
+    let script = r#"
+        Object.defineProperty(document, 'currentScript', {
+            get: function() {
+                return document.__getCurrentScript();
+            },
+            configurable: true,
+            enumerable: true
+        });
+    "#;
+
+    runtime.execute(script, false).map_err(|e| {
+        println!("[JS] Warning: Failed to set up document.currentScript property: {}", e);
         e
     })?;
 
@@ -358,6 +387,21 @@ unsafe fn setup_document(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
     define_function(raw_cx, document.get(), "__getHead", Some(document_get_head), 0)?;
     define_function(raw_cx, document.get(), "__getBody", Some(document_get_body), 0)?;
     define_function(raw_cx, document.get(), "__setBody", Some(document_set_body), 1)?;
+
+    // Add document.currentScript helper (getter returns the currently-executing <script> element)
+    define_function(raw_cx, document.get(), "__getCurrentScript", Some(document_get_current_script), 0)?;
+
+    // Set initial currentScript = null (will be overridden by the deferred property accessor)
+    rooted!(in(raw_cx) let null_cs = NullValue());
+    rooted!(in(raw_cx) let document_rooted_cs = document.get());
+    let cs_name = std::ffi::CString::new("currentScript").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        document_rooted_cs.handle().into(),
+        cs_name.as_ptr(),
+        null_cs.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     // Create documentElement (represents <html>) using a proper element with methods
     let doc_elem_val = element_bindings::create_stub_element(raw_cx, "html")?;
@@ -1083,6 +1127,39 @@ unsafe extern "C" fn document_set_body(raw_cx: *mut JSContext, argc: c_uint, vp:
     });
 
     args.rval().set(UndefinedValue());
+    true
+}
+
+/// document.currentScript getter – returns a JS element wrapper for the currently-executing
+/// <script> element, or null when no script is running synchronously.
+unsafe extern "C" fn document_get_current_script(raw_cx: *mut JSContext, _argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, 0);
+
+    let element_data = CURRENT_SCRIPT_NODE_ID.with(|id| {
+        let node_id = (*id.borrow())?;
+        DOM_REF.with(|dom_ref| {
+            let dom_ptr = (*dom_ref.borrow())?;
+            let dom = &*dom_ptr;
+            let node = dom.get_node(node_id)?;
+            if let crate::dom::NodeData::Element(ref elem_data) = node.data {
+                Some((node_id, elem_data.name.local.to_string(), elem_data.attributes.clone()))
+            } else {
+                None
+            }
+        })
+    });
+
+    if let Some((node_id, tag_name, attributes)) = element_data {
+        match element_bindings::create_js_element_by_id(raw_cx, node_id, &tag_name, &attributes) {
+            Ok(val) => {
+                args.rval().set(val);
+                return true;
+            }
+            Err(_) => {}
+        }
+    }
+
+    args.rval().set(NullValue());
     true
 }
 

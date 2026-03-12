@@ -2,7 +2,11 @@ use std::sync::mpsc::Sender;
 
 #[derive(Debug, Clone)]
 pub enum JsProviderMessage {
-    ExecuteScript(String),
+    ExecuteScript {
+        script: String,
+        /// Node ID of the `<script>` element being executed, for `document.currentScript`.
+        node_id: Option<usize>,
+    },
 }
 
 pub struct StokesJsProvider {
@@ -15,6 +19,11 @@ impl StokesJsProvider {
     }
 
     pub fn execute_script(&self, script: String) {
-        let _ = self.sender.send(JsProviderMessage::ExecuteScript(script));
+        let _ = self.sender.send(JsProviderMessage::ExecuteScript { script, node_id: None });
+    }
+
+    pub fn execute_script_with_node_id(&self, script: String, node_id: usize) {
+        let _ = self.sender.send(JsProviderMessage::ExecuteScript { script, node_id: Some(node_id) });
     }
 }
+
