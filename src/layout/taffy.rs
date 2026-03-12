@@ -389,6 +389,7 @@ impl PrintTree for Dom {
         let node = self.node_from_id(node_id);
         match node.data {
             NodeData::Document => "DOCUMENT",
+            NodeData::Doctype { .. } => "DOCTYPE",
             NodeData::Text { .. } => "TEXT",
             NodeData::Comment => "COMMENT",
             NodeData::Element(_) => "ELEMENT",

@@ -474,7 +474,7 @@ impl HtmlRenderer<'_> {
             }
             NodeData::Document => {}
             NodeData::ShadowRoot(_) => {}
-            // NodeData::Doctype => {}
+            NodeData::Doctype { .. } => {}
             NodeData::Comment => {}
         }
     }

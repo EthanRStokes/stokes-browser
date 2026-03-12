@@ -782,6 +782,7 @@ pub(crate) fn find_inline_layout_embedded_boxes(
             NodeData::Comment | NodeData::Text { .. } => {
                 node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
             }
+            NodeData::Doctype { .. } => {},
             NodeData::Document => unreachable!(),
         }
     }
@@ -1077,6 +1078,7 @@ pub(crate) fn build_inline_layout(
             NodeData::Comment => {
                 // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
             }
+            NodeData::Doctype { .. } => {},
             NodeData::Document => unreachable!(),
         }
     }

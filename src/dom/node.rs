@@ -120,6 +120,7 @@ impl FromIterator<Attribute> for AttributeMap {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NodeKind {
     Document,
+    Doctype,
     Element,
     AnonymousBlock,
     ShadowRoot,
@@ -132,6 +133,7 @@ pub enum NodeKind {
 pub enum NodeData {
     /// The `Document` itself - the root node.
     Document,
+    Doctype { name: StrTendril },
     Text(TextData),
     Comment,
     Element(ElementData),
@@ -197,6 +199,7 @@ impl NodeData {
             NodeData::ShadowRoot(_) => NodeKind::ShadowRoot,
             NodeData::Text { .. } => NodeKind::Text,
             NodeData::Comment => NodeKind::Comment,
+            NodeData::Doctype { .. } => NodeKind::Doctype,
         }
     }
 }
@@ -1791,7 +1794,7 @@ impl DomNode {
                     self.tree()[child_id].write_outer_html(writer);
                 }
             }
-            // NodeData::Doctype { name, .. } => write!(s, "DOCTYPE {name}"),
+            NodeData::Doctype { name, .. } => writer.push_str("DOCTYPE {name}"),
             NodeData::Text(text) => {
                 writer.push_str(&text.content);
             }
@@ -1881,6 +1884,9 @@ impl fmt::Debug for DomNode {
             NodeData::Comment => {
                 write!(f, "<!-- comment -->")
             },
+            NodeData::Doctype { name } => {
+                write!(f, "<{}>", name)
+            }
         }
     }
 }

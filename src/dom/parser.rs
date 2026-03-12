@@ -1,4 +1,4 @@
-use super::Dom;
+use super::{Dom, NodeData};
 use crate::dom::config::DomConfig;
 use crate::dom::node::Attribute;
 use html5ever::tendril::{StrTendril, TendrilSink};
@@ -112,10 +112,10 @@ impl<'m> DomHtmlParser<'m> {
         let opts = ParseOpts {
             tokenizer: TokenizerOpts::default(),
             tree_builder: TreeBuilderOpts {
-                exact_errors: false,
+                exact_errors: true,
                 scripting_enabled: false, // Enables parsing of <noscript> tags
                 iframe_srcdoc: false,
-                drop_doctype: true,
+                drop_doctype: false,
                 quirks_mode: QuirksMode::NoQuirks,
             },
         };
@@ -168,16 +168,16 @@ impl<'m> TreeSink for DomHtmlParser<'m> {
         })
     }
 
-    fn create_element(&self, name: QualName, attrs: Vec<markup5ever::Attribute>, flags: ElementFlags) -> Self::Handle {
+    fn create_element(&self, name: QualName, attrs: Vec<markup5ever::Attribute>, _flags: ElementFlags) -> Self::Handle {
         let attrs = attrs.into_iter().map(html5ever_to_stokes).collect();
         self.dom().create_element(name, attrs)
     }
 
-    fn create_comment(&self, text: StrTendril) -> Self::Handle {
+    fn create_comment(&self, _text: StrTendril) -> Self::Handle {
         self.dom().create_comment_node()
     }
 
-    fn create_pi(&self, target: StrTendril, data: StrTendril) -> Self::Handle {
+    fn create_pi(&self, _target: StrTendril, _data: StrTendril) -> Self::Handle {
         self.dom().create_comment_node()
     }
 
@@ -226,6 +226,11 @@ impl<'m> TreeSink for DomHtmlParser<'m> {
     }
 
     fn append_doctype_to_document(&self, name: StrTendril, public_id: StrTendril, system_id: StrTendril) {
+        let mut dom = self.dom();
+        let doctype = dom.create_node(NodeData::Doctype {
+            name,
+        });
+        dom.append_children(0, &[doctype]);
     }
 
     fn get_template_contents(&self, target: &Self::Handle) -> Self::Handle {
