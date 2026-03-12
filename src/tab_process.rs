@@ -222,6 +222,64 @@ impl TabProcess {
                                 }
                             }
                         }
+                        NavigationProviderMessage::NavigateReplace(options) => {
+                            if self.engine.dom.is_none() {
+                                continue;
+                            }
+
+                            self.navigation_id = self.navigation_id.wrapping_add(1);
+                            let navigation_id = self.navigation_id;
+
+                            let nav_provider = self.engine.navigation_provider.clone();
+                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(true));
+                            let url = options.url.as_str().to_string();
+                            let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
+                            self.dom().unwrap().net_provider.fetch_with_callback(
+                                options.into_request(),
+                                Box::new(move |result| {
+                                    let (url, bytes) = match result {
+                                        Ok(res) => res,
+                                        Err(_) => {
+                                            (url, include_str!("../assets/404.html").into())
+                                        }
+                                    };
+                                    let contents = std::str::from_utf8(&bytes).unwrap().to_string();
+                                    let _ = nav_provider.sender.send(NavigationProviderMessage::NavigateReplaceCommit {
+                                        navigation_id,
+                                        url,
+                                        contents,
+                                    });
+                                })
+                            );
+                        }
+                        NavigationProviderMessage::NavigateReplaceCommit {
+                            navigation_id,
+                            url,
+                            contents,
+                        } => {
+                            if navigation_id != self.navigation_id {
+                                continue;
+                            }
+                            self.engine.set_loading_state(true);
+                            // Navigate without adding to history, then replace the current entry.
+                            match self.engine.navigate(&url, contents, true, false).await {
+                                Ok(_) => {
+                                    self.engine.replace_current_history_entry(url.clone());
+                                    let title = self.engine.page_title().to_string();
+                                    let _ = self.channel.send(&TabToParentMessage::NavigationCompleted {
+                                        url: url.clone(),
+                                        title: title.clone(),
+                                    });
+                                    let _ = self.channel.send(&TabToParentMessage::TitleChanged(title));
+                                    let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                                    self.render_frame()?;
+                                }
+                                Err(e) => {
+                                    let _ = self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()));
+                                    let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                                }
+                            }
+                        }
                     }
                 }
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {},

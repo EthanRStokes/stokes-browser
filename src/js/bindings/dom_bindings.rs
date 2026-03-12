@@ -13,6 +13,7 @@ use crate::js::bindings::element_bindings::{
 };
 use crate::js::selectors::matches_selector;
 use crate::js::JsRuntime;
+use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use html5ever::ns;
 use markup5ever::QualName;
 use mozjs::jsapi::{
@@ -2152,8 +2153,20 @@ unsafe extern "C" fn location_assign(raw_cx: *mut JSContext, argc: c_uint, vp: *
     };
 
     println!("[JS] location.assign('{}') called", url);
-    // FIXME: Does not navigate to the given URL. Should trigger a browser navigation to `url`,
-    // pushing a new entry onto the session history.
+
+    DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = dom_ref.borrow().as_ref() {
+            let dom = unsafe { &**dom_ptr };
+            if let Some(resolved) = dom.url.resolve_relative(&url) {
+                dom.nav_provider.navigate_to(NavigationOptions::new(
+                    resolved,
+                    String::from("text/plain"),
+                    dom.id(),
+                ));
+            }
+        }
+    });
+
     args.rval().set(UndefinedValue());
     true
 }
@@ -2169,8 +2182,20 @@ unsafe extern "C" fn location_replace(raw_cx: *mut JSContext, argc: c_uint, vp: 
     };
 
     println!("[JS] location.replace('{}') called", url);
-    // FIXME: Does not navigate to the given URL. Should replace the current history entry with
-    // `url` without adding a new entry to the session history.
+
+    DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = dom_ref.borrow().as_ref() {
+            let dom = unsafe { &**dom_ptr };
+            if let Some(resolved) = dom.url.resolve_relative(&url) {
+                dom.nav_provider.navigate_replace(NavigationOptions::new(
+                    resolved,
+                    String::from("text/plain"),
+                    dom.id(),
+                ));
+            }
+        }
+    });
+
     args.rval().set(UndefinedValue());
     true
 }

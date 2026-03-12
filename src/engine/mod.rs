@@ -738,6 +738,18 @@ impl Engine {
         self.history_index = Some(self.history.len() - 1);
     }
 
+    /// Replace the current history entry with `url` without pushing a new entry.
+    /// This is used by `location.replace()`.
+    pub fn replace_current_history_entry(&mut self, url: String) {
+        if let Some(index) = self.history_index {
+            self.history[index] = url;
+        } else {
+            // No existing history; establish an initial entry.
+            self.history.push(url);
+            self.history_index = Some(0);
+        }
+    }
+
     /// Check if we can navigate back
     #[inline]
     pub fn can_go_back(&self) -> bool {

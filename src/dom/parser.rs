@@ -88,10 +88,10 @@ impl<'m> DomHtmlParser<'m> {
             let opts = ParseOpts {
                 tokenizer: TokenizerOpts::default(),
                 tree_builder: TreeBuilderOpts {
-                    exact_errors: false,
+                    exact_errors: true,
                     scripting_enabled: true,
                     iframe_srcdoc: false,
-                    drop_doctype: true,
+                    drop_doctype: false,
                     quirks_mode: QuirksMode::NoQuirks,
                 },
             };
