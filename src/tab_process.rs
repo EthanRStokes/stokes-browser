@@ -339,7 +339,8 @@ impl TabProcess {
                 let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                 self.engine.set_loading_state(true);
 
-                let contents = networking::fetch(&url, &self.engine.config.user_agent).unwrap_or_else(|_| {
+                let contents = networking::fetch(&url, &self.engine.config.user_agent).unwrap_or_else(|e| {
+                    eprintln!("[navigate] networking::fetch failed for {url}: {e}");
                     include_str!("../assets/404.html").to_string()
                 });
                 match self.engine.navigate(&url, contents, true, true).await {
@@ -365,7 +366,8 @@ impl TabProcess {
                 if !url.is_empty() {
                     let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
                     self.engine.set_loading_state(true);
-                    let contents = networking::fetch(&url, &self.engine.config.user_agent).unwrap_or_else(|_| {
+                    let contents = networking::fetch(&url, &self.engine.config.user_agent).unwrap_or_else(|e| {
+                        eprintln!("[reload] networking::fetch failed for {url}: {e}");
                         include_str!("../assets/404.html").to_string()
                     });
                     match self.engine.navigate(&url, contents, true, true).await {

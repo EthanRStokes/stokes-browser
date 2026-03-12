@@ -173,13 +173,20 @@ impl StokesNetProvider {
                 easy.url(request.url.as_str()).unwrap();
 
                 let mut headers = List::new();
+                // Forward any request-level headers first.
                 for (name, value) in &request.headers {
                     headers.append(&format!("{}: {}", name.as_str(), value.to_str().unwrap())).unwrap();
                 }
+                // Add browser-like headers so servers such as Google do not
+                // reject the request with a 4xx response.
+                headers.append("Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8").unwrap();
+                headers.append("Accept-Language: en-US,en;q=0.5").unwrap();
                 easy.http_headers(headers);
 
                 easy.follow_location(true).unwrap();
                 easy.useragent(user_agent).unwrap();
+                // Enable automatic decompression for gzip/deflate/br responses.
+                easy.accept_encoding("").unwrap();
                 Self::apply_request_method(&mut easy, &request);
                 match easy.perform() {
                     Ok(_) => {}
@@ -189,7 +196,12 @@ impl StokesNetProvider {
                 }
 
                 let status_code = easy.response_code().unwrap_or(0);
-                if !(200..300).contains(&status_code) {
+                // Only treat a non-2xx response as a hard failure when the
+                // body is empty.  If the server sent content (e.g. Google's
+                // sorry/CAPTCHA page on 429), render it instead of falling
+                // back to our own 404 page.
+                let body = easy.get_ref().0.clone();
+                if !(200..300).contains(&status_code) && body.is_empty() {
                     return Err(ProviderError::HttpError(status_code));
                 }
 
@@ -199,7 +211,7 @@ impl StokesNetProvider {
                     _ => request.url.to_string(),
                 };
 
-                (final_url, Bytes::from(easy.get_ref().0.clone()))
+                (final_url, Bytes::from(body))
             }
         })
     }

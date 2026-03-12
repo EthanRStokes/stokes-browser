@@ -3,7 +3,7 @@ use blitz_traits::net::{NetHandler, NetProvider, Request};
 use blitz_traits::shell::ShellProvider;
 use bytes::Bytes;
 // Networking module for handling HTTP requests
-use curl::easy::Easy;
+use curl::easy::{Easy, List};
 use selectors::context::QuirksMode;
 use std::io::Cursor;
 use std::path::Path;
@@ -571,7 +571,11 @@ fn read_local_file(path: &str) -> Result<String, NetworkError> {
 pub fn fetch(url: &str, user_agent: &str) -> Result<String, NetworkError> {
     println!("Fetching: {}", url);
 
-    let url = match Url::parse(url) {
+    // Parse only for scheme detection. We intentionally pass the *original* URL
+    // string to curl below so that Url::parse() normalization (e.g. percent-
+    // encoding of '*', reordering, etc.) cannot corrupt signed query parameters
+    // such as those used by Google Search.
+    let parsed_url = match Url::parse(url) {
         Ok(u) => u,
         Err(err) => {
             return Err(NetworkError::Curl(err.to_string()))
@@ -579,12 +583,10 @@ pub fn fetch(url: &str, user_agent: &str) -> Result<String, NetworkError> {
     };
 
     // Check if it's a local file
-    if url.scheme() == "file" {
-        let file_path = url_to_file_path(url.as_str());
+    if parsed_url.scheme() == "file" {
+        let file_path = url_to_file_path(url);
         return read_local_file(&file_path);
     }
-
-    // Normalize the URL: if it lacks a scheme, default to https://
 
     // Run curl operation in a blocking task since curl is synchronous
     let user_agent = user_agent.to_string();
@@ -593,12 +595,25 @@ pub fn fetch(url: &str, user_agent: &str) -> Result<String, NetworkError> {
     let mut data = Vec::new();
     let mut headers = Vec::new();
 
-    // Configure curl
-    easy.url(&url.as_str()).map_err(|e| NetworkError::Curl(e.to_string()))?;
+    // Configure curl — use the original URL string to avoid any normalization.
+    easy.url(url).map_err(|e| NetworkError::Curl(e.to_string()))?;
     easy.useragent(&user_agent).map_err(|e| NetworkError::Curl(e.to_string()))?;
     easy.timeout(Duration::from_secs(30)).map_err(|e| NetworkError::Curl(e.to_string()))?;
     easy.follow_location(true).map_err(|e| NetworkError::Curl(e.to_string()))?;
-    easy.max_redirections(5).map_err(|e| NetworkError::Curl(e.to_string()))?;
+    easy.max_redirections(10).map_err(|e| NetworkError::Curl(e.to_string()))?;
+    // Enable automatic decompression (gzip, deflate, br) so compressed responses
+    // such as those returned by Google Search are transparently decoded before
+    // we attempt the UTF-8 conversion below.
+    easy.accept_encoding("").map_err(|e| NetworkError::Curl(e.to_string()))?;
+
+    // Send browser-like request headers so servers such as Google do not treat
+    // this as a plain bot request and return 4xx responses.
+    let mut req_headers = List::new();
+    req_headers.append("Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .map_err(|e| NetworkError::Curl(e.to_string()))?;
+    req_headers.append("Accept-Language: en-US,en;q=0.5")
+        .map_err(|e| NetworkError::Curl(e.to_string()))?;
+    easy.http_headers(req_headers).map_err(|e| NetworkError::Curl(e.to_string()))?;
 
     // Set up data collection
     {
@@ -616,9 +631,14 @@ pub fn fetch(url: &str, user_agent: &str) -> Result<String, NetworkError> {
         transfer.perform().map_err(|e| NetworkError::Curl(e.to_string()))?;
     }
 
-    // Check response code
+    // Check response code — but don't discard the body just because the status
+    // is an error code.  If the server sent content (e.g. Google's CAPTCHA /
+    // sorry page on 429, or a real 404 error page), we want to render it rather
+    // than silently replacing it with our own 404 fallback.  We only treat it
+    // as a hard failure when the response is completely empty AND the status
+    // indicates an error.
     let response_code = easy.response_code().map_err(|e| NetworkError::Curl(e.to_string()))?;
-    if response_code >= 400 {
+    if response_code >= 400 && data.is_empty() {
         return Err(NetworkError::Http(response_code));
     }
 
