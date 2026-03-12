@@ -7,7 +7,7 @@ use crate::js::selectors::matches_selector;
 use html5ever::local_name;
 use markup5ever::QualName;
 use mozjs::jsapi::{
-    CallArgs, JSContext, JSObject, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE,
+    CallArgs, CurrentGlobalOrNull, JSContext, JSObject, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE,
 };
 use mozjs::jsval::{BooleanValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::rooted;
@@ -84,6 +84,7 @@ pub unsafe fn create_js_element_by_id(
     define_function(raw_cx, element.get(), "closest", Some(element_closest), 1)?;
     define_function(raw_cx, element.get(), "matches", Some(element_matches), 1)?;
     define_function(raw_cx, element.get(), "contains", Some(element_contains), 1)?;
+    define_function(raw_cx, element.get(), "getRootNode", Some(element_get_root_node), 1)?;
     define_function(raw_cx, element.get(), "attachShadow", Some(element_attach_shadow), 1)?;
 
     // Define internal getter/setter functions for reflected and dynamic properties
@@ -769,7 +770,7 @@ pub(crate) unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, arg
 }
 
 /// element.removeChild implementation
-unsafe extern "C" fn element_remove_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_remove_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     println!("[JS] element.removeChild() called");
@@ -807,7 +808,7 @@ unsafe extern "C" fn element_remove_child(raw_cx: *mut JSContext, argc: c_uint, 
 }
 
 /// element.insertBefore implementation
-unsafe extern "C" fn element_insert_before(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_insert_before(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     println!("[JS] element.insertBefore() called");
@@ -861,7 +862,7 @@ unsafe extern "C" fn element_insert_before(raw_cx: *mut JSContext, argc: c_uint,
 }
 
 /// element.replaceChild implementation
-unsafe extern "C" fn element_replace_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_replace_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     println!("[JS] element.replaceChild() called");
@@ -878,7 +879,7 @@ unsafe extern "C" fn element_replace_child(raw_cx: *mut JSContext, argc: c_uint,
 }
 
 /// element.cloneNode implementation
-unsafe extern "C" fn element_clone_node(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_clone_node(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let deep = if argc > 0 {
@@ -1063,7 +1064,7 @@ unsafe extern "C" fn element_query_selector_all(raw_cx: *mut JSContext, argc: c_
 }
 
 /// element.addEventListener implementation
-unsafe extern "C" fn element_add_event_listener(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_add_event_listener(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let event_type = if argc > 0 {
@@ -1080,7 +1081,7 @@ unsafe extern "C" fn element_add_event_listener(raw_cx: *mut JSContext, argc: c_
 }
 
 /// element.removeEventListener implementation
-unsafe extern "C" fn element_remove_event_listener(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_remove_event_listener(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let event_type = if argc > 0 {
@@ -1096,7 +1097,8 @@ unsafe extern "C" fn element_remove_event_listener(raw_cx: *mut JSContext, argc:
 }
 
 /// element.dispatchEvent implementation
-unsafe extern "C" fn element_dispatch_event(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+/// element.dispatchEvent implementation
+pub(crate) unsafe extern "C" fn element_dispatch_event(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     println!("[JS] element.dispatchEvent() called");
     // FIXME: Always returns true without dispatching the event to any registered listeners.
@@ -1255,7 +1257,7 @@ unsafe extern "C" fn element_matches(raw_cx: *mut JSContext, argc: c_uint, vp: *
 }
 
 /// element.contains implementation
-unsafe extern "C" fn element_contains(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_contains(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     println!("[JS] element.contains() called");
 
@@ -1318,6 +1320,140 @@ unsafe extern "C" fn element_contains(raw_cx: *mut JSContext, argc: c_uint, vp: 
     };
 
     args.rval().set(BooleanValue(result));
+    true
+}
+
+/// element.getRootNode implementation (Node.getRootNode per DOM Living Standard)
+pub(crate) unsafe extern "C" fn element_get_root_node(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] element.getRootNode() called");
+
+    // Parse options - check for {composed: true}
+    let composed = if argc > 0 {
+        let options = *args.get(0);
+        if options.is_object() && !options.is_null() {
+            rooted!(in(raw_cx) let options_obj = options.to_object());
+            rooted!(in(raw_cx) let mut composed_val = UndefinedValue());
+            let composed_name = std::ffi::CString::new("composed").unwrap();
+            if mozjs::jsapi::JS_GetProperty(
+                raw_cx,
+                options_obj.handle().into(),
+                composed_name.as_ptr(),
+                composed_val.handle_mut().into(),
+            ) && composed_val.get().is_boolean() {
+                composed_val.get().to_boolean()
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    let Some(start_id) = get_node_id_from_this(raw_cx, &args) else {
+        args.rval().set(NullValue());
+        return true;
+    };
+
+    // Represents which kind of root was found
+    enum RootKind {
+        Document,
+        ShadowRoot,
+        Element,
+    }
+
+    // Walk up the parent chain (honouring shadow boundaries) to find the root node
+    let root_info: Option<(usize, RootKind)> = DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = *dom_ref.borrow() {
+            let dom = &*dom_ptr;
+            let mut current_id = start_id;
+            loop {
+                let Some(node) = dom.get_node(current_id) else {
+                    return None;
+                };
+                if let Some(parent_id) = node.parent {
+                    // Keep climbing
+                    current_id = parent_id;
+                } else if let Some(host_id) = node.shadow_host {
+                    // Reached a shadow root node
+                    if composed {
+                        // Cross shadow boundary and continue from the host element
+                        current_id = host_id;
+                    } else {
+                        // Stop here – return the shadow root
+                        return Some((current_id, RootKind::ShadowRoot));
+                    }
+                } else {
+                    // No parent, no shadow host – this is the top-most root
+                    let kind = match &node.data {
+                        NodeData::Document => RootKind::Document,
+                        _ => RootKind::Element,
+                    };
+                    return Some((current_id, kind));
+                }
+            }
+        }
+        None
+    });
+
+    match root_info {
+        Some((_, RootKind::Document)) => {
+            // Return the global `document` object
+            rooted!(in(raw_cx) let global = CurrentGlobalOrNull(raw_cx));
+            if !global.is_null() {
+                rooted!(in(raw_cx) let mut doc_val = UndefinedValue());
+                let doc_name = std::ffi::CString::new("document").unwrap();
+                if mozjs::jsapi::JS_GetProperty(
+                    raw_cx,
+                    global.handle().into(),
+                    doc_name.as_ptr(),
+                    doc_val.handle_mut().into(),
+                ) {
+                    args.rval().set(doc_val.get());
+                    return true;
+                }
+            }
+            args.rval().set(NullValue());
+        }
+        Some((shadow_root_id, RootKind::ShadowRoot)) => {
+            match create_js_shadow_root_by_id(raw_cx, shadow_root_id) {
+                Ok(val) => args.rval().set(val),
+                Err(_) => args.rval().set(NullValue()),
+            }
+        }
+        Some((root_id, RootKind::Element)) => {
+            // Disconnected subtree – if the root is this very node return `this`
+            if root_id == start_id {
+                args.rval().set(args.thisv().get());
+            } else {
+                // Build a JS wrapper for the disconnected root element
+                let elem_info = DOM_REF.with(|dom_ref| {
+                    if let Some(dom_ptr) = *dom_ref.borrow() {
+                        let dom = &*dom_ptr;
+                        if let Some(node) = dom.get_node(root_id) {
+                            if let NodeData::Element(ref elem_data) = node.data {
+                                return Some((elem_data.name.local.to_string(), elem_data.attributes.clone()));
+                            }
+                        }
+                    }
+                    None
+                });
+                if let Some((tag, attrs)) = elem_info {
+                    match create_js_element_by_id(raw_cx, root_id, &tag, &attrs) {
+                        Ok(val) => args.rval().set(val),
+                        Err(_) => args.rval().set(NullValue()),
+                    }
+                } else {
+                    args.rval().set(NullValue());
+                }
+            }
+        }
+        None => {
+            args.rval().set(NullValue());
+        }
+    }
     true
 }
 

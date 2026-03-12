@@ -6,7 +6,11 @@ use super::cookies::{ensure_cookie_jar_initialized, set_document_url, Cookie, CO
 use super::element_bindings;
 // DOM bindings for JavaScript using mozjs
 use crate::dom::{AttributeMap, Dom};
-use crate::js::bindings::element_bindings::element_append_child;
+use crate::js::bindings::element_bindings::{
+    element_append_child, element_remove_child, element_insert_before, element_replace_child,
+    element_clone_node, element_contains, element_get_root_node,
+    element_add_event_listener, element_remove_event_listener, element_dispatch_event,
+};
 use crate::js::selectors::matches_selector;
 use crate::js::JsRuntime;
 use html5ever::ns;
@@ -747,6 +751,194 @@ unsafe fn setup_storage(raw_cx: *mut JSContext, global: *mut JSObject) -> Result
     Ok(())
 }
 
+// ============================================================================
+// Node.prototype method implementations
+// ============================================================================
+
+/// node.hasChildNodes() – returns true when the node has at least one child in the DOM.
+unsafe extern "C" fn node_has_child_nodes(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let result = if let Some(node_id) = get_node_id_from_value(raw_cx, args.thisv().get()) {
+        DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &*dom_ptr;
+                if let Some(node) = dom.get_node(node_id) {
+                    return !node.children.is_empty();
+                }
+            }
+            false
+        })
+    } else {
+        false
+    };
+    args.rval().set(BooleanValue(result));
+    true
+}
+
+/// node.normalize() – stub; merges adjacent text nodes in a real UA. No-op here.
+unsafe extern "C" fn node_normalize(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] node.normalize() called (stub)");
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// node.isEqualNode(otherNode) – two nodes are equal when they have the same node ID (same
+/// object in our DOM).  A full structural comparison is not yet implemented.
+unsafe extern "C" fn node_is_equal_node(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let result = if argc > 0 {
+        let this_id = get_node_id_from_value(raw_cx, args.thisv().get());
+        let other_id = get_node_id_from_value(raw_cx, *args.get(0));
+        match (this_id, other_id) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
+    } else {
+        false
+    };
+    args.rval().set(BooleanValue(result));
+    true
+}
+
+/// node.isSameNode(otherNode) – identity check: same __nodeId means same node.
+unsafe extern "C" fn node_is_same_node(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let result = if argc > 0 {
+        let this_id = get_node_id_from_value(raw_cx, args.thisv().get());
+        let other_id = get_node_id_from_value(raw_cx, *args.get(0));
+        match (this_id, other_id) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
+    } else {
+        false
+    };
+    args.rval().set(BooleanValue(result));
+    true
+}
+
+/// node.compareDocumentPosition(other) – returns a bitmask per the DOM spec.
+/// Bit flags: DISCONNECTED=1, PRECEDING=2, FOLLOWING=4, CONTAINS=8, CONTAINED_BY=16.
+unsafe extern "C" fn node_compare_document_position(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let this_id = get_node_id_from_value(raw_cx, args.thisv().get());
+    let other_id = if argc > 0 {
+        get_node_id_from_value(raw_cx, *args.get(0))
+    } else {
+        None
+    };
+
+    let bits: i32 = match (this_id, other_id) {
+        (Some(a), Some(b)) if a == b => 0,
+        (Some(this_id), Some(other_id)) => {
+            DOM_REF.with(|dom_ref| {
+                if let Some(dom_ptr) = *dom_ref.borrow() {
+                    let dom = &*dom_ptr;
+
+                    // Collect ancestor chains for both nodes
+                    let ancestors_of = |mut id: usize| -> Vec<usize> {
+                        let mut chain = vec![id];
+                        while let Some(node) = dom.get_node(id) {
+                            if let Some(p) = node.parent {
+                                chain.push(p);
+                                id = p;
+                            } else {
+                                break;
+                            }
+                        }
+                        chain
+                    };
+
+                    let this_chain = ancestors_of(this_id);
+                    let other_chain = ancestors_of(other_id);
+
+                    // Check for contains / contained_by
+                    if this_chain.contains(&other_id) {
+                        // `other` is an ancestor of `this` → `this` is contained_by `other`
+                        // other CONTAINS this (bit 8) + other PRECEDING this (bit 2)
+                        return 8 | 2;
+                    }
+                    if other_chain.contains(&this_id) {
+                        // `this` is an ancestor of `other` → `this` CONTAINS `other`
+                        // other is CONTAINED_BY this (bit 16) + other FOLLOWING this (bit 4)
+                        return 16 | 4;
+                    }
+
+                    // Find common ancestor to determine order
+                    for &t_anc in &this_chain {
+                        if other_chain.contains(&t_anc) {
+                            // t_anc is the LCA; compare order among children
+                            // Determine sibling indices at the divergence point
+                            let child_index = |parent_id: usize, child_id: usize| -> Option<usize> {
+                                if let Some(parent_node) = dom.get_node(parent_id) {
+                                    return parent_node.children.iter().position(|&c| c == child_id);
+                                }
+                                None
+                            };
+                            // Find the child of LCA on each path
+                            let this_branch = this_chain.iter()
+                                .rev()
+                                .find(|&&n| n != t_anc && {
+                                    dom.get_node(n).map_or(false, |nd| nd.parent == Some(t_anc))
+                                })
+                                .copied()
+                                .unwrap_or(this_id);
+                            let other_branch = other_chain.iter()
+                                .rev()
+                                .find(|&&n| n != t_anc && {
+                                    dom.get_node(n).map_or(false, |nd| nd.parent == Some(t_anc))
+                                })
+                                .copied()
+                                .unwrap_or(other_id);
+                            let this_idx = child_index(t_anc, this_branch).unwrap_or(0);
+                            let other_idx = child_index(t_anc, other_branch).unwrap_or(0);
+                            return if other_idx < this_idx {
+                                2 // PRECEDING
+                            } else {
+                                4 // FOLLOWING
+                            };
+                        }
+                    }
+                    // No common ancestor – disconnected
+                    1 // DISCONNECTED
+                } else {
+                    1 // DISCONNECTED
+                }
+            })
+        }
+        _ => 1, // DISCONNECTED (null / missing)
+    };
+
+    args.rval().set(Int32Value(bits));
+    true
+}
+
+/// node.lookupPrefix(namespace) – stub, returns null.
+unsafe extern "C" fn node_lookup_prefix(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] node.lookupPrefix() called (stub)");
+    args.rval().set(NullValue());
+    true
+}
+
+/// node.lookupNamespaceURI(prefix) – stub, returns null.
+unsafe extern "C" fn node_lookup_namespace_uri(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] node.lookupNamespaceURI() called (stub)");
+    args.rval().set(NullValue());
+    true
+}
+
+/// node.isDefaultNamespace(namespace) – stub, returns false.
+unsafe extern "C" fn node_is_default_namespace(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] node.isDefaultNamespace() called (stub)");
+    args.rval().set(BooleanValue(false));
+    true
+}
+
 /// Set up Node constructor with node type constants
 unsafe fn setup_node_constructor(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
     rooted!(in(raw_cx) let node = JS_NewPlainObject(raw_cx));
@@ -766,6 +958,79 @@ unsafe fn setup_node_constructor(raw_cx: *mut JSContext, global: *mut JSObject) 
     set_int_property(raw_cx, node.get(), "DOCUMENT_TYPE_NODE", 10)?;
     set_int_property(raw_cx, node.get(), "DOCUMENT_FRAGMENT_NODE", 11)?;
     set_int_property(raw_cx, node.get(), "NOTATION_NODE", 12)?;
+
+    // compareDocumentPosition bit-mask constants (also on Node)
+    set_int_property(raw_cx, node.get(), "DOCUMENT_POSITION_DISCONNECTED", 1)?;
+    set_int_property(raw_cx, node.get(), "DOCUMENT_POSITION_PRECEDING", 2)?;
+    set_int_property(raw_cx, node.get(), "DOCUMENT_POSITION_FOLLOWING", 4)?;
+    set_int_property(raw_cx, node.get(), "DOCUMENT_POSITION_CONTAINS", 8)?;
+    set_int_property(raw_cx, node.get(), "DOCUMENT_POSITION_CONTAINED_BY", 16)?;
+    set_int_property(raw_cx, node.get(), "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC", 32)?;
+
+    // Create Node.prototype with all methods from the Node interface
+    rooted!(in(raw_cx) let node_prototype = JS_NewPlainObject(raw_cx));
+    if !node_prototype.get().is_null() {
+        // Node type constants on prototype as well (spec requires them on both)
+        set_int_property(raw_cx, node_prototype.get(), "ELEMENT_NODE", 1)?;
+        set_int_property(raw_cx, node_prototype.get(), "ATTRIBUTE_NODE", 2)?;
+        set_int_property(raw_cx, node_prototype.get(), "TEXT_NODE", 3)?;
+        set_int_property(raw_cx, node_prototype.get(), "CDATA_SECTION_NODE", 4)?;
+        set_int_property(raw_cx, node_prototype.get(), "ENTITY_REFERENCE_NODE", 5)?;
+        set_int_property(raw_cx, node_prototype.get(), "ENTITY_NODE", 6)?;
+        set_int_property(raw_cx, node_prototype.get(), "PROCESSING_INSTRUCTION_NODE", 7)?;
+        set_int_property(raw_cx, node_prototype.get(), "COMMENT_NODE", 8)?;
+        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_NODE", 9)?;
+        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_TYPE_NODE", 10)?;
+        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_FRAGMENT_NODE", 11)?;
+        set_int_property(raw_cx, node_prototype.get(), "NOTATION_NODE", 12)?;
+        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_POSITION_DISCONNECTED", 1)?;
+        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_POSITION_PRECEDING", 2)?;
+        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_POSITION_FOLLOWING", 4)?;
+        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_POSITION_CONTAINS", 8)?;
+        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_POSITION_CONTAINED_BY", 16)?;
+        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC", 32)?;
+
+        // Tree-mutation methods
+        define_function(raw_cx, node_prototype.get(), "appendChild", Some(element_append_child), 1)?;
+        define_function(raw_cx, node_prototype.get(), "removeChild", Some(element_remove_child), 1)?;
+        define_function(raw_cx, node_prototype.get(), "insertBefore", Some(element_insert_before), 2)?;
+        define_function(raw_cx, node_prototype.get(), "replaceChild", Some(element_replace_child), 2)?;
+
+        // Clone / compare
+        define_function(raw_cx, node_prototype.get(), "cloneNode", Some(element_clone_node), 1)?;
+        define_function(raw_cx, node_prototype.get(), "isEqualNode", Some(node_is_equal_node), 1)?;
+        define_function(raw_cx, node_prototype.get(), "isSameNode", Some(node_is_same_node), 1)?;
+        define_function(raw_cx, node_prototype.get(), "compareDocumentPosition", Some(node_compare_document_position), 1)?;
+
+        // Tree-traversal / query
+        define_function(raw_cx, node_prototype.get(), "getRootNode", Some(element_get_root_node), 1)?;
+        define_function(raw_cx, node_prototype.get(), "contains", Some(element_contains), 1)?;
+        define_function(raw_cx, node_prototype.get(), "hasChildNodes", Some(node_has_child_nodes), 0)?;
+
+        // Normalisation
+        define_function(raw_cx, node_prototype.get(), "normalize", Some(node_normalize), 0)?;
+
+        // Namespace helpers
+        define_function(raw_cx, node_prototype.get(), "lookupPrefix", Some(node_lookup_prefix), 1)?;
+        define_function(raw_cx, node_prototype.get(), "lookupNamespaceURI", Some(node_lookup_namespace_uri), 1)?;
+        define_function(raw_cx, node_prototype.get(), "isDefaultNamespace", Some(node_is_default_namespace), 1)?;
+
+        // Event handling
+        define_function(raw_cx, node_prototype.get(), "addEventListener", Some(element_add_event_listener), 3)?;
+        define_function(raw_cx, node_prototype.get(), "removeEventListener", Some(element_remove_event_listener), 3)?;
+        define_function(raw_cx, node_prototype.get(), "dispatchEvent", Some(element_dispatch_event), 1)?;
+
+        rooted!(in(raw_cx) let proto_val = ObjectValue(node_prototype.get()));
+        rooted!(in(raw_cx) let node_rooted = node.get());
+        let proto_name = std::ffi::CString::new("prototype").unwrap();
+        JS_DefineProperty(
+            raw_cx,
+            node_rooted.handle().into(),
+            proto_name.as_ptr(),
+            proto_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
 
     rooted!(in(raw_cx) let node_val = ObjectValue(node.get()));
     rooted!(in(raw_cx) let global_rooted = global);
