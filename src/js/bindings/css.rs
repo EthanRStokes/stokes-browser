@@ -590,6 +590,10 @@ unsafe extern "C" fn css_register_property(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     args.rval().set(UndefinedValue());
+    // FIXME: The descriptor (name, syntax, inherits, initialValue) is silently ignored.
+    // Custom properties registered this way will not type-check, will not have an initial value,
+    // and will not inherit correctly.  A real implementation requires a Houdini-style property
+    // registry in the style engine.
     // Silently succeed
     let _ = argc;
     true

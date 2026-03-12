@@ -573,7 +573,8 @@ fn get_device_pixel_ratio() -> f32 {
 }
 
 /// Set up the navigator object
-// TODO: Many navigator properties are hardcoded (language, platform) - should detect from system
+// FIXME: Many navigator properties are hardcoded (language, platform) — should be detected from
+// the system at runtime rather than using compile-time constants.
 unsafe fn setup_navigator(
     raw_cx: *mut JSContext,
     global: *mut JSObject,
@@ -777,6 +778,8 @@ unsafe extern "C" fn node_has_child_nodes(raw_cx: *mut JSContext, argc: c_uint, 
 /// node.normalize() – stub; merges adjacent text nodes in a real UA. No-op here.
 unsafe extern "C" fn node_normalize(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    // FIXME: Should merge adjacent text nodes and remove empty text nodes throughout this node's
+    // subtree per the DOM Living Standard.
     println!("[JS] node.normalize() called (stub)");
     args.rval().set(UndefinedValue());
     true
@@ -917,6 +920,8 @@ unsafe extern "C" fn node_compare_document_position(raw_cx: *mut JSContext, argc
 /// node.lookupPrefix(namespace) – stub, returns null.
 unsafe extern "C" fn node_lookup_prefix(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    // FIXME: Should walk namespace prefix declarations on this node and its ancestors to find
+    // the prefix bound to the given namespace URI, returning null only if none is found.
     println!("[JS] node.lookupPrefix() called (stub)");
     args.rval().set(NullValue());
     true
@@ -925,6 +930,8 @@ unsafe extern "C" fn node_lookup_prefix(_raw_cx: *mut JSContext, argc: c_uint, v
 /// node.lookupNamespaceURI(prefix) – stub, returns null.
 unsafe extern "C" fn node_lookup_namespace_uri(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    // FIXME: Should walk ancestor namespace declarations to find the URI bound to the given
+    // prefix, returning null only if none is declared in scope.
     println!("[JS] node.lookupNamespaceURI() called (stub)");
     args.rval().set(NullValue());
     true
@@ -933,6 +940,8 @@ unsafe extern "C" fn node_lookup_namespace_uri(_raw_cx: *mut JSContext, argc: c_
 /// node.isDefaultNamespace(namespace) – stub, returns false.
 unsafe extern "C" fn node_is_default_namespace(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    // FIXME: Should check whether the given namespace URI is bound to the empty prefix (i.e. is
+    // the default namespace) on this node or one of its ancestors.
     println!("[JS] node.isDefaultNamespace() called (stub)");
     args.rval().set(BooleanValue(false));
     true
@@ -1670,6 +1679,10 @@ unsafe extern "C" fn document_create_text_node(raw_cx: *mut JSContext, argc: c_u
 
     println!("[JS] document.createTextNode('{}') called", text);
 
+    // FIXME: The returned object has no __nodeId so it cannot be inserted into the DOM tree via
+    // appendChild / insertBefore (those helpers use get_node_id_from_value which will return None
+    // and silently skip the insertion).  Should call dom.create_text_node() here and store the
+    // resulting node ID as __nodeId on the returned JS object.
     rooted!(in(raw_cx) let text_node = JS_NewPlainObject(raw_cx));
     if !text_node.get().is_null() {
         let _ = set_int_property(raw_cx, text_node.get(), "nodeType", 3);
@@ -1689,6 +1702,10 @@ unsafe extern "C" fn document_create_document_fragment(raw_cx: *mut JSContext, a
 
     println!("[JS] document.createDocumentFragment() called");
 
+    // FIXME: The returned fragment has no __nodeId or real DOM backing. Children appended to it
+    // via appendChild are not recorded in the DOM, and inserting the fragment itself into a
+    // parent element has no effect.  Should create a DocumentFragment node in the DOM,
+    // assign __nodeId, and transfer children when the fragment is inserted.
     rooted!(in(raw_cx) let fragment = JS_NewPlainObject(raw_cx));
     if !fragment.get().is_null() {
         let _ = set_int_property(raw_cx, fragment.get(), "nodeType", 11);
@@ -2440,12 +2457,15 @@ unsafe extern "C" fn style_get_property_value(raw_cx: *mut JSContext, argc: c_ui
     };
 
     println!("[JS] style.getPropertyValue('{}') called", property);
+    // FIXME: Always returns "" — this version is used by getComputedStyle(). It should resolve
+    // the computed value from the cascade (author stylesheets, inherited values, initial values)
+    // for the target element rather than returning an empty string unconditionally.
     args.rval().set(create_js_string(raw_cx, ""));
     true
 }
 
 /// HTMLIFrameElement contentWindow getter
-// TODO
+// FIXME: Always returns null; iframe browsing-context support is not yet implemented.
 unsafe extern "C" fn html_iframe_element_get_content_window(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
@@ -2458,7 +2478,8 @@ unsafe extern "C" fn html_iframe_element_get_content_window(raw_cx: *mut JSConte
 }
 
 /// HTMLIFrameElement contentWindow setter
-// TODO
+// FIXME: contentWindow is read-only per spec; the setter silently ignores its argument.
+// The getter also always returns null since iframe browsing contexts are not yet supported.
 unsafe extern "C" fn html_iframe_element_set_content_window(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
@@ -2470,7 +2491,7 @@ unsafe extern "C" fn html_iframe_element_set_content_window(raw_cx: *mut JSConte
 }
 
 /// HTMLIFrameElement contentDocument getter
-// TODO
+// FIXME: Always returns null; iframe browsing-context support is not yet implemented.
 unsafe extern "C" fn html_iframe_element_get_content_document(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
@@ -2483,7 +2504,7 @@ unsafe extern "C" fn html_iframe_element_get_content_document(raw_cx: *mut JSCon
 }
 
 /// HTMLIFrameElement contentDocument setter
-// TODO
+// FIXME: contentDocument is read-only per spec; the setter silently ignores its argument.
 unsafe extern "C" fn html_iframe_element_set_content_document(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
@@ -2495,7 +2516,7 @@ unsafe extern "C" fn html_iframe_element_set_content_document(raw_cx: *mut JSCon
 }
 
 /// HTMLIFrameElement src getter
-// TODO
+// FIXME: Always returns "" instead of reading the src attribute from the element's backing DOM node.
 unsafe extern "C" fn html_iframe_element_get_src(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
@@ -2508,7 +2529,8 @@ unsafe extern "C" fn html_iframe_element_get_src(raw_cx: *mut JSContext, argc: c
 }
 
 /// HTMLIFrameElement src setter
-// TODO
+// FIXME: Setting src does not update the attribute on the backing DOM node and does not
+// trigger loading the iframe URL.
 unsafe extern "C" fn html_iframe_element_set_src(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 

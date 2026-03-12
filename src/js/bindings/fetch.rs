@@ -509,7 +509,10 @@ unsafe extern "C" fn response_json(cx: *mut JSContext, argc: c_uint, vp: *mut JS
 }
 
 /// Response.blob() - Returns a Promise that resolves to a Blob (simplified implementation)
-// TODO Check if it works
+// FIXME: This implementation consumes the global PENDING_RESPONSE store (taking the value out),
+// which means calling .blob() after .text() or .json() on the same Response will return empty
+// data.  A proper implementation should give each Response its own body store that can be
+// consumed only once (per the ReadableStream / Body mixin spec).
 unsafe extern "C" fn response_blob(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 

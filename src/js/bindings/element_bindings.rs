@@ -1138,6 +1138,7 @@ pub(crate) unsafe extern "C" fn element_dispatch_event(raw_cx: *mut JSContext, a
 /// element.focus implementation
 unsafe extern "C" fn element_focus(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    // FIXME: Does not update the browser focus state or fire focus / focusin events on the element.
     println!("[JS] element.focus() called");
     args.rval().set(UndefinedValue());
     true
@@ -1146,6 +1147,7 @@ unsafe extern "C" fn element_focus(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
 /// element.blur implementation
 unsafe extern "C" fn element_blur(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    // FIXME: Does not update the browser focus state or fire blur / focusout events on the element.
     println!("[JS] element.blur() called");
     args.rval().set(UndefinedValue());
     true
@@ -1154,6 +1156,8 @@ unsafe extern "C" fn element_blur(raw_cx: *mut JSContext, argc: c_uint, vp: *mut
 /// element.click implementation
 unsafe extern "C" fn  element_click(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    // FIXME: Does not synthesize a click event, invoke registered click listeners, or simulate
+    // the default activation behaviour (e.g. following links, submitting forms).
     println!("[JS] element.click() called");
     args.rval().set(UndefinedValue());
     true
@@ -1778,6 +1782,8 @@ unsafe extern "C" fn element_has_attributes(raw_cx: *mut JSContext, argc: c_uint
 /// element.scrollIntoView() — no-op stub (layout is not yet interactive).
 unsafe extern "C" fn element_scroll_into_view(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    // FIXME: Should scroll the nearest scrollable ancestor (or the viewport) so that this element
+    // is visible, respecting the scrollIntoViewOptions (behavior, block, inline).
     println!("[JS] element.scrollIntoView() called (stub)");
     args.rval().set(UndefinedValue());
     true
@@ -1786,6 +1792,8 @@ unsafe extern "C" fn element_scroll_into_view(raw_cx: *mut JSContext, argc: c_ui
 /// element.scrollTo() / element.scroll() — no-op stub.
 unsafe extern "C" fn element_scroll_to(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    // FIXME: Should update the element's scroll position to the given (x, y) coordinates and fire
+    // a scroll event.
     args.rval().set(UndefinedValue());
     true
 }
@@ -1793,6 +1801,8 @@ unsafe extern "C" fn element_scroll_to(raw_cx: *mut JSContext, argc: c_uint, vp:
 /// element.scrollBy() — no-op stub.
 unsafe extern "C" fn element_scroll_by(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    // FIXME: Should offset the element's current scroll position by the given (dx, dy) delta and
+    // fire a scroll event.
     args.rval().set(UndefinedValue());
     true
 }
@@ -2852,12 +2862,15 @@ unsafe extern "C" fn form_reset(raw_cx: *mut JSContext, argc: c_uint, vp: *mut J
 
 unsafe extern "C" fn form_check_validity(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    // FIXME: Always returns true without running constraint validation on the form's controls.
     args.rval().set(BooleanValue(true));
     true
 }
 
 unsafe extern "C" fn form_report_validity(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    // FIXME: Always returns true without running constraint validation or highlighting invalid
+    // fields to the user via browser UI.
     args.rval().set(BooleanValue(true));
     true
 }
