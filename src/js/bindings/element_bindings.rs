@@ -101,6 +101,31 @@ unsafe fn create_js_element_impl(
     define_function(raw_cx, element.get(), "getRootNode", Some(element_get_root_node), 1)?;
     define_function(raw_cx, element.get(), "attachShadow", Some(element_attach_shadow), 1)?;
 
+    // ChildNode / ParentNode mixin methods
+    define_function(raw_cx, element.get(), "remove", Some(element_remove), 0)?;
+    define_function(raw_cx, element.get(), "prepend", Some(element_prepend), 0)?;
+    define_function(raw_cx, element.get(), "before", Some(element_before), 0)?;
+    define_function(raw_cx, element.get(), "after", Some(element_after), 0)?;
+    define_function(raw_cx, element.get(), "replaceWith", Some(element_replace_with), 0)?;
+
+    // Adjacent-insertion methods
+    define_function(raw_cx, element.get(), "insertAdjacentHTML", Some(element_insert_adjacent_html), 2)?;
+    define_function(raw_cx, element.get(), "insertAdjacentElement", Some(element_insert_adjacent_element), 2)?;
+    define_function(raw_cx, element.get(), "insertAdjacentText", Some(element_insert_adjacent_text), 2)?;
+
+    // Attribute introspection
+    define_function(raw_cx, element.get(), "getAttributeNames", Some(element_get_attribute_names), 0)?;
+    define_function(raw_cx, element.get(), "hasAttributes", Some(element_has_attributes), 0)?;
+
+    // Scroll stubs
+    define_function(raw_cx, element.get(), "scrollIntoView", Some(element_scroll_into_view), 0)?;
+    define_function(raw_cx, element.get(), "scrollTo", Some(element_scroll_to), 0)?;
+    define_function(raw_cx, element.get(), "scroll", Some(element_scroll_to), 0)?;
+    define_function(raw_cx, element.get(), "scrollBy", Some(element_scroll_by), 0)?;
+
+    // Web Animations API stub
+    define_function(raw_cx, element.get(), "animate", Some(element_animate), 2)?;
+
     // Define internal getter/setter functions for reflected and dynamic properties
     define_function(raw_cx, element.get(), "__getTextContent", Some(element_get_text_content), 0)?;
     define_function(raw_cx, element.get(), "__setTextContent", Some(element_set_text_content), 1)?;
@@ -1457,6 +1482,366 @@ pub(crate) unsafe extern "C" fn element_get_root_node(raw_cx: *mut JSContext, ar
             args.rval().set(NullValue());
         }
     }
+    true
+}
+
+// ============================================================================
+// ChildNode / ParentNode mixin methods
+// ============================================================================
+
+/// element.remove() — removes this element from its parent (ChildNode mixin).
+unsafe extern "C" fn element_remove(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] element.remove() called");
+    if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
+        DOM_REF.with(|dom| {
+            if let Some(dom_ptr) = *dom.borrow() {
+                let dom = &mut *dom_ptr;
+                dom.remove_node(node_id);
+            }
+        });
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// Collect DOM node IDs from a varargs call.  String arguments become new text nodes.
+unsafe fn collect_nodes_from_varargs(raw_cx: *mut JSContext, args: &CallArgs, argc: c_uint) -> Vec<usize> {
+    let mut ids: Vec<usize> = Vec::new();
+    for i in 0..argc {
+        let arg = *args.get(i);
+        if arg.is_string() {
+            let text = js_value_to_string(raw_cx, arg);
+            DOM_REF.with(|dom| {
+                if let Some(dom_ptr) = *dom.borrow() {
+                    let dom = &mut *dom_ptr;
+                    ids.push(dom.create_text_node(&text));
+                }
+            });
+        } else if let Some(id) = get_node_id_from_value(raw_cx, arg) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+/// element.prepend(...nodes) — inserts nodes at the beginning of this element's children.
+unsafe extern "C" fn element_prepend(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] element.prepend() called with {} args", argc);
+    if let Some(parent_id) = get_node_id_from_this(raw_cx, &args) {
+        let new_ids = collect_nodes_from_varargs(raw_cx, &args, argc);
+        if !new_ids.is_empty() {
+            DOM_REF.with(|dom| {
+                if let Some(dom_ptr) = *dom.borrow() {
+                    let dom = &mut *dom_ptr;
+                    let first_child = dom.get_node(parent_id).and_then(|n| n.children.first().copied());
+                    match first_child {
+                        Some(fc) => dom.insert_nodes_before(fc, &new_ids),
+                        None => dom.append_children(parent_id, &new_ids),
+                    }
+                }
+            });
+        }
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// element.before(...nodes) — inserts nodes immediately before this element.
+unsafe extern "C" fn element_before(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] element.before() called");
+    if let Some(self_id) = get_node_id_from_this(raw_cx, &args) {
+        let new_ids = collect_nodes_from_varargs(raw_cx, &args, argc);
+        if !new_ids.is_empty() {
+            DOM_REF.with(|dom| {
+                if let Some(dom_ptr) = *dom.borrow() {
+                    let dom = &mut *dom_ptr;
+                    if dom.get_node(self_id).and_then(|n| n.parent).is_some() {
+                        dom.insert_nodes_before(self_id, &new_ids);
+                    }
+                }
+            });
+        }
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// element.after(...nodes) — inserts nodes immediately after this element.
+unsafe extern "C" fn element_after(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] element.after() called");
+    if let Some(self_id) = get_node_id_from_this(raw_cx, &args) {
+        let new_ids = collect_nodes_from_varargs(raw_cx, &args, argc);
+        if !new_ids.is_empty() {
+            DOM_REF.with(|dom| {
+                if let Some(dom_ptr) = *dom.borrow() {
+                    let dom = &mut *dom_ptr;
+                    if dom.get_node(self_id).and_then(|n| n.parent).is_some() {
+                        dom.insert_nodes_after(self_id, &new_ids);
+                    }
+                }
+            });
+        }
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// element.replaceWith(...nodes) — replaces this element with the given nodes.
+unsafe extern "C" fn element_replace_with(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] element.replaceWith() called");
+    if let Some(self_id) = get_node_id_from_this(raw_cx, &args) {
+        let new_ids = collect_nodes_from_varargs(raw_cx, &args, argc);
+        DOM_REF.with(|dom| {
+            if let Some(dom_ptr) = *dom.borrow() {
+                let dom = &mut *dom_ptr;
+                if dom.get_node(self_id).and_then(|n| n.parent).is_some() {
+                    dom.replace_node_with(self_id, &new_ids);
+                }
+            }
+        });
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+// ============================================================================
+// Adjacent-insertion methods
+// ============================================================================
+
+/// Shared logic for insertAdjacentElement/Text: resolve a position string to one of the four
+/// standard positions ("beforebegin", "afterbegin", "beforeend", "afterend") and perform the
+/// DOM insertion of the given new node IDs.
+unsafe fn insert_adjacent_nodes(self_id: usize, position: &str, new_ids: &[usize]) {
+    if new_ids.is_empty() {
+        return;
+    }
+    DOM_REF.with(|dom| {
+        if let Some(dom_ptr) = *dom.borrow() {
+            let dom = &mut *dom_ptr;
+            match position.to_ascii_lowercase().as_str() {
+                "beforebegin" => {
+                    if dom.get_node(self_id).and_then(|n| n.parent).is_some() {
+                        dom.insert_nodes_before(self_id, new_ids);
+                    }
+                }
+                "afterbegin" => {
+                    let first_child = dom.get_node(self_id).and_then(|n| n.children.first().copied());
+                    match first_child {
+                        Some(fc) => dom.insert_nodes_before(fc, new_ids),
+                        None => dom.append_children(self_id, new_ids),
+                    }
+                }
+                "beforeend" => {
+                    dom.append_children(self_id, new_ids);
+                }
+                "afterend" => {
+                    if dom.get_node(self_id).and_then(|n| n.parent).is_some() {
+                        dom.insert_nodes_after(self_id, new_ids);
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+}
+
+/// element.insertAdjacentHTML(position, html) — parses and inserts HTML relative to the element.
+/// FIXME: The html argument is not parsed as a fragment; it is currently a no-op for safety.
+unsafe extern "C" fn element_insert_adjacent_html(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let position = if argc > 0 { js_value_to_string(raw_cx, *args.get(0)) } else { String::new() };
+    println!("[JS] element.insertAdjacentHTML('{}', ...) called (FIXME: html not parsed)", position);
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// element.insertAdjacentElement(position, element) — inserts element at a position relative to this one.
+unsafe extern "C" fn element_insert_adjacent_element(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let position = if argc > 0 { js_value_to_string(raw_cx, *args.get(0)) } else { String::new() };
+    println!("[JS] element.insertAdjacentElement('{}', ...) called", position);
+
+    let self_id = match get_node_id_from_this(raw_cx, &args) {
+        Some(id) => id,
+        None => { args.rval().set(NullValue()); return true; }
+    };
+    let new_id = if argc > 1 { get_node_id_from_value(raw_cx, *args.get(1)) } else { None };
+    let Some(new_id) = new_id else {
+        args.rval().set(NullValue());
+        return true;
+    };
+
+    insert_adjacent_nodes(self_id, &position, &[new_id]);
+
+    // Return the inserted element
+    args.rval().set(*args.get(1));
+    true
+}
+
+/// element.insertAdjacentText(position, text) — inserts a text node at a position relative to this element.
+unsafe extern "C" fn element_insert_adjacent_text(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let position = if argc > 0 { js_value_to_string(raw_cx, *args.get(0)) } else { String::new() };
+    let text = if argc > 1 { js_value_to_string(raw_cx, *args.get(1)) } else { String::new() };
+    println!("[JS] element.insertAdjacentText('{}', ...) called", position);
+
+    if let Some(self_id) = get_node_id_from_this(raw_cx, &args) {
+        let text_id = DOM_REF.with(|dom| {
+            if let Some(dom_ptr) = *dom.borrow() {
+                let dom = &mut *dom_ptr;
+                Some(dom.create_text_node(&text))
+            } else {
+                None
+            }
+        });
+        if let Some(text_id) = text_id {
+            insert_adjacent_nodes(self_id, &position, &[text_id]);
+        }
+    }
+
+    args.rval().set(UndefinedValue());
+    true
+}
+
+// ============================================================================
+// Attribute introspection
+// ============================================================================
+
+/// element.getAttributeNames() — returns an array of the element's attribute names.
+unsafe extern "C" fn element_get_attribute_names(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] element.getAttributeNames() called");
+
+    rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
+
+    if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
+        let names: Vec<String> = DOM_REF.with(|dom_ref| {
+            let mut out = Vec::new();
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &*dom_ptr;
+                if let Some(node) = dom.get_node(node_id) {
+                    if let NodeData::Element(ref elem_data) = node.data {
+                        for attr in elem_data.attributes.iter() {
+                            out.push(attr.name.local.to_string());
+                        }
+                    }
+                }
+            }
+            out
+        });
+
+        for (i, name) in names.iter().enumerate() {
+            let name_val = create_js_string(raw_cx, name);
+            rooted!(in(raw_cx) let name_rooted = name_val);
+            rooted!(in(raw_cx) let array_obj = array.get());
+            mozjs::rust::wrappers::JS_SetElement(raw_cx, array_obj.handle().into(), i as u32, name_rooted.handle().into());
+        }
+    }
+
+    args.rval().set(ObjectValue(array.get()));
+    true
+}
+
+/// element.hasAttributes() — returns true if the element has any attributes.
+unsafe extern "C" fn element_has_attributes(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let result = if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
+        DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &*dom_ptr;
+                if let Some(node) = dom.get_node(node_id) {
+                    if let NodeData::Element(ref elem_data) = node.data {
+                        return !elem_data.attributes.is_empty();
+                    }
+                }
+            }
+            false
+        })
+    } else {
+        false
+    };
+
+    args.rval().set(BooleanValue(result));
+    true
+}
+
+// ============================================================================
+// Scroll stubs
+// ============================================================================
+
+/// element.scrollIntoView() — no-op stub (layout is not yet interactive).
+unsafe extern "C" fn element_scroll_into_view(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] element.scrollIntoView() called (stub)");
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// element.scrollTo() / element.scroll() — no-op stub.
+unsafe extern "C" fn element_scroll_to(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// element.scrollBy() — no-op stub.
+unsafe extern "C" fn element_scroll_by(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    args.rval().set(UndefinedValue());
+    true
+}
+
+// ============================================================================
+// Web Animations API stubs
+// ============================================================================
+
+/// Shared no-op callback for stub Animation methods.
+unsafe extern "C" fn animation_noop(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// element.animate(keyframes, options) — returns a minimal stub Animation object.
+// FIXME
+unsafe extern "C" fn element_animate(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    println!("[JS] element.animate() called (stub)");
+
+    rooted!(in(raw_cx) let anim = JS_NewPlainObject(raw_cx));
+    if anim.get().is_null() {
+        args.rval().set(NullValue());
+        return true;
+    }
+
+    // Minimal Animation interface stubs
+    let _ = define_function(raw_cx, anim.get(), "cancel", Some(animation_noop), 0);
+    let _ = define_function(raw_cx, anim.get(), "finish", Some(animation_noop), 0);
+    let _ = define_function(raw_cx, anim.get(), "pause", Some(animation_noop), 0);
+    let _ = define_function(raw_cx, anim.get(), "play", Some(animation_noop), 0);
+    let _ = define_function(raw_cx, anim.get(), "reverse", Some(animation_noop), 0);
+    let _ = define_function(raw_cx, anim.get(), "updatePlaybackRate", Some(animation_noop), 1);
+    let _ = define_function(raw_cx, anim.get(), "commitStyles", Some(animation_noop), 0);
+
+    rooted!(in(raw_cx) let null_val = NullValue());
+    rooted!(in(raw_cx) let anim_obj = anim.get());
+    for prop in &["onfinish", "oncancel", "onremove", "ready", "finished", "effect", "timeline"] {
+        let cname = std::ffi::CString::new(*prop).unwrap();
+        JS_DefineProperty(raw_cx, anim_obj.handle().into(), cname.as_ptr(), null_val.handle().into(), JSPROP_ENUMERATE as u32);
+    }
+
+    let _ = set_string_property(raw_cx, anim.get(), "playState", "finished");
+    let _ = set_int_property(raw_cx, anim.get(), "currentTime", 0);
+    let _ = set_int_property(raw_cx, anim.get(), "startTime", 0);
+    let _ = set_int_property(raw_cx, anim.get(), "playbackRate", 1);
+
+    args.rval().set(ObjectValue(anim.get()));
     true
 }
 
