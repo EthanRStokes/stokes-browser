@@ -15,6 +15,7 @@ pub(crate) mod registry;
 pub(crate) mod timers;
 pub(crate) mod alert_callback;
 pub mod console;
+pub mod css;
 pub mod fetch;
 pub mod performance;
 pub mod url;
@@ -40,6 +41,9 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
 
     // Set up URL API
     url::setup_url(runtime)?;
+
+    // Set up CSS namespace object (CSS.supports, CSS.escape, CSS Typed OM, etc.)
+    css::setup_css(runtime)?;
 
     // Set up DOM bindings
     dom_bindings::setup_dom_bindings(runtime, document_root, user_agent)?;
