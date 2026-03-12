@@ -16,6 +16,7 @@ pub(crate) mod timers;
 pub(crate) mod alert_callback;
 pub mod console;
 pub mod css;
+pub mod event_listeners;
 pub mod fetch;
 pub mod google;
 pub mod performance;

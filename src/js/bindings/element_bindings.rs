@@ -1093,45 +1093,172 @@ unsafe extern "C" fn element_query_selector_all(raw_cx: *mut JSContext, argc: c_
 
 /// element.addEventListener implementation
 pub(crate) unsafe extern "C" fn element_add_event_listener(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    use crate::js::bindings::event_listeners;
+
     let args = CallArgs::from_vp(vp, argc);
 
     let event_type = if argc > 0 {
         js_value_to_string(raw_cx, *args.get(0))
     } else {
-        String::new()
+        args.rval().set(UndefinedValue());
+        return true;
     };
 
-    println!("[JS] element.addEventListener('{}') called", event_type);
-    // FIXME: The event listener (args.get(1)) is silently discarded and never stored.
-    // Events fired via dispatchEvent will not reach listeners registered here.
+    // Second argument must be a callable (function or object with handleEvent).
+    if argc < 2 {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let callback_val = *args.get(1);
+    if !callback_val.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let callback_obj = callback_val.to_object();
+
+    // Third argument: options object or boolean (useCapture).
+    let use_capture = if argc >= 3 {
+        let opt = *args.get(2);
+        if opt.is_boolean() {
+            opt.to_boolean()
+        } else if opt.is_object() {
+            // { capture: true/false }
+            let opt_obj = opt.to_object();
+            rooted!(in(raw_cx) let opt_r = opt_obj);
+            rooted!(in(raw_cx) let mut cap_val = UndefinedValue());
+            let cname = std::ffi::CString::new("capture").unwrap();
+            mozjs::jsapi::JS_GetProperty(raw_cx, opt_r.handle().into(), cname.as_ptr(), cap_val.handle_mut().into());
+            cap_val.get().is_boolean() && cap_val.get().to_boolean()
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    // Determine the node ID from `this.__nodeId`.
+    let node_id = match get_node_id_from_this(raw_cx, &args) {
+        Some(id) => id,
+        None => {
+            // `this` has no __nodeId; silently ignore (e.g. object literals).
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    };
+
+    event_listeners::add_listener(raw_cx, node_id, event_type, callback_obj, use_capture);
+
     args.rval().set(UndefinedValue());
     true
 }
 
 /// element.removeEventListener implementation
 pub(crate) unsafe extern "C" fn element_remove_event_listener(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    use crate::js::bindings::event_listeners;
+
     let args = CallArgs::from_vp(vp, argc);
 
     let event_type = if argc > 0 {
         js_value_to_string(raw_cx, *args.get(0))
     } else {
-        String::new()
+        args.rval().set(UndefinedValue());
+        return true;
     };
 
-    println!("[JS] element.removeEventListener('{}') called", event_type);
-    // FIXME: No listener registry exists, so this is a no-op.
+    if argc < 2 {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let callback_val = *args.get(1);
+    if !callback_val.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let callback_obj = callback_val.to_object();
+
+    let use_capture = if argc >= 3 {
+        let opt = *args.get(2);
+        if opt.is_boolean() { opt.to_boolean() } else { false }
+    } else {
+        false
+    };
+
+    let node_id = match get_node_id_from_this(raw_cx, &args) {
+        Some(id) => id,
+        None => {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    };
+
+    event_listeners::remove_listener(node_id, &event_type, callback_obj, use_capture);
+
     args.rval().set(UndefinedValue());
     true
 }
 
 /// element.dispatchEvent implementation
-/// element.dispatchEvent implementation
 pub(crate) unsafe extern "C" fn element_dispatch_event(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    use crate::js::bindings::event_listeners;
+    use mozjs::jsapi::{JS_GetProperty, CurrentGlobalOrNull};
+
     let args = CallArgs::from_vp(vp, argc);
-    println!("[JS] element.dispatchEvent() called");
-    // FIXME: Always returns true without dispatching the event to any registered listeners.
-    // Should invoke all matching listeners on this element and its ancestors (bubbling phase).
-    args.rval().set(BooleanValue(true));
+
+    // We need the event object (first argument) and the target node ID.
+    if argc < 1 {
+        args.rval().set(BooleanValue(true));
+        return true;
+    }
+
+    let event_val = *args.get(0);
+    if !event_val.is_object() {
+        args.rval().set(BooleanValue(true));
+        return true;
+    }
+
+    let node_id = match get_node_id_from_this(raw_cx, &args) {
+        Some(id) => id,
+        None => {
+            args.rval().set(BooleanValue(true));
+            return true;
+        }
+    };
+
+    let event_obj = event_val.to_object();
+    rooted!(in(raw_cx) let event_r = event_obj);
+
+    // Read event.type
+    rooted!(in(raw_cx) let mut type_val = UndefinedValue());
+    let type_cname = std::ffi::CString::new("type").unwrap();
+    JS_GetProperty(raw_cx, event_r.handle().into(), type_cname.as_ptr(), type_val.handle_mut().into());
+    let event_type = if type_val.get().is_string() {
+        js_value_to_string(raw_cx, *type_val)
+    } else {
+        args.rval().set(BooleanValue(true));
+        return true;
+    };
+
+    // Read event.bubbles
+    rooted!(in(raw_cx) let mut bubbles_val = UndefinedValue());
+    let bubbles_cname = std::ffi::CString::new("bubbles").unwrap();
+    JS_GetProperty(raw_cx, event_r.handle().into(), bubbles_cname.as_ptr(), bubbles_val.handle_mut().into());
+    let bubbles = bubbles_val.get().is_boolean() && bubbles_val.get().to_boolean();
+
+    // Build the node chain (target → ancestors).
+    let chain = DOM_REF.with(|d| {
+        d.borrow().as_ref().map(|dom_ptr| {
+            let dom = &**dom_ptr;
+            dom.node_chain(node_id)
+        }).unwrap_or_else(|| vec![node_id])
+    });
+
+    // Dispatch through JS listeners.
+    rooted!(in(raw_cx) let global = CurrentGlobalOrNull(raw_cx));
+    event_listeners::dispatch_event_obj(raw_cx, global.get(), &chain, &event_type, bubbles, event_obj);
+
+    // Return true if default was not prevented.
+    let not_cancelled = !event_listeners::EVENT_DEFAULT_PREVENTED.with(|f| f.get());
+    args.rval().set(BooleanValue(not_cancelled));
     true
 }
 

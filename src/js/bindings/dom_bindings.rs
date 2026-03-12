@@ -17,7 +17,7 @@ use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use html5ever::ns;
 use markup5ever::QualName;
 use mozjs::jsapi::{
-    CallArgs, JSContext, JSObject, JS_DefineProperty, JS_NewPlainObject,
+    CallArgs, JSContext, JSObject, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject,
     JSPROP_ENUMERATE,
 };
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, UndefinedValue};
@@ -381,6 +381,10 @@ unsafe fn setup_document(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
     define_function(raw_cx, document.get(), "createElement", Some(document_create_element), 1)?;
     define_function(raw_cx, document.get(), "createTextNode", Some(document_create_text_node), 1)?;
     define_function(raw_cx, document.get(), "createDocumentFragment", Some(document_create_document_fragment), 0)?;
+    // Event handling on the document
+    define_function(raw_cx, document.get(), "addEventListener",    Some(document_add_event_listener),    3)?;
+    define_function(raw_cx, document.get(), "removeEventListener", Some(document_remove_event_listener), 3)?;
+    define_function(raw_cx, document.get(), "dispatchEvent",       Some(document_dispatch_event),        1)?;
 
     // Add cookie getter and setter helper functions
     define_function(raw_cx, document.get(), "__getCookie", Some(document_get_cookie), 0)?;
@@ -1812,34 +1816,205 @@ unsafe extern "C" fn window_get_computed_style(raw_cx: *mut JSContext, argc: c_u
 
 /// window.addEventListener implementation
 unsafe extern "C" fn window_add_event_listener(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    use crate::js::bindings::event_listeners;
+
     let args = CallArgs::from_vp(vp, argc);
 
     let event_type = if argc > 0 {
         js_value_to_string(raw_cx, *args.get(0))
     } else {
-        String::new()
+        args.rval().set(UndefinedValue());
+        return true;
     };
 
-    println!("[JS] window.addEventListener('{}') called", event_type);
-    // FIXME: The event listener (args.get(1)) is silently discarded and never registered.
-    // Events like "resize", "scroll", "load", "DOMContentLoaded" will never fire.
+    if argc < 2 {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let callback_val = *args.get(1);
+    if !callback_val.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let callback_obj = callback_val.to_object();
+
+    let use_capture = if argc >= 3 {
+        let opt = *args.get(2);
+        if opt.is_boolean() { opt.to_boolean() } else { false }
+    } else {
+        false
+    };
+
+    event_listeners::add_listener(raw_cx, event_listeners::WINDOW_NODE_ID, event_type, callback_obj, use_capture);
+
     args.rval().set(UndefinedValue());
     true
 }
 
 /// window.removeEventListener implementation
 unsafe extern "C" fn window_remove_event_listener(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    use crate::js::bindings::event_listeners;
+
     let args = CallArgs::from_vp(vp, argc);
 
     let event_type = if argc > 0 {
         js_value_to_string(raw_cx, *args.get(0))
     } else {
-        String::new()
+        args.rval().set(UndefinedValue());
+        return true;
     };
 
-    println!("[JS] window.removeEventListener('{}') called", event_type);
-    // FIXME: No listener registry exists, so nothing is removed. This is a no-op.
+    if argc < 2 {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let callback_val = *args.get(1);
+    if !callback_val.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let callback_obj = callback_val.to_object();
+
+    let use_capture = if argc >= 3 {
+        let opt = *args.get(2);
+        if opt.is_boolean() { opt.to_boolean() } else { false }
+    } else {
+        false
+    };
+
+    event_listeners::remove_listener(event_listeners::WINDOW_NODE_ID, &event_type, callback_obj, use_capture);
+
     args.rval().set(UndefinedValue());
+    true
+}
+
+/// document.addEventListener implementation
+unsafe extern "C" fn document_add_event_listener(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    use crate::js::bindings::event_listeners;
+
+    let args = CallArgs::from_vp(vp, argc);
+
+    let event_type = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        args.rval().set(UndefinedValue());
+        return true;
+    };
+
+    if argc < 2 {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let callback_val = *args.get(1);
+    if !callback_val.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let callback_obj = callback_val.to_object();
+
+    let use_capture = if argc >= 3 {
+        let opt = *args.get(2);
+        if opt.is_boolean() {
+            opt.to_boolean()
+        } else if opt.is_object() {
+            let opt_obj = opt.to_object();
+            rooted!(in(raw_cx) let opt_r = opt_obj);
+            rooted!(in(raw_cx) let mut cap_val = UndefinedValue());
+            let cname = std::ffi::CString::new("capture").unwrap();
+            JS_GetProperty(raw_cx, opt_r.handle().into(), cname.as_ptr(), cap_val.handle_mut().into());
+            cap_val.get().is_boolean() && cap_val.get().to_boolean()
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    event_listeners::add_listener(raw_cx, event_listeners::DOCUMENT_NODE_ID, event_type, callback_obj, use_capture);
+
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// document.removeEventListener implementation
+unsafe extern "C" fn document_remove_event_listener(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    use crate::js::bindings::event_listeners;
+
+    let args = CallArgs::from_vp(vp, argc);
+
+    let event_type = if argc > 0 {
+        js_value_to_string(raw_cx, *args.get(0))
+    } else {
+        args.rval().set(UndefinedValue());
+        return true;
+    };
+
+    if argc < 2 {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let callback_val = *args.get(1);
+    if !callback_val.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let callback_obj = callback_val.to_object();
+
+    let use_capture = if argc >= 3 {
+        let opt = *args.get(2);
+        if opt.is_boolean() { opt.to_boolean() } else { false }
+    } else {
+        false
+    };
+
+    event_listeners::remove_listener(event_listeners::DOCUMENT_NODE_ID, &event_type, callback_obj, use_capture);
+
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// document.dispatchEvent implementation
+unsafe extern "C" fn document_dispatch_event(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    use crate::js::bindings::event_listeners;
+    use mozjs::jsapi::CurrentGlobalOrNull;
+
+    let args = CallArgs::from_vp(vp, argc);
+
+    if argc < 1 {
+        args.rval().set(BooleanValue(true));
+        return true;
+    }
+    let event_val = *args.get(0);
+    if !event_val.is_object() {
+        args.rval().set(BooleanValue(true));
+        return true;
+    }
+
+    let event_obj = event_val.to_object();
+    rooted!(in(raw_cx) let event_r = event_obj);
+
+    rooted!(in(raw_cx) let mut type_val = UndefinedValue());
+    let type_cname = std::ffi::CString::new("type").unwrap();
+    JS_GetProperty(raw_cx, event_r.handle().into(), type_cname.as_ptr(), type_val.handle_mut().into());
+    let event_type = if type_val.get().is_string() {
+        js_value_to_string(raw_cx, *type_val)
+    } else {
+        args.rval().set(BooleanValue(true));
+        return true;
+    };
+
+    rooted!(in(raw_cx) let mut bubbles_val = UndefinedValue());
+    let bubbles_cname = std::ffi::CString::new("bubbles").unwrap();
+    JS_GetProperty(raw_cx, event_r.handle().into(), bubbles_cname.as_ptr(), bubbles_val.handle_mut().into());
+    let bubbles = bubbles_val.get().is_boolean() && bubbles_val.get().to_boolean();
+
+    // For document.dispatchEvent, the chain is just [DOCUMENT_NODE_ID].
+    let chain = [event_listeners::DOCUMENT_NODE_ID];
+    rooted!(in(raw_cx) let global = CurrentGlobalOrNull(raw_cx));
+    event_listeners::dispatch_event_obj(raw_cx, global.get(), &chain, &event_type, bubbles, event_obj);
+
+    let not_cancelled = !event_listeners::EVENT_DEFAULT_PREVENTED.with(|f| f.get());
+    args.rval().set(BooleanValue(not_cancelled));
     true
 }
 

@@ -10,6 +10,7 @@ use crate::dom::node::{RasterImageData, SpecialElementData};
 use crate::dom::{Dom, ImageData, NodeData};
 use crate::dom::{EventDispatcher, EventType};
 use crate::js::JsRuntime;
+use crate::js::runtime::RUNTIME;
 use crate::networking;
 use crate::networking::{NetworkError, HttpClient};
 use crate::renderer::painter::ScenePainter;
@@ -141,11 +142,15 @@ impl Engine {
             // Parse and apply CSS styles from the document
             self.parse_document_styles().await;
 
-            // TODO Execute JavaScript in the page after everything is loaded
             if self.config.enable_javascript {
                 style::thread_state::enter(ThreadState::SCRIPT);
                 self.execute_document_scripts().await;
                 style::thread_state::exit(ThreadState::SCRIPT);
+
+                // Fire DOMContentLoaded then load after all inline scripts have run.
+                if let Some(dom) = self.dom.as_ref() {
+                    crate::js::bindings::event_listeners::fire_load_events(dom);
+                }
             }
 
             self.resolve(0.0);
@@ -395,6 +400,12 @@ impl Engine {
             Ok(runtime) => {
                 println!("JavaScript runtime initialized successfully");
                 self.js_runtime = Some(runtime);
+                // Now that the JsRuntime is at its final stable address inside
+                // self.js_runtime, update the thread-local so that code paths
+                // that access RUNTIME (e.g. fire_load_events) get a valid pointer.
+                if let Some(rt) = self.js_runtime.as_mut() {
+                    RUNTIME.with(|cell| *cell.borrow_mut() = Some(rt as *mut JsRuntime));
+                }
             }
             Err(e) => {
                 eprintln!("Failed to initialize JavaScript runtime: {}", e);

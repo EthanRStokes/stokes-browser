@@ -100,7 +100,8 @@ use crate::engine::net_provider::StokesNetProvider;
 use crate::events::{BlitzScrollEvent, DomEventData};
 use crate::qual_name;
 use crate::shell_provider::{ShellProviderMessage, StokesShellProvider};
-use crate::dom::events::{EventDriver, NoopEventHandler};
+use crate::dom::events::EventDriver;
+use crate::js::bindings::event_listeners::JsEventHandler;
 use crate::dom::parser::HtmlProvider;
 use crate::engine::js_provider::StokesJsProvider;
 
@@ -165,7 +166,7 @@ pub trait AbstractDom: Any + 'static {
     /// Update the [`Document`] in response to a [`UiEvent`] (click, keypress, etc)
     fn handle_ui_event(&mut self, event: UiEvent) {
         let mut doc = self.inner_mut();
-        let mut driver = EventDriver::new(&mut *doc, NoopEventHandler);
+        let mut driver = EventDriver::new(&mut *doc, JsEventHandler);
         driver.handle_ui_event(event);
     }
 

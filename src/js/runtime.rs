@@ -112,7 +112,9 @@ impl JsRuntime {
             event_loop: EventLoop::new(),
             runtime,
         };
-        RUNTIME.set(Some(&mut js_runtime as *mut _));
+        // NOTE: Do NOT set RUNTIME here — js_runtime is a local stack variable that will be
+        // moved when this function returns Ok(js_runtime).  The caller must update RUNTIME
+        // after placing the returned value in its final, stable memory location.
         let user_agent = js_runtime.user_agent.clone();
 
         // Enter the realm for the global object before setting up bindings
