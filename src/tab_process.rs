@@ -14,6 +14,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use crate::shell_provider::{StokesShellProvider, ShellProviderMessage};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use tracing::Level;
+use tracing::metadata::LevelFilter;
+use tracing_subscriber::util::SubscriberInitExt;
 use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
 
 /// Tab process that runs in its own OS process
@@ -483,6 +486,8 @@ impl TabProcess {
 
 /// Entry point for tab process executable
 pub async fn tab_process_main(tab_id: String, server_name: String) -> io::Result<()> {
+    tracing_subscriber::fmt::fmt().with_max_level(LevelFilter::WARN).init();
+
     let mut process = TabProcess::new(tab_id, server_name)?;
     process.run().await
 }
