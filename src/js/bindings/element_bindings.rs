@@ -65,6 +65,7 @@ pub unsafe fn create_js_element_by_id(
     define_function(raw_cx, element.get(), "setAttribute", Some(element_set_attribute), 2)?;
     define_function(raw_cx, element.get(), "removeAttribute", Some(element_remove_attribute), 1)?;
     define_function(raw_cx, element.get(), "hasAttribute", Some(element_has_attribute), 1)?;
+    define_function(raw_cx, element.get(), "append", Some(element_append), 0)?;
     define_function(raw_cx, element.get(), "appendChild", Some(element_append_child), 1)?;
     define_function(raw_cx, element.get(), "removeChild", Some(element_remove_child), 1)?;
     define_function(raw_cx, element.get(), "insertBefore", Some(element_insert_before), 2)?;
@@ -245,6 +246,7 @@ pub unsafe fn create_js_element_by_id(
 
             // Add insertBefore method to parent
             define_function(raw_cx, parent_elem.get(), "insertBefore", Some(element_insert_before), 2)?;
+            define_function(raw_cx, parent_elem.get(), "append", Some(element_append), 0)?;
             define_function(raw_cx, parent_elem.get(), "appendChild", Some(element_append_child), 1)?;
             define_function(raw_cx, parent_elem.get(), "removeChild", Some(element_remove_child), 1)?;
 
@@ -680,6 +682,48 @@ fn trigger_script_load_if_needed(child_id: usize) {
             }),
         );
     }
+}
+
+/// element.append implementation - appends multiple nodes or DOMStrings as children
+pub(crate) unsafe extern "C" fn element_append(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    println!("[JS] element.append() called with {} args", argc);
+
+    let parent_id = match get_node_id_from_this(raw_cx, &args) {
+        Some(id) => id,
+        None => {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    };
+
+    for i in 0..argc {
+        let arg = *args.get(i);
+        if arg.is_string() {
+            // DOMString argument: create a text node and append it
+            let text = js_value_to_string(raw_cx, arg);
+            DOM_REF.with(|dom| {
+                if let Some(dom_ptr) = *dom.borrow() {
+                    let dom = &mut *dom_ptr;
+                    let text_node_id = dom.create_text_node(&text);
+                    dom.append_children(parent_id, &[text_node_id]);
+                }
+            });
+        } else if let Some(child_id) = get_node_id_from_value(raw_cx, arg) {
+            // Node argument: append directly
+            DOM_REF.with(|dom| {
+                if let Some(dom_ptr) = *dom.borrow() {
+                    let dom = &mut *dom_ptr;
+                    dom.append_children(parent_id, &[child_id]);
+                }
+            });
+            trigger_script_load_if_needed(child_id);
+        }
+    }
+
+    args.rval().set(UndefinedValue());
+    true
 }
 
 /// element.appendChild implementation
