@@ -645,6 +645,7 @@ impl Dom {
         url: &str,
         html: &str,
         user_agent: String,
+        debug_net: bool,
         viewport: Viewport,
         shell_provider: Arc<StokesShellProvider>,
         nav_provider: Arc<StokesNavigationProvider>,
@@ -654,7 +655,7 @@ impl Dom {
         parser.parse(html, DomConfig {
             viewport: Some(viewport),
             base_url: Some(url.to_string()),
-            net_provider: Some(Arc::new(StokesNetProvider::new(user_agent))),
+            net_provider: Some(Arc::new(StokesNetProvider::new(user_agent, debug_net,))),
             shell_provider: Some(shell_provider),
             nav_provider: Some(nav_provider),
             js_provider: Some(js_provider),

@@ -108,6 +108,7 @@ impl Engine {
                 url,
                 &contents,
                 self.config.user_agent.clone(),
+                self.config.debug_net,
                 self.viewport.clone(),
                 self.shell_provider.clone(),
                 self.navigation_provider.clone(),
@@ -430,10 +431,19 @@ impl Engine {
                     let net_provider = dom.net_provider.clone();
                     let js_provider = self.js_provider.clone();
                     let url = dom.resolve_url(src);
+                    let url_str = url.to_string();
                     net_provider.fetch_with_callback(
                         Request::get(url),
                         Box::new(move |result| {
-                            js_provider.execute_script(String::from_utf8(Vec::from(result.unwrap().1)).unwrap());
+                            match result {
+                                Ok((_, bytes)) => {
+                                    match String::from_utf8(Vec::from(bytes)) {
+                                        Ok(script) => js_provider.execute_script(script),
+                                        Err(e) => eprintln!("[JS] External script at '{}' is not valid UTF-8: {}", url_str, e),
+                                    }
+                                }
+                                Err(e) => eprintln!("[JS] Failed to load external script '{}': {:?}", url_str, e),
+                            }
                         })
                     );
                 } else {

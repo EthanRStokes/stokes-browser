@@ -372,6 +372,23 @@ unsafe fn setup_document(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
         JSPROP_ENUMERATE as u32,
     );
 
+    // document.baseURI / document.URL — the page's base URL, used by scripts for relative URL resolution
+    let base_url_str = DOM_REF.with(|dom_ref| {
+        dom_ref.borrow().as_ref().map(|dom_ptr| {
+            let dom = &**dom_ptr;
+            let url: url::Url = (&dom.url).into();
+            url.as_str().to_string()
+        }).unwrap_or_default()
+    });
+    set_string_property(raw_cx, document.get(), "baseURI", &base_url_str)?;
+    set_string_property(raw_cx, document.get(), "URL", &base_url_str)?;
+    set_string_property(raw_cx, document.get(), "documentURI", &base_url_str)?;
+    set_string_property(raw_cx, document.get(), "readyState", "complete")?;
+    set_string_property(raw_cx, document.get(), "compatMode", "CSS1Compat")?;
+    set_string_property(raw_cx, document.get(), "characterSet", "UTF-8")?;
+    set_string_property(raw_cx, document.get(), "charset", "UTF-8")?;
+    set_string_property(raw_cx, document.get(), "inputEncoding", "UTF-8")?;
+
     // Set document on global
     rooted!(in(raw_cx) let document_val = ObjectValue(document.get()));
     let name = std::ffi::CString::new("document").unwrap();

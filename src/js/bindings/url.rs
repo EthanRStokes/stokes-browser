@@ -82,10 +82,19 @@ unsafe extern "C" fn url_constructor(cx: *mut JSContext, argc: c_uint, vp: *mut 
     }
 
     let input = extract_url_argument(cx, *args.get(0));
-    let base = if argc > 1 {
-        Some(extract_url_argument(cx, *args.get(1)))
+
+    // Resolve the base: use the explicit argument when present and not undefined/null,
+    // otherwise fall back to the document URL (mirrors browser behaviour).
+    let base: Option<String> = if argc > 1 {
+        let base_val = *args.get(1);
+        if base_val.is_undefined() || base_val.is_null() {
+            document_base_url()
+        } else {
+            let s = extract_url_argument(cx, base_val);
+            if s.is_empty() { document_base_url() } else { Some(s) }
+        }
     } else {
-        None
+        document_base_url()
     };
 
     let resolved = match resolve_url(&input, base.as_deref()) {
@@ -342,8 +351,24 @@ fn resolve_url(input: &str, base: Option<&str>) -> Result<Url, String> {
     }
 }
 
+/// Return the current document URL as a string, used as the default base for relative URL resolution.
+fn document_base_url() -> Option<String> {
+    DOM_REF.with(|dom_ref| {
+        dom_ref.borrow().as_ref().map(|dom_ptr| {
+            let dom = unsafe { &**dom_ptr };
+            let url: Url = (&dom.url).into();
+            url.as_str().to_string()
+        })
+    })
+}
+
 unsafe fn extract_url_argument(cx: *mut JSContext, val: JSVal) -> String {
-    if val.is_object() && !val.is_null() {
+    // undefined and null mean "no value" — fall back to the document URL.
+    if val.is_undefined() || val.is_null() {
+        return document_base_url().unwrap_or_default();
+    }
+
+    if val.is_object() {
         rooted!(in(cx) let obj = val.to_object());
         if let Some(href) = get_string_property(cx, obj.handle().into(), "href") {
             return href;
@@ -355,15 +380,7 @@ unsafe fn extract_url_argument(cx: *mut JSContext, val: JSVal) -> String {
         return raw;
     }
 
-    DOM_REF.with(|dom_ref| {
-        if let Some(dom_ptr) = dom_ref.borrow().as_ref() {
-            let dom = unsafe { &**dom_ptr };
-            let url: Url = (&dom.url).into();
-            url.as_str().to_string()
-        } else {
-            raw
-        }
-    })
+    document_base_url().unwrap_or_default()
 }
 
 unsafe fn set_url_properties(cx: *mut JSContext, obj: *mut JSObject, url: &Url) -> Result<(), String> {

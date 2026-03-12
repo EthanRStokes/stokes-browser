@@ -17,6 +17,7 @@ pub enum ProviderError {
     DataUrl(data_url::DataUrlError),
     DataUrlBase64(data_url::forgiving_base64::InvalidBase64),
     ReqwestError(Error),
+    HttpError(u32),
     #[cfg(feature = "cache")]
     ReqwestMiddlewareError(reqwest_middleware::Error),
 }
@@ -48,13 +49,15 @@ impl From<Error> for ProviderError {
 pub struct StokesNetProvider {
     rt: Handle,
     user_agent: String,
+    debug_net: bool,
 }
 
 impl StokesNetProvider {
-    pub fn new(user_agent: String) -> Self {
+    pub fn new(user_agent: String, debug_net: bool,) -> Self {
         Self {
             rt: Handle::current(),
             user_agent,
+            debug_net,
         }
     }
 }
@@ -73,6 +76,7 @@ impl NetProvider for StokesNetProvider {
             }
         } else {
             let user_agent = self.user_agent.clone();
+            let debug_net = self.debug_net;
             self.rt.spawn(async move {
                 let url = request.url.to_string();
 
@@ -86,10 +90,14 @@ impl NetProvider for StokesNetProvider {
                 match result {
                     Ok((response_url, bytes)) => {
                         handler.bytes(response_url, bytes);
-                        println!("Success {url}");
+                        if debug_net {
+                            println!("Success {url}");
+                        }
                     }
                     Err(e) => {
-                        eprintln!("Error fetching {url}: {e:?}")
+                        if debug_net {
+                            eprintln!("Error fetching {url}: {e:?}");
+                        }
                     }
                 }
             });
@@ -180,7 +188,18 @@ impl StokesNetProvider {
                     }
                 }
 
-                (request.url.to_string(), Bytes::from(easy.get_ref().0.clone()))
+                let status_code = easy.response_code().unwrap_or(0);
+                if !(200..300).contains(&status_code) {
+                    return Err(ProviderError::HttpError(status_code));
+                }
+
+                // Use the final URL after any redirects as the canonical URL
+                let final_url = match easy.effective_url() {
+                    Ok(Some(u)) if !u.is_empty() => u.to_string(),
+                    _ => request.url.to_string(),
+                };
+
+                (final_url, Bytes::from(easy.get_ref().0.clone()))
             }
         })
     }

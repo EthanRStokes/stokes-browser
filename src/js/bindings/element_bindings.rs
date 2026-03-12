@@ -1,4 +1,5 @@
 // Element bindings for JavaScript using mozjs
+use blitz_traits::net::Request;
 use crate::dom::{AttributeMap, NodeData, ShadowRootMode};
 use crate::js::bindings::dom_bindings::DOM_REF;
 use crate::js::helpers::{create_empty_array, create_js_string, define_function, define_property_accessor, get_node_id_from_this, get_node_id_from_value, js_value_to_string, set_int_property, set_string_property, to_css_property_name};
@@ -99,6 +100,17 @@ pub unsafe fn create_js_element_by_id(
     define_property_accessor(raw_cx, element.get(), "id", "__getId", "__setId")?;
     define_property_accessor(raw_cx, element.get(), "className", "__getClassName", "__setClassName")?;
     define_property_accessor(raw_cx, element.get(), "shadowRoot", "__getShadowRoot", "__setShadowRoot")?;
+
+    // IDL-reflected attribute accessors (src, type, async)
+    define_function(raw_cx, element.get(), "__getSrc", Some(element_get_src), 0)?;
+    define_function(raw_cx, element.get(), "__setSrc", Some(element_set_src), 1)?;
+    define_function(raw_cx, element.get(), "__getType", Some(element_get_type_attr), 0)?;
+    define_function(raw_cx, element.get(), "__setType", Some(element_set_type_attr), 1)?;
+    define_function(raw_cx, element.get(), "__getAsync", Some(element_get_async_attr), 0)?;
+    define_function(raw_cx, element.get(), "__setAsync", Some(element_set_async_attr), 1)?;
+    define_property_accessor(raw_cx, element.get(), "src", "__getSrc", "__setSrc")?;
+    define_property_accessor(raw_cx, element.get(), "type", "__getType", "__setType")?;
+    define_property_accessor(raw_cx, element.get(), "async", "__getAsync", "__setAsync")?;
 
     if tag_name.eq_ignore_ascii_case("form") {
         setup_form_element_bindings(raw_cx, element.get())?;
@@ -600,6 +612,49 @@ unsafe extern "C" fn element_has_attribute(raw_cx: *mut JSContext, argc: c_uint,
     true
 }
 
+/// Checks if `child_id` refers to a `<script src="…">` element and, if so, fetches and
+/// executes the script via the DOM's net/JS providers.
+fn trigger_script_load_if_needed(child_id: usize) {
+    let script_load_info = DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = *dom_ref.borrow() {
+            let dom = unsafe { &*dom_ptr };
+            if let Some(node) = dom.get_node(child_id) {
+                if let NodeData::Element(ref elem_data) = node.data {
+                    if elem_data.name.local.as_ref() == "script" {
+                        if let Some(src) = elem_data.attributes.iter()
+                            .find(|a| a.name.local.as_ref() == "src")
+                            .map(|a| a.value.to_string())
+                        {
+                            if let Some(url) = dom.url.resolve_relative(&src) {
+                                return Some((url, dom.net_provider.clone(), dom.js_provider.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    });
+    if let Some((url, net_provider, js_provider)) = script_load_info {
+        println!("[JS] Dynamically loading script: {}", url);
+        let url_str = url.to_string();
+        net_provider.fetch_with_callback(
+            Request::get(url),
+            Box::new(move |result| {
+                match result {
+                    Ok((_, bytes)) => {
+                        match String::from_utf8(bytes.to_vec()) {
+                            Ok(script) => js_provider.execute_script(script),
+                            Err(e) => eprintln!("[JS] Dynamic script at '{}' is not valid UTF-8: {}", url_str, e),
+                        }
+                    }
+                    Err(e) => eprintln!("[JS] Failed to load dynamic script '{}': {:?}", url_str, e),
+                }
+            }),
+        );
+    }
+}
+
 /// element.appendChild implementation
 pub(crate) unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -629,6 +684,10 @@ pub(crate) unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, arg
             }
         }
     });
+
+    // Trigger script loading if a <script> element with a src attribute was appended
+    trigger_script_load_if_needed(child_id);
+
     if argc > 0 {
         // Return the child that was appended
         args.rval().set(*args.get(0));
@@ -721,6 +780,9 @@ unsafe extern "C" fn element_insert_before(raw_cx: *mut JSContext, argc: c_uint,
             }
         }
     });
+
+    // Trigger script loading if a <script> element with a src attribute was inserted
+    trigger_script_load_if_needed(new_child_id);
 
     // Return the inserted node.
     args.rval().set(*args.get(0));
@@ -1818,6 +1880,82 @@ unsafe extern "C" fn element_set_class_name(raw_cx: *mut JSContext, argc: c_uint
         });
     }
 
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// element.__getSrc implementation (getter for src IDL-reflected attribute)
+unsafe extern "C" fn element_get_src(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let value = get_node_id_from_this(raw_cx, &args)
+        .and_then(|id| get_attribute_for_node(id, "src"))
+        .unwrap_or_default();
+    args.rval().set(create_js_string(raw_cx, &value));
+    true
+}
+
+/// element.__setSrc implementation (setter for src IDL-reflected attribute)
+unsafe extern "C" fn element_set_src(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
+        let value = if argc > 0 { js_value_to_string(raw_cx, *args.get(0)) } else { String::new() };
+        set_attribute_for_node(node_id, "src", &value);
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// element.__getType implementation (getter for type IDL-reflected attribute)
+unsafe extern "C" fn element_get_type_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let value = get_node_id_from_this(raw_cx, &args)
+        .and_then(|id| get_attribute_for_node(id, "type"))
+        .unwrap_or_default();
+    args.rval().set(create_js_string(raw_cx, &value));
+    true
+}
+
+/// element.__setType implementation (setter for type IDL-reflected attribute)
+unsafe extern "C" fn element_set_type_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
+        let value = if argc > 0 { js_value_to_string(raw_cx, *args.get(0)) } else { String::new() };
+        set_attribute_for_node(node_id, "type", &value);
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// element.__getAsync implementation (getter for async IDL-reflected boolean attribute)
+unsafe extern "C" fn element_get_async_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let present = get_node_id_from_this(raw_cx, &args)
+        .map(|id| get_attribute_for_node(id, "async").is_some())
+        .unwrap_or(false);
+    args.rval().set(BooleanValue(present));
+    true
+}
+
+/// element.__setAsync implementation (setter for async IDL-reflected boolean attribute)
+unsafe extern "C" fn element_set_async_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
+        let enabled = argc > 0 && {
+            let v = *args.get(0);
+            if v.is_boolean() {
+                v.to_boolean()
+            } else if v.is_undefined() || v.is_null() {
+                false
+            } else {
+                true // any other truthy value
+            }
+        };
+        if enabled {
+            set_attribute_for_node(node_id, "async", "");
+        } else {
+            clear_attribute_for_node(node_id, "async");
+        }
+    }
     args.rval().set(UndefinedValue());
     true
 }
