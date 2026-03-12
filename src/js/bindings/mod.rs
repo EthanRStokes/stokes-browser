@@ -17,6 +17,7 @@ pub(crate) mod alert_callback;
 pub mod console;
 pub mod css;
 pub mod fetch;
+pub mod google;
 pub mod performance;
 pub mod url;
 pub mod xhr;
@@ -48,6 +49,11 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
 
     // Set up DOM bindings
     dom_bindings::setup_dom_bindings(runtime, document_root, user_agent)?;
+
+    // Inject google.* polyfill stubs so that Google-hosted scripts that call
+    // google.cv, google.rll, google.ml etc. do not throw before they can set
+    // up their own real implementations.
+    google::setup_google_polyfill(runtime)?;
 
     // Set up window.matchMedia and MediaQueryList behavior
     dom_bindings::setup_match_media_deferred(runtime)?;
