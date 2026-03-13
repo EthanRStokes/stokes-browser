@@ -8,9 +8,13 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::unbounded_channel;
+
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
 
 const REPORT_NODE_ID: &str = "stokes-wpt-results";
 const DEFAULT_MANIFEST: &str = "wpt/manifests/smoke.txt";
@@ -30,9 +34,10 @@ struct WptOptions {
     poll_ms: u64,
     max_tests: Option<usize>,
     filter: Option<String>,
+    single_test: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, serde::Deserialize)]
 struct RunOutput {
     started_unix_ms: u128,
     duration_ms: u128,
@@ -41,7 +46,7 @@ struct RunOutput {
     results: Vec<TestResult>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, serde::Deserialize)]
 struct OutputConfig {
     manifest: String,
     expectations: String,
@@ -54,7 +59,7 @@ struct OutputConfig {
     filter: Option<String>,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, serde::Deserialize, Default)]
 struct RunSummary {
     total: usize,
     passed: usize,
@@ -66,7 +71,7 @@ struct RunSummary {
     harness_timeouts: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, serde::Deserialize)]
 struct TestResult {
     path: String,
     url: String,
@@ -77,7 +82,7 @@ struct TestResult {
     error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum Outcome {
     Pass,
@@ -88,7 +93,7 @@ enum Outcome {
     Skipped,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, serde::Deserialize)]
 struct SubtestFailure {
     name: String,
     status: i32,
@@ -116,22 +121,26 @@ struct HarnessSubtest {
 
 pub(crate) async fn run_from_args(args: &[String]) -> Result<(), Box<dyn Error>> {
     let options = WptOptions::parse(args)?;
-
-    let manifest_entries = load_manifest(&options.manifest)?;
     let expected_failures = load_expectations(&options.expectations)?;
 
-    let mut tests = select_tests(manifest_entries, &options)?;
-    if tests.is_empty() {
-        return Err(format!(
-            "No tests selected. Check manifest path '{}' and filter settings.",
-            options.manifest.display()
-        )
-        .into());
-    }
+    let mut tests = if let Some(single_test) = options.single_test.as_ref() {
+        vec![normalize_manifest_path(single_test)]
+    } else {
+        let manifest_entries = load_manifest(&options.manifest)?;
+        let mut selected = select_tests(manifest_entries, &options)?;
+        if selected.is_empty() {
+            return Err(format!(
+                "No tests selected. Check manifest path '{}' and filter settings.",
+                options.manifest.display()
+            )
+            .into());
+        }
 
-    if let Some(limit) = options.max_tests {
-        tests.truncate(limit);
-    }
+        if let Some(limit) = options.max_tests {
+            selected.truncate(limit);
+        }
+        selected
+    };
 
     println!("Running {} WPT tests against {}", tests.len(), options.base_url);
 
@@ -143,10 +152,19 @@ pub(crate) async fn run_from_args(args: &[String]) -> Result<(), Box<dyn Error>>
 
     let mut engine = build_engine();
     let mut results = Vec::with_capacity(tests.len());
+    let current_exe = if options.single_test.is_none() {
+        Some(std::env::current_exe()?)
+    } else {
+        None
+    };
 
     for (index, path) in tests.iter().enumerate() {
         println!("[{}/{}] {}", index + 1, tests.len(), path);
-        let result = run_one_test(&mut engine, path, &options, &expected_failures).await;
+        let result = if let Some(exe) = current_exe.as_ref() {
+            run_one_test_isolated(exe, path, &options, &expected_failures).await
+        } else {
+            run_one_test(&mut engine, path, &options, &expected_failures).await
+        };
         print_result_line(&result);
         results.push(result);
     }
@@ -201,6 +219,7 @@ impl WptOptions {
             poll_ms: 25,
             max_tests: None,
             filter: None,
+            single_test: None,
         };
 
         let mut i = 0;
@@ -242,6 +261,10 @@ impl WptOptions {
                     i += 1;
                     options.filter = Some(arg_value(args, i, "--filter")?.to_string());
                 }
+                "--single-test" => {
+                    i += 1;
+                    options.single_test = Some(arg_value(args, i, "--single-test")?.to_string());
+                }
                 "-h" | "--help" => {
                     print_help();
                     std::process::exit(0);
@@ -276,8 +299,164 @@ fn print_help() {
          --timeout-ms <n>        Per-test timeout in milliseconds (default: 8000)\n\
          --poll-ms <n>           Poll interval while waiting for completion (default: 25)\n\
          --max-tests <n>         Cap number of tests from manifest\n\
-         --filter <text>         Run only tests whose path contains the text"
+         --filter <text>         Run only tests whose path contains the text\n\
+         --single-test <path>    Internal: run exactly one test path in-process"
     );
+}
+
+async fn run_one_test_isolated(
+    exe: &Path,
+    path: &str,
+    options: &WptOptions,
+    expected_failures: &HashSet<String>,
+) -> TestResult {
+    let expected_fail = expected_failures.contains(path);
+    let url = format!("{}/{}", options.base_url.trim_end_matches('/'), path);
+    let temp_output = temp_output_path(path);
+
+    let mut cmd = Command::new(exe);
+    cmd.arg("--wpt-run")
+        .arg("--single-test")
+        .arg(path)
+        .arg("--expectations")
+        .arg(&options.expectations)
+        .arg("--output")
+        .arg(&temp_output)
+        .arg("--wpt-root")
+        .arg(&options.wpt_root)
+        .arg("--base-url")
+        .arg(&options.base_url)
+        .arg("--timeout-ms")
+        .arg(options.timeout_ms.to_string())
+        .arg("--poll-ms")
+        .arg(options.poll_ms.to_string());
+
+    let output = match cmd.output().await {
+        Ok(output) => output,
+        Err(err) => {
+            return crash_result(
+                path,
+                url,
+                expected_fail,
+                format!("failed to launch isolated test runner: {}", err),
+            )
+        }
+    };
+
+    if output.status.success() {
+        let result = match read_single_result(&temp_output) {
+            Ok(result) => result,
+            Err(err) => crash_result(
+                path,
+                url,
+                expected_fail,
+                format!(
+                    "isolated runner produced unreadable result: {}{}",
+                    err,
+                    stderr_suffix(&output)
+                ),
+            ),
+        };
+        let _ = fs::remove_file(&temp_output);
+        return result;
+    }
+
+    let signal = exit_signal(output.status);
+    let error = if let Some(sig) = signal {
+        format!(
+            "isolated runner crashed with {} (signal {}){}",
+            signal_name(sig),
+            sig,
+            stderr_suffix(&output)
+        )
+    } else {
+        format!(
+            "isolated runner exited with code {:?}{}",
+            output.status.code(),
+            stderr_suffix(&output)
+        )
+    };
+
+    let _ = fs::remove_file(&temp_output);
+    crash_result(path, url, expected_fail, error)
+}
+
+fn temp_output_path(path: &str) -> PathBuf {
+    let mut sanitized = path.replace(['/', '\\'], "_");
+    sanitized = sanitized
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' { ch } else { '_' })
+        .collect();
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+
+    std::env::temp_dir().join(format!(
+        "stokes-wpt-{}-{}-{}.json",
+        std::process::id(),
+        unique,
+        sanitized
+    ))
+}
+
+fn read_single_result(path: &Path) -> Result<TestResult, Box<dyn Error>> {
+    let bytes = fs::read(path)?;
+    let output: RunOutput = serde_json::from_slice(&bytes)?;
+    output
+        .results
+        .into_iter()
+        .next()
+        .ok_or_else(|| "isolated runner output did not include any test results".into())
+}
+
+fn crash_result(path: &str, url: String, expected_fail: bool, error: String) -> TestResult {
+    TestResult {
+        path: path.to_string(),
+        url,
+        outcome: if expected_fail {
+            Outcome::ExpectedFail
+        } else {
+            Outcome::Regression
+        },
+        harness_status: None,
+        harness_message: None,
+        failing_subtests: Vec::new(),
+        error: Some(error),
+    }
+}
+
+fn stderr_suffix(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        String::new()
+    } else {
+        format!("; stderr: {}", stderr)
+    }
+}
+
+fn exit_signal(status: ExitStatus) -> Option<i32> {
+    #[cfg(unix)]
+    {
+        status.signal()
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = status;
+        None
+    }
+}
+
+fn signal_name(sig: i32) -> &'static str {
+    match sig {
+        11 => "SIGSEGV",
+        6 => "SIGABRT",
+        4 => "SIGILL",
+        8 => "SIGFPE",
+        _ => "signal",
+    }
 }
 
 fn build_engine() -> Engine {

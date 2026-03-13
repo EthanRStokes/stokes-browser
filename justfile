@@ -35,7 +35,7 @@ wpt-bootstrap:
 
 # Serve WPT content locally for the runner (run in a second terminal)
 wpt-serve:
-    python third_party/wpt/wpt serve --host 127.0.0.1 --port 8000
+    python third_party/wpt/wpt serve --config tools/wpt/serve-local.json --no-h2
 
 # Run the Rust WPT harness against the selected manifest
 wpt-run manifest="wpt/manifests/smoke.txt" expectations="wpt/expectations/known-failures.txt" output="wpt/results/latest.json" timeout_ms="8000" filter="":

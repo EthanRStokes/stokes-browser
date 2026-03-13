@@ -223,6 +223,9 @@ impl PersistentRooted {
         assert!(AddRawValueRoot(
             cx,
             self.permanent_js_root.get_unsafe(),
+            #[cfg(arch = "aarch64")]
+            c_str.as_ptr() as *const u8
+            #[cfg(not(arch = "aarch64"))]
             c_str.as_ptr() as *const i8
         ));
     }
