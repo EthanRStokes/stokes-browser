@@ -3,3 +3,5 @@
 .idea/
 
 debug_js/
+third_party/wpt/
+wpt/results/

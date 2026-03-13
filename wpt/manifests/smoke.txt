@@ -1,0 +1,8 @@
+s# Minimal WPT smoke set for quick iteration.
+# Paths are relative to third_party/wpt.
+
+dom/nodes/Document-createElement.html
+dom/nodes/ParentNode-querySelector-All.html
+html/dom/documents/dom-tree-accessors/document.title-01.html
+html/webappapis/timers/setTimeout-setInterval.html
+

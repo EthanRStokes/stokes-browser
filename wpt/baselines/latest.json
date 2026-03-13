@@ -1,0 +1,27 @@
+{
+  "started_unix_ms": 0,
+  "duration_ms": 0,
+  "config": {
+    "manifest": "wpt/manifests/smoke.txt",
+    "expectations": "wpt/expectations/known-failures.txt",
+    "output": "wpt/results/latest.json",
+    "wpt_root": "third_party/wpt",
+    "base_url": "http://127.0.0.1:8000",
+    "timeout_ms": 8000,
+    "poll_ms": 25,
+    "max_tests": null,
+    "filter": null
+  },
+  "summary": {
+    "total": 0,
+    "passed": 0,
+    "failed": 0,
+    "expected_failures": 0,
+    "regressions": 0,
+    "unexpected_passes": 0,
+    "skipped": 0,
+    "harness_timeouts": 0
+  },
+  "results": []
+}
+

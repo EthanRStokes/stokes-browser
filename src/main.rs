@@ -16,6 +16,7 @@ mod browser;
 mod window;
 mod shell_provider;
 mod default_browser;
+mod wpt_runner;
 
 use crate::browser::BrowserApp;
 use winit::event_loop::EventLoop;
@@ -23,8 +24,14 @@ use winit_core::event_loop::ControlFlow;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Check if this is a tab process
     let args: Vec<String> = std::env::args().collect();
+
+    // Dedicated WPT runner mode for automated conformance testing.
+    if args.len() >= 2 && args[1] == "--wpt-run" {
+        return wpt_runner::run_from_args(&args[2..]).await;
+    }
+
+    // Check if this is a tab process
     if args.len() >= 4 && args[1] == "--tab-process" {
         let tab_id = args[2].clone();
         let server_name = args[3].clone();
