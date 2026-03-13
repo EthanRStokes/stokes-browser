@@ -16,10 +16,7 @@ use crate::js::JsRuntime;
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use html5ever::ns;
 use markup5ever::QualName;
-use mozjs::jsapi::{
-    CallArgs, JSContext, JSObject, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject,
-    JSPROP_ENUMERATE,
-};
+use mozjs::jsapi::{CallArgs, HandleValueArray, JSContext, JSObject, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JSPROP_ENUMERATE};
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use std::cell::RefCell;
@@ -1217,7 +1214,7 @@ unsafe fn setup_base64_functions(raw_cx: *mut JSContext, global: *mut JSObject) 
 
 /// Set up dataLayer for Google Analytics compatibility
 unsafe fn setup_data_layer(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
-    rooted!(in(raw_cx) let data_layer = create_empty_array(raw_cx));
+    rooted!(in(raw_cx) let data_layer = mozjs::jsapi::NewArrayObject(raw_cx, &mozjs::jsapi::HandleValueArray::empty()));
     if data_layer.get().is_null() {
         return Err("Failed to create dataLayer array".to_string());
     }
@@ -1498,15 +1495,15 @@ unsafe extern "C" fn document_get_elements_by_tag_name(raw_cx: *mut JSContext, a
         results
     });
 
-    rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
-
-    for (index, (node_id, tag, attrs)) in matching_elements.iter().enumerate() {
+    let mut js_vals = Vec::new();
+    for (_index, (node_id, tag, attrs)) in matching_elements.iter().enumerate() {
         if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, *node_id, tag, attrs) {
-            rooted!(in(raw_cx) let elem_val = js_elem);
-            rooted!(in(raw_cx) let array_obj = array.get());
-            mozjs::rust::wrappers::JS_SetElement(raw_cx, array_obj.handle().into(), index as u32, elem_val.handle().into());
+            js_vals.push(js_elem);
         }
     }
+
+    let hva = mozjs::jsapi::HandleValueArray { length_: js_vals.len(), elements_: js_vals.as_ptr() };
+    rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &hva));
 
     args.rval().set(ObjectValue(array.get()));
     true
@@ -1545,15 +1542,15 @@ unsafe extern "C" fn document_get_elements_by_class_name(raw_cx: *mut JSContext,
         results
     });
 
-    rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
-
-    for (index, (node_id, tag, attrs)) in matching_elements.iter().enumerate() {
+    let mut js_vals = Vec::new();
+    for (_index, (node_id, tag, attrs)) in matching_elements.iter().enumerate() {
         if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, *node_id, tag, attrs) {
-            rooted!(in(raw_cx) let elem_val = js_elem);
-            rooted!(in(raw_cx) let array_obj = array.get());
-            mozjs::rust::wrappers::JS_SetElement(raw_cx, array_obj.handle().into(), index as u32, elem_val.handle().into());
+            js_vals.push(js_elem);
         }
     }
+
+    let hva = mozjs::jsapi::HandleValueArray { length_: js_vals.len(), elements_: js_vals.as_ptr() };
+    rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &hva));
 
     args.rval().set(ObjectValue(array.get()));
     true
@@ -1624,15 +1621,15 @@ unsafe extern "C" fn document_query_selector_all(raw_cx: *mut JSContext, argc: c
         results
     });
 
-    rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
-
-    for (index, (node_id, tag, attrs)) in matching_elements.iter().enumerate() {
+    let mut js_vals = Vec::new();
+    for (_index, (node_id, tag, attrs)) in matching_elements.iter().enumerate() {
         if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, *node_id, tag, attrs) {
-            rooted!(in(raw_cx) let elem_val = js_elem);
-            rooted!(in(raw_cx) let array_obj = array.get());
-            mozjs::rust::wrappers::JS_SetElement(raw_cx, array_obj.handle().into(), index as u32, elem_val.handle().into());
+            js_vals.push(js_elem);
         }
     }
+
+    let hva = mozjs::jsapi::HandleValueArray { length_: js_vals.len(), elements_: js_vals.as_ptr() };
+    rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &hva));
 
     args.rval().set(ObjectValue(array.get()));
     true

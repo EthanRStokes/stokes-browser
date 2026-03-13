@@ -1,6 +1,6 @@
 use crate::js::bindings::dom_bindings::DOM_REF;
 use crate::js::helpers::{
-    create_empty_array, create_js_string, define_function, define_property_accessor, js_value_to_string,
+    create_js_string, define_function, define_property_accessor, js_value_to_string,
     set_string_property,
 };
 use crate::js::JsRuntime;
@@ -271,24 +271,18 @@ unsafe extern "C" fn url_search_params_get_all(
     };
 
     let pairs = params_pairs_from_this(cx, &args);
-    rooted!(in(cx) let array = create_empty_array(cx));
+    let mut js_vals = Vec::new();
 
-    let mut idx = 0_u32;
     for (k, v) in pairs {
         if k == name {
             rooted!(in(cx) let val = create_js_string(cx, &v));
-            rooted!(in(cx) let array_obj = array.get());
-            mozjs::rust::wrappers::JS_SetElement(
-                cx,
-                array_obj.handle().into(),
-                idx,
-                val.handle().into(),
-            );
-            idx += 1;
+            js_vals.push(val.get());
         }
     }
 
-    args.rval().set(ObjectValue(array.get()));
+    let hva = mozjs::jsapi::HandleValueArray { length_: js_vals.len(), elements_: js_vals.as_ptr() };
+    rooted!(in(cx) let array_out = mozjs::jsapi::NewArrayObject(cx, &hva));
+    args.rval().set(ObjectValue(array_out.get()));
     true
 }
 

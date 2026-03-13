@@ -7,11 +7,12 @@ use crate::js::selectors::matches_selector;
 use html5ever::local_name;
 use markup5ever::QualName;
 use mozjs::jsapi::{
-    CallArgs, CurrentGlobalOrNull, JSContext, JSObject, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE,
+    CallArgs, CurrentGlobalOrNull, HandleValueArray, JSContext, JSObject, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE, NewArrayObject,
 };
 use mozjs::jsval::{BooleanValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use std::os::raw::c_uint;
+use crate::js::runtime::RUNTIME;
 
 /// Create a JS element wrapper for a DOM node with its real tag name and attributes
 pub unsafe fn create_js_element_by_id(
@@ -311,43 +312,266 @@ unsafe fn create_js_element_impl(
         }
     }
 
-    // Set sibling properties to null initially
-    // FIXME: firstChild, lastChild, previousSibling, and nextSibling are always null. They should
-    // be populated by looking up the node's actual siblings and first/last children in the DOM.
-    rooted!(in(raw_cx) let null_val = NullValue());
-    for name in &["firstChild", "lastChild", "previousSibling", "nextSibling"] {
-        let cname = std::ffi::CString::new(*name).unwrap();
-        JS_DefineProperty(
-            raw_cx,
-            element_rooted.handle().into(),
-            cname.as_ptr(),
-            null_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
+    // Look up previousSibling and nextSibling from the parent's children list.
+    let sibling_info: (Option<usize>, Option<usize>) = if node_id != 0 {
+        DOM_REF.with(|dom_ref| {
+            if let Some(ref dom) = *dom_ref.borrow() {
+                let dom = &**dom;
+                if let Some(node) = dom.get_node(node_id) {
+                    if let Some(parent_id) = node.parent {
+                        if let Some(parent_node) = dom.get_node(parent_id) {
+                            if let Some(pos) = parent_node.children.iter().position(|id| *id == node_id) {
+                                let prev = if pos > 0 { Some(parent_node.children[pos - 1]) } else { None };
+                                let next = if pos + 1 < parent_node.children.len() { Some(parent_node.children[pos + 1]) } else { None };
+                                return (prev, next);
+                            }
+                        }
+                    }
+                }
+            }
+            (None, None)
+        })
+    } else {
+        (None, None)
+    };
+
+    // Helper: create a JS wrapper for a sibling/child node by its id.
+    // Element nodes get a full element wrapper (with_parent=false), Text nodes get a plain object
+    // with nodeType=3, Comment nodes get nodeType=8.
+    let create_child_js_val = |raw_cx: *mut JSContext, child_id: usize| -> Option<JSVal> {
+        DOM_REF.with(|dom_ref| {
+            if let Some(ref dom) = *dom_ref.borrow() {
+                let dom = &**dom;
+                if let Some(child_node) = dom.get_node(child_id) {
+                    match &child_node.data {
+                        NodeData::Element(elem_data) => {
+                            if let Ok(val) = create_js_element_impl(raw_cx, child_id, &elem_data.name.local.to_string(), &elem_data.attributes, false) {
+                                return Some(val);
+                            }
+                        }
+                        NodeData::Text(text_data) => {
+                            rooted!(in(raw_cx) let text_obj = JS_NewPlainObject(raw_cx));
+                            if !text_obj.get().is_null() {
+                                let _ = set_int_property(raw_cx, text_obj.get(), "nodeType", 3);
+                                let _ = set_string_property(raw_cx, text_obj.get(), "nodeName", "#text");
+                                let _ = set_string_property(raw_cx, text_obj.get(), "textContent", &text_data.content);
+                                let _ = set_string_property(raw_cx, text_obj.get(), "nodeValue", &text_data.content);
+                                // Store __nodeId so the text node can be used with appendChild etc.
+                                rooted!(in(raw_cx) let nid_val = mozjs::jsval::DoubleValue(child_id as f64));
+                                rooted!(in(raw_cx) let text_obj_rooted = text_obj.get());
+                                let cname = std::ffi::CString::new("__nodeId").unwrap();
+                                JS_DefineProperty(
+                                    raw_cx,
+                                    text_obj_rooted.handle().into(),
+                                    cname.as_ptr(),
+                                    nid_val.handle().into(),
+                                    0,
+                                );
+                                return Some(ObjectValue(text_obj.get()));
+                            }
+                        }
+                        NodeData::Comment => {
+                            rooted!(in(raw_cx) let comment_obj = JS_NewPlainObject(raw_cx));
+                            if !comment_obj.get().is_null() {
+                                let _ = set_int_property(raw_cx, comment_obj.get(), "nodeType", 8);
+                                let _ = set_string_property(raw_cx, comment_obj.get(), "nodeName", "#comment");
+                                rooted!(in(raw_cx) let nid_val = mozjs::jsval::DoubleValue(child_id as f64));
+                                rooted!(in(raw_cx) let comment_obj_rooted = comment_obj.get());
+                                let cname = std::ffi::CString::new("__nodeId").unwrap();
+                                JS_DefineProperty(
+                                    raw_cx,
+                                    comment_obj_rooted.handle().into(),
+                                    cname.as_ptr(),
+                                    nid_val.handle().into(),
+                                    0,
+                                );
+                                return Some(ObjectValue(comment_obj.get()));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            None
+        })
+    };
+
+    // Set previousSibling
+    if let Some(prev_id) = sibling_info.0 {
+        if let Some(prev_val) = create_child_js_val(raw_cx, prev_id) {
+            rooted!(in(raw_cx) let pv = prev_val);
+            let cname = std::ffi::CString::new("previousSibling").unwrap();
+            JS_DefineProperty(
+                raw_cx,
+                element_rooted.handle().into(),
+                cname.as_ptr(),
+                pv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        } else {
+            rooted!(in(raw_cx) let null_val = NullValue());
+            let cname = std::ffi::CString::new("previousSibling").unwrap();
+            JS_DefineProperty(raw_cx, element_rooted.handle().into(), cname.as_ptr(), null_val.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+    } else {
+        rooted!(in(raw_cx) let null_val = NullValue());
+        let cname = std::ffi::CString::new("previousSibling").unwrap();
+        JS_DefineProperty(raw_cx, element_rooted.handle().into(), cname.as_ptr(), null_val.handle().into(), JSPROP_ENUMERATE as u32);
     }
 
-    // Create empty children and childNodes arrays
-    // FIXME: children and childNodes are always empty arrays. They should be populated with JS
-    // element wrappers for each actual child of this node in the DOM tree.
-    rooted!(in(raw_cx) let children_array = create_empty_array(raw_cx));
+    // Set nextSibling
+    if let Some(next_id) = sibling_info.1 {
+        if let Some(next_val) = create_child_js_val(raw_cx, next_id) {
+            rooted!(in(raw_cx) let nv = next_val);
+            let cname = std::ffi::CString::new("nextSibling").unwrap();
+            JS_DefineProperty(
+                raw_cx,
+                element_rooted.handle().into(),
+                cname.as_ptr(),
+                nv.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        } else {
+            rooted!(in(raw_cx) let null_val = NullValue());
+            let cname = std::ffi::CString::new("nextSibling").unwrap();
+            JS_DefineProperty(raw_cx, element_rooted.handle().into(), cname.as_ptr(), null_val.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+    } else {
+        rooted!(in(raw_cx) let null_val = NullValue());
+        let cname = std::ffi::CString::new("nextSibling").unwrap();
+        JS_DefineProperty(raw_cx, element_rooted.handle().into(), cname.as_ptr(), null_val.handle().into(), JSPROP_ENUMERATE as u32);
+    }
+
+    // Collect actual child node info from the DOM.
+    // Each entry: (child_id, is_element, tag_name_if_element, attrs_if_element, text_content_if_text)
+    enum ChildInfo {
+        Element { id: usize, tag: String, attrs: AttributeMap },
+        Text { id: usize, content: String },
+        Comment { id: usize },
+    }
+
+    let child_infos: Vec<ChildInfo> = if node_id != 0 {
+        DOM_REF.with(|dom_ref| {
+            let mut infos = Vec::new();
+            if let Some(ref dom) = *dom_ref.borrow() {
+                let dom = &**dom;
+                if let Some(node) = dom.get_node(node_id) {
+                    for &child_id in &node.children {
+                        if let Some(child_node) = dom.get_node(child_id) {
+                            match &child_node.data {
+                                NodeData::Element(elem_data) => {
+                                    infos.push(ChildInfo::Element {
+                                        id: child_id,
+                                        tag: elem_data.name.local.to_string(),
+                                        attrs: elem_data.attributes.clone(),
+                                    });
+                                }
+                                NodeData::Text(text_data) => {
+                                    infos.push(ChildInfo::Text {
+                                        id: child_id,
+                                        content: text_data.content.clone(),
+                                    });
+                                }
+                                NodeData::Comment => {
+                                    infos.push(ChildInfo::Comment { id: child_id });
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            infos
+        })
+    } else {
+        Vec::new()
+    };
+
+    // Build JS values for each child, collecting into two Vecs:
+    //  - `element_vals`: Element nodes only (for `children` HTMLCollection)
+    //  - `all_child_vals`: all nodes (for `childNodes` NodeList)
+    let mut element_vals: Vec<JSVal> = Vec::new();
+    let mut all_child_vals: Vec<JSVal> = Vec::new();
+
+    for info in &child_infos {
+        match info {
+            ChildInfo::Element { id, tag, attrs } => {
+                if let Ok(js_elem) = create_js_element_impl(raw_cx, *id, tag, attrs, false) {
+                    element_vals.push(js_elem);
+                    all_child_vals.push(js_elem);
+                }
+            }
+            ChildInfo::Text { id, content } => {
+                rooted!(in(raw_cx) let text_obj = JS_NewPlainObject(raw_cx));
+                if !text_obj.get().is_null() {
+                    let _ = set_int_property(raw_cx, text_obj.get(), "nodeType", 3);
+                    let _ = set_string_property(raw_cx, text_obj.get(), "nodeName", "#text");
+                    let _ = set_string_property(raw_cx, text_obj.get(), "textContent", content);
+                    let _ = set_string_property(raw_cx, text_obj.get(), "nodeValue", content);
+                    // Store __nodeId
+                    rooted!(in(raw_cx) let nid_val = mozjs::jsval::DoubleValue(*id as f64));
+                    rooted!(in(raw_cx) let text_obj_rooted = text_obj.get());
+                    let nid_cname = std::ffi::CString::new("__nodeId").unwrap();
+                    JS_DefineProperty(raw_cx, text_obj_rooted.handle().into(), nid_cname.as_ptr(), nid_val.handle().into(), 0);
+
+                    all_child_vals.push(ObjectValue(text_obj.get()));
+                }
+            }
+            ChildInfo::Comment { id } => {
+                rooted!(in(raw_cx) let comment_obj = JS_NewPlainObject(raw_cx));
+                if !comment_obj.get().is_null() {
+                    let _ = set_int_property(raw_cx, comment_obj.get(), "nodeType", 8);
+                    let _ = set_string_property(raw_cx, comment_obj.get(), "nodeName", "#comment");
+                    rooted!(in(raw_cx) let nid_val = mozjs::jsval::DoubleValue(*id as f64));
+                    rooted!(in(raw_cx) let comment_obj_rooted = comment_obj.get());
+                    let nid_cname = std::ffi::CString::new("__nodeId").unwrap();
+                    JS_DefineProperty(raw_cx, comment_obj_rooted.handle().into(), nid_cname.as_ptr(), nid_val.handle().into(), 0);
+
+                    all_child_vals.push(ObjectValue(comment_obj.get()));
+                }
+            }
+        }
+    }
+
+    // Create `children` array (Element-only HTMLCollection) from pre-built values
+    let children_hva = HandleValueArray { length_: element_vals.len(), elements_: element_vals.as_ptr() };
+    rooted!(in(raw_cx) let children_array = NewArrayObject(raw_cx, &children_hva));
     if !children_array.get().is_null() {
         rooted!(in(raw_cx) let children_val = ObjectValue(children_array.get()));
         let cname = std::ffi::CString::new("children").unwrap();
-        JS_DefineProperty(
-            raw_cx,
-            element_rooted.handle().into(),
-            cname.as_ptr(),
-            children_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
+        JS_DefineProperty(raw_cx, element_rooted.handle().into(), cname.as_ptr(), children_val.handle().into(), JSPROP_ENUMERATE as u32);
+    }
+
+    // Create `childNodes` array (all-nodes NodeList) from pre-built values
+    let child_nodes_hva = HandleValueArray { length_: all_child_vals.len(), elements_: all_child_vals.as_ptr() };
+    rooted!(in(raw_cx) let child_nodes_array = NewArrayObject(raw_cx, &child_nodes_hva));
+    if !child_nodes_array.get().is_null() {
+        rooted!(in(raw_cx) let child_nodes_val = ObjectValue(child_nodes_array.get()));
         let cname = std::ffi::CString::new("childNodes").unwrap();
-        JS_DefineProperty(
-            raw_cx,
-            element_rooted.handle().into(),
-            cname.as_ptr(),
-            children_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
+        JS_DefineProperty(raw_cx, element_rooted.handle().into(), cname.as_ptr(), child_nodes_val.handle().into(), JSPROP_ENUMERATE as u32);
+    }
+
+    // Set childElementCount
+    set_int_property(raw_cx, element.get(), "childElementCount", element_vals.len() as i32)?;
+
+    // Set firstChild and lastChild from the all_child_vals vec
+    if let Some(&fc) = all_child_vals.first() {
+        rooted!(in(raw_cx) let fc_rooted = fc);
+        let cname = std::ffi::CString::new("firstChild").unwrap();
+        JS_DefineProperty(raw_cx, element_rooted.handle().into(), cname.as_ptr(), fc_rooted.handle().into(), JSPROP_ENUMERATE as u32);
+    } else {
+        rooted!(in(raw_cx) let null_val = NullValue());
+        let cname = std::ffi::CString::new("firstChild").unwrap();
+        JS_DefineProperty(raw_cx, element_rooted.handle().into(), cname.as_ptr(), null_val.handle().into(), JSPROP_ENUMERATE as u32);
+    }
+    if let Some(&lc) = all_child_vals.last() {
+        rooted!(in(raw_cx) let lc_rooted = lc);
+        let cname = std::ffi::CString::new("lastChild").unwrap();
+        JS_DefineProperty(raw_cx, element_rooted.handle().into(), cname.as_ptr(), lc_rooted.handle().into(), JSPROP_ENUMERATE as u32);
+    } else {
+        rooted!(in(raw_cx) let null_val = NullValue());
+        let cname = std::ffi::CString::new("lastChild").unwrap();
+        JS_DefineProperty(raw_cx, element_rooted.handle().into(), cname.as_ptr(), null_val.handle().into(), JSPROP_ENUMERATE as u32);
     }
 
     // Set dimension properties
@@ -1047,8 +1271,7 @@ unsafe extern "C" fn element_query_selector_all(raw_cx: *mut JSContext, argc: c_
 
     println!("[JS] element.querySelectorAll('{}') called", selector);
 
-    // Create JS array
-    rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
+    let mut js_vals = Vec::new();
 
     if !selector.is_empty() {
         if let Some(node_id) = get_node_id_from_this(raw_cx, &args) {
@@ -1079,15 +1302,15 @@ unsafe extern "C" fn element_query_selector_all(raw_cx: *mut JSContext, argc: c_
 
             for (index, (match_id, tag, attrs)) in matching_elements.iter().enumerate() {
                 if let Ok(js_elem) = create_js_element_by_id(raw_cx, *match_id, tag, attrs) {
-                    rooted!(in(raw_cx) let elem_val = js_elem);
-                    rooted!(in(raw_cx) let array_obj = array.get());
-                    mozjs::rust::wrappers::JS_SetElement(raw_cx, array_obj.handle().into(), index as u32, elem_val.handle().into());
+                    js_vals.push(js_elem);
                 }
             }
         }
     }
 
-    args.rval().set(ObjectValue(array.get()));
+    let hva = mozjs::jsapi::HandleValueArray { length_: js_vals.len(), elements_: js_vals.as_ptr() };
+    rooted!(in(raw_cx) let array_out = mozjs::jsapi::NewArrayObject(raw_cx, &hva));
+    args.rval().set(ObjectValue(array_out.get()));
     true
 }
 
@@ -1321,7 +1544,7 @@ unsafe extern "C" fn element_get_client_rects(raw_cx: *mut JSContext, argc: c_ui
     println!("[JS] element.getClientRects() called");
 
     // FIXME: Always returns an empty DOMRectList instead of the element's per-line-box rects.
-    rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
+    rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &mozjs::jsapi::HandleValueArray::empty()));
     args.rval().set(ObjectValue(array.get()));
     true
 }
