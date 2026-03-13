@@ -347,7 +347,7 @@ dependencies = [
 [[package]]
 name = "blitz-net"
 version = "0.2.1"
-source = "git+https://github.com/DioxusLabs/blitz?rev=2b3d3ac0#2b3d3ac0b7eea3623987d4bef1142df8e2dd3d4f"
+source = "git+https://github.com/DioxusLabs/blitz?rev=05c98929#05c9892932a3d03858f634d416606a376052e544"
 dependencies = [
  "blitz-traits",
  "data-url",
@@ -358,7 +358,7 @@ dependencies = [
 [[package]]
 name = "blitz-traits"
 version = "0.2.0"
-source = "git+https://github.com/DioxusLabs/blitz?rev=2b3d3ac0#2b3d3ac0b7eea3623987d4bef1142df8e2dd3d4f"
+source = "git+https://github.com/DioxusLabs/blitz?rev=05c98929#05c9892932a3d03858f634d416606a376052e544"
 dependencies = [
  "bitflags 2.11.0",
  "bytes",
@@ -1224,7 +1224,7 @@ dependencies = [
 [[package]]
 name = "fontique"
 version = "0.7.0"
-source = "git+https://github.com/linebender/parley?rev=6d0d9c90a7875ceb34f0bb1c2bfbfbe5b5d74856#6d0d9c90a7875ceb34f0bb1c2bfbfbe5b5d74856"
+source = "git+https://github.com/linebender/parley?rev=c3d3d41eaaca0d2dce9558f460c2c129559fc425#c3d3d41eaaca0d2dce9558f460c2c129559fc425"
 dependencies = [
  "hashbrown 0.16.1",
  "linebender_resource_handle",
@@ -3151,7 +3151,7 @@ dependencies = [
 [[package]]
 name = "parley"
 version = "0.7.0"
-source = "git+https://github.com/linebender/parley?rev=6d0d9c90a7875ceb34f0bb1c2bfbfbe5b5d74856#6d0d9c90a7875ceb34f0bb1c2bfbfbe5b5d74856"
+source = "git+https://github.com/linebender/parley?rev=c3d3d41eaaca0d2dce9558f460c2c129559fc425#c3d3d41eaaca0d2dce9558f460c2c129559fc425"
 dependencies = [
  "fontique",
  "harfrust",
@@ -3168,7 +3168,7 @@ dependencies = [
 [[package]]
 name = "parley_data"
 version = "0.0.0"
-source = "git+https://github.com/linebender/parley?rev=6d0d9c90a7875ceb34f0bb1c2bfbfbe5b5d74856#6d0d9c90a7875ceb34f0bb1c2bfbfbe5b5d74856"
+source = "git+https://github.com/linebender/parley?rev=c3d3d41eaaca0d2dce9558f460c2c129559fc425#c3d3d41eaaca0d2dce9558f460c2c129559fc425"
 dependencies = [
  "icu_collections 2.1.1",
  "icu_properties 2.1.2",
@@ -4591,7 +4591,7 @@ dependencies = [
 [[package]]
 name = "stylo_taffy"
 version = "0.2.0"
-source = "git+https://github.com/DioxusLabs/blitz?rev=2b3d3ac0#2b3d3ac0b7eea3623987d4bef1142df8e2dd3d4f"
+source = "git+https://github.com/DioxusLabs/blitz?rev=05c98929#05c9892932a3d03858f634d416606a376052e544"
 dependencies = [
  "stylo",
  "stylo_atoms",
@@ -4743,7 +4743,7 @@ dependencies = [
 [[package]]
 name = "text_primitives"
 version = "0.1.0"
-source = "git+https://github.com/linebender/parley?rev=6d0d9c90a7875ceb34f0bb1c2bfbfbe5b5d74856#6d0d9c90a7875ceb34f0bb1c2bfbfbe5b5d74856"
+source = "git+https://github.com/linebender/parley?rev=c3d3d41eaaca0d2dce9558f460c2c129559fc425#c3d3d41eaaca0d2dce9558f460c2c129559fc425"
 
 [[package]]
 name = "thin-vec"

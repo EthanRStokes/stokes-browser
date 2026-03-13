@@ -28,7 +28,7 @@ taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "25759dad44d8350743
 slab = "0.4.12"
 markup5ever = "0.38.0"
 xml5ever = "0.38.0"
-parley = { git = "https://github.com/linebender/parley", rev = "6d0d9c90a7875ceb34f0bb1c2bfbfbe5b5d74856" }
+parley = { git = "https://github.com/linebender/parley", rev = "c3d3d41eaaca0d2dce9558f460c2c129559fc425" }
 euclid = "0.22.13"
 bitflags = { version = "2.11.0", features = ["serde"] }
 atomic_refcell = "0.1.13"
@@ -70,9 +70,9 @@ stylo_dom = "0.12.0"
 selectors = "0.35.0"
 
 # Blitz
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "2b3d3ac0" }
-blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "2b3d3ac0" }
-stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "2b3d3ac0", features = ["floats"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "05c98929" }
+blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "05c98929" }
+stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "05c98929", features = ["floats"] }
 dioxus-asset-resolver = { version = "0.7.3", features = ["native"] }
 
 [dependencies.glutin-winit]

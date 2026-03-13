@@ -331,7 +331,7 @@ async fn run_one_test_isolated(
         .arg("--poll-ms")
         .arg(options.poll_ms.to_string());
 
-    let output = match cmd.output().await {
+    let output = match cmd.output() {
         Ok(output) => output,
         Err(err) => {
             return crash_result(
