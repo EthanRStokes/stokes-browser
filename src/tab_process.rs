@@ -21,7 +21,7 @@ use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
-    pub(crate) engine: Engine,
+    pub(crate) engine: Engine<'static>,
     scene_cache: SkiaCache,
     animation_time: Option<Instant>,
     channel: IpcChannel,

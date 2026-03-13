@@ -1,7 +1,7 @@
 use crate::engine::Engine;
 use crate::engine::js_provider::JsProviderMessage;
 
-impl Engine {
+impl Engine<'_> {
     pub fn resolve(&mut self, now: f64) {
         let dom = self.dom_mut();
 

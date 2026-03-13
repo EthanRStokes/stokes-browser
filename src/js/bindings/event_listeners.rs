@@ -524,9 +524,9 @@ pub unsafe fn dispatch_event_obj(
     event_obj: *mut JSObject,
 ) {
     // Reset per-dispatch flags.
-    EVENT_DEFAULT_PREVENTED.with(|f| f.set(false));
-    EVENT_PROPAGATION_STOPPED.with(|f| f.set(false));
-    EVENT_IMMEDIATE_STOPPED.with(|f| f.set(false));
+    EVENT_DEFAULT_PREVENTED.set(false);
+    EVENT_PROPAGATION_STOPPED.set(false);
+    EVENT_IMMEDIATE_STOPPED.set(false);
 
     let target_id = chain.first().copied().unwrap_or(0);
     set_event_target(cx, event_obj, target_id);
@@ -535,14 +535,14 @@ pub unsafe fn dispatch_event_obj(
     if bubbles && chain.len() > 1 {
         set_event_phase(cx, event_obj, 1); // CAPTURING_PHASE
         for &node_id in chain[1..].iter().rev() {
-            if EVENT_PROPAGATION_STOPPED.with(|f| f.get()) { break; }
+            if EVENT_PROPAGATION_STOPPED.get() { break; }
             set_event_current_target(cx, event_obj, node_id);
             fire_on_node(cx, global, node_id, event_obj, event_type, true, false);
         }
     }
 
     // ── At-target phase ───────────────────────────────────────────────────
-    if !EVENT_PROPAGATION_STOPPED.with(|f| f.get()) {
+    if !EVENT_PROPAGATION_STOPPED.get() {
         set_event_phase(cx, event_obj, 2); // AT_TARGET
         set_event_current_target(cx, event_obj, target_id);
         fire_on_node(cx, global, target_id, event_obj, event_type, false, true);
@@ -552,16 +552,16 @@ pub unsafe fn dispatch_event_obj(
     if bubbles {
         set_event_phase(cx, event_obj, 3); // BUBBLING_PHASE
         for &node_id in chain[1..].iter() {
-            if EVENT_PROPAGATION_STOPPED.with(|f| f.get()) { break; }
+            if EVENT_PROPAGATION_STOPPED.get() { break; }
             set_event_current_target(cx, event_obj, node_id);
             fire_on_node(cx, global, node_id, event_obj, event_type, false, false);
         }
         // Bubble to document-level listeners.
-        if !EVENT_PROPAGATION_STOPPED.with(|f| f.get()) {
+        if !EVENT_PROPAGATION_STOPPED.get() {
             fire_on_node(cx, global, DOCUMENT_NODE_ID, event_obj, event_type, false, false);
         }
         // Bubble to window-level listeners.
-        if !EVENT_PROPAGATION_STOPPED.with(|f| f.get()) {
+        if !EVENT_PROPAGATION_STOPPED.get() {
             fire_on_node(cx, global, WINDOW_NODE_ID, event_obj, event_type, false, false);
         }
     }
@@ -577,7 +577,7 @@ pub unsafe fn dispatch_event_obj(
 /// Fire `DOMContentLoaded` and `load` events on the document / window.
 /// Call this once the page is fully loaded.
 pub fn fire_load_events(dom: &Dom) {
-    let runtime = RUNTIME.with(|cell| unsafe { cell.get().as_mut().unwrap().as_mut() });
+    let runtime = unsafe { RUNTIME.get().as_mut().unwrap().as_mut() };
 
     // Build the node chain for the root element.
     let root_id = dom.root_node().id;
@@ -586,9 +586,9 @@ pub fn fire_load_events(dom: &Dom) {
     runtime.do_with_jsapi(|_rt_ref, cx, global| unsafe {
         // DOMContentLoaded — fires on document, does not bubble to window in the
         // standard sense, but we fire on both DOCUMENT_NODE_ID and WINDOW_NODE_ID.
-        EVENT_DEFAULT_PREVENTED.with(|f| f.set(false));
-        EVENT_PROPAGATION_STOPPED.with(|f| f.set(false));
-        EVENT_IMMEDIATE_STOPPED.with(|f| f.set(false));
+        EVENT_DEFAULT_PREVENTED.set(false);
+        EVENT_PROPAGATION_STOPPED.set(false);
+        EVENT_IMMEDIATE_STOPPED.set(false);
         rooted!(in(cx) let dcl_obj = JS_NewPlainObject(cx));
         if !dcl_obj.get().is_null() {
             let _ = set_string_property(cx, dcl_obj.get(), "type",    "DOMContentLoaded");
@@ -604,9 +604,9 @@ pub fn fire_load_events(dom: &Dom) {
         }
 
         // load event — fires on window.
-        EVENT_DEFAULT_PREVENTED.with(|f| f.set(false));
-        EVENT_PROPAGATION_STOPPED.with(|f| f.set(false));
-        EVENT_IMMEDIATE_STOPPED.with(|f| f.set(false));
+        EVENT_DEFAULT_PREVENTED.set(false);
+        EVENT_PROPAGATION_STOPPED.set(false);
+        EVENT_IMMEDIATE_STOPPED.set(false);
         rooted!(in(cx) let load_obj = JS_NewPlainObject(cx));
         if !load_obj.get().is_null() {
             let _ = set_string_property(cx, load_obj.get(), "type",    "load");

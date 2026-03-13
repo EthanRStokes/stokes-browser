@@ -343,7 +343,7 @@ impl JsRuntime {
 
     pub fn do_with_jsapi<C, R>(&mut self, consumer: C) -> R
     where
-        C: FnOnce(&Runtime, *mut ApiJSContext, HandleObject) -> R,
+        C: FnOnce(&mut Runtime, *mut ApiJSContext, HandleObject) -> R,
     {
         let rt = &mut self.runtime;
         let cx = unsafe { rt.cx().raw_cx() };
