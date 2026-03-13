@@ -18,7 +18,7 @@ use url::Url;
 
 /// Register global URL-related constructors.
 pub fn setup_url(runtime: &mut JsRuntime) -> Result<(), String> {
-    runtime.do_with_jsapi(|_rt, cx, global| unsafe {
+    runtime.do_with_jsapi(|cx, global| unsafe {
         let url_name = CString::new("URL").unwrap();
         if JS_DefineFunction(
             cx,

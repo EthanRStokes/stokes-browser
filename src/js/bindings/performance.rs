@@ -1,6 +1,7 @@
 // Performance API implementation for JavaScript using mozjs
+use crate::js::helpers::create_empty_array;
 use crate::js::JsRuntime;
-use mozjs::jsapi::{CallArgs, JSContext, JSNative, JSObject, JS_DefineFunction, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE, JSPROP_READONLY, HandleValueArray};
+use mozjs::jsapi::{CallArgs, JSContext, JSNative, JSObject, JS_DefineFunction, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE, JSPROP_READONLY};
 use mozjs::jsval::{JSVal, UndefinedValue, DoubleValue, ObjectValue};
 use mozjs::rooted;
 use std::cell::RefCell;
@@ -192,7 +193,7 @@ pub fn setup_performance(runtime: &mut JsRuntime) -> Result<(), String> {
         *pm.borrow_mut() = Some(perf_manager);
     });
 
-    runtime.do_with_jsapi(|_rt, cx, global| unsafe {
+    runtime.do_with_jsapi(|cx, global| unsafe {
         // Create performance object
         rooted!(in(cx) let performance = JS_NewPlainObject(cx));
         if performance.get().is_null() {
@@ -426,7 +427,7 @@ unsafe extern "C" fn performance_get_entries_by_type(raw_cx: *mut JSContext, arg
 
     if argc < 1 {
         // Return empty array
-        rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &HandleValueArray::empty()));
+        rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
         args.rval().set(ObjectValue(array.get()));
         return true;
     }
@@ -434,7 +435,7 @@ unsafe extern "C" fn performance_get_entries_by_type(raw_cx: *mut JSContext, arg
     let entry_type = match js_value_to_string_perf(raw_cx, *args.get(0)) {
         Some(s) => s,
         None => {
-            rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &HandleValueArray::empty()));
+            rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
             args.rval().set(ObjectValue(array.get()));
             return true;
         }
@@ -449,7 +450,7 @@ unsafe extern "C" fn performance_get_entries_by_type(raw_cx: *mut JSContext, arg
     });
 
     // Create an array to return
-    rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &HandleValueArray::empty()));
+    rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
     if array.get().is_null() {
         args.rval().set(UndefinedValue());
         return true;
@@ -467,7 +468,7 @@ unsafe extern "C" fn performance_get_entries_by_name(raw_cx: *mut JSContext, arg
     let args = CallArgs::from_vp(vp, argc);
 
     if argc < 1 {
-        rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &HandleValueArray::empty()));
+        rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
         args.rval().set(ObjectValue(array.get()));
         return true;
     }
@@ -475,7 +476,7 @@ unsafe extern "C" fn performance_get_entries_by_name(raw_cx: *mut JSContext, arg
     let name = match js_value_to_string_perf(raw_cx, *args.get(0)) {
         Some(s) => s,
         None => {
-            rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &HandleValueArray::empty()));
+            rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
             args.rval().set(ObjectValue(array.get()));
             return true;
         }
@@ -490,7 +491,7 @@ unsafe extern "C" fn performance_get_entries_by_name(raw_cx: *mut JSContext, arg
     });
 
     // Create an array to return
-    rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &HandleValueArray::empty()));
+    rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
     if array.get().is_null() {
         args.rval().set(UndefinedValue());
         return true;
@@ -508,7 +509,7 @@ unsafe extern "C" fn performance_get_entries(raw_cx: *mut JSContext, argc: c_uin
     let args = CallArgs::from_vp(vp, argc);
 
     // Create an array to return (returns empty array for now)
-    rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &HandleValueArray::empty()));
+    rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
     if array.get().is_null() {
         args.rval().set(UndefinedValue());
         return true;

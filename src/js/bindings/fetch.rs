@@ -58,7 +58,7 @@ pub fn setup_fetch(runtime: &mut JsRuntime, user_agent: String) -> Result<(), St
         *ua.borrow_mut() = user_agent;
     });
 
-    runtime.do_with_jsapi(|_rt, cx, global| unsafe {
+    runtime.do_with_jsapi(|cx, global| unsafe {
         // Define global fetch function
         let fetch_name = CString::new("fetch").unwrap();
         if JS_DefineFunction(
@@ -187,8 +187,6 @@ unsafe extern "C" fn js_fetch(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) 
         }
     }
 
-    // Run any promise jobs that were queued (like .then() callbacks)
-    crate::js::jsapi::promise::run_promise_jobs(cx);
 
     // Return the promise
     args.rval().set(ObjectValue(promise_ptr));

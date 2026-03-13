@@ -29,7 +29,7 @@ use url::Url;
 
 /// Register the `CSS` namespace object on the JS global.
 pub fn setup_css(runtime: &mut JsRuntime) -> Result<(), String> {
-    runtime.do_with_jsapi(|_rt, cx, global| unsafe {
+    runtime.do_with_jsapi(|cx, global| unsafe {
         rooted!(in(cx) let css_obj = JS_NewPlainObject(cx));
         if css_obj.get().is_null() {
             return Err("Failed to create CSS object".to_string());

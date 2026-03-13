@@ -26,7 +26,7 @@ pub mod xhr;
 /// Initialize JavaScript bindings for the browser
 pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, user_agent: String, timer_manager: Rc<TimerManager>) -> JsResult<()> {
     let job_queue = unsafe { CreateJobQueue(&JOB_QUEUE_TRAPS, ptr::null_mut(), ptr::null_mut()) };
-    runtime.do_with_jsapi(|rt, cx, global| unsafe {
+    runtime.do_with_jsapi(|cx, global| unsafe {
         SetJobQueue(cx, job_queue);
         init_rejection_tracker(cx);
     });

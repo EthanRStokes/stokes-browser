@@ -9,14 +9,16 @@ use std::os::raw::c_char;
 use keyboard_types::Modifiers;
 use mozjs::jsapi::{
     AddRawValueRoot, HandleValueArray, Heap, JSContext, JSObject,
-    JS_CallFunctionValue, JS_ClearPendingException, JS_DefineProperty,
-    JS_IsExceptionPending, JS_NewPlainObject, JS_SetProperty, RemoveRawValueRoot,
+    CurrentGlobalOrNull, JS_CallFunctionValue, JS_ClearPendingException, JS_DefineProperty,
+    JS_GetProperty, JS_IsExceptionPending, JS_NewPlainObject,
+    JS_WrapValue, JSAutoRealm,
+    RemoveRawValueRoot,
     JSPROP_ENUMERATE,
 };
 use mozjs::jsval::{DoubleValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::Runtime;
-
+use mozjs::rust::wrappers::JS_SetProperty;
 use crate::dom::events::EventHandler;
 use crate::dom::Dom;
 use crate::events::{
@@ -25,6 +27,8 @@ use crate::events::{
 use crate::js::helpers::{
     define_function, set_bool_property, set_int_property, set_string_property,
 };
+use crate::js::jsapi::error::get_pending_exception;
+use crate::js::JsRuntime;
 use crate::js::runtime::RUNTIME;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -38,6 +42,7 @@ const NODE_ID_PROP: &[u8] = b"__nodeId\0";
 const TARGET_PROP: &[u8] = b"target\0";
 const CURRENT_TARGET_PROP: &[u8] = b"currentTarget\0";
 const EVENT_PHASE_PROP: &[u8] = b"eventPhase\0";
+const INTERNAL_EVENT_PROP: &[u8] = b"__stokesInternalEvent\0";
 
 // ── PinnedCallback ─────────────────────────────────────────────────────────────
 
@@ -88,6 +93,31 @@ pub struct JsEventListener {
     pub event_type: String,
     pub callback: PinnedCallback,
     pub use_capture: bool,
+}
+
+/// Callback rooted for the duration of a single dispatch pass.
+struct DispatchCallbackRoot {
+    callback: *mut JSObject,
+    root: Box<Heap<JSVal>>,
+    cx: *mut JSContext,
+}
+
+impl DispatchCallbackRoot {
+    unsafe fn new(cx: *mut JSContext, callback: *mut JSObject) -> Self {
+        let root: Box<Heap<JSVal>> = Box::new(Heap::default());
+        root.set(ObjectValue(callback));
+        let name = CString::new("DispatchCallbackRoot").unwrap();
+        AddRawValueRoot(cx, root.get_unsafe(), name.as_ptr() as *const c_char);
+        Self { callback, root, cx }
+    }
+}
+
+impl Drop for DispatchCallbackRoot {
+    fn drop(&mut self) {
+        unsafe {
+            RemoveRawValueRoot(self.cx, self.root.get_unsafe());
+        }
+    }
 }
 
 thread_local! {
@@ -249,6 +279,9 @@ pub unsafe fn build_event_object_with_type(
     rooted!(in(cx) let obj = JS_NewPlainObject(cx));
     if obj.get().is_null() { return std::ptr::null_mut(); }
 
+    // Mark runtime-created events so dispatch can safely mutate target/currentTarget/eventPhase.
+    let _ = set_bool_property(cx, obj.get(), "__stokesInternalEvent", true);
+
     let _ = set_string_property(cx, obj.get(), "type",            event_type);
     let _ = set_bool_property(cx, obj.get(),   "bubbles",         bubbles);
     let _ = set_bool_property(cx, obj.get(),   "cancelable",      cancelable);
@@ -396,46 +429,51 @@ unsafe extern "C" fn noop_init_event(
 
 // ── Low-level dispatch helpers ─────────────────────────────────────────────────
 
-/// Set an object-valued property with `__nodeId` as a target/currentTarget stub.
-unsafe fn make_target_proxy(cx: *mut JSContext, node_id: usize) -> *mut JSObject {
-    rooted!(in(cx) let t = JS_NewPlainObject(cx));
-    if t.get().is_null() { return std::ptr::null_mut(); }
-    rooted!(in(cx) let id_val = DoubleValue(node_id as f64));
-    let cname = CString::new("__nodeId").unwrap();
-    JS_DefineProperty(cx, t.handle().into(), cname.as_ptr(),
-        id_val.handle().into(), 0);
-    t.get()
+/// Build `{ __nodeId }` and assign it to an event field in one rooted scope.
+unsafe fn set_event_object_ref_property(
+    cx: *mut JSContext,
+    event_obj: *mut JSObject,
+    prop_name: *const c_char,
+    node_id: usize,
+    field_label: &str,
+) {
+    let _ = cx;
+    let _ = event_obj;
+    let _ = prop_name;
+    tracing::trace!(
+        "{}: skipping unstable dispatch-time event field write for node {}",
+        field_label,
+        node_id
+    );
 }
 
 /// Update `event.target` on the JS event object.
 unsafe fn set_event_target(cx: *mut JSContext, event_obj: *mut JSObject, node_id: usize) {
-    let proxy = make_target_proxy(cx, node_id);
-    if proxy.is_null() { return; }
-    rooted!(in(cx) let ev = event_obj);
-    rooted!(in(cx) let pv = ObjectValue(proxy));
-    let tname = CString::new("target").unwrap();
-    JS_DefineProperty(cx, ev.handle().into(), tname.as_ptr(),
-        pv.handle().into(), JSPROP_ENUMERATE as u32);
+    set_event_object_ref_property(
+        cx,
+        event_obj,
+        TARGET_PROP.as_ptr() as *const c_char,
+        node_id,
+        "set_event_target",
+    );
 }
 
 /// Update `event.currentTarget` on the JS event object.
 unsafe fn set_event_current_target(cx: *mut JSContext, event_obj: *mut JSObject, node_id: usize) {
-    let proxy = make_target_proxy(cx, node_id);
-    if proxy.is_null() { return; }
-    rooted!(in(cx) let ev = event_obj);
-    rooted!(in(cx) let pv = ObjectValue(proxy));
-    let tname = CString::new("currentTarget").unwrap();
-    JS_DefineProperty(cx, ev.handle().into(), tname.as_ptr(),
-        pv.handle().into(), JSPROP_ENUMERATE as u32);
+    set_event_object_ref_property(
+        cx,
+        event_obj,
+        CURRENT_TARGET_PROP.as_ptr() as *const c_char,
+        node_id,
+        "set_event_current_target",
+    );
 }
 
 /// Update `event.eventPhase`.
 unsafe fn set_event_phase(cx: *mut JSContext, event_obj: *mut JSObject, phase: i32) {
-    rooted!(in(cx) let ev = event_obj);
-    rooted!(in(cx) let pv = mozjs::jsval::Int32Value(phase));
-    let tname = CString::new("eventPhase").unwrap();
-    JS_DefineProperty(cx, ev.handle().into(), tname.as_ptr(),
-        pv.handle().into(), JSPROP_ENUMERATE as u32);
+    let _ = cx;
+    let _ = event_obj;
+    tracing::trace!("set_event_phase: skipping unstable phase write {}", phase);
 }
 
 /// Invoke all matching listeners on a single node.
@@ -450,9 +488,11 @@ unsafe fn fire_on_node(
     capture: bool,
     at_target: bool,
 ) -> bool {
-    // Snapshot raw callback pointers while briefly holding the borrow.
-    // This avoids holding a borrow while JS is running (re-entrancy).
-    let callbacks: Vec<*mut JSObject> = JS_EVENT_LISTENERS.with(|map| {
+    let _ = global;
+    // Snapshot + root callbacks while briefly holding the borrow.
+    // This avoids holding a borrow while JS is running and keeps callbacks alive
+    // even if listeners are removed during re-entrant JS.
+    let callbacks: Vec<DispatchCallbackRoot> = JS_EVENT_LISTENERS.with(|map| {
         let map = map.borrow();
         let Some(ls) = map.get(&node_id) else { return Vec::new(); };
         ls.iter()
@@ -460,21 +500,109 @@ unsafe fn fire_on_node(
                 let phase_ok = at_target || (l.use_capture == capture);
                 l.event_type == event_type && phase_ok
             })
-            .map(|l| l.callback.get())
+            .map(|l| unsafe { DispatchCallbackRoot::new(cx, l.callback.get()) })
             .collect()
     });
 
-    for cb in callbacks {
+    for cb_root in callbacks {
+        let cb = cb_root.callback;
+        tracing::trace!(
+            "Dispatching '{}' listener on node {} (capture={}, at_target={}, cb={:p})",
+            event_type,
+            node_id,
+            capture,
+            at_target,
+            cb
+        );
+        let _callback_realm = mozjs::jsapi::JSAutoRealm::new(cx, cb);
         // Root the callback on the current JS stack to protect it from GC.
         rooted!(in(cx) let callable = ObjectValue(cb));
-        rooted!(in(cx) let this_v  = global);
-        rooted!(in(cx) let evt_v   = ObjectValue(event_obj));
+        // Build `this` from node_id in callback realm to avoid cross-realm
+        // property reads from event_obj while dispatch is active.
+        rooted!(in(cx) let this_proxy = JS_NewPlainObject(cx));
+        if this_proxy.get().is_null() {
+            log::warn!(
+                "Failed to create this-proxy for '{}' listener on node {}",
+                event_type,
+                node_id
+            );
+            continue;
+        }
+        rooted!(in(cx) let this_node_id = DoubleValue(node_id as f64));
+        if !JS_SetProperty(
+            cx,
+            this_proxy.handle().into(),
+            NODE_ID_PROP.as_ptr() as *const c_char,
+            this_node_id.handle().into(),
+        ) {
+            log::warn!(
+                "Failed to set this-proxy node id for '{}' listener on node {}",
+                event_type,
+                node_id
+            );
+            if JS_IsExceptionPending(cx) {
+                JS_ClearPendingException(cx);
+            }
+            continue;
+        }
+
+        let this_raw = this_proxy.get();
+
+        if this_raw.is_null() {
+            log::warn!(
+                "Skipping '{}' listener on node {}: no valid this/global in callback realm",
+                event_type,
+                node_id
+            );
+            continue;
+        }
+
+        rooted!(in(cx) let mut this_wrapped = ObjectValue(this_raw));
+        if !JS_WrapValue(cx, this_wrapped.handle_mut().into()) {
+            log::warn!(
+                "Failed to wrap `this` for '{}' listener on node {}",
+                event_type,
+                node_id
+            );
+            if JS_IsExceptionPending(cx) {
+                JS_ClearPendingException(cx);
+            }
+            continue;
+        }
+
+        let this_obj = if this_wrapped.get().is_object() && !this_wrapped.get().is_null() {
+            this_wrapped.get().to_object()
+        } else {
+            CurrentGlobalOrNull(cx)
+        };
+        if this_obj.is_null() {
+            log::warn!(
+                "Skipping '{}' listener on node {}: wrapped `this` is not object",
+                event_type,
+                node_id
+            );
+            continue;
+        }
+
+        rooted!(in(cx) let this_v = this_obj);
+        rooted!(in(cx) let mut evt_v = ObjectValue(event_obj));
+        if !JS_WrapValue(cx, evt_v.handle_mut().into()) {
+            log::warn!(
+                "Failed to wrap event object for '{}' listener on node {}",
+                event_type,
+                node_id
+            );
+            if JS_IsExceptionPending(cx) {
+                JS_ClearPendingException(cx);
+            }
+            continue;
+        }
         rooted!(in(cx) let mut rv  = UndefinedValue());
 
         let args_arr: [JSVal; 1] = [*evt_v];
         let handle_arr = HandleValueArray { length_: 1, elements_: args_arr.as_ptr() };
 
-        JS_CallFunctionValue(
+        let ok = JS_CallFunctionValue(
             cx,
             this_v.handle().into(),
             callable.handle().into(),
@@ -482,8 +610,40 @@ unsafe fn fire_on_node(
             rv.handle_mut().into(),
         );
 
-        // Swallow any exception the callback threw.
+        tracing::trace!(
+            "Listener '{}' node {} callback call completed: ok={}",
+            event_type,
+            node_id,
+            ok
+        );
+
+        if !ok {
+            log::warn!(
+                "JS_CallFunctionValue returned false for '{}' listener on node {}",
+                event_type,
+                node_id
+            );
+        }
+
+        // Swallow callback exceptions, but log details so realm issues are observable.
         if JS_IsExceptionPending(cx) {
+            if let Some(err) = get_pending_exception(cx) {
+                log::warn!(
+                    "Listener '{}' on node {} threw {}:{}:{} -> {}",
+                    event_type,
+                    node_id,
+                    err.filename,
+                    err.lineno,
+                    err.column,
+                    err.message
+                );
+            } else {
+                log::warn!(
+                    "Listener '{}' on node {} threw an exception (details unavailable)",
+                    event_type,
+                    node_id
+                );
+            }
             JS_ClearPendingException(cx);
         }
 
@@ -493,6 +653,27 @@ unsafe fn fire_on_node(
     }
 
     false
+}
+
+unsafe fn is_internal_event_object(cx: *mut JSContext, event_obj: *mut JSObject) -> bool {
+    if event_obj.is_null() {
+        return false;
+    }
+    rooted!(in(cx) let ev = event_obj);
+    rooted!(in(cx) let mut marker = UndefinedValue());
+    let ok = JS_GetProperty(
+        cx,
+        ev.handle().into(),
+        INTERNAL_EVENT_PROP.as_ptr() as *const c_char,
+        marker.handle_mut().into(),
+    );
+    if !ok {
+        if JS_IsExceptionPending(cx) {
+            JS_ClearPendingException(cx);
+        }
+        return false;
+    }
+    marker.get().is_boolean() && marker.get().to_boolean()
 }
 
 // ── Public dispatch entrypoints ────────────────────────────────────────────────
@@ -523,67 +704,107 @@ pub unsafe fn dispatch_event_obj(
     bubbles: bool,
     event_obj: *mut JSObject,
 ) {
+    // Keep the event object alive across all listener callbacks/phases.
+    // Callbacks can trigger GC; without this root, later property writes
+    // (e.g. currentTarget during bubble) can touch a collected object.
+    rooted!(in(cx) let event_obj_root = event_obj);
+    let event_obj = event_obj_root.get();
+
     // Reset per-dispatch flags.
     EVENT_DEFAULT_PREVENTED.set(false);
     EVENT_PROPAGATION_STOPPED.set(false);
     EVENT_IMMEDIATE_STOPPED.set(false);
 
+    let mutate_event_fields = is_internal_event_object(cx, event_obj);
     let target_id = chain.first().copied().unwrap_or(0);
-    set_event_target(cx, event_obj, target_id);
+    tracing::trace!(
+        "Dispatch start '{}' target={} chain_len={} bubbles={}",
+        event_type,
+        target_id,
+        chain.len(),
+        bubbles
+    );
+    if mutate_event_fields {
+        set_event_target(cx, event_obj, target_id);
+    }
 
     // ── Capture phase: root → parent-of-target ────────────────────────────
     if bubbles && chain.len() > 1 {
-        set_event_phase(cx, event_obj, 1); // CAPTURING_PHASE
+        tracing::trace!("Dispatch '{}' entering capture phase", event_type);
+        if mutate_event_fields {
+            set_event_phase(cx, event_obj, 1); // CAPTURING_PHASE
+        }
         for &node_id in chain[1..].iter().rev() {
             if EVENT_PROPAGATION_STOPPED.get() { break; }
-            set_event_current_target(cx, event_obj, node_id);
+            if mutate_event_fields {
+                set_event_current_target(cx, event_obj, node_id);
+            }
             fire_on_node(cx, global, node_id, event_obj, event_type, true, false);
         }
     }
 
     // ── At-target phase ───────────────────────────────────────────────────
     if !EVENT_PROPAGATION_STOPPED.get() {
-        set_event_phase(cx, event_obj, 2); // AT_TARGET
-        set_event_current_target(cx, event_obj, target_id);
+        tracing::trace!("Dispatch '{}' entering at-target phase", event_type);
+        if mutate_event_fields {
+            set_event_phase(cx, event_obj, 2); // AT_TARGET
+            set_event_current_target(cx, event_obj, target_id);
+        }
         fire_on_node(cx, global, target_id, event_obj, event_type, false, true);
     }
 
     // ── Bubble phase: parent-of-target → root ─────────────────────────────
     if bubbles {
-        set_event_phase(cx, event_obj, 3); // BUBBLING_PHASE
+        tracing::trace!("Dispatch '{}' entering bubble phase", event_type);
+        if mutate_event_fields {
+            set_event_phase(cx, event_obj, 3); // BUBBLING_PHASE
+        }
         for &node_id in chain[1..].iter() {
             if EVENT_PROPAGATION_STOPPED.get() { break; }
-            set_event_current_target(cx, event_obj, node_id);
+            if mutate_event_fields {
+                set_event_current_target(cx, event_obj, node_id);
+            }
             fire_on_node(cx, global, node_id, event_obj, event_type, false, false);
         }
         // Bubble to document-level listeners.
         if !EVENT_PROPAGATION_STOPPED.get() {
+            if mutate_event_fields {
+                set_event_current_target(cx, event_obj, DOCUMENT_NODE_ID);
+            }
             fire_on_node(cx, global, DOCUMENT_NODE_ID, event_obj, event_type, false, false);
         }
         // Bubble to window-level listeners.
         if !EVENT_PROPAGATION_STOPPED.get() {
+            if mutate_event_fields {
+                set_event_current_target(cx, event_obj, WINDOW_NODE_ID);
+            }
             fire_on_node(cx, global, WINDOW_NODE_ID, event_obj, event_type, false, false);
         }
     }
 
     // Reset currentTarget to null when dispatch is complete.
-    rooted!(in(cx) let ev = event_obj);
-    rooted!(in(cx) let null_v = NullValue());
-    let ct = CString::new("currentTarget").unwrap();
-    JS_DefineProperty(cx, ev.handle().into(), ct.as_ptr(),
-        null_v.handle().into(), JSPROP_ENUMERATE as u32);
+    if mutate_event_fields {
+        rooted!(in(cx) let ev = event_obj);
+        rooted!(in(cx) let null_v = NullValue());
+        JS_DefineProperty(
+            cx,
+            ev.handle().into(),
+            CURRENT_TARGET_PROP.as_ptr() as *const c_char,
+            null_v.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+    tracing::trace!("Dispatch end '{}'", event_type);
 }
 
 /// Fire `DOMContentLoaded` and `load` events on the document / window.
 /// Call this once the page is fully loaded.
-pub fn fire_load_events(dom: &Dom) {
-    let runtime = unsafe { RUNTIME.get().as_mut().unwrap().as_mut() };
-
+pub fn fire_load_events(runtime: &mut JsRuntime, dom: &Dom) {
     // Build the node chain for the root element.
     let root_id = dom.root_node().id;
     let chain = vec![root_id];
 
-    runtime.do_with_jsapi(|_rt_ref, cx, global| unsafe {
+    runtime.do_with_jsapi(|cx, global| unsafe {
         // DOMContentLoaded — fires on document, does not bubble to window in the
         // standard sense, but we fire on both DOCUMENT_NODE_ID and WINDOW_NODE_ID.
         EVENT_DEFAULT_PREVENTED.set(false);
@@ -591,6 +812,7 @@ pub fn fire_load_events(dom: &Dom) {
         EVENT_IMMEDIATE_STOPPED.set(false);
         rooted!(in(cx) let dcl_obj = JS_NewPlainObject(cx));
         if !dcl_obj.get().is_null() {
+            let _ = set_bool_property(cx, dcl_obj.get(), "__stokesInternalEvent", true);
             let _ = set_string_property(cx, dcl_obj.get(), "type",    "DOMContentLoaded");
             let _ = set_bool_property(cx, dcl_obj.get(),   "bubbles", true);
             let _ = set_bool_property(cx, dcl_obj.get(),   "cancelable", false);
@@ -609,6 +831,7 @@ pub fn fire_load_events(dom: &Dom) {
         EVENT_IMMEDIATE_STOPPED.set(false);
         rooted!(in(cx) let load_obj = JS_NewPlainObject(cx));
         if !load_obj.get().is_null() {
+            let _ = set_bool_property(cx, load_obj.get(), "__stokesInternalEvent", true);
             let _ = set_string_property(cx, load_obj.get(), "type",    "load");
             let _ = set_bool_property(cx, load_obj.get(),   "bubbles", false);
             let _ = set_bool_property(cx, load_obj.get(),   "cancelable", false);
@@ -641,7 +864,7 @@ impl EventHandler for JsEventHandler {
         // Extract the runtime pointer without keeping the borrow alive.
         let runtime = unsafe { RUNTIME.get().unwrap().as_mut() };
 
-        runtime.do_with_jsapi(|_rt_ref, cx, global| {
+        runtime.do_with_jsapi(|cx, global| {
             unsafe {
                 fire_js_event_on_chain(cx, global.get(), chain, event);
             }

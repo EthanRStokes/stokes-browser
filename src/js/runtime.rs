@@ -26,6 +26,7 @@ use std::ptr;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::Duration;
+use mozjs::realm::AutoRealm;
 use url::Url;
 use crate::js::bindings::initialize_bindings;
 
@@ -168,7 +169,8 @@ impl JsRuntime {
             }
 
             // Must enter the realm before compiling or executing scripts
-            let _realm = mozjs::jsapi::JSAutoRealm::new(raw_cx, global.get());
+            let mut realm = AutoRealm::new_from_handle(cx, global.handle());
+            let cx = &mut realm;
 
             rooted!(in(raw_cx) let mut rval = UndefinedValue());
             let rval = rval.handle_mut();
@@ -297,7 +299,7 @@ impl JsRuntime {
     pub fn run_pending_jobs(&mut self) {
         use crate::js::jsapi::promise::run_promise_jobs;
 
-        self.do_with_jsapi(|_rt, cx, _global| {
+        self.do_with_jsapi(|cx, _global| {
             let executed = run_promise_jobs(cx);
             if executed > 0 {
                 log::trace!("Executed {} promise jobs", executed);
@@ -343,20 +345,19 @@ impl JsRuntime {
 
     pub fn do_with_jsapi<C, R>(&mut self, consumer: C) -> R
     where
-        C: FnOnce(&mut Runtime, *mut ApiJSContext, HandleObject) -> R,
+        C: FnOnce(*mut ApiJSContext, HandleObject) -> R,
     {
         let rt = &mut self.runtime;
-        let cx = unsafe { rt.cx().raw_cx() };
-        let global = &self.global;
+        let cx = rt.cx();
+        let raw_cx = unsafe { cx.raw_cx() };
+        let global = self.global.get();
 
-        rooted!(in (cx) let global_root = global.get());
+        rooted!(in (raw_cx) let global_root = global);
 
-        let ret;
-        {
-            let _ac = JSAutoRealm::new(cx, global.get());
-            ret = consumer(rt, cx, global_root.handle().into());
-        }
-        ret
+        let mut ar = AutoRealm::new_from_handle(cx, global_root.handle());
+        let raw_cx = unsafe { ar.raw_cx() };
+
+        consumer(raw_cx, global_root.handle())
     }
 
     pub fn add_global_function<F>(&mut self, name: &'static str, func: F)
@@ -368,7 +369,7 @@ impl JsRuntime {
             global_ops.insert(name, Box::new(func));
         });
 
-        self.do_with_jsapi(|_rt, cx, global| {
+        self.do_with_jsapi(|cx, global| {
             define_native_function(
                 cx,
                 global,

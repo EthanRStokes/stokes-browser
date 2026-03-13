@@ -1,0 +1,11 @@
+[package]
+name = "script_bindings"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+phf = "0.11"
+
+[build-dependencies]
+weedle = "0.13"
+phf_codegen = "0.11"

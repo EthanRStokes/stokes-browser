@@ -2,8 +2,9 @@
 use mozjs::conversions::jsstr_to_string;
 use mozjs::gc::Handle;
 use mozjs::jsapi::{
-    CallArgs, HandleValueArray, JSContext, JSNative, JSObject, JS_DefineFunction,
-    JS_DefineProperty, JS_NewUCStringCopyN, NewArrayObject, JSPROP_ENUMERATE,
+    CallArgs, CurrentGlobalOrNull, HandleValueArray, JSAutoRealm, JSContext, JSNative,
+    JSObject, JS_DefineFunction, JS_DefineProperty, JS_NewUCStringCopyN, NewArrayObject,
+    JSPROP_ENUMERATE,
 };
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, StringValue, UndefinedValue};
 use mozjs::rooted;
@@ -192,12 +193,16 @@ pub unsafe fn define_property_accessor(
     getter_name: &str,
     setter_name: &str,
 ) -> Result<(), String> {
-    use mozjs::jsapi::{Compile1, CurrentGlobalOrNull, Handle, JS_ExecuteScript, MutableHandleValue};
+    use mozjs::jsapi::{Compile1, CurrentGlobalOrNull, Handle, JSAutoRealm, JS_ExecuteScript, MutableHandleValue};
     use mozjs::context::JSContext as SafeJSContext;
     use mozjs::rust::{transform_str_to_source_text, CompileOptionsWrapper};
 
     // We'll use a well-known temporary variable name
     let temp_var_name = "__definePropertyTarget__";
+
+    rooted!(in(raw_cx) let obj_root = obj);
+    // Ensure defineProperty work happens in the same realm as the target object.
+    let _realm = JSAutoRealm::new(raw_cx, obj_root.get());
 
     rooted!(in(raw_cx) let obj_val = mozjs::jsval::ObjectValue(obj));
 

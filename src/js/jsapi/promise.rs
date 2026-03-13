@@ -1,5 +1,5 @@
 use crate::js::jsapi::error::{get_pending_exception, JsError};
-use mozjs::jsapi::{AddRawValueRoot, HandleObject, HandleValue, HandleValueArray, Heap, JSContext, JSObject, JS_CallFunctionValue, PromiseRejectionHandlingState, RemoveRawValueRoot, ResolvePromise, SetPromiseRejectionTrackerCallback, StackFormat};
+use mozjs::jsapi::{AddRawValueRoot, HandleObject, HandleValue, HandleValueArray, Heap, JSContext, JSObject, JS_CallFunctionValue, JSAutoRealm, PromiseRejectionHandlingState, RemoveRawValueRoot, ResolvePromise, SetPromiseRejectionTrackerCallback, StackFormat};
 use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
 use mozjs::panic::wrap_panic;
 use mozjs::rust::Runtime;
@@ -62,11 +62,11 @@ pub(crate) unsafe extern "C" fn enqueue_promise_job(
     _promise: mozjs::jsapi::HandleObject,
     job: mozjs::jsapi::HandleObject,
     _allocation_site: mozjs::jsapi::HandleObject,
-    _incumbent_global: mozjs::jsapi::HandleObject,
+    incumbent_global: mozjs::jsapi::HandleObject,
 ) -> bool {
     let mut result = false;
     wrap_panic(&mut || unsafe {
-        let cb = PromiseJobCallback::new(cx, job.get());
+        let cb = PromiseJobCallback::new(cx, job.get(), incumbent_global.get());
 
         // Add the job to our promise job queue
         PROMISE_JOB_QUEUE.with(|queue| {
@@ -94,7 +94,7 @@ pub fn run_promise_jobs(cx: *mut JSContext) -> usize {
         match job {
             Some(cb) => {
                 unsafe {
-                    let call_res = cb.call(cx, HandleObject::null());
+                    let call_res = cb.call(cx);
                     if call_res.is_err() {
                         if let Some(err) = get_pending_exception(cx) {
                             log::error!(
@@ -120,28 +120,43 @@ pub fn has_pending_promise_jobs() -> bool {
 
 struct PromiseJobCallback {
     pub parent: CallbackFunction,
+    pub incumbent_global: PersistentRooted,
 }
 
 impl PromiseJobCallback {
-    pub unsafe fn new(cx: *mut JSContext, a_callback: *mut JSObject) -> Rc<PromiseJobCallback> {
+    pub unsafe fn new(
+        cx: *mut JSContext,
+        a_callback: *mut JSObject,
+        incumbent_global: *mut JSObject,
+    ) -> Rc<PromiseJobCallback> {
         let mut ret = Rc::new(PromiseJobCallback {
             parent: CallbackFunction::new(),
+            incumbent_global: PersistentRooted::new(),
         });
         // Note: callback cannot be moved after calling init.
         match Rc::get_mut(&mut ret) {
-            Some(ref mut callback) => callback.parent.init(cx, a_callback),
+            Some(ref mut callback) => {
+                callback.parent.init(cx, a_callback);
+                callback.incumbent_global.init(cx, incumbent_global);
+            }
             None => unreachable!(),
         };
         ret
     }
 
-    unsafe fn call(&self, cx: *mut JSContext, a_this_obj: HandleObject) -> Result<(), ()> {
+    unsafe fn call(&self, cx: *mut JSContext) -> Result<(), ()> {
+        let incumbent_global = self.incumbent_global.get();
+        if incumbent_global.is_null() {
+            return Err(());
+        }
+
+        let _realm = JSAutoRealm::new(cx, incumbent_global);
         rooted!(in(cx) let mut rval = UndefinedValue());
         rooted!(in(cx) let callable = ObjectValue(self.parent.callback_holder().get()));
-        //rooted!(in(cx) let rooted_this = a_this_obj.get());
+        rooted!(in(cx) let this_obj = incumbent_global);
         let ok = JS_CallFunctionValue(
             cx,
-            a_this_obj,
+            this_obj.handle().into(),
             callable.handle().into(),
             &HandleValueArray::empty(),
             rval.handle_mut().into(),

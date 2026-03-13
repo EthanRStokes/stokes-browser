@@ -62,7 +62,7 @@ pub fn setup_dom_bindings(
         set_document_url(url);
     }
 
-    runtime.do_with_jsapi(|_rt, cx, global| unsafe {
+    runtime.do_with_jsapi(|cx, global| unsafe {
         let global_ptr = global.get();
 
         // Create and set up document object

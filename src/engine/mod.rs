@@ -21,7 +21,6 @@ use markup5ever::local_name;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{channel, Receiver};
@@ -32,12 +31,12 @@ use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
 use crate::engine::nav_provider::StokesNavigationProvider;
 
 thread_local! {
-    pub(crate) static ENGINE_REF: RefCell<Option<*mut Engine<'static>>> = RefCell::new(None);
+    pub(crate) static ENGINE_REF: RefCell<Option<*mut Engine>> = RefCell::new(None);
     pub(crate) static USER_AGENT_REF: RefCell<Option<String>> = RefCell::new(None);
 }
 
 /// The core browser engine that coordinates all browser activities
-pub struct Engine<'a> {
+pub struct Engine {
     pub config: EngineConfig,
     new_http_client: Option<HttpClient>,
     current_url: String,
@@ -50,7 +49,7 @@ pub struct Engine<'a> {
     content_width: f32,
     pub(crate) viewport: Viewport,
     // JavaScript runtime
-    js_runtime: Option<&'a mut JsRuntime>,
+    js_runtime: Option<Box<JsRuntime>>,
     // Navigation history
     history: Vec<String>,
     history_index: Option<usize>,
@@ -60,7 +59,7 @@ pub struct Engine<'a> {
     pub js_provider: Arc<StokesJsProvider>,
 }
 
-impl Engine<'_> {
+impl Engine {
     pub fn new(config: EngineConfig, viewport: Viewport, shell_provider: Arc<StokesShellProvider>, navigation_provider: Arc<StokesNavigationProvider>) -> Self {
         let (js_tx, js_rx) = channel();
         let js_provider = Arc::new(StokesJsProvider::new(js_tx));
@@ -131,8 +130,8 @@ impl Engine<'_> {
             // Store the DOM
             self.dom = Some(dom);
             if invalidate_js {
-                let js = self.js_runtime.take();
-                drop(js);
+                // Clear the thread-local pointer before dropping the runtime.
+                RUNTIME.set(None);
                 self.js_runtime = None;
             }
 
@@ -149,8 +148,8 @@ impl Engine<'_> {
                 style::thread_state::exit(ThreadState::SCRIPT);
 
                 // Fire DOMContentLoaded then load after all inline scripts have run.
-                if let Some(dom) = self.dom.as_ref() {
-                    crate::js::bindings::event_listeners::fire_load_events(dom);
+                if let (Some(runtime), Some(dom)) = (self.js_runtime.as_mut(), self.dom.as_ref()) {
+                    crate::js::bindings::event_listeners::fire_load_events(runtime.as_mut(), dom);
                 }
             }
 
@@ -394,19 +393,19 @@ impl Engine<'_> {
 
     /// Initialize JavaScript runtime for the current document
     pub fn initialize_js_runtime(&mut self) {
+        // Ensure stale pointers are never visible if runtime creation fails.
+        RUNTIME.set(None);
+
         let user_agent = self.config.user_agent.clone();
         let dom = self.dom_mut();
         let dom = dom as *mut Dom;
         match JsRuntime::new(dom, user_agent) {
-            Ok(mut runtime) => {
+            Ok(runtime) => {
                 println!("JavaScript runtime initialized successfully");
-                // Now that the JsRuntime is at its final stable address inside
-                // self.js_runtime, update the thread-local so that code paths
-                // that access RUNTIME (e.g. fire_load_events) get a valid pointer.
-                let mut nn = NonNull::from_mut(&mut runtime);
-                RUNTIME.set(Some(nn));
-
-                self.js_runtime = unsafe { Option::from(nn.as_mut()) };
+                let mut runtime = Box::new(runtime);
+                // Store a stable pointer that remains valid for the Box lifetime.
+                RUNTIME.set(Some(std::ptr::NonNull::from(runtime.as_mut())));
+                self.js_runtime = Some(runtime);
             }
             Err(e) => {
                 eprintln!("Failed to initialize JavaScript runtime: {}", e);
@@ -818,3 +817,10 @@ impl Engine<'_> {
         }
     }
 }
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        RUNTIME.set(None);
+    }
+}
+

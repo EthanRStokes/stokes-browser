@@ -7,7 +7,8 @@ use crate::js::selectors::matches_selector;
 use html5ever::local_name;
 use markup5ever::QualName;
 use mozjs::jsapi::{
-    CallArgs, CurrentGlobalOrNull, JSContext, JSObject, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE,
+    CallArgs, CurrentGlobalOrNull, JSAutoRealm, JSContext, JSObject, JS_DefineProperty,
+    JS_NewPlainObject, JSPROP_ENUMERATE,
 };
 use mozjs::jsval::{BooleanValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::rooted;
@@ -34,6 +35,12 @@ unsafe fn create_js_element_impl(
     attributes: &AttributeMap,
     with_parent: bool,
 ) -> Result<JSVal, String> {
+    rooted!(in(raw_cx) let realm_global = CurrentGlobalOrNull(raw_cx));
+    if realm_global.get().is_null() {
+        return Err("No current global for element creation".to_string());
+    }
+    let _realm = JSAutoRealm::new(raw_cx, realm_global.get());
+
     rooted!(in(raw_cx) let element = JS_NewPlainObject(raw_cx));
     if element.get().is_null() {
         return Err("Failed to create element object".to_string());

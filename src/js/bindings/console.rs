@@ -10,7 +10,7 @@ use std::ptr::NonNull;
 
 /// Set up the console object in the JavaScript context
 pub fn setup_console(runtime: &mut JsRuntime) -> Result<(), String> {
-    runtime.do_with_jsapi(|_rt, cx, global| unsafe {
+    runtime.do_with_jsapi(|cx, global| unsafe {
         // Create console object
         rooted!(in(cx) let console = JS_NewPlainObject(cx));
         if console.get().is_null() {

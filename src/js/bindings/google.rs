@@ -81,7 +81,7 @@ pub fn setup_google_polyfill(runtime: &mut JsRuntime) -> Result<(), String> {
     // Snapshot the navigation start time once per page load.
     NAV_START_MS.with(|ns| *ns.borrow_mut() = epoch_ms());
 
-    runtime.do_with_jsapi(|_rt, cx, global| unsafe {
+    runtime.do_with_jsapi(|cx, global| unsafe {
         setup_google(cx, global.get())
     })
 }
@@ -414,6 +414,8 @@ unsafe extern "C" fn google_rll(raw_cx: *mut JSContext, argc: c_uint, vp: *mut J
     let _ = eager;
 
     if callback_val.is_object() {
+        let cb_obj = callback_val.to_object();
+        let _callback_realm = mozjs::jsapi::JSAutoRealm::new(raw_cx, cb_obj);
         rooted!(in(raw_cx) let mut rval = UndefinedValue());
         rooted!(in(raw_cx) let cb = callback_val);
         rooted!(in(raw_cx) let this = CurrentGlobalOrNull(raw_cx));
@@ -679,6 +681,8 @@ unsafe extern "C" fn google_c_q(raw_cx: *mut JSContext, argc: c_uint, vp: *mut J
     if argc >= 2 {
         let callback_val = *args.get(1);
         if callback_val.is_object() {
+            let cb_obj = callback_val.to_object();
+            let _callback_realm = mozjs::jsapi::JSAutoRealm::new(raw_cx, cb_obj);
             rooted!(in(raw_cx) let mut rval = UndefinedValue());
             rooted!(in(raw_cx) let cb = callback_val);
             rooted!(in(raw_cx) let this = CurrentGlobalOrNull(raw_cx));
