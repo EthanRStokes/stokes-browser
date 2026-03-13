@@ -16,7 +16,7 @@ curl = "0.4"
 html5ever = "0.38.0"
 usvg = "0.46.0"
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
-mozjs = "0.15.6"
+mozjs = { version = "0.15.6", features = ["debugmozjs"] }
 base64 = "0.22"
 stacker = "0.1"
 serde_json = "1.0.149"

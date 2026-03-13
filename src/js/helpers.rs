@@ -9,10 +9,13 @@ use mozjs::jsval::{BooleanValue, Int32Value, JSVal, StringValue, UndefinedValue}
 use mozjs::rooted;
 use mozjs::rust::wrappers::JS_ValueToSource;
 use std::ptr::NonNull;
+use mozjs::rust::ValueArray;
 
 /// Create an empty JavaScript array
 pub unsafe fn create_empty_array(raw_cx: *mut JSContext) -> *mut JSObject {
-    NewArrayObject(raw_cx, &HandleValueArray::empty())
+    rooted!(in(raw_cx) let array = ValueArray::<0usize>::new([]));
+
+    NewArrayObject(raw_cx, &HandleValueArray::from(&array))
 }
 
 /// Define a function on a JavaScript object
