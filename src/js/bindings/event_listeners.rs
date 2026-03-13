@@ -10,7 +10,7 @@ use keyboard_types::Modifiers;
 use mozjs::jsapi::{
     AddRawValueRoot, HandleValueArray, Heap, JSContext, JSObject,
     JS_CallFunctionValue, JS_ClearPendingException, JS_DefineProperty,
-    JS_IsExceptionPending, JS_NewPlainObject, RemoveRawValueRoot,
+    JS_IsExceptionPending, JS_NewPlainObject, JS_SetProperty, RemoveRawValueRoot,
     JSPROP_ENUMERATE,
 };
 use mozjs::jsval::{DoubleValue, JSVal, NullValue, ObjectValue, UndefinedValue};
@@ -33,6 +33,11 @@ use crate::js::runtime::RUNTIME;
 pub const WINDOW_NODE_ID: usize = usize::MAX;
 /// Sentinel node ID used to store `document.addEventListener` listeners.
 pub const DOCUMENT_NODE_ID: usize = usize::MAX - 1;
+
+const NODE_ID_PROP: &[u8] = b"__nodeId\0";
+const TARGET_PROP: &[u8] = b"target\0";
+const CURRENT_TARGET_PROP: &[u8] = b"currentTarget\0";
+const EVENT_PHASE_PROP: &[u8] = b"eventPhase\0";
 
 // ── PinnedCallback ─────────────────────────────────────────────────────────────
 
@@ -572,15 +577,13 @@ pub unsafe fn dispatch_event_obj(
 /// Fire `DOMContentLoaded` and `load` events on the document / window.
 /// Call this once the page is fully loaded.
 pub fn fire_load_events(dom: &Dom) {
-    let rt_ptr = RUNTIME.with(|cell| *cell.borrow());
-    let Some(rt_ptr) = rt_ptr else { return; };
-    let rt = unsafe { &mut *rt_ptr };
+    let runtime = RUNTIME.with(|cell| unsafe { cell.get().as_mut().unwrap().as_mut() });
 
     // Build the node chain for the root element.
     let root_id = dom.root_node().id;
     let chain = vec![root_id];
 
-    rt.do_with_jsapi(|_rt_ref, cx, global| unsafe {
+    runtime.do_with_jsapi(|_rt_ref, cx, global| unsafe {
         // DOMContentLoaded — fires on document, does not bubble to window in the
         // standard sense, but we fire on both DOCUMENT_NODE_ID and WINDOW_NODE_ID.
         EVENT_DEFAULT_PREVENTED.with(|f| f.set(false));
@@ -636,11 +639,9 @@ impl EventHandler for JsEventHandler {
         event_state: &mut EventState,
     ) {
         // Extract the runtime pointer without keeping the borrow alive.
-        let rt_ptr = RUNTIME.with(|cell| *cell.borrow());
-        let Some(rt_ptr) = rt_ptr else { return; };
-        let rt = unsafe { &mut *rt_ptr };
+        let runtime = unsafe { RUNTIME.get().unwrap().as_mut() };
 
-        rt.do_with_jsapi(|_rt_ref, cx, global| {
+        runtime.do_with_jsapi(|_rt_ref, cx, global| {
             unsafe {
                 fire_js_event_on_chain(cx, global.get(), chain, event);
             }

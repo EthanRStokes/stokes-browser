@@ -19,7 +19,7 @@ use mozjs::panic::{maybe_resume_unwind};
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{JS_GetScriptPrivate, JS_NewGlobalObject, JS_ValueToSource};
 use mozjs::rust::{transform_str_to_source_text, CompileOptionsWrapper, JSEngine, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::os::raw::c_void;
 use std::ptr;
@@ -40,7 +40,7 @@ thread_local! {
 pub type GlobalOp = dyn Fn(*mut ApiJSContext, CallArgs) -> bool + Send + 'static;
 
 thread_local! {
-    pub(crate) static RUNTIME: RefCell<Option<*mut JsRuntime>> = RefCell::new(None);
+    pub(crate) static RUNTIME: Cell<Option<NonNull<JsRuntime>>> = Cell::new(None);
     static GLOBAL_OPS: RefCell<HashMap<&'static str, Box<GlobalOp>>> = RefCell::new(HashMap::new());
 }
 
@@ -69,6 +69,12 @@ pub struct JsRuntime {
     global: Box<Heap<*mut JSObject>>,
     event_loop: EventLoop,
     runtime: Runtime,
+}
+
+impl JsRuntime {
+    pub fn get() -> Option<NonNull<JsRuntime>> {
+        RUNTIME.get()
+    }
 }
 
 impl JsRuntime {
@@ -381,9 +387,8 @@ impl JsRuntime {
 
         let async_job = || {
             RUNTIME.with(|engine| unsafe {
-                let mut engine = engine.borrow_mut();
-                let engine = engine.as_mut().unwrap();;
-                job(&mut &**engine)
+                let engine = engine.get().as_mut().unwrap().as_mut();
+                job(engine)
             });
         };
 
@@ -392,16 +397,15 @@ impl JsRuntime {
 
     pub fn do_in_es_event_queue_sync<R: Send + 'static, J>(&self, job: J) -> R
     where
-        J: FnOnce(&JsRuntime) -> R + Send + 'static,
+        J: FnOnce(&mut JsRuntime) -> R + Send + 'static,
     {
         trace!("do_in_spidermonkey_runtime_thread_sync");
         // this is executed in the single thread in the Threadpool, therefore Runtime and global are stored in a thread_local
 
         let job = || {
-            RUNTIME.with(|engine| unsafe {
-                let mut engine = engine.borrow_mut();
-                let engine = engine.as_mut().unwrap();
-                job(&mut &**engine)
+            RUNTIME.with(|mut engine| unsafe {
+                let engine = engine.get().as_mut().unwrap().as_mut();
+                job(engine)
             })
         };
 

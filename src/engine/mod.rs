@@ -21,6 +21,7 @@ use markup5ever::local_name;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{channel, Receiver};
@@ -404,7 +405,8 @@ impl Engine {
                 // self.js_runtime, update the thread-local so that code paths
                 // that access RUNTIME (e.g. fire_load_events) get a valid pointer.
                 if let Some(rt) = self.js_runtime.as_mut() {
-                    RUNTIME.with(|cell| *cell.borrow_mut() = Some(rt as *mut JsRuntime));
+                    let nn = NonNull::new(rt);
+                    RUNTIME.with(|cell| cell.set(nn));
                 }
             }
             Err(e) => {

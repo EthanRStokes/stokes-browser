@@ -277,9 +277,9 @@ impl JsPromiseHandle {
         let ptr_clone = promise_ptr.clone();
 
         let result: Result<usize, JsError> = runtime.do_in_es_event_queue_sync(move |_rt| {
-            RUNTIME.with(|rc| unsafe {
-                let sm_rt = &mut *rc.borrow_mut().unwrap();
-                sm_rt.do_with_jsapi(|_rt, cx, _global| {
+            RUNTIME.with(|rt| unsafe {
+                let rt = rt.get().as_mut().unwrap().as_mut();
+                rt.do_with_jsapi(|_rt, cx, _global| {
                     let promise = JsPromise::new(cx)?;
                     let ptr = promise.get() as usize;
                     *ptr_clone.lock().unwrap() = Some(ptr);
@@ -333,15 +333,12 @@ impl JsPromiseHandle {
             }),
         };
 
-        runtime.do_in_es_event_queue_sync(move |_rt| {
-            RUNTIME.with(|rc| unsafe {
-                let sm_rt = &mut *rc.borrow_mut().unwrap();
-                sm_rt.do_with_jsapi(|_rt, cx, _global| {
-                    let promise = JsPromise::from_object(cx, ptr as *mut JSObject)?;
-                    let result = promise.resolve_undefined(cx);
-                    std::mem::forget(promise); // Don't drop - still managed externally
-                    result
-                })
+        runtime.do_in_es_event_queue_sync(move |rt| {
+            rt.do_with_jsapi(|_rt, cx, _global| unsafe {
+                let promise = JsPromise::from_object(cx, ptr as *mut JSObject)?;
+                let result = promise.resolve_undefined(cx);
+                std::mem::forget(promise); // Don't drop - still managed externally
+                result
             })
         })
     }
@@ -361,7 +358,7 @@ impl JsPromiseHandle {
 
         runtime.do_in_es_event_queue_sync(move |_rt| {
             RUNTIME.with(|rc| unsafe {
-                let sm_rt = &mut *rc.borrow_mut().unwrap();
+                let sm_rt = rc.get().as_mut().unwrap().as_mut();
                 sm_rt.do_with_jsapi(|_rt, cx, _global| {
                     let promise = JsPromise::from_object(cx, ptr as *mut JSObject)?;
                     let result = promise.resolve_string(cx, &value);
@@ -387,7 +384,7 @@ impl JsPromiseHandle {
 
         runtime.do_in_es_event_queue_sync(move |_rt| {
             RUNTIME.with(|rc| unsafe {
-                let sm_rt = &mut *rc.borrow_mut().unwrap();
+                let sm_rt = rc.get().as_mut().unwrap().as_mut();
                 sm_rt.do_with_jsapi(|_rt, cx, _global| {
                     let promise = JsPromise::from_object(cx, ptr as *mut JSObject)?;
                     let result = promise.reject_string(cx, &message);
@@ -413,7 +410,7 @@ impl JsPromiseHandle {
 
         runtime.do_in_es_event_queue_sync(move |_rt| {
             RUNTIME.with(|rc| unsafe {
-                let sm_rt = &mut *rc.borrow_mut().unwrap();
+                let sm_rt = rc.get().as_mut().unwrap().as_mut();
                 sm_rt.do_with_jsapi(|_rt, cx, _global| {
                     let promise = JsPromise::from_object(cx, ptr as *mut JSObject)?;
                     let state = promise.state(cx);
@@ -512,7 +509,7 @@ impl JsRuntimePromiseExt for JsRuntime {
         let value = value.to_string();
         self.do_in_es_event_queue_sync(move |_rt| {
             RUNTIME.with(|rc| unsafe {
-                let sm_rt = &mut *rc.borrow_mut().unwrap();
+                let sm_rt = rc.get().as_mut().unwrap().as_mut();
                 sm_rt.do_with_jsapi(|_rt, cx, _global| {
                     let promise = JsPromiseBuilder::resolved_string(cx, &value)?;
                     let ptr = promise.get() as usize;
@@ -527,7 +524,7 @@ impl JsRuntimePromiseExt for JsRuntime {
         let message = message.to_string();
         self.do_in_es_event_queue_sync(move |_rt| {
             RUNTIME.with(|rc| unsafe {
-                let sm_rt = &mut *rc.borrow_mut().unwrap();
+                let sm_rt = rc.get().as_mut().unwrap().as_mut();
                 sm_rt.do_with_jsapi(|_rt, cx, _global| {
                     let promise = JsPromiseBuilder::rejected_string(cx, &message)?;
                     let ptr = promise.get() as usize;

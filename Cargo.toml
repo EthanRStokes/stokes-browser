@@ -1,9 +1,13 @@
+[workspace]
+members = [".", "crates/script_bindings"]
+
 [package]
 name = "stokes-browser"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+script_bindings = { path = "crates/script_bindings" }
 winit = "0.31.0-beta.2"
 winit-core = "0.31.0-beta.2"
 gl = "0.14.0"
