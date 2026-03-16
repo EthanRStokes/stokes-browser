@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MutationObserver Test</title>
+</head>
+<body>
+<div id="root"></div>
+<script>
+    console.log("=== MutationObserver smoke test ===");
+
+    const root = document.getElementById('root');
+    const seen = [];
+
+    const observer = new MutationObserver((records) => {
+        for (const record of records) {
+            seen.push(record);
+            console.log(
+                '[MO]',
+                'type=', record.type,
+                'attr=', record.attributeName,
+                'added=', record.addedNodes ? record.addedNodes.length : 0,
+                'removed=', record.removedNodes ? record.removedNodes.length : 0,
+                'oldValue=', record.oldValue
+            );
+        }
+    });
+
+    observer.observe(root, {
+        childList: true,
+        attributes: true,
+        attributeOldValue: true,
+        characterData: true,
+        characterDataOldValue: true,
+        subtree: true,
+    });
+
+    const child = document.createElement('div');
+    child.setAttribute('id', 'child-1');
+    root.appendChild(child);
+
+    child.setAttribute('data-x', '1');
+    child.setAttribute('data-x', '2');
+    child.removeAttribute('data-x');
+
+    child.textContent = 'hello';
+    child.textContent = 'world';
+
+    const other = document.createElement('span');
+    other.setAttribute('id', 'child-2');
+    root.replaceChild(other, child);
+    root.removeChild(other);
+
+    Promise.resolve().then(() => {
+        console.log('[MO] delivered count:', seen.length);
+        const extra = observer.takeRecords();
+        console.log('[MO] takeRecords after delivery:', extra.length);
+        observer.disconnect();
+        console.log('=== MutationObserver smoke test done ===');
+    });
+</script>
+</body>
+</html>
+

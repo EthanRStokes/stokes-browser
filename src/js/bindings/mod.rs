@@ -11,6 +11,7 @@ use crate::js::runtime::JOB_QUEUE_TRAPS;
 pub(crate) mod cookies;
 pub(crate) mod dom_bindings;
 pub(crate) mod element_bindings;
+pub(crate) mod mutation_observer;
 pub(crate) mod registry;
 pub(crate) mod timers;
 pub(crate) mod alert_callback;
@@ -50,6 +51,9 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
 
     // Set up DOM bindings
     dom_bindings::setup_dom_bindings(runtime, document_root, user_agent)?;
+
+    // Set up MutationObserver / MutationRecord polyfill and node patch hooks
+    mutation_observer::setup_mutation_observer(runtime)?;
 
     // Inject google.* polyfill stubs so that Google-hosted scripts that call
     // google.cv, google.rll, google.ml etc. do not throw before they can set

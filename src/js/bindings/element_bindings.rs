@@ -11,7 +11,41 @@ use mozjs::jsapi::{
 };
 use mozjs::jsval::{BooleanValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::rooted;
+use mozjs::rust::ValueArray;
 use std::os::raw::c_uint;
+
+unsafe fn maybe_patch_mutation_observer_node(raw_cx: *mut JSContext, node_obj: *mut JSObject) {
+    rooted!(in(raw_cx) let global = CurrentGlobalOrNull(raw_cx));
+    if global.get().is_null() {
+        return;
+    }
+
+    rooted!(in(raw_cx) let mut patch_fn = UndefinedValue());
+    let patch_name = std::ffi::CString::new("__stokesPatchMutationObserverNode").unwrap();
+    if !mozjs::jsapi::JS_GetProperty(
+        raw_cx,
+        global.handle().into(),
+        patch_name.as_ptr(),
+        patch_fn.handle_mut().into(),
+    ) {
+        return;
+    }
+
+    if !patch_fn.get().is_object() {
+        return;
+    }
+
+    rooted!(in(raw_cx) let node_rooted = node_obj);
+    rooted!(in(raw_cx) let call_args = ValueArray::<0usize>::new([]));
+    rooted!(in(raw_cx) let mut rval = UndefinedValue());
+    let _ = mozjs::jsapi::JS_CallFunctionValue(
+        raw_cx,
+        node_rooted.handle().into(),
+        patch_fn.handle().into(),
+        &mozjs::jsapi::HandleValueArray::from(&call_args),
+        rval.handle_mut().into(),
+    );
+}
 
 /// Create a JS element wrapper for a DOM node with its real tag name and attributes
 pub unsafe fn create_js_element_by_id(
@@ -365,6 +399,8 @@ unsafe fn create_js_element_impl(
     set_int_property(raw_cx, element.get(), "scrollLeft", 0)?;
     set_int_property(raw_cx, element.get(), "scrollTop", 0)?;
 
+    maybe_patch_mutation_observer_node(raw_cx, element.get());
+
     Ok(ObjectValue(element.get()))
 }
 
@@ -618,17 +654,12 @@ unsafe extern "C" fn element_remove_attribute(raw_cx: *mut JSContext, argc: c_ui
         DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &mut *dom_ptr;
-                if let Some(node) = dom.get_node_mut(node_id) {
-                    if let NodeData::Element(ref mut elem_data) = node.data {
-                        // Create QualName for the attribute to remove
-                        let qname = QualName::new(
-                            None,
-                            markup5ever::ns!(),
-                            markup5ever::LocalName::from(attr_name.as_str()),
-                        );
-                        elem_data.attributes.remove(&qname);
-                    }
-                }
+                let qname = QualName::new(
+                    None,
+                    markup5ever::ns!(),
+                    markup5ever::LocalName::from(attr_name.as_str()),
+                );
+                dom.clear_attribute(node_id, qname);
             }
         });
     }
@@ -895,14 +926,28 @@ pub(crate) unsafe extern "C" fn element_replace_child(raw_cx: *mut JSContext, ar
 
     println!("[JS] element.replaceChild() called");
 
-    // FIXME: The new node (args.get(0)) is never swapped in for the old node (args.get(1)) in the
-    // DOM. Should remove the old child and insert the new one in its place.
-    if argc > 1 {
-        // Return the old child that was replaced
-        args.rval().set(*args.get(1));
-    } else {
-        args.rval().set(UndefinedValue());
+    if argc >= 2 {
+        let parent_id = get_node_id_from_this(raw_cx, &args);
+        let new_child_id = get_node_id_from_value(raw_cx, *args.get(0));
+        let old_child_id = get_node_id_from_value(raw_cx, *args.get(1));
+
+        if let (Some(parent_id), Some(new_child_id), Some(old_child_id)) = (parent_id, new_child_id, old_child_id) {
+            DOM_REF.with(|dom| {
+                if let Some(dom_ptr) = *dom.borrow() {
+                    let dom = &mut *dom_ptr;
+                    if dom.parent_id(old_child_id) == Some(parent_id) {
+                        dom.replace_node_with(old_child_id, &[new_child_id]);
+                    }
+                }
+            });
+
+            trigger_script_load_if_needed(new_child_id);
+            args.rval().set(*args.get(1));
+            return true;
+        }
     }
+
+    args.rval().set(UndefinedValue());
     true
 }
 
@@ -1941,6 +1986,7 @@ unsafe extern "C" fn element_scroll_by(raw_cx: *mut JSContext, argc: c_uint, vp:
 /// Shared no-op callback for stub Animation methods.
 unsafe extern "C" fn animation_noop(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    tracing::warn!("animation_noop() called");
     args.rval().set(UndefinedValue());
     true
 }
