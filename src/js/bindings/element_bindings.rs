@@ -1,6 +1,8 @@
 // Element bindings for JavaScript using mozjs
 use blitz_traits::net::Request;
 use crate::dom::{AttributeMap, NodeData, ShadowRootMode};
+use crate::engine::js_provider::ScriptKind;
+use crate::engine::script_type::executable_script_kind;
 use crate::js::bindings::dom_bindings::DOM_REF;
 use crate::js::helpers::{create_empty_array, create_js_string, define_function, define_property_accessor, get_node_id_from_this, get_node_id_from_value, js_value_to_string, set_int_property, set_string_property, to_css_property_name};
 use crate::js::selectors::matches_selector;
@@ -714,33 +716,17 @@ fn trigger_script_load_if_needed(child_id: usize) {
                             .find(|a| a.name.local.as_ref() == "type")
                             .map(|a| a.value.to_string());
 
-                        let script_kind = if matches!(script_type.as_deref().map(str::trim), Some(t) if t.eq_ignore_ascii_case("module")) {
-                            "module"
-                        } else {
-                            "classic"
-                        };
-
-                        let is_supported = match script_type.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
-                            None => true,
-                            Some(t) => {
-                                t.eq_ignore_ascii_case("text/javascript")
-                                    || t.eq_ignore_ascii_case("application/javascript")
-                                    || t.eq_ignore_ascii_case("application/ecmascript")
-                                    || t.eq_ignore_ascii_case("text/ecmascript")
-                                    || t.eq_ignore_ascii_case("module")
-                            }
-                        };
-                        if !is_supported {
-                            println!("[JS] Skipping dynamic <script> with unsupported type attribute: {:?}", script_type);
+                        let Some(script_kind) = executable_script_kind(script_type.as_deref()) else {
+                            // Non-JS types are data blocks in browsers and do not execute.
                             return None;
-                        }
+                        };
 
                         if let Some(src) = elem_data.attributes.iter()
                             .find(|a| a.name.local.as_ref() == "src")
                             .map(|a| a.value.to_string())
                         {
                             if let Some(url) = dom.url.resolve_relative(&src) {
-                                return Some((url, dom.net_provider.clone(), dom.js_provider.clone(), child_id, script_kind.to_string()));
+                                return Some((url, dom.net_provider.clone(), dom.js_provider.clone(), child_id, script_kind));
                             }
                         }
                     }
@@ -752,7 +738,7 @@ fn trigger_script_load_if_needed(child_id: usize) {
     if let Some((url, net_provider, js_provider, script_node_id, script_kind)) = script_load_info {
         println!("[JS] Dynamically loading script: {}", url);
         let url_str = url.to_string();
-        let module_source_url = (script_kind == "module").then(|| url_str.clone());
+        let module_source_url = (script_kind == ScriptKind::Module).then(|| url_str.clone());
         net_provider.fetch_with_callback(
             Request::get(url),
             Box::new(move |result| {
@@ -760,7 +746,7 @@ fn trigger_script_load_if_needed(child_id: usize) {
                     Ok((_, bytes)) => {
                         match String::from_utf8(bytes.to_vec()) {
                             Ok(script) => {
-                                if script_kind == "module" {
+                                if script_kind == ScriptKind::Module {
                                     js_provider.execute_module_script_with_node_id(script, script_node_id, module_source_url.clone());
                                 } else {
                                     js_provider.execute_script_with_node_id(script, script_node_id);

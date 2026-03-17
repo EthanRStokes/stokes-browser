@@ -4,6 +4,7 @@ pub mod net_provider;
 pub mod nav_provider;
 pub mod resolve;
 pub mod js_provider;
+pub(crate) mod script_type;
 
 pub use self::config::EngineConfig;
 use crate::dom::node::{RasterImageData, SpecialElementData};
@@ -29,6 +30,7 @@ use style::dom::TNode;
 use style::thread_state::ThreadState;
 use crate::engine::js_provider::{JsProviderMessage, ScriptKind, StokesJsProvider};
 use crate::engine::nav_provider::StokesNavigationProvider;
+use crate::engine::script_type::executable_script_kind;
 
 thread_local! {
     pub(crate) static ENGINE_REF: RefCell<Option<*mut Engine>> = RefCell::new(None);
@@ -60,27 +62,6 @@ pub struct Engine {
 }
 
 impl Engine {
-    fn classify_script_type(script_type: Option<&str>) -> Option<ScriptKind> {
-        if matches!(script_type.map(str::trim), Some(t) if t.eq_ignore_ascii_case("module")) {
-            return Some(ScriptKind::Module);
-        }
-
-        match script_type.map(str::trim).filter(|t| !t.is_empty()) {
-            None => Some(ScriptKind::Classic),
-            Some(t) => {
-                if t.eq_ignore_ascii_case("text/javascript")
-                    || t.eq_ignore_ascii_case("application/javascript")
-                    || t.eq_ignore_ascii_case("application/ecmascript")
-                    || t.eq_ignore_ascii_case("text/ecmascript")
-                {
-                    Some(ScriptKind::Classic)
-                } else {
-                    None
-                }
-            }
-        }
-    }
-
     pub fn new(config: EngineConfig, viewport: Viewport, shell_provider: Arc<StokesShellProvider>, navigation_provider: Arc<StokesNavigationProvider>) -> Self {
         let (js_tx, js_rx) = channel();
         let js_provider = Arc::new(StokesJsProvider::new(js_tx));
@@ -470,8 +451,8 @@ impl Engine {
                 let script_node_id = script_element.id;
                 let script_type = element_data.attr(local_name!("type"));
 
-                let Some(script_kind) = Self::classify_script_type(script_type) else {
-                    println!("[JS] Skipping <script> with unsupported type attribute: {:?}", script_type);
+                let Some(script_kind) = executable_script_kind(script_type) else {
+                    // Non-JS types are data blocks by spec and are not executed.
                     continue;
                 };
 
