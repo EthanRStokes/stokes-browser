@@ -133,6 +133,9 @@ impl JsRuntime {
             rooted!(in(raw_cx) let global_root = global_ptr);
             let _realm = mozjs::jsapi::JSAutoRealm::new(raw_cx, global_root.get());
 
+            // Required for import.meta support in module scripts.
+            mozjs::jsapi::SetModuleMetadataHook(self.runtime.rt(), Some(module_metadata_hook));
+
             initialize_bindings(self, dom, user_agent, timer_manager)?;
         }
         Ok(())
@@ -350,6 +353,12 @@ impl JsRuntime {
                 return Err(msg);
             }
 
+            let source_url_utf16: Vec<u16> = source_name.encode_utf16().collect();
+            rooted!(in(raw_cx) let source_url_js = mozjs::jsapi::JS_NewUCStringCopyN(raw_cx, source_url_utf16.as_ptr(), source_url_utf16.len()));
+            rooted!(in(raw_cx) let module_private = mozjs::jsval::StringValue(&*source_url_js.get()));
+            let module_private_value = module_private.get();
+            mozjs::jsapi::SetModulePrivate(module.get(), &module_private_value);
+
             if !ModuleLink(raw_cx, module.handle().into()) {
                 let msg = Self::extract_js_exception(cx, raw_cx, "JavaScript MODULE INSTANTIATE error", code, print_eval_error);
                 eprintln!("Module script execution error: {}", msg);
@@ -529,6 +538,26 @@ unsafe extern "C" fn global_op_native_method(
         });
     }
     false
+}
+
+unsafe extern "C" fn module_metadata_hook(
+    cx: *mut ApiJSContext,
+    private_value: mozjs::jsapi::HandleValue,
+    meta_object: mozjs::jsapi::HandleObject,
+) -> bool {
+    rooted!(in(cx) let module_private = private_value.get());
+    if !module_private.get().is_string() {
+        return true;
+    }
+
+    let cname = std::ffi::CString::new("url").unwrap();
+    mozjs::jsapi::JS_DefineProperty(
+        cx,
+        meta_object,
+        cname.as_ptr(),
+        module_private.handle().into(),
+        mozjs::jsapi::JSPROP_ENUMERATE as u32,
+    )
 }
 
 /// Helper to convert a Rust string to a SourceText for SpiderMonkey
