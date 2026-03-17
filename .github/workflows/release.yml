@@ -27,7 +27,8 @@ jobs:
             libwayland-dev \
             libegl1-mesa-dev \
             libgl1-mesa-dev \
-            libfontconfig1-dev
+            libfontconfig1-dev \
+            llvm
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
