@@ -27,7 +27,7 @@ use std::sync::mpsc::{channel, Receiver};
 use blitz_traits::net::Request;
 use style::dom::TNode;
 use style::thread_state::ThreadState;
-use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
+use crate::engine::js_provider::{JsProviderMessage, ScriptKind, StokesJsProvider};
 use crate::engine::nav_provider::StokesNavigationProvider;
 
 thread_local! {
@@ -60,6 +60,27 @@ pub struct Engine {
 }
 
 impl Engine {
+    fn classify_script_type(script_type: Option<&str>) -> Option<ScriptKind> {
+        if matches!(script_type.map(str::trim), Some(t) if t.eq_ignore_ascii_case("module")) {
+            return Some(ScriptKind::Module);
+        }
+
+        match script_type.map(str::trim).filter(|t| !t.is_empty()) {
+            None => Some(ScriptKind::Classic),
+            Some(t) => {
+                if t.eq_ignore_ascii_case("text/javascript")
+                    || t.eq_ignore_ascii_case("application/javascript")
+                    || t.eq_ignore_ascii_case("application/ecmascript")
+                    || t.eq_ignore_ascii_case("text/ecmascript")
+                {
+                    Some(ScriptKind::Classic)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     pub fn new(config: EngineConfig, viewport: Viewport, shell_provider: Arc<StokesShellProvider>, navigation_provider: Arc<StokesNavigationProvider>) -> Self {
         let (js_tx, js_rx) = channel();
         let js_provider = Arc::new(StokesJsProvider::new(js_tx));
@@ -424,6 +445,16 @@ impl Engine {
         }
     }
 
+    pub fn execute_module_javascript(&mut self, code: &str, source_url: Option<&str>, print_eval_error: bool) {
+        if let Some(runtime) = &mut self.js_runtime {
+            if let Err(e) = runtime.execute_module_script(code, source_url, print_eval_error) {
+                eprintln!("JavaScript module execution error: {}", e);
+            }
+        } else {
+            eprintln!("JavaScript runtime not initialized");
+        }
+    }
+
     /// Extract and execute JavaScript from <script> tags in the current DOM
     pub async fn execute_document_scripts(&mut self) {
         // Initialize JS runtime if not already done
@@ -437,6 +468,13 @@ impl Engine {
         for script_element in script_elements {
             if let NodeData::Element(element_data) = &script_element.data {
                 let script_node_id = script_element.id;
+                let script_type = element_data.attr(local_name!("type"));
+
+                let Some(script_kind) = Self::classify_script_type(script_type) else {
+                    println!("[JS] Skipping <script> with unsupported type attribute: {:?}", script_type);
+                    continue;
+                };
+
                 // Check for external scripts
                 if let Some(src) = element_data.attr(local_name!("src")) {
                     println!("Found external script: {}", src);
@@ -444,13 +482,20 @@ impl Engine {
                     let js_provider = self.js_provider.clone();
                     let url = dom.resolve_url(src);
                     let url_str = url.to_string();
+                    let source_url = (script_kind == ScriptKind::Module).then(|| url_str.clone());
                     net_provider.fetch_with_callback(
                         Request::get(url),
                         Box::new(move |result| {
                             match result {
                                 Ok((_, bytes)) => {
                                     match String::from_utf8(Vec::from(bytes)) {
-                                        Ok(script) => js_provider.execute_script_with_node_id(script, script_node_id),
+                                        Ok(script) => {
+                                            if script_kind == ScriptKind::Module {
+                                                js_provider.execute_module_script_with_node_id(script, script_node_id, source_url.clone());
+                                            } else {
+                                                js_provider.execute_script_with_node_id(script, script_node_id);
+                                            }
+                                        }
                                         Err(e) => eprintln!("[JS] External script at '{}' is not valid UTF-8: {}", url_str, e),
                                     }
                                 }
@@ -462,7 +507,15 @@ impl Engine {
                     // Get inline script content
                     let script_content = script_element.text_content();
                     if !script_content.trim().is_empty() {
-                        self.js_provider.execute_script_with_node_id(script_content, script_node_id);
+                        if script_kind == ScriptKind::Module {
+                            self.js_provider.execute_module_script_with_node_id(
+                                script_content,
+                                script_node_id,
+                                Some(dom.url.to_string()),
+                            );
+                        } else {
+                            self.js_provider.execute_script_with_node_id(script_content, script_node_id);
+                        }
                     }
                 }
             }

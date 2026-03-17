@@ -710,12 +710,37 @@ fn trigger_script_load_if_needed(child_id: usize) {
             if let Some(node) = dom.get_node(child_id) {
                 if let NodeData::Element(ref elem_data) = node.data {
                     if elem_data.name.local.as_ref() == "script" {
+                        let script_type = elem_data.attributes.iter()
+                            .find(|a| a.name.local.as_ref() == "type")
+                            .map(|a| a.value.to_string());
+
+                        let script_kind = if matches!(script_type.as_deref().map(str::trim), Some(t) if t.eq_ignore_ascii_case("module")) {
+                            "module"
+                        } else {
+                            "classic"
+                        };
+
+                        let is_supported = match script_type.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                            None => true,
+                            Some(t) => {
+                                t.eq_ignore_ascii_case("text/javascript")
+                                    || t.eq_ignore_ascii_case("application/javascript")
+                                    || t.eq_ignore_ascii_case("application/ecmascript")
+                                    || t.eq_ignore_ascii_case("text/ecmascript")
+                                    || t.eq_ignore_ascii_case("module")
+                            }
+                        };
+                        if !is_supported {
+                            println!("[JS] Skipping dynamic <script> with unsupported type attribute: {:?}", script_type);
+                            return None;
+                        }
+
                         if let Some(src) = elem_data.attributes.iter()
                             .find(|a| a.name.local.as_ref() == "src")
                             .map(|a| a.value.to_string())
                         {
                             if let Some(url) = dom.url.resolve_relative(&src) {
-                                return Some((url, dom.net_provider.clone(), dom.js_provider.clone()));
+                                return Some((url, dom.net_provider.clone(), dom.js_provider.clone(), child_id, script_kind.to_string()));
                             }
                         }
                     }
@@ -724,16 +749,23 @@ fn trigger_script_load_if_needed(child_id: usize) {
         }
         None
     });
-    if let Some((url, net_provider, js_provider)) = script_load_info {
+    if let Some((url, net_provider, js_provider, script_node_id, script_kind)) = script_load_info {
         println!("[JS] Dynamically loading script: {}", url);
         let url_str = url.to_string();
+        let module_source_url = (script_kind == "module").then(|| url_str.clone());
         net_provider.fetch_with_callback(
             Request::get(url),
             Box::new(move |result| {
                 match result {
                     Ok((_, bytes)) => {
                         match String::from_utf8(bytes.to_vec()) {
-                            Ok(script) => js_provider.execute_script(script),
+                            Ok(script) => {
+                                if script_kind == "module" {
+                                    js_provider.execute_module_script_with_node_id(script, script_node_id, module_source_url.clone());
+                                } else {
+                                    js_provider.execute_script_with_node_id(script, script_node_id);
+                                }
+                            }
                             Err(e) => eprintln!("[JS] Dynamic script at '{}' is not valid UTF-8: {}", url_str, e),
                         }
                     }

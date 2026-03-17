@@ -170,23 +170,23 @@ impl StokesNetProvider {
             },
             _ => {
                 let mut easy = Easy2::new(Collector(Vec::new()));
-                easy.url(request.url.as_str()).unwrap();
+                easy.url(request.url.as_str())?;
 
                 let mut headers = List::new();
                 // Forward any request-level headers first.
                 for (name, value) in &request.headers {
-                    headers.append(&format!("{}: {}", name.as_str(), value.to_str().unwrap())).unwrap();
+                    headers.append(&format!("{}: {}", name.as_str(), value.to_str().unwrap()))?;
                 }
                 // Add browser-like headers so servers such as Google do not
                 // reject the request with a 4xx response.
-                headers.append("Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8").unwrap();
-                headers.append("Accept-Language: en-US,en;q=0.5").unwrap();
-                easy.http_headers(headers);
+                headers.append("Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")?;
+                headers.append("Accept-Language: en-US,en;q=0.5")?;
+                easy.http_headers(headers)?;
 
-                easy.follow_location(true).unwrap();
-                easy.useragent(user_agent).unwrap();
+                easy.follow_location(true)?;
+                easy.useragent(user_agent)?;
                 // Enable automatic decompression for gzip/deflate/br responses.
-                easy.accept_encoding("").unwrap();
+                easy.accept_encoding("")?;
                 Self::apply_request_method(&mut easy, &request);
                 match easy.perform() {
                     Ok(_) => {}

@@ -12,7 +12,7 @@ use mozjs::conversions::jsstr_to_string;
 use mozjs::gc::HandleObject;
 use mozjs::glue::JobQueueTraps;
 use mozjs::jsapi::{CallArgs, JSContext as ApiJSContext};
-use mozjs::jsapi::{Compile1, Handle, Heap, JSAutoRealm, JSContext as RawJSContext, JSObject, JSScript, JS_ClearPendingException, JS_ExecuteScript, JS_GetPendingException, JS_IsExceptionPending, MutableHandleValue, OnNewGlobalHookOption, SetScriptPrivate};
+use mozjs::jsapi::{Compile1, CompileModule1, Handle, Heap, JSAutoRealm, JSContext as RawJSContext, JSObject, JSScript, JS_ClearPendingException, JS_ExecuteScript, JS_GetPendingException, JS_IsExceptionPending, ModuleEvaluate, ModuleLink, MutableHandleValue, OnNewGlobalHookOption, SetScriptPrivate};
 // JavaScript runtime management using Mozilla's SpiderMonkey (mozjs)
 use mozjs::jsval::{PrivateValue, UndefinedValue};
 use mozjs::panic::{maybe_resume_unwind};
@@ -284,6 +284,90 @@ impl JsRuntime {
                 Err(e)
             }
         }
+    }
+
+    fn effective_module_source_url(&self, source_url: Option<&str>) -> String {
+        source_url
+            .map(str::to_string)
+            .unwrap_or_else(|| unsafe { (&*self.dom).url.to_string() })
+    }
+
+    fn compile_module_script(
+        context: &mut JSContext,
+        text: &str,
+        filename: &str,
+        line_number: u32,
+    ) -> *mut JSObject {
+        let options = unsafe { CompileOptionsWrapper::new(&context, filename.parse().unwrap(), line_number) };
+        unsafe { CompileModule1(context.raw_cx(), options.ptr, &mut transform_str_to_source_text(text)) }
+    }
+
+    unsafe fn extract_js_exception(
+        context: &mut JSContext,
+        raw_cx: *mut RawJSContext,
+        prefix: &str,
+        code: &str,
+        print_error: bool,
+    ) -> String {
+        if JS_IsExceptionPending(raw_cx) {
+            rooted!(in(raw_cx) let mut exception = UndefinedValue());
+            if JS_GetPendingException(raw_cx, MutableHandleValue::from(exception.handle_mut())) {
+                JS_ClearPendingException(raw_cx);
+                rooted!(in(raw_cx) let exc_str = JS_ValueToSource(context, exception.handle()));
+                if !exc_str.get().is_null() {
+                    let msg = jsstr_to_string(raw_cx, NonNull::new(exc_str.handle().get()).unwrap());
+                    if print_error {
+                        return format!("{prefix}: {msg}\n{code}");
+                    }
+                    return format!("{prefix}: {msg}");
+                }
+            }
+        }
+
+        prefix.to_string()
+    }
+
+    /// Execute JavaScript that originated from `<script type=\"module\">`.
+    pub fn execute_module_script(&mut self, code: &str, source_url: Option<&str>, print_eval_error: bool) -> JsResult<()> {
+        let source_name = self.effective_module_source_url(source_url);
+        let cx = self.runtime.cx();
+        let raw_cx = unsafe { cx.raw_cx() };
+        let global_ptr = self.global.get();
+
+        unsafe {
+            rooted!(in(raw_cx) let global = global_ptr);
+            if global.get().is_null() {
+                return Err("No global object".to_string());
+            }
+
+            let _realm = JSAutoRealm::new(raw_cx, global.get());
+
+            rooted!(in(raw_cx) let mut module = ptr::null_mut::<JSObject>());
+            module.set(Self::compile_module_script(cx, code, &source_name, 1));
+            if module.get().is_null() {
+                let msg = Self::extract_js_exception(cx, raw_cx, "JavaScript MODULE COMPILE error", code, print_eval_error);
+                eprintln!("Module script execution error: {}", msg);
+                return Err(msg);
+            }
+
+            if !ModuleLink(raw_cx, module.handle().into()) {
+                let msg = Self::extract_js_exception(cx, raw_cx, "JavaScript MODULE INSTANTIATE error", code, print_eval_error);
+                eprintln!("Module script execution error: {}", msg);
+                return Err(msg);
+            }
+
+            rooted!(in(raw_cx) let mut eval_result = UndefinedValue());
+            if !ModuleEvaluate(raw_cx, module.handle().into(), eval_result.handle_mut().into()) {
+                let msg = Self::extract_js_exception(cx, raw_cx, "JavaScript MODULE EVAL error", code, print_eval_error);
+                eprintln!("Module script execution error: {}", msg);
+                return Err(msg);
+            }
+
+            maybe_resume_unwind();
+        }
+
+        self.run_pending_jobs();
+        Ok(())
     }
 
     /// Run all pending jobs in the job queue (for Promises)
