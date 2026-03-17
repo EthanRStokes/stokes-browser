@@ -25,13 +25,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            build-essential \
+            python3 \
+            python3-distutils \
+            llvm \
+            libclang-dev \
+            clang \
+            curl \
             libx11-dev \
             libxkbcommon-dev \
             libwayland-dev \
             libegl1-mesa-dev \
             libgl1-mesa-dev \
-            libfontconfig1-dev \
-            llvm
+            libfontconfig1-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
