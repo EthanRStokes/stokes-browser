@@ -373,10 +373,10 @@ impl JsRuntime {
     /// Run all pending jobs in the job queue (for Promises)
     /// This handles microtasks like Promise callbacks and needs proper error handling
     pub fn run_pending_jobs(&mut self) {
-        use crate::js::jsapi::promise::run_promise_jobs;
+        use crate::js::jsapi::promise::perform_microtask_checkpoint;
 
         self.do_with_jsapi(|_rt, cx, _global| {
-            let executed = run_promise_jobs(cx);
+            let executed = perform_microtask_checkpoint(cx);
             if executed > 0 {
                 log::trace!("Executed {} promise jobs", executed);
             }

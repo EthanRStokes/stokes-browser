@@ -2772,9 +2772,8 @@ pub fn setup_image_constructor_deferred(runtime: &mut JsRuntime) -> Result<(), S
                             img.complete = true;
                             return;
                         }
-                        // Fire a network request; callbacks are triggered once the
-                        // Promise settles (SpiderMonkey runs microtasks eagerly after
-                        // each top-level call so this effectively fires synchronously).
+                        // Fire a network request; callbacks run on the next
+                        // microtask checkpoint after the Promise settles.
                         try {
                             fetch(strUrl)
                                 .then(function (response) {

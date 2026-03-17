@@ -1,11 +1,13 @@
 use crate::js::jsapi::error::{get_pending_exception, JsError};
-use mozjs::jsapi::{AddRawValueRoot, HandleObject, HandleValue, HandleValueArray, Heap, JSContext, JSObject, JS_CallFunctionValue, PromiseRejectionHandlingState, RemoveRawValueRoot, ResolvePromise, SetPromiseRejectionTrackerCallback, StackFormat};
+use crate::js::helpers::js_value_to_string;
+use mozjs::jsapi::{AddRawValueRoot, CurrentGlobalOrNull, HandleObject, HandleValue, HandleValueArray, Heap, JSContext, JSObject, JS_CallFunctionValue, PromiseRejectionHandlingState, RemoveRawValueRoot, ResolvePromise, SetPromiseRejectionTrackerCallback};
 use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
 use mozjs::panic::wrap_panic;
+use mozjs::rust::wrappers::JS_GetPromiseResult;
 use mozjs::rust::Runtime;
-use mozjs::{capture_stack, rooted};
+use mozjs::rooted;
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CString;
 use std::os::raw::c_void;
 use std::ptr;
@@ -14,6 +16,19 @@ use std::rc::Rc;
 // Thread-local queue for promise jobs
 thread_local! {
     static PROMISE_JOB_QUEUE: RefCell<VecDeque<Rc<PromiseJobCallback>>> = RefCell::new(VecDeque::new());
+    static REJECTION_TRANSITIONS: RefCell<VecDeque<PromiseRejectionTransition>> = RefCell::new(VecDeque::new());
+    static REPORTED_UNHANDLED_PROMISES: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+}
+
+#[derive(Clone, Copy)]
+enum RejectionTransitionState {
+    Unhandled,
+    Handled,
+}
+
+struct PromiseRejectionTransition {
+    promise: PersistentRooted,
+    state: RejectionTransitionState,
 }
 
 /// resolve a Promise with a given resolution value
@@ -46,14 +61,23 @@ pub fn init_rejection_tracker(cx: *mut JSContext) {
 unsafe extern "C" fn promise_rejection_tracker(
     cx: *mut JSContext,
     _muted_errors: bool,
-    _promise: HandleObject,
-    _state: PromiseRejectionHandlingState,
+    promise: HandleObject,
+    state: PromiseRejectionHandlingState,
     _data: *mut c_void,
 ) {
-    capture_stack!(in (cx) let stack);
-    let str_stack = stack.unwrap().as_string(None, StackFormat::SpiderMonkey).unwrap();
+    let transition_state = match state {
+        PromiseRejectionHandlingState::Unhandled => RejectionTransitionState::Unhandled,
+        PromiseRejectionHandlingState::Handled => RejectionTransitionState::Handled,
+    };
 
-    log::error!("promise without rejection handler rejected from {str_stack}")
+    let rooted_promise = PersistentRooted::new_from_obj(cx, promise.get());
+
+    REJECTION_TRANSITIONS.with(|queue| {
+        queue.borrow_mut().push_back(PromiseRejectionTransition {
+            promise: rooted_promise,
+            state: transition_state,
+        });
+    });
 }
 
 pub(crate) unsafe extern "C" fn enqueue_promise_job(
@@ -78,10 +102,11 @@ pub(crate) unsafe extern "C" fn enqueue_promise_job(
     result
 }
 
-/// Run all pending promise jobs in the queue
-/// This should be called after script execution to process microtasks
-/// Returns the number of jobs that were executed
-pub fn run_promise_jobs(cx: *mut JSContext) -> usize {
+/// Run one full microtask checkpoint.
+///
+/// This drains queued promise jobs and then reports any rejection transitions.
+/// Returns the number of promise jobs executed.
+pub fn perform_microtask_checkpoint(cx: *mut JSContext) -> usize {
     let mut executed = 0;
 
     // Process jobs until the queue is empty
@@ -110,12 +135,135 @@ pub fn run_promise_jobs(cx: *mut JSContext) -> usize {
         }
     }
 
+    process_rejection_transitions(cx);
+
     executed
+}
+
+// Backward-compatible alias for existing call sites.
+pub fn run_promise_jobs(cx: *mut JSContext) -> usize {
+    perform_microtask_checkpoint(cx)
 }
 
 /// Check if there are pending promise jobs
 pub fn has_pending_promise_jobs() -> bool {
     PROMISE_JOB_QUEUE.with(|queue| !queue.borrow().is_empty())
+}
+
+fn process_rejection_transitions(cx: *mut JSContext) {
+    let transitions: Vec<PromiseRejectionTransition> = REJECTION_TRANSITIONS.with(|queue| {
+        queue.borrow_mut().drain(..).collect()
+    });
+
+    if transitions.is_empty() {
+        return;
+    }
+
+    let mut pending_unhandled: HashMap<usize, PersistentRooted> = HashMap::new();
+    let mut handled_to_dispatch: Vec<PersistentRooted> = Vec::new();
+
+    for transition in transitions {
+        let promise_id = transition.promise.get() as usize;
+        match transition.state {
+            RejectionTransitionState::Unhandled => {
+                pending_unhandled.insert(promise_id, transition.promise);
+            }
+            RejectionTransitionState::Handled => {
+                if pending_unhandled.remove(&promise_id).is_some() {
+                    continue;
+                }
+
+                let was_reported = REPORTED_UNHANDLED_PROMISES.with(|set| {
+                    set.borrow().contains(&promise_id)
+                });
+
+                if was_reported {
+                    REPORTED_UNHANDLED_PROMISES.with(|set| {
+                        set.borrow_mut().remove(&promise_id);
+                    });
+                    handled_to_dispatch.push(transition.promise);
+                }
+            }
+        }
+    }
+
+    let mut unhandled_reason_counts: HashMap<String, usize> = HashMap::new();
+
+    for (promise_id, promise) in pending_unhandled {
+        let already_reported = REPORTED_UNHANDLED_PROMISES.with(|set| {
+            set.borrow().contains(&promise_id)
+        });
+        if already_reported {
+            continue;
+        }
+
+        let not_canceled = unsafe {
+            dispatch_promise_rejection_event(cx, "unhandledrejection", promise.get(), true)
+        };
+
+        if not_canceled {
+            let reason_text = unsafe { promise_reason_to_string(cx, promise.get()) };
+            *unhandled_reason_counts.entry(reason_text).or_insert(0) += 1;
+        }
+
+        REPORTED_UNHANDLED_PROMISES.with(|set| {
+            set.borrow_mut().insert(promise_id);
+        });
+    }
+
+    for (reason, count) in unhandled_reason_counts {
+        if count == 1 {
+            log::error!("Unhandled promise rejection: {reason}");
+        } else {
+            log::error!("Unhandled promise rejection ({count}x): {reason}");
+        }
+    }
+
+    for promise in handled_to_dispatch {
+        unsafe {
+            let _ = dispatch_promise_rejection_event(
+                cx,
+                "rejectionhandled",
+                promise.get(),
+                false,
+            );
+        }
+    }
+}
+
+unsafe fn dispatch_promise_rejection_event(
+    cx: *mut JSContext,
+    event_type: &str,
+    promise_obj: *mut JSObject,
+    cancelable: bool,
+) -> bool {
+    rooted!(in(cx) let global = CurrentGlobalOrNull(cx));
+    if global.get().is_null() {
+        return true;
+    }
+
+    let reason = promise_rejection_reason(cx, promise_obj);
+
+    crate::js::bindings::event_listeners::dispatch_window_promise_rejection_event(
+        cx,
+        global.get(),
+        event_type,
+        promise_obj,
+        reason,
+        cancelable,
+    )
+}
+
+unsafe fn promise_rejection_reason(cx: *mut JSContext, promise_obj: *mut JSObject) -> JSVal {
+    rooted!(in(cx) let promise = promise_obj);
+    rooted!(in(cx) let mut reason = UndefinedValue());
+    JS_GetPromiseResult(promise.handle().into(), reason.handle_mut().into());
+    *reason
+}
+
+unsafe fn promise_reason_to_string(cx: *mut JSContext, promise_obj: *mut JSObject) -> String {
+    let reason = promise_rejection_reason(cx, promise_obj);
+    js_value_to_string(cx, reason)
 }
 
 struct PromiseJobCallback {

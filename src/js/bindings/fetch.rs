@@ -2,6 +2,7 @@
 // Provides the global fetch() function and Response object
 
 use crate::js::bindings::dom_bindings::{DOM_REF, USER_AGENT};
+use crate::js::helpers::js_value_to_string;
 use crate::js::jsapi::js_promise::JsPromiseHandle;
 use crate::js::JsRuntime;
 use curl::easy::{Easy, List};
@@ -87,37 +88,15 @@ unsafe extern "C" fn js_fetch(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) 
         return create_rejected_promise(cx, args.rval(), "fetch requires at least 1 argument");
     }
 
-    // Get the URL argument
-    let url_arg = args.get(0);
-    if !url_arg.is_string() {
-        return create_rejected_promise(cx, args.rval(), "fetch: first argument must be a string URL");
-    }
-
-    // Convert JS string to Rust string
-    let url = {
-        let js_str = url_arg.to_string();
-        if js_str.is_null() {
-            return create_rejected_promise(cx, args.rval(), "fetch: failed to read URL string");
-        }
-        jsstr_to_string(cx, NonNull::new(js_str).unwrap())
+    let input_url = match extract_fetch_input_url(cx, *args.get(0)) {
+        Some(v) => v,
+        None => return create_rejected_promise(cx, args.rval(), "fetch: invalid request input"),
     };
-    let url = DOM_REF.with(|dom_ref| {
-        if let Some(dom) = dom_ref.borrow().as_ref() {
-            let dom = &**dom;
-            match dom.url.join(&url) {
-                Ok(resolved_url) => {
-                    println!("[JS] Resolved URL: {}", resolved_url);
-                    resolved_url
-                }
-                Err(e) => {
-                    panic!("[JS] URL resolution error: {} for url {url} on dom url {}", e, dom.url.as_str());
-                }
-            }
-        } else {
-            panic!("[JS] DOM ref not available for URL resolution");
-        }
-    });
-    let url = url.as_str();
+
+    let url = match resolve_fetch_url(&input_url) {
+        Ok(v) => v,
+        Err(msg) => return create_rejected_promise(cx, args.rval(), &msg),
+    };
 
     // Parse request options (method, headers, body)
     let mut method = String::from("GET");
@@ -187,12 +166,56 @@ unsafe extern "C" fn js_fetch(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) 
         }
     }
 
-    // Run any promise jobs that were queued (like .then() callbacks)
-    crate::js::jsapi::promise::run_promise_jobs(cx);
 
     // Return the promise
     args.rval().set(ObjectValue(promise_ptr));
     true
+}
+
+fn resolve_fetch_url(input: &str) -> Result<String, String> {
+    DOM_REF.with(|dom_ref| {
+        let dom_borrow = dom_ref.borrow();
+        let dom_ptr = *dom_borrow
+            .as_ref()
+            .ok_or_else(|| "fetch: document base URL unavailable".to_string())?;
+        if dom_ptr.is_null() {
+            return Err("fetch: document base URL unavailable".to_string());
+        }
+
+        let dom = unsafe { &*dom_ptr };
+
+        dom.url
+            .join(input)
+            .map(|u| u.to_string())
+            .map_err(|e| format!("fetch: invalid URL: {e}"))
+    })
+}
+
+unsafe fn extract_fetch_input_url(cx: *mut JSContext, request_info: JSVal) -> Option<String> {
+    if request_info.is_undefined() || request_info.is_null() {
+        return None;
+    }
+
+    if request_info.is_string() {
+        let js_str = request_info.to_string();
+        if js_str.is_null() {
+            return None;
+        }
+        return Some(jsstr_to_string(cx, NonNull::new(js_str).unwrap()));
+    }
+
+    if request_info.is_object() {
+        rooted!(in(cx) let obj = request_info.to_object());
+        // Request and URL objects expose a string `url`/`href` we can consume.
+        if let Some(url) = get_string_property(cx, obj.handle().into(), "url") {
+            return Some(url);
+        }
+        if let Some(href) = get_string_property(cx, obj.handle().into(), "href") {
+            return Some(href);
+        }
+    }
+
+    Some(js_value_to_string(cx, request_info))
 }
 
 /// Perform the actual HTTP fetch operation

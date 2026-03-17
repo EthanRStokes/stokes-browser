@@ -10,6 +10,7 @@ use keyboard_types::Modifiers;
 use mozjs::jsapi::{
     AddRawValueRoot, HandleValueArray, Heap, JSContext, JSObject,
     JS_CallFunctionValue, JS_ClearPendingException, JS_DefineProperty,
+    JS_GetProperty,
     JS_IsExceptionPending, JS_NewPlainObject, RemoveRawValueRoot,
     JSPROP_ENUMERATE,
 };
@@ -567,6 +568,120 @@ pub unsafe fn dispatch_event_obj(
     let ct = CString::new("currentTarget").unwrap();
     JS_DefineProperty(cx, ev.handle().into(), ct.as_ptr(),
         null_v.handle().into(), JSPROP_ENUMERATE as u32);
+}
+
+/// Dispatch a window-level Promise rejection event (`unhandledrejection` /
+/// `rejectionhandled`) with browser-like payload fields.
+///
+/// Returns `true` if the event was not canceled via `preventDefault()`.
+pub unsafe fn dispatch_window_promise_rejection_event(
+    cx: *mut JSContext,
+    global: *mut JSObject,
+    event_type: &str,
+    promise_obj: *mut JSObject,
+    reason: JSVal,
+    cancelable: bool,
+) -> bool {
+    EVENT_DEFAULT_PREVENTED.with(|f| f.set(false));
+    EVENT_PROPAGATION_STOPPED.with(|f| f.set(false));
+    EVENT_IMMEDIATE_STOPPED.with(|f| f.set(false));
+
+    rooted!(in(cx) let event_obj = JS_NewPlainObject(cx));
+    if event_obj.get().is_null() {
+        return true;
+    }
+
+    let _ = set_string_property(cx, event_obj.get(), "type", event_type);
+    let _ = set_bool_property(cx, event_obj.get(), "bubbles", false);
+    let _ = set_bool_property(cx, event_obj.get(), "cancelable", cancelable);
+    let _ = set_bool_property(cx, event_obj.get(), "isTrusted", true);
+    let _ = define_function(cx, event_obj.get(), "stopPropagation", Some(js_stop_propagation), 0);
+    let _ = define_function(cx, event_obj.get(), "stopImmediatePropagation", Some(js_stop_immediate_propagation), 0);
+    let _ = define_function(cx, event_obj.get(), "preventDefault", Some(js_prevent_default), 0);
+
+    rooted!(in(cx) let promise_v = ObjectValue(promise_obj));
+    rooted!(in(cx) let reason_v = reason);
+    let promise_name = CString::new("promise").unwrap();
+    let reason_name = CString::new("reason").unwrap();
+    JS_DefineProperty(
+        cx,
+        event_obj.handle().into(),
+        promise_name.as_ptr(),
+        promise_v.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+    JS_DefineProperty(
+        cx,
+        event_obj.handle().into(),
+        reason_name.as_ptr(),
+        reason_v.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
+    set_event_target(cx, event_obj.get(), WINDOW_NODE_ID);
+    set_event_phase(cx, event_obj.get(), 2);
+    set_event_current_target(cx, event_obj.get(), WINDOW_NODE_ID);
+
+    // Support window.onunhandledrejection / window.onrejectionhandled.
+    // Many sites use the IDL event handler property instead of addEventListener.
+    invoke_window_event_handler_property(cx, global, event_obj.get(), event_type);
+
+    fire_on_node(
+        cx,
+        global,
+        WINDOW_NODE_ID,
+        event_obj.get(),
+        event_type,
+        false,
+        true,
+    );
+
+    !EVENT_DEFAULT_PREVENTED.with(|f| f.get())
+}
+
+unsafe fn invoke_window_event_handler_property(
+    cx: *mut JSContext,
+    global: *mut JSObject,
+    event_obj: *mut JSObject,
+    event_type: &str,
+) {
+    let prop_name = format!("on{event_type}");
+    let c_name = CString::new(prop_name).unwrap();
+
+    rooted!(in(cx) let global_r = global);
+    rooted!(in(cx) let mut handler_val = UndefinedValue());
+    if !JS_GetProperty(
+        cx,
+        global_r.handle().into(),
+        c_name.as_ptr(),
+        handler_val.handle_mut().into(),
+    ) {
+        return;
+    }
+
+    if !handler_val.get().is_object() {
+        return;
+    }
+
+    rooted!(in(cx) let handler = handler_val.get().to_object());
+    rooted!(in(cx) let this_v = global);
+    rooted!(in(cx) let callable = ObjectValue(handler.get()));
+    rooted!(in(cx) let evt_v = ObjectValue(event_obj));
+    rooted!(in(cx) let mut rv = UndefinedValue());
+    let args_arr: [JSVal; 1] = [*evt_v];
+    let handle_arr = HandleValueArray { length_: 1, elements_: args_arr.as_ptr() };
+
+    JS_CallFunctionValue(
+        cx,
+        this_v.handle().into(),
+        callable.handle().into(),
+        &handle_arr,
+        rv.handle_mut().into(),
+    );
+
+    if JS_IsExceptionPending(cx) {
+        JS_ClearPendingException(cx);
+    }
 }
 
 /// Fire `DOMContentLoaded` and `load` events on the document / window.
