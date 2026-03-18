@@ -51,6 +51,18 @@ unsafe fn maybe_patch_mutation_observer_node(cx: &mut SafeJSContext, node_obj: *
     );
 }
 
+fn constructor_name_for_element(is_svg: bool, local_name: &str) -> &'static str {
+    if !is_svg {
+        return "HTMLElement";
+    }
+
+    match local_name.to_ascii_lowercase().as_str() {
+        "svg" => "SVGSVGElement",
+        "rect" => "SVGRectElement",
+        _ => "SVGElement",
+    }
+}
+
 /// Create a JS element wrapper for a DOM node with its real tag name and attributes
 pub unsafe fn create_js_element_by_id(
     cx: &mut mozjs::context::JSContext,
@@ -107,15 +119,7 @@ unsafe fn create_js_element_impl(
                         };
                         let is_html = elem_data.name.ns == ns!(html);
                         let is_svg = elem_data.name.ns == ns!(svg);
-                        let constructor = if is_svg {
-                            if local_name.eq_ignore_ascii_case("svg") {
-                                "SVGSVGElement"
-                            } else {
-                                "SVGElement"
-                            }
-                        } else {
-                            "HTMLElement"
-                        };
+                        let constructor = constructor_name_for_element(is_svg, &local_name);
                         return (local_name, namespace_uri, is_html, is_svg, constructor.to_string());
                     }
                 }

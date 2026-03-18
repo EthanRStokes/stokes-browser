@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>SVGElement Test</title>
+    <style>
+        body { font-family: sans-serif; padding: 16px; }
+        .ok { color: #0a7f2e; }
+        .fail { color: #b00020; }
+        pre { background: #f5f5f5; padding: 12px; border-radius: 6px; }
+    </style>
+</head>
+<body>
+    <h1>SVGElement regression test</h1>
+    <p>Checks global SVG constructors and basic SVG namespace element wrappers.</p>
+
+    <pre id="log"></pre>
+
+    <script>
+        (function () {
+            var logEl = document.getElementById("log");
+            var failures = 0;
+
+            function line(text, ok) {
+                var div = document.createElement("div");
+                div.className = ok ? "ok" : "fail";
+                div.textContent = (ok ? "PASS: " : "FAIL: ") + text;
+                logEl.appendChild(div);
+                if (!ok) failures++;
+            }
+
+            function check(name, fn) {
+                try {
+                    var value = fn();
+                    line(name, !!value);
+                } catch (err) {
+                    line(name + " threw " + String(err), false);
+                }
+            }
+
+            check("typeof SVGElement is function", function () {
+                return typeof SVGElement === "function";
+            });
+
+            check("typeof SVGSVGElement is function", function () {
+                return typeof SVGSVGElement === "function";
+            });
+
+            check("typeof SVGRectElement is function", function () {
+                return typeof SVGRectElement === "function";
+            });
+
+            check("SVGElement links to Element when Element.prototype exists", function () {
+                if (typeof Element !== "function" || !Element.prototype) {
+                    return false;
+                }
+                return Element.prototype.isPrototypeOf(SVGElement.prototype);
+            });
+
+            check("typeof SVGGraphicsElement is function", function () {
+                return typeof SVGGraphicsElement === "function";
+            });
+
+            check("typeof SVGGeometryElement is function", function () {
+                return typeof SVGGeometryElement === "function";
+            });
+
+            check("SVGSVGElement.prototype inherits SVGGraphicsElement.prototype", function () {
+                return Object.getPrototypeOf(SVGSVGElement.prototype) === SVGGraphicsElement.prototype;
+            });
+
+            check("SVGRectElement.prototype inherits SVGGeometryElement.prototype", function () {
+                return Object.getPrototypeOf(SVGRectElement.prototype) === SVGGeometryElement.prototype;
+            });
+
+            var svgNs = "http://www.w3.org/2000/svg";
+            var svg = document.createElementNS(svgNs, "svg");
+            var rect = document.createElementNS(svgNs, "rect");
+
+            check("createElementNS returns svg element", function () {
+                return !!svg && svg.tagName === "svg";
+            });
+
+            check("svg namespaceURI is SVG namespace", function () {
+                return svg.namespaceURI === svgNs;
+            });
+
+            check("svg.constructor is SVGSVGElement", function () {
+                return svg.constructor === SVGSVGElement;
+            });
+
+            check("createElementNS returns non-root SVG element", function () {
+                return !!rect && rect.tagName === "rect";
+            });
+
+            check("rect namespaceURI is SVG namespace", function () {
+                return rect.namespaceURI === svgNs;
+            });
+
+            check("rect.constructor is SVGRectElement", function () {
+                return rect.constructor === SVGRectElement;
+            });
+
+            check("rect.constructor is not base SVGElement", function () {
+                return rect.constructor !== SVGElement;
+            });
+
+            if (failures === 0) {
+                console.log("svg-element-test: all checks passed");
+            } else {
+                console.log("svg-element-test: " + failures + " failures");
+            }
+        })();
+    </script>
+</body>
+</html>
+
+
+

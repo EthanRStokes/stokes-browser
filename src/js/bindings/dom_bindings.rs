@@ -1186,30 +1186,85 @@ pub fn setup_svg_constructors_deferred(runtime: &mut JsRuntime) -> Result<(), St
         (function() {
             const root = typeof globalThis !== 'undefined' ? globalThis : window;
 
-            if (typeof root.SVGElement !== 'function') {
-                function SVGElement() {
+            function normalizeElementConstructor() {
+                if (typeof root.Element === 'function') {
+                    return;
+                }
+
+                const oldElement = root.Element;
+                function Element() {
                     throw new TypeError('Illegal constructor');
                 }
 
-                if (typeof root.Element === 'function' && root.Element.prototype) {
-                    Object.setPrototypeOf(SVGElement.prototype, root.Element.prototype);
-                    Object.setPrototypeOf(SVGElement, root.Element);
+                if (oldElement && typeof oldElement === 'object') {
+                    const keys = Object.getOwnPropertyNames(oldElement);
+                    for (let i = 0; i < keys.length; i++) {
+                        const key = keys[i];
+                        if (key === 'prototype') {
+                            continue;
+                        }
+                        try {
+                            Element[key] = oldElement[key];
+                        } catch (_) {
+                        }
+                    }
                 }
 
-                root.SVGElement = SVGElement;
+                root.Element = Element;
             }
 
-            if (typeof root.SVGSVGElement !== 'function') {
-                function SVGSVGElement() {
-                    throw new TypeError('Illegal constructor');
+            function ensureConstructor(name, parentName) {
+                if (typeof root[name] !== 'function') {
+                    root[name] = function() {
+                        throw new TypeError('Illegal constructor');
+                    };
                 }
 
-                if (typeof root.SVGElement === 'function' && root.SVGElement.prototype) {
-                    Object.setPrototypeOf(SVGSVGElement.prototype, root.SVGElement.prototype);
-                    Object.setPrototypeOf(SVGSVGElement, root.SVGElement);
+                const ctor = root[name];
+                if (!ctor.prototype || typeof ctor.prototype !== 'object') {
+                    ctor.prototype = {};
                 }
 
-                root.SVGSVGElement = SVGSVGElement;
+                if (typeof parentName !== 'string') {
+                    return ctor;
+                }
+
+                const parentCtor = root[parentName];
+                if (typeof parentCtor !== 'function') {
+                    return ctor;
+                }
+
+                try {
+                    Object.setPrototypeOf(ctor, parentCtor);
+                    if (parentCtor.prototype && typeof parentCtor.prototype === 'object') {
+                        Object.setPrototypeOf(ctor.prototype, parentCtor.prototype);
+                    }
+                } catch (_) {
+                }
+
+                return ctor;
+            }
+
+            normalizeElementConstructor();
+
+            if (typeof root.HTMLElement !== 'function') {
+                root.HTMLElement = root.Element;
+            }
+
+            ensureConstructor('SVGElement', 'Element');
+            ensureConstructor('SVGGraphicsElement', 'SVGElement');
+            ensureConstructor('SVGGeometryElement', 'SVGGraphicsElement');
+            ensureConstructor('SVGSVGElement', 'SVGGraphicsElement');
+            ensureConstructor('SVGRectElement', 'SVGGeometryElement');
+
+            if (typeof root.HTMLElement === 'function' && typeof root.Element === 'function') {
+                try {
+                    Object.setPrototypeOf(root.HTMLElement, root.Element);
+                    if (root.Element.prototype && root.HTMLElement.prototype) {
+                        Object.setPrototypeOf(root.HTMLElement.prototype, root.Element.prototype);
+                    }
+                } catch (_) {
+                }
             }
         })();
     "#;
