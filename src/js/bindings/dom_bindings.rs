@@ -2,7 +2,7 @@ use super::super::helpers::{
     create_empty_array, create_js_string, define_function, js_value_to_string,
     set_bool_property, set_int_property, set_string_property, get_node_id_from_value,
 };
-use super::cookies::{ensure_cookie_jar_initialized, set_document_url, Cookie, COOKIE_JAR, DOCUMENT_URL};
+use super::cookies::{ensure_cookie_jar_initialized, set_document_url, COOKIE_JAR, DOCUMENT_URL};
 use super::element_bindings;
 // DOM bindings for JavaScript using mozjs
 use crate::dom::{AttributeMap, Dom};
@@ -1687,8 +1687,12 @@ unsafe extern "C" fn document_get_cookie(raw_cx: *mut JSContext, _argc: c_uint, 
         if let Some(ref url) = *url_opt {
             let domain = url.host_str().unwrap_or("localhost");
             let path = url.path();
+            let is_secure = url.scheme() == "https";
 
-            COOKIE_JAR.with(|jar| jar.borrow_mut().get_cookie_string(domain, path))
+            COOKIE_JAR.with(|jar| {
+                jar.borrow_mut()
+                    .get_document_cookie_string(domain, path, is_secure)
+            })
         } else {
             String::new()
         }
@@ -1719,12 +1723,14 @@ unsafe extern "C" fn document_set_cookie(raw_cx: *mut JSContext, argc: c_uint, v
         if let Some(ref url) = *url_opt {
             let domain = url.host_str().unwrap_or("localhost");
             let path = url.path();
+            let is_secure = url.scheme() == "https";
 
-            if let Some(cookie) = Cookie::parse(&cookie_str, domain, path) {
-                COOKIE_JAR.with(|jar| {
-                    jar.borrow_mut().set_cookie(cookie);
-                });
-            } else {
+            let set_ok = COOKIE_JAR.with(|jar| {
+                jar.borrow_mut()
+                    .set_from_document_cookie(&cookie_str, domain, path, is_secure)
+            });
+
+            if !set_ok {
                 warn!("[JS] Failed to parse cookie: {}", cookie_str);
             }
         }
