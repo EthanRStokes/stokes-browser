@@ -418,14 +418,14 @@ impl JsRuntime {
     pub fn process_timers(&mut self) -> bool {
         let timer_manager = self.timer_manager.clone();
         let had_timers = timer_manager.process_timers(self);
+        let had_fetch_settlements = crate::js::bindings::fetch::process_pending_fetches(self);
 
-        if had_timers {
-            // After executing timer callbacks, run any pending promise jobs
-            // that may have been scheduled by the timer callbacks
+        if had_timers || had_fetch_settlements {
+            // After timer callbacks or async fetch settlements, run pending promise jobs.
             self.run_pending_jobs();
         }
 
-        had_timers
+        had_timers || had_fetch_settlements
     }
 
     /// Get the runtime reference

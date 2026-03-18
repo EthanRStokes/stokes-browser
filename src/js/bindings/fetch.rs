@@ -4,8 +4,10 @@
 use crate::js::bindings::dom_bindings::{DOM_REF, USER_AGENT};
 use crate::js::helpers::{js_value_to_string, ToSafeCx};
 use crate::js::jsapi::js_promise::JsPromiseHandle;
+use crate::js::runtime::RUNTIME;
 use crate::js::JsRuntime;
 use curl::easy::{Easy, List};
+use lazy_static::lazy_static;
 use mozjs::context::JSContext as SafeJSContext;
 use mozjs::conversions::jsstr_to_string;
 use mozjs::gc::Handle;
@@ -18,17 +20,26 @@ use mozjs::rooted;
 use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JS_ParseJSON, NewArrayBuffer, NewPromiseObject, RejectPromise, ResolvePromise};
 use mozjs::rust::MutableHandleValue;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::Cell;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::CString;
 use std::os::raw::c_uint;
 use std::ptr::NonNull;
+use std::sync::Mutex;
 use std::time::Duration;
 use url::Url;
 
-/// Thread-local storage for the pending response data
-/// This is used to pass response data between fetch and Response methods
+const RESPONSE_ID_PROP: &str = "__stokesResponseId";
+const MAX_STORED_RESPONSES: usize = 256;
+
 thread_local! {
-    static PENDING_RESPONSE: RefCell<Option<FetchResponse>> = RefCell::new(None);
+    static RESPONSE_STORE: RefCell<HashMap<u64, FetchResponse>> = RefCell::new(HashMap::new());
+    static RESPONSE_ORDER: RefCell<VecDeque<u64>> = RefCell::new(VecDeque::new());
+    static NEXT_RESPONSE_ID: Cell<u64> = const { Cell::new(1) };
+}
+
+lazy_static! {
+    static ref FETCH_SETTLEMENT_QUEUE: Mutex<VecDeque<PendingFetchSettlement>> = Mutex::new(VecDeque::new());
 }
 
 /// Represents an HTTP response
@@ -40,6 +51,12 @@ struct FetchResponse {
     body: String,
     url: String,
     ok: bool,
+}
+
+struct PendingFetchSettlement {
+    runtime_ptr: usize,
+    promise_ptr: usize,
+    result: Result<FetchResponse, String>,
 }
 
 impl Default for FetchResponse {
@@ -143,36 +160,71 @@ unsafe extern "C" fn js_fetch(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSV
 
     // Get user agent
     let user_agent = USER_AGENT.with(|ua| ua.borrow().clone());
+    let Some(runtime_ptr) = current_runtime_ptr() else {
+        return create_rejected_promise(
+            safe_cx,
+            MutableHandleValue::from_raw(args.rval()),
+            "fetch: JavaScript runtime unavailable",
+        );
+    };
 
-    // Perform the fetch synchronously (for now - could be made async later)
-    let result = perform_fetch(&url, &method, &request_headers, request_body.as_deref(), &user_agent);
-
-    // Resolve or reject the promise using the current context
-    match result {
-        Ok(response) => {
-            // Store response for Response methods to access
-            PENDING_RESPONSE.with(|pr| {
-                *pr.borrow_mut() = Some(response.clone());
-            });
-
-            // Create Response object
-            let response_obj = create_response_object(safe_cx, &response);
-            rooted!(in(raw_cx) let promise = promise_ptr);
-            rooted!(in(raw_cx) let response_val = ObjectValue(response_obj));
-            ResolvePromise(safe_cx, promise.handle().into(), response_val.handle().into());
-        }
-        Err(err) => {
-            rooted!(in(raw_cx) let promise = promise_ptr);
-            let error_utf16: Vec<u16> = err.encode_utf16().collect();
-            rooted!(in(raw_cx) let error_str = JS_NewUCStringCopyN(safe_cx, error_utf16.as_ptr(), error_utf16.len()));
-            rooted!(in(raw_cx) let error_val = StringValue(&*error_str.get()));
-            RejectPromise(safe_cx, promise.handle().into(), error_val.handle().into());
-        }
-    }
-
+    spawn_fetch_job(
+        runtime_ptr,
+        promise_ptr as usize,
+        url,
+        method,
+        request_headers,
+        request_body,
+        user_agent,
+    );
 
     // Return the promise
     args.rval().set(ObjectValue(promise_ptr));
+    true
+}
+
+pub fn process_pending_fetches(runtime: &mut JsRuntime) -> bool {
+    let current_runtime_ptr = runtime as *mut JsRuntime as usize;
+    let settlements = {
+        let mut queue = FETCH_SETTLEMENT_QUEUE.lock().unwrap();
+        if queue.is_empty() {
+            return false;
+        }
+
+        queue.drain(..).collect::<Vec<_>>()
+    };
+
+    runtime.do_with_jsapi(|cx, _global| unsafe {
+        let raw_cx = cx.raw_cx();
+
+        for settlement in settlements {
+            if settlement.runtime_ptr != current_runtime_ptr {
+                continue;
+            }
+
+            rooted!(in(raw_cx) let promise = settlement.promise_ptr as *mut JSObject);
+            if promise.get().is_null() {
+                continue;
+            }
+
+            match settlement.result {
+                Ok(response) => {
+                    let response_obj = create_response_object(cx, &response);
+                    if response_obj.is_null() {
+                        reject_promise_with_error(cx, promise.handle().into(), "fetch: failed to create Response object");
+                        continue;
+                    }
+
+                    rooted!(in(raw_cx) let response_val = ObjectValue(response_obj));
+                    ResolvePromise(cx, promise.handle().into(), response_val.handle().into());
+                }
+                Err(err) => {
+                    reject_promise_with_error(cx, promise.handle().into(), &err);
+                }
+            }
+        }
+    });
+
     true
 }
 
@@ -344,6 +396,98 @@ fn perform_fetch(
     })
 }
 
+fn spawn_fetch_job(
+    runtime_ptr: usize,
+    promise_ptr: usize,
+    url: String,
+    method: String,
+    headers: HashMap<String, String>,
+    body: Option<String>,
+    user_agent: String,
+) {
+    std::thread::spawn(move || {
+        let result = perform_fetch(&url, &method, &headers, body.as_deref(), &user_agent);
+        enqueue_fetch_settlement(PendingFetchSettlement {
+            runtime_ptr,
+            promise_ptr,
+            result,
+        });
+    });
+}
+
+fn enqueue_fetch_settlement(settlement: PendingFetchSettlement) {
+    let mut queue = FETCH_SETTLEMENT_QUEUE.lock().unwrap();
+    queue.push_back(settlement);
+}
+
+fn current_runtime_ptr() -> Option<usize> {
+    RUNTIME.with(|cell| cell.borrow().map(|ptr| ptr as usize))
+}
+
+fn reserve_response_id() -> u64 {
+    NEXT_RESPONSE_ID.with(|next| {
+        let id = next.get();
+        next.set(id.wrapping_add(1).max(1));
+        id
+    })
+}
+
+fn store_response(response: &FetchResponse) -> u64 {
+    let id = reserve_response_id();
+    RESPONSE_STORE.with(|store| {
+        store.borrow_mut().insert(id, response.clone());
+    });
+    RESPONSE_ORDER.with(|order| {
+        let mut order = order.borrow_mut();
+        order.push_back(id);
+        if order.len() > MAX_STORED_RESPONSES {
+            if let Some(evicted_id) = order.pop_front() {
+                RESPONSE_STORE.with(|store| {
+                    store.borrow_mut().remove(&evicted_id);
+                });
+            }
+        }
+    });
+    id
+}
+
+unsafe fn response_from_this(cx: &mut SafeJSContext, args: &CallArgs) -> Option<FetchResponse> {
+    let raw_cx = cx.raw_cx();
+    let this_val = args.thisv();
+    if !this_val.is_object() {
+        return None;
+    }
+
+    rooted!(in(raw_cx) let this_obj = this_val.to_object());
+    let response_id = get_u64_property(cx, this_obj.handle().into(), RESPONSE_ID_PROP)?;
+
+    RESPONSE_STORE.with(|store| store.borrow().get(&response_id).cloned())
+}
+
+unsafe fn get_u64_property(cx: &mut SafeJSContext, obj: Handle<*mut JSObject>, name: &str) -> Option<u64> {
+    let raw_cx = cx.raw_cx();
+    let name_cstr = CString::new(name).ok()?;
+    rooted!(in(raw_cx) let mut val = UndefinedValue());
+
+    if !JS_GetProperty(cx, obj, name_cstr.as_ptr(), val.handle_mut().into()) {
+        return None;
+    }
+
+    if val.is_int32() {
+        return Some(val.to_int32() as u64);
+    }
+
+    None
+}
+
+unsafe fn reject_promise_with_error(cx: &mut SafeJSContext, promise: Handle<*mut JSObject>, error_msg: &str) {
+    let raw_cx = cx.raw_cx();
+    let error_utf16: Vec<u16> = error_msg.encode_utf16().collect();
+    rooted!(in(raw_cx) let error_str = JS_NewUCStringCopyN(cx, error_utf16.as_ptr(), error_utf16.len()));
+    rooted!(in(raw_cx) let error_val = StringValue(&*error_str.get()));
+    RejectPromise(cx, promise, error_val.handle().into());
+}
+
 /// Create a Response object from FetchResponse
 unsafe fn create_response_object(cx: &mut SafeJSContext, response: &FetchResponse) -> *mut JSObject {
     let raw_cx = cx.raw_cx();
@@ -398,6 +542,17 @@ unsafe fn create_response_object(cx: &mut SafeJSContext, response: &FetchRespons
         url_name.as_ptr(),
         url_val.handle().into(),
         JSPROP_ENUMERATE as u32,
+    );
+
+    let response_id_name = CString::new(RESPONSE_ID_PROP).unwrap();
+    let response_id = store_response(response);
+    rooted!(in(raw_cx) let response_id_val = Int32Value(response_id as i32));
+    JS_DefineProperty(
+        cx,
+        obj.handle().into(),
+        response_id_name.as_ptr(),
+        response_id_val.handle().into(),
+        0,
     );
 
     // Define text() method - returns Promise<string>
@@ -478,10 +633,9 @@ unsafe extern "C" fn response_text(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
-    // Get the stored response body
-    let body = PENDING_RESPONSE.with(|pr| {
-        pr.borrow().as_ref().map(|r| r.body.clone()).unwrap_or_default()
-    });
+    let body = response_from_this(safe_cx, &args)
+        .map(|r| r.body)
+        .unwrap_or_default();
 
     // Create a resolved promise with the body text
     rooted!(in(raw_cx) let null_obj = std::ptr::null_mut::<JSObject>());
@@ -506,10 +660,9 @@ unsafe extern "C" fn response_json(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
-    // Get the stored response body
-    let body = PENDING_RESPONSE.with(|pr| {
-        pr.borrow().as_ref().map(|r| r.body.clone()).unwrap_or_default()
-    });
+    let body = response_from_this(safe_cx, &args)
+        .map(|r| r.body)
+        .unwrap_or_default();
 
     // Create a promise
     rooted!(in(raw_cx) let null_obj = std::ptr::null_mut::<JSObject>());
@@ -540,17 +693,11 @@ unsafe extern "C" fn response_json(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
 }
 
 /// Response.blob() - Returns a Promise that resolves to a Blob (simplified implementation)
-// FIXME: This implementation consumes the global PENDING_RESPONSE store (taking the value out),
-// which means calling .blob() after .text() or .json() on the same Response will return empty
-// data.  A proper implementation should give each Response its own body store that can be
-// consumed only once (per the ReadableStream / Body mixin spec).
 unsafe extern "C" fn response_blob(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
-    let response = PENDING_RESPONSE.with(|pr| {
-        pr.borrow_mut().take().unwrap_or_default()
-    });
+    let response = response_from_this(safe_cx, &args).unwrap_or_default();
 
     let headers = response.headers;
     let body = &response.body;
@@ -609,10 +756,9 @@ unsafe extern "C" fn response_array_buffer(raw_cx: *mut JSContext, argc: c_uint,
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
-    // Get the stored response body
-    let body = PENDING_RESPONSE.with(|pr| {
-        pr.borrow().as_ref().map(|r| r.body.clone()).unwrap_or_default()
-    });
+    let body = response_from_this(safe_cx, &args)
+        .map(|r| r.body)
+        .unwrap_or_default();
 
     // Create a promise
     rooted!(in(raw_cx) let null_obj = std::ptr::null_mut::<JSObject>());
