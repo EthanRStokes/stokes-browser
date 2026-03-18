@@ -833,5 +833,3 @@ impl EventHandler for JsEventHandler {
         }
     }
 }
-
-

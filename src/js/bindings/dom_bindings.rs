@@ -612,6 +612,7 @@ unsafe fn setup_document(cx: &mut mozjs::context::JSContext, global: *mut JSObje
     define_function(cx, document.get(), "createElement", Some(document_create_element), 1)?;
     define_function(cx, document.get(), "createElementNS", Some(document_create_element_ns), 2)?;
     define_function(cx, document.get(), "createTextNode", Some(document_create_text_node), 1)?;
+    define_function(cx, document.get(), "createComment", Some(document_create_comment), 1)?;
     define_function(cx, document.get(), "createDocumentFragment", Some(document_create_document_fragment), 0)?;
     // Event handling on the document
     define_function(cx, document.get(), "addEventListener",    Some(document_add_event_listener),    3)?;
@@ -2189,10 +2190,15 @@ unsafe extern "C" fn document_create_text_node(raw_cx: *mut JSContext, argc: c_u
 
     trace!("[JS] document.createTextNode('{}') called", text);
 
-    // FIXME: The returned object has no __nodeId so it cannot be inserted into the DOM tree via
-    // appendChild / insertBefore (those helpers use get_node_id_from_value which will return None
-    // and silently skip the insertion).  Should call dom.create_text_node() here and store the
-    // resulting node ID as __nodeId on the returned JS object.
+    let text_node_id = DOM_REF.with(|dom| {
+        if let Some(dom_ptr) = *dom.borrow() {
+            let dom = &mut *dom_ptr;
+            let node_id = dom.create_text_node(&text);
+            return dom.get_node(node_id).map(|node| node.id);
+        }
+        None
+    });
+
     rooted!(in(raw_cx) let text_node = JS_NewPlainObject(raw_cx));
     if !text_node.get().is_null() {
         let _ = define_function(safe_cx, text_node.get(), "hasChildNodes", Some(node_has_child_nodes), 0);
@@ -2200,10 +2206,130 @@ unsafe extern "C" fn document_create_text_node(raw_cx: *mut JSContext, argc: c_u
         let _ = set_string_property(safe_cx, text_node.get(), "nodeName", "#text");
         let _ = set_string_property(safe_cx, text_node.get(), "textContent", &text);
         let _ = set_string_property(safe_cx, text_node.get(), "nodeValue", &text);
+
+        if let Some(node_id) = text_node_id {
+            rooted!(in(raw_cx) let node_id_val = mozjs::jsval::DoubleValue(node_id as f64));
+            rooted!(in(raw_cx) let text_rooted = text_node.get());
+            let node_id_name = std::ffi::CString::new("__nodeId").unwrap();
+            JS_DefineProperty(
+                raw_cx,
+                text_rooted.handle().into(),
+                node_id_name.as_ptr(),
+                node_id_val.handle().into(),
+                0,
+            );
+        }
+
+        rooted!(in(raw_cx) let null_val = NullValue());
+        rooted!(in(raw_cx) let text_rooted = text_node.get());
+        for prop in &["parentNode", "parentElement", "firstChild", "lastChild", "previousSibling", "nextSibling"] {
+            if let Ok(cname) = std::ffi::CString::new(*prop) {
+                JS_DefineProperty(
+                    raw_cx,
+                    text_rooted.handle().into(),
+                    cname.as_ptr(),
+                    null_val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        }
+
+        rooted!(in(raw_cx) let child_nodes = create_empty_array(safe_cx));
+        if !child_nodes.get().is_null() {
+            rooted!(in(raw_cx) let child_nodes_val = ObjectValue(child_nodes.get()));
+            let child_nodes_name = std::ffi::CString::new("childNodes").unwrap();
+            JS_DefineProperty(
+                raw_cx,
+                text_rooted.handle().into(),
+                child_nodes_name.as_ptr(),
+                child_nodes_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+
         args.rval().set(ObjectValue(text_node.get()));
     } else {
         args.rval().set(mozjs::jsval::NullValue());
     }
+    true
+}
+
+/// document.createComment implementation
+unsafe extern "C" fn document_create_comment(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    let comment_text = if argc > 0 {
+        js_value_to_string(safe_cx, *args.get(0))
+    } else {
+        String::new()
+    };
+
+    trace!("[JS] document.createComment('{}') called", comment_text);
+
+    let comment_node_id = DOM_REF.with(|dom| {
+        if let Some(dom_ptr) = *dom.borrow() {
+            let dom = &mut *dom_ptr;
+            let node_id = dom.create_comment_node();
+            return dom.get_node(node_id).map(|node| node.id);
+        }
+        None
+    });
+
+    rooted!(in(raw_cx) let comment_node = JS_NewPlainObject(raw_cx));
+    if comment_node.get().is_null() {
+        args.rval().set(NullValue());
+        return true;
+    }
+
+    let _ = define_function(safe_cx, comment_node.get(), "hasChildNodes", Some(node_has_child_nodes), 0);
+    let _ = set_int_property(safe_cx, comment_node.get(), "nodeType", 8);
+    let _ = set_string_property(safe_cx, comment_node.get(), "nodeName", "#comment");
+    // The DOM backend does not yet persist comment text, so keep it on the wrapper object.
+    let _ = set_string_property(safe_cx, comment_node.get(), "nodeValue", &comment_text);
+    let _ = set_string_property(safe_cx, comment_node.get(), "textContent", &comment_text);
+
+    if let Some(node_id) = comment_node_id {
+        rooted!(in(raw_cx) let node_id_val = mozjs::jsval::DoubleValue(node_id as f64));
+        rooted!(in(raw_cx) let comment_rooted = comment_node.get());
+        let node_id_name = std::ffi::CString::new("__nodeId").unwrap();
+        JS_DefineProperty(
+            raw_cx,
+            comment_rooted.handle().into(),
+            node_id_name.as_ptr(),
+            node_id_val.handle().into(),
+            0,
+        );
+    }
+
+    rooted!(in(raw_cx) let null_val = NullValue());
+    rooted!(in(raw_cx) let comment_rooted = comment_node.get());
+    for prop in &["parentNode", "parentElement", "firstChild", "lastChild", "previousSibling", "nextSibling"] {
+        if let Ok(cname) = std::ffi::CString::new(*prop) {
+            JS_DefineProperty(
+                raw_cx,
+                comment_rooted.handle().into(),
+                cname.as_ptr(),
+                null_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+    }
+
+    rooted!(in(raw_cx) let child_nodes = create_empty_array(safe_cx));
+    if !child_nodes.get().is_null() {
+        rooted!(in(raw_cx) let child_nodes_val = ObjectValue(child_nodes.get()));
+        let child_nodes_name = std::ffi::CString::new("childNodes").unwrap();
+        JS_DefineProperty(
+            raw_cx,
+            comment_rooted.handle().into(),
+            child_nodes_name.as_ptr(),
+            child_nodes_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+
+    args.rval().set(ObjectValue(comment_node.get()));
     true
 }
 

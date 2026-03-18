@@ -63,6 +63,18 @@ fn constructor_name_for_element(is_svg: bool, local_name: &str) -> &'static str 
     }
 }
 
+fn dom_node_id_or(node_id: usize) -> usize {
+    DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = *dom_ref.borrow() {
+            let dom = unsafe { &*dom_ptr };
+            if let Some(node) = dom.get_node(node_id) {
+                return node.id;
+            }
+        }
+        node_id
+    })
+}
+
 /// Create a JS element wrapper for a DOM node with its real tag name and attributes
 pub unsafe fn create_js_element_by_id(
     cx: &mut mozjs::context::JSContext,
@@ -70,7 +82,7 @@ pub unsafe fn create_js_element_by_id(
     tag_name: &str,
     attributes: &AttributeMap,
 ) -> Result<JSVal, String> {
-    create_js_element_impl(cx, node_id, tag_name, attributes, true)
+    create_js_element_impl(cx, node_id, tag_name, attributes, true, true)
 }
 
 /// Internal element wrapper builder.
@@ -83,22 +95,13 @@ unsafe fn create_js_element_impl(
     tag_name: &str,
     attributes: &AttributeMap,
     with_parent: bool,
+    with_tree_relations: bool,
 ) -> Result<JSVal, String> {
     let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let element = JS_NewPlainObject(cx));
     if element.get().is_null() {
         return Err("Failed to create element object".to_string());
     }
-
-    // Get id and className from attributes
-    let id_attr = attributes.iter()
-        .find(|attr| attr.name.local.as_ref() == "id")
-        .map(|attr| attr.value.as_ref())
-        .unwrap_or("");
-    let class_attr = attributes.iter()
-        .find(|attr| attr.name.local.as_ref() == "class")
-        .map(|attr| attr.value.as_ref())
-        .unwrap_or("");
 
     let (resolved_local_name, namespace_uri, is_html_element, is_svg_element, constructor_name) =
         DOM_REF.with(|dom_ref| {
@@ -146,8 +149,7 @@ unsafe fn create_js_element_impl(
     set_string_property(cx, element.get(), "nodeName", &display_name)?;
     set_string_property(cx, element.get(), "localName", &resolved_local_name)?;
     set_int_property(cx, element.get(), "nodeType", 1)?; // ELEMENT_NODE
-    set_string_property(cx, element.get(), "id", id_attr)?;
-    set_string_property(cx, element.get(), "className", class_attr)?;
+    // id/className are exposed through reflected accessors defined below.
     // FIXME: innerHTML always returns "" instead of serializing the element's child nodes as HTML.
     set_string_property(cx, element.get(), "innerHTML", "")?;
     // FIXME: outerHTML returns a stub "<tag></tag>" instead of the element's full serialized HTML
@@ -155,8 +157,9 @@ unsafe fn create_js_element_impl(
     set_string_property(cx, element.get(), "outerHTML", &format!("<{0}></{0}>", resolved_local_name))?;
     // Note: textContent will be defined as a property accessor below
 
-    // Store the node_id for reference to the actual DOM node
-    rooted!(in(raw_cx) let ptr_val = mozjs::jsval::DoubleValue(node_id as f64));
+    // Store the DomNode.id for reference to the actual DOM node.
+    let dom_node_id = dom_node_id_or(node_id);
+    rooted!(in(raw_cx) let ptr_val = mozjs::jsval::DoubleValue(dom_node_id as f64));
     rooted!(in(raw_cx) let element_rooted = element.get());
     let cname = std::ffi::CString::new("__nodeId").unwrap();
     JS_DefineProperty(
@@ -280,12 +283,24 @@ unsafe fn create_js_element_impl(
     define_function(cx, element.get(), "__setClassName", Some(element_set_class_name), 1)?;
     define_function(cx, element.get(), "__getShadowRoot", Some(element_get_shadow_root), 0)?;
     define_function(cx, element.get(), "__setShadowRoot", Some(element_set_shadow_root_noop), 1)?;
+    define_function(cx, element.get(), "__getFirstChild", Some(element_get_first_child), 0)?;
+    define_function(cx, element.get(), "__getLastChild", Some(element_get_last_child), 0)?;
+    define_function(cx, element.get(), "__getPreviousSibling", Some(element_get_previous_sibling), 0)?;
+    define_function(cx, element.get(), "__getNextSibling", Some(element_get_next_sibling), 0)?;
+    define_function(cx, element.get(), "__getChildren", Some(element_get_children), 0)?;
+    define_function(cx, element.get(), "__getChildNodes", Some(element_get_child_nodes), 0)?;
 
     // Define property accessors
     define_property_accessor(cx, element.get(), "textContent", "__getTextContent", "__setTextContent")?;
     define_property_accessor(cx, element.get(), "id", "__getId", "__setId")?;
     define_property_accessor(cx, element.get(), "className", "__getClassName", "__setClassName")?;
     define_property_accessor(cx, element.get(), "shadowRoot", "__getShadowRoot", "__setShadowRoot")?;
+    define_property_accessor(cx, element.get(), "firstChild", "__getFirstChild", "__setShadowRoot")?;
+    define_property_accessor(cx, element.get(), "lastChild", "__getLastChild", "__setShadowRoot")?;
+    define_property_accessor(cx, element.get(), "previousSibling", "__getPreviousSibling", "__setShadowRoot")?;
+    define_property_accessor(cx, element.get(), "nextSibling", "__getNextSibling", "__setShadowRoot")?;
+    define_property_accessor(cx, element.get(), "children", "__getChildren", "__setShadowRoot")?;
+    define_property_accessor(cx, element.get(), "childNodes", "__getChildNodes", "__setShadowRoot")?;
 
     // IDL-reflected attribute accessors (src, type, async)
     define_function(cx, element.get(), "__getSrc", Some(element_get_src), 0)?;
@@ -417,7 +432,7 @@ unsafe fn create_js_element_impl(
         // method (e.g. hasAttribute, getAttribute, matches, …) on it without hitting a
         // "not a function" error.  We pass `with_parent = false` to prevent the parent from
         // also building its own parent and so on (no infinite recursion).
-        if let Ok(parent_val) = create_js_element_impl(cx, parent_id, &parent_tag, &parent_attrs, false) {
+        if let Ok(parent_val) = create_js_element_impl(cx, parent_id, &parent_tag, &parent_attrs, false, false) {
             for name in &["parentNode", "parentElement"] {
                 let cname = std::ffi::CString::new(*name).unwrap();
                 rooted!(in(raw_cx) let pv = parent_val);
@@ -456,45 +471,6 @@ unsafe fn create_js_element_impl(
         }
     }
 
-    // Set sibling properties to null initially
-    // FIXME: firstChild, lastChild, previousSibling, and nextSibling are always null. They should
-    // be populated by looking up the node's actual siblings and first/last children in the DOM.
-    rooted!(in(raw_cx) let null_val = NullValue());
-    for name in &["firstChild", "lastChild", "previousSibling", "nextSibling"] {
-        let cname = std::ffi::CString::new(*name).unwrap();
-        JS_DefineProperty(
-            cx,
-            element_rooted.handle().into(),
-            cname.as_ptr(),
-            null_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-    }
-
-    // Create empty children and childNodes arrays
-    // FIXME: children and childNodes are always empty arrays. They should be populated with JS
-    // element wrappers for each actual child of this node in the DOM tree.
-    rooted!(in(raw_cx) let children_array = create_empty_array(cx));
-    if !children_array.get().is_null() {
-        rooted!(in(raw_cx) let children_val = ObjectValue(children_array.get()));
-        let cname = std::ffi::CString::new("children").unwrap();
-        JS_DefineProperty(
-            cx,
-            element_rooted.handle().into(),
-            cname.as_ptr(),
-            children_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-        let cname = std::ffi::CString::new("childNodes").unwrap();
-        JS_DefineProperty(
-            cx,
-            element_rooted.handle().into(),
-            cname.as_ptr(),
-            children_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-    }
-
     // Set dimension properties
     // FIXME: All element dimension/scroll properties are hardcoded to 0. They should reflect the
     // element's actual layout geometry from the renderer (offsetWidth, offsetHeight, clientWidth,
@@ -519,6 +495,151 @@ unsafe fn create_js_element_impl(
 pub unsafe fn create_stub_element(cx: &mut mozjs::context::JSContext, tag_name: &str) -> Result<JSVal, String> {
     // Create element with no attributes
     create_js_element_by_id(cx, 0, tag_name, &AttributeMap::empty())
+}
+
+unsafe fn create_js_text_node_by_id(
+    cx: &mut SafeJSContext,
+    node_id: usize,
+    text: &str,
+) -> Result<JSVal, String> {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let text_node = JS_NewPlainObject(cx));
+    if text_node.get().is_null() {
+        return Err("Failed to create text node object".to_string());
+    }
+
+    set_int_property(cx, text_node.get(), "nodeType", 3)?; // TEXT_NODE
+    set_string_property(cx, text_node.get(), "nodeName", "#text")?;
+    set_string_property(cx, text_node.get(), "nodeValue", text)?;
+    set_string_property(cx, text_node.get(), "textContent", text)?;
+    define_function(cx, text_node.get(), "hasChildNodes", Some(element_has_child_nodes), 0)?;
+
+    let dom_node_id = dom_node_id_or(node_id);
+    rooted!(in(raw_cx) let ptr_val = mozjs::jsval::DoubleValue(dom_node_id as f64));
+    rooted!(in(raw_cx) let text_rooted = text_node.get());
+    let cname = std::ffi::CString::new("__nodeId").unwrap();
+    JS_DefineProperty(
+        cx,
+        text_rooted.handle().into(),
+        cname.as_ptr(),
+        ptr_val.handle().into(),
+        0,
+    );
+
+    rooted!(in(raw_cx) let null_val = NullValue());
+    for name in &["parentNode", "parentElement", "firstChild", "lastChild", "previousSibling", "nextSibling"] {
+        let cname = std::ffi::CString::new(*name).unwrap();
+        JS_DefineProperty(
+            cx,
+            text_rooted.handle().into(),
+            cname.as_ptr(),
+            null_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+
+    rooted!(in(raw_cx) let child_nodes_array = create_empty_array(cx));
+    if !child_nodes_array.get().is_null() {
+        rooted!(in(raw_cx) let child_nodes_val = ObjectValue(child_nodes_array.get()));
+        let cname = std::ffi::CString::new("childNodes").unwrap();
+        JS_DefineProperty(
+            cx,
+            text_rooted.handle().into(),
+            cname.as_ptr(),
+            child_nodes_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+
+    Ok(ObjectValue(text_node.get()))
+}
+
+unsafe fn create_js_comment_node_by_id(cx: &mut SafeJSContext, node_id: usize) -> Result<JSVal, String> {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let comment_node = JS_NewPlainObject(cx));
+    if comment_node.get().is_null() {
+        return Err("Failed to create comment node object".to_string());
+    }
+
+    set_int_property(cx, comment_node.get(), "nodeType", 8)?; // COMMENT_NODE
+    set_string_property(cx, comment_node.get(), "nodeName", "#comment")?;
+    set_string_property(cx, comment_node.get(), "nodeValue", "")?;
+    set_string_property(cx, comment_node.get(), "textContent", "")?;
+    define_function(cx, comment_node.get(), "hasChildNodes", Some(element_has_child_nodes), 0)?;
+
+    let dom_node_id = dom_node_id_or(node_id);
+    rooted!(in(raw_cx) let ptr_val = mozjs::jsval::DoubleValue(dom_node_id as f64));
+    rooted!(in(raw_cx) let comment_rooted = comment_node.get());
+    let cname = std::ffi::CString::new("__nodeId").unwrap();
+    JS_DefineProperty(
+        cx,
+        comment_rooted.handle().into(),
+        cname.as_ptr(),
+        ptr_val.handle().into(),
+        0,
+    );
+
+    rooted!(in(raw_cx) let null_val = NullValue());
+    for name in &["parentNode", "parentElement", "firstChild", "lastChild", "previousSibling", "nextSibling"] {
+        let cname = std::ffi::CString::new(*name).unwrap();
+        JS_DefineProperty(
+            cx,
+            comment_rooted.handle().into(),
+            cname.as_ptr(),
+            null_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+
+    rooted!(in(raw_cx) let child_nodes_array = create_empty_array(cx));
+    if !child_nodes_array.get().is_null() {
+        rooted!(in(raw_cx) let child_nodes_val = ObjectValue(child_nodes_array.get()));
+        let cname = std::ffi::CString::new("childNodes").unwrap();
+        JS_DefineProperty(
+            cx,
+            comment_rooted.handle().into(),
+            cname.as_ptr(),
+            child_nodes_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+
+    Ok(ObjectValue(comment_node.get()))
+}
+
+unsafe fn create_js_node_wrapper_by_id(cx: &mut SafeJSContext, node_id: usize) -> Option<JSVal> {
+    enum NodeWrapperSeed {
+        Element(String, AttributeMap),
+        Text(String),
+        Comment,
+    }
+
+    let seed = DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = *dom_ref.borrow() {
+            let dom = &*dom_ptr;
+            if let Some(node) = dom.get_node(node_id) {
+                return match &node.data {
+                    NodeData::Element(elem_data) => Some(NodeWrapperSeed::Element(
+                        elem_data.name.local.to_string(),
+                        elem_data.attributes.clone(),
+                    )),
+                    NodeData::Text(text_data) => Some(NodeWrapperSeed::Text(text_data.content.clone())),
+                    NodeData::Comment => Some(NodeWrapperSeed::Comment),
+                    _ => None,
+                };
+            }
+        }
+        None
+    });
+
+    match seed {
+        Some(NodeWrapperSeed::Element(tag, attrs)) => {
+            create_js_element_impl(cx, node_id, &tag, &attrs, false, false).ok()
+        }
+        Some(NodeWrapperSeed::Text(text)) => create_js_text_node_by_id(cx, node_id, &text).ok(),
+        Some(NodeWrapperSeed::Comment) => create_js_comment_node_by_id(cx, node_id).ok(),
+        None => None,
+    }
 }
 
 // ============================================================================
@@ -693,6 +814,166 @@ unsafe extern "C" fn element_get_shadow_root(raw_cx: *mut JSContext, argc: c_uin
 unsafe extern "C" fn element_set_shadow_root_noop(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     args.rval().set(UndefinedValue());
+    true
+}
+
+unsafe extern "C" fn element_get_first_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    let first_child_val = get_node_id_from_this(safe_cx, &args).and_then(|node_id| {
+        DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &*dom_ptr;
+                if let Some(node) = dom.get_node(node_id) {
+                    return node.children.first().copied().and_then(|id| create_js_node_wrapper_by_id(safe_cx, id));
+                }
+            }
+            None
+        })
+    });
+
+    args.rval().set(first_child_val.unwrap_or(NullValue()));
+    true
+}
+
+unsafe extern "C" fn element_get_last_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    let last_child_val = get_node_id_from_this(safe_cx, &args).and_then(|node_id| {
+        DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &*dom_ptr;
+                if let Some(node) = dom.get_node(node_id) {
+                    return node.children.last().copied().and_then(|id| create_js_node_wrapper_by_id(safe_cx, id));
+                }
+            }
+            None
+        })
+    });
+
+    args.rval().set(last_child_val.unwrap_or(NullValue()));
+    true
+}
+
+unsafe extern "C" fn element_get_previous_sibling(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    let previous_val = get_node_id_from_this(safe_cx, &args).and_then(|node_id| {
+        DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &*dom_ptr;
+                return dom.previous_sibling_id(node_id).and_then(|id| create_js_node_wrapper_by_id(safe_cx, id));
+            }
+            None
+        })
+    });
+
+    args.rval().set(previous_val.unwrap_or(NullValue()));
+    true
+}
+
+unsafe extern "C" fn element_get_next_sibling(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    let next_val = get_node_id_from_this(safe_cx, &args).and_then(|node_id| {
+        DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &*dom_ptr;
+                return dom.next_sibling_id(node_id).and_then(|id| create_js_node_wrapper_by_id(safe_cx, id));
+            }
+            None
+        })
+    });
+
+    args.rval().set(next_val.unwrap_or(NullValue()));
+    true
+}
+
+unsafe extern "C" fn element_get_children(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    rooted!(in(raw_cx) let children_array = create_empty_array(safe_cx));
+    if !children_array.get().is_null() {
+        let child_ids = get_node_id_from_this(safe_cx, &args)
+            .map(|node_id| {
+                DOM_REF.with(|dom_ref| {
+                    if let Some(dom_ptr) = *dom_ref.borrow() {
+                        let dom = &*dom_ptr;
+                        if let Some(node) = dom.get_node(node_id) {
+                            return node
+                                .children
+                                .iter()
+                                .copied()
+                                .filter(|child_id| {
+                                    dom.get_node(*child_id)
+                                        .is_some_and(|child| matches!(child.data, NodeData::Element(_)))
+                                })
+                                .collect::<Vec<usize>>();
+                        }
+                    }
+                    Vec::new()
+                })
+            })
+            .unwrap_or_default();
+
+        for (idx, child_id) in child_ids.iter().enumerate() {
+            if let Some(child_val) = create_js_node_wrapper_by_id(safe_cx, *child_id) {
+                rooted!(in(raw_cx) let child_rooted = child_val);
+                rooted!(in(raw_cx) let children_obj = children_array.get());
+                JS_SetElement(
+                    safe_cx,
+                    children_obj.handle().into(),
+                    idx as u32,
+                    child_rooted.handle().into(),
+                );
+            }
+        }
+    }
+
+    args.rval().set(ObjectValue(children_array.get()));
+    true
+}
+
+unsafe extern "C" fn element_get_child_nodes(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    rooted!(in(raw_cx) let child_nodes_array = create_empty_array(safe_cx));
+    if !child_nodes_array.get().is_null() {
+        let child_ids = get_node_id_from_this(safe_cx, &args)
+            .map(|node_id| {
+                DOM_REF.with(|dom_ref| {
+                    if let Some(dom_ptr) = *dom_ref.borrow() {
+                        let dom = &*dom_ptr;
+                        if let Some(node) = dom.get_node(node_id) {
+                            return node.children.clone();
+                        }
+                    }
+                    Vec::new()
+                })
+            })
+            .unwrap_or_default();
+
+        for (idx, child_id) in child_ids.iter().enumerate() {
+            if let Some(child_val) = create_js_node_wrapper_by_id(safe_cx, *child_id) {
+                rooted!(in(raw_cx) let child_rooted = child_val);
+                rooted!(in(raw_cx) let child_nodes_obj = child_nodes_array.get());
+                JS_SetElement(
+                    safe_cx,
+                    child_nodes_obj.handle().into(),
+                    idx as u32,
+                    child_rooted.handle().into(),
+                );
+            }
+        }
+    }
+
+    args.rval().set(ObjectValue(child_nodes_array.get()));
     true
 }
 

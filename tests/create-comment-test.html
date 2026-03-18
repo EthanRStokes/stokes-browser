@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>createComment Test</title>
+    <style>
+        body { font-family: sans-serif; padding: 16px; }
+        .ok { color: #0a7f2e; }
+        .fail { color: #b00020; }
+        #log { background: #f5f5f5; padding: 12px; border-radius: 6px; }
+    </style>
+</head>
+<body>
+    <h1>document.createComment regression test</h1>
+    <div id="root"></div>
+    <div id="log"></div>
+
+    <script>
+        (function () {
+            var logEl = document.getElementById("log");
+            var failures = 0;
+
+            function line(text, ok) {
+                var div = document.createElement("div");
+                div.className = ok ? "ok" : "fail";
+                div.textContent = (ok ? "PASS: " : "FAIL: ") + text;
+                logEl.appendChild(div);
+                if (!ok) failures++;
+            }
+
+            function check(name, fn) {
+                try {
+                    line(name, !!fn());
+                } catch (err) {
+                    line(name + " threw " + String(err), false);
+                }
+            }
+
+            var root = document.getElementById("root");
+            var comment = document.createComment("hello-comment");
+
+            check("createComment returns object", function () {
+                return !!comment && typeof comment === "object";
+            });
+
+            check("nodeType is COMMENT_NODE", function () {
+                return comment.nodeType === 8;
+            });
+
+            check("nodeName is #comment", function () {
+                return comment.nodeName === "#comment";
+            });
+
+            check("nodeValue is set", function () {
+                return comment.nodeValue === "hello-comment";
+            });
+
+            root.appendChild(comment);
+
+            check("comment can be appended", function () {
+                return root.childNodes && root.childNodes.length === 1 && root.firstChild && root.firstChild.nodeType === 8;
+            });
+
+            if (failures === 0) {
+                console.log("create-comment-test: all checks passed");
+            } else {
+                console.log("create-comment-test: " + failures + " failure(s)");
+            }
+        })();
+    </script>
+</body>
+</html>
