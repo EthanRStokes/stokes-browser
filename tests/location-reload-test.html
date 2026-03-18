@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>location.reload Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 24px;
+        }
+
+        .status {
+            margin-top: 12px;
+            font-weight: bold;
+        }
+
+        button {
+            margin-top: 16px;
+            padding: 8px 14px;
+        }
+    </style>
+</head>
+<body>
+    <h1>location.reload() Test</h1>
+    <p>This page increments a persistent counter each time it loads.</p>
+    <p>Press the button to call <code>location.reload()</code>.</p>
+
+    <div id="load-count"></div>
+    <div id="status" class="status"></div>
+    <button id="reload-btn">Reload via location.reload()</button>
+
+    <script>
+        const countKey = 'location_reload_test_load_count';
+        const raw = localStorage.getItem(countKey);
+        const nextCount = (raw ? Number(raw) : 0) + 1;
+        localStorage.setItem(countKey, String(nextCount));
+
+        document.getElementById('load-count').textContent =
+            'Page load count (from localStorage): ' + nextCount;
+
+        document.getElementById('reload-btn').addEventListener('click', function() {
+            document.getElementById('status').textContent = 'Calling location.reload()...';
+            location.reload();
+        });
+    </script>
+</body>
+</html>
+

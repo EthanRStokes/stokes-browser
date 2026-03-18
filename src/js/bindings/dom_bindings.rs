@@ -25,6 +25,8 @@ use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, Unde
 use mozjs::rooted;
 use std::cell::RefCell;
 use std::os::raw::c_uint;
+use tracing::{info, trace, warn};
+use url::Url;
 use crate::js::helpers::ToSafeCx;
 
 // Thread-local storage for DOM reference
@@ -127,7 +129,7 @@ pub fn setup_cookie_property_deferred(runtime: &mut JsRuntime) -> Result<(), Str
 
     // Use the runtime's execute method which handles realm entry properly
     runtime.execute(script, false).map_err(|e| {
-        println!("[JS] Warning: Failed to set up document.cookie property: {}", e);
+        warn!("[JS] Failed to set up document.cookie property: {}", e);
         e
     })?;
 
@@ -149,7 +151,7 @@ pub fn setup_head_property_deferred(runtime: &mut JsRuntime) -> Result<(), Strin
 
     // Use the runtime's execute method which handles realm entry properly
     runtime.execute(script, false).map_err(|e| {
-        println!("[JS] Warning: Failed to set up document.head property: {}", e);
+        warn!("[JS] Failed to set up document.head property: {}", e);
         e
     })?;
 
@@ -173,7 +175,7 @@ pub fn setup_body_property_deferred(runtime: &mut JsRuntime) -> Result<(), Strin
     "#;
 
     runtime.execute(script, false).map_err(|e| {
-        println!("[JS] Warning: Failed to set up document.body property: {}", e);
+        warn!("[JS] Failed to set up document.body property: {}", e);
         e
     })?;
 
@@ -194,7 +196,7 @@ pub fn setup_current_script_deferred(runtime: &mut JsRuntime) -> Result<(), Stri
     "#;
 
     runtime.execute(script, false).map_err(|e| {
-        println!("[JS] Warning: Failed to set up document.currentScript property: {}", e);
+        warn!("[JS] Failed to set up document.currentScript property: {}", e);
         e
     })?;
 
@@ -340,7 +342,7 @@ pub fn setup_match_media_deferred(runtime: &mut JsRuntime) -> Result<(), String>
     "#;
 
     runtime.execute(script, false).map_err(|e| {
-        println!("[JS] Warning: Failed to set up window.matchMedia: {}", e);
+        warn!("[JS] Failed to set up window.matchMedia: {}", e);
         e
     })?;
 
@@ -868,7 +870,7 @@ unsafe extern "C" fn node_normalize(_raw_cx: *mut JSContext, argc: c_uint, vp: *
     let args = CallArgs::from_vp(vp, argc);
     // FIXME: Should merge adjacent text nodes and remove empty text nodes throughout this node's
     // subtree per the DOM Living Standard.
-    println!("[JS] node.normalize() called (stub)");
+    warn!("[JS] node.normalize() called (stub)");
     args.rval().set(UndefinedValue());
     true
 }
@@ -1013,7 +1015,7 @@ unsafe extern "C" fn node_lookup_prefix(_raw_cx: *mut JSContext, argc: c_uint, v
     let args = CallArgs::from_vp(vp, argc);
     // FIXME: Should walk namespace prefix declarations on this node and its ancestors to find
     // the prefix bound to the given namespace URI, returning null only if none is found.
-    println!("[JS] node.lookupPrefix() called (stub)");
+    warn!("[JS] node.lookupPrefix() called (stub)");
     args.rval().set(NullValue());
     true
 }
@@ -1023,7 +1025,7 @@ unsafe extern "C" fn node_lookup_namespace_uri(_raw_cx: *mut JSContext, argc: c_
     let args = CallArgs::from_vp(vp, argc);
     // FIXME: Should walk ancestor namespace declarations to find the URI bound to the given
     // prefix, returning null only if none is declared in scope.
-    println!("[JS] node.lookupNamespaceURI() called (stub)");
+    warn!("[JS] node.lookupNamespaceURI() called (stub)");
     args.rval().set(NullValue());
     true
 }
@@ -1033,7 +1035,7 @@ unsafe extern "C" fn node_is_default_namespace(_raw_cx: *mut JSContext, argc: c_
     let args = CallArgs::from_vp(vp, argc);
     // FIXME: Should check whether the given namespace URI is bound to the empty prefix (i.e. is
     // the default namespace) on this node or one of its ancestors.
-    println!("[JS] node.isDefaultNamespace() called (stub)");
+    warn!("[JS] node.isDefaultNamespace() called (stub)");
     args.rval().set(BooleanValue(false));
     true
 }
@@ -1270,7 +1272,7 @@ pub fn setup_svg_constructors_deferred(runtime: &mut JsRuntime) -> Result<(), St
     "#;
 
     runtime.execute(script, false).map_err(|e| {
-        println!("[JS] Warning: Failed to set up SVG constructors: {}", e);
+        warn!("[JS] Failed to set up SVG constructors: {}", e);
         e
     })?;
 
@@ -1483,7 +1485,7 @@ unsafe extern "C" fn document_set_cookie(raw_cx: *mut JSContext, argc: c_uint, v
         return true;
     };
 
-    println!("[JS] document.cookie = '{}' (setting cookie)", cookie_str);
+    trace!("[JS] document.cookie = '{}' (setting cookie)", cookie_str);
 
     ensure_cookie_jar_initialized();
 
@@ -1498,7 +1500,7 @@ unsafe extern "C" fn document_set_cookie(raw_cx: *mut JSContext, argc: c_uint, v
                     jar.borrow_mut().set_cookie(cookie);
                 });
             } else {
-                println!("[JS] Warning: Failed to parse cookie: {}", cookie_str);
+                warn!("[JS] Failed to parse cookie: {}", cookie_str);
             }
         }
     });
@@ -1512,7 +1514,7 @@ unsafe extern "C" fn document_get_head(raw_cx: *mut JSContext, argc: c_uint, vp:
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
-    println!("[JS] document.head called");
+    trace!("[JS] document.head called");
 
     let head_element = DOM_REF.with(|dom_ref| {
         if let Some(ref dom) = *dom_ref.borrow() {
@@ -1537,7 +1539,7 @@ unsafe extern "C" fn document_get_head(raw_cx: *mut JSContext, argc: c_uint, vp:
             args.rval().set(mozjs::jsval::NullValue());
         }
     } else {
-        println!("[JS] head element not found");
+        trace!("[JS] head element not found");
         args.rval().set(mozjs::jsval::NullValue());
     }
 
@@ -1651,7 +1653,7 @@ unsafe extern "C" fn document_get_element_by_id(raw_cx: *mut JSContext, argc: c_
         return true;
     }
 
-    println!("[JS] document.getElementById('{}') called", id);
+    trace!("[JS] document.getElementById('{}') called", id);
 
     let element_data = DOM_REF.with(|dom_ref| {
         if let Some(ref dom) = *dom_ref.borrow() {
@@ -1676,7 +1678,7 @@ unsafe extern "C" fn document_get_element_by_id(raw_cx: *mut JSContext, argc: c_
             args.rval().set(mozjs::jsval::NullValue());
         }
     } else {
-        println!("[JS] Element with id '{}' not found", id);
+        trace!("[JS] Element with id '{}' not found", id);
         args.rval().set(mozjs::jsval::NullValue());
     }
 
@@ -1694,7 +1696,7 @@ unsafe extern "C" fn document_get_elements_by_tag_name(raw_cx: *mut JSContext, a
         String::new()
     };
 
-    println!("[JS] document.getElementsByTagName('{}') called", tag_name);
+    trace!("[JS] document.getElementsByTagName('{}') called", tag_name);
 
     let matching_elements: Vec<(usize, String, AttributeMap)> = DOM_REF.with(|dom_ref| {
         let mut results = Vec::new();
@@ -1739,7 +1741,7 @@ unsafe extern "C" fn document_get_elements_by_class_name(raw_cx: *mut JSContext,
         String::new()
     };
 
-    println!("[JS] document.getElementsByClassName('{}') called", class_name);
+    trace!("[JS] document.getElementsByClassName('{}') called", class_name);
 
     let search_classes: Vec<&str> = class_name.split_whitespace().collect();
 
@@ -1787,7 +1789,7 @@ unsafe extern "C" fn document_query_selector(raw_cx: *mut JSContext, argc: c_uin
         String::new()
     };
 
-    println!("[JS] document.querySelector('{}') called", selector);
+    trace!("[JS] document.querySelector('{}') called", selector);
 
     let element_data = DOM_REF.with(|dom_ref| {
         if let Some(ref dom) = *dom_ref.borrow() {
@@ -1826,7 +1828,7 @@ unsafe extern "C" fn document_query_selector_all(raw_cx: *mut JSContext, argc: c
         String::new()
     };
 
-    println!("[JS] document.querySelectorAll('{}') called", selector);
+    trace!("[JS] document.querySelectorAll('{}') called", selector);
 
     let matching_elements: Vec<(usize, String, AttributeMap)> = DOM_REF.with(|dom_ref| {
         let mut results = Vec::new();
@@ -1873,7 +1875,7 @@ unsafe extern "C" fn document_create_element(raw_cx: *mut JSContext, argc: c_uin
         return true;
     }
 
-    println!("[JS] document.createElement('{}') called", tag_name);
+    trace!("[JS] document.createElement('{}') called", tag_name);
 
     DOM_REF.with(|dom| {
         if let Some(dom_ptr) = *dom.borrow() {
@@ -1961,7 +1963,7 @@ unsafe extern "C" fn document_create_text_node(raw_cx: *mut JSContext, argc: c_u
         String::new()
     };
 
-    println!("[JS] document.createTextNode('{}') called", text);
+    trace!("[JS] document.createTextNode('{}') called", text);
 
     // FIXME: The returned object has no __nodeId so it cannot be inserted into the DOM tree via
     // appendChild / insertBefore (those helpers use get_node_id_from_value which will return None
@@ -1986,7 +1988,7 @@ unsafe extern "C" fn document_create_document_fragment(raw_cx: *mut JSContext, a
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
-    println!("[JS] document.createDocumentFragment() called");
+    trace!("[JS] document.createDocumentFragment() called");
 
     // FIXME: The returned fragment has no __nodeId or real DOM backing. Children appended to it
     // via appendChild are not recorded in the DOM, and inserting the fragment itself into a
@@ -2039,7 +2041,7 @@ unsafe extern "C" fn window_confirm(raw_cx: *mut JSContext, argc: c_uint, vp: *m
         String::new()
     };
 
-    println!("[JS] window.confirm('{}') called - returning false", message);
+    trace!("[JS] window.confirm('{}') called - returning false", message);
     // FIXME: window.confirm() always returns false instead of displaying a dialog to the user
     // and returning their choice. Should dispatch a confirmation dialog via the browser UI.
     args.rval().set(BooleanValue(false));
@@ -2057,7 +2059,7 @@ unsafe extern "C" fn window_prompt(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
         String::new()
     };
 
-    println!("[JS] window.prompt('{}') called - returning null", message);
+    trace!("[JS] window.prompt('{}') called - returning null", message);
     // FIXME: window.prompt() always returns null (as if the user dismissed the dialog) instead of
     // displaying a text-input dialog and returning the entered string, or null on cancel.
     args.rval().set(mozjs::jsval::NullValue());
@@ -2067,7 +2069,7 @@ unsafe extern "C" fn window_prompt(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
 /// window.requestAnimationFrame implementation
 unsafe extern "C" fn window_request_animation_frame(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    println!("[JS] requestAnimationFrame called");
+    trace!("[JS] requestAnimationFrame called");
     // FIXME: The callback (args.get(0)) is never stored or invoked. requestAnimationFrame should
     // schedule the callback to be called before the next paint, passing the current DOMHighResTimeStamp.
     // The returned handle ID should also be unique so cancelAnimationFrame can identify it.
@@ -2078,7 +2080,7 @@ unsafe extern "C" fn window_request_animation_frame(raw_cx: *mut JSContext, argc
 /// window.cancelAnimationFrame implementation
 unsafe extern "C" fn window_cancel_animation_frame(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    println!("[JS] cancelAnimationFrame called");
+    trace!("[JS] cancelAnimationFrame called");
     args.rval().set(UndefinedValue());
     true
 }
@@ -2087,7 +2089,7 @@ unsafe extern "C" fn window_cancel_animation_frame(raw_cx: *mut JSContext, argc:
 unsafe extern "C" fn window_get_computed_style(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
-    println!("[JS] getComputedStyle called");
+    warn!("[JS] getComputedStyle called");
 
     // FIXME: Returns a stub CSSStyleDeclaration whose getPropertyValue always returns "".
     // A correct implementation must resolve the cascade (inherited styles, stylesheet rules,
@@ -2314,7 +2316,7 @@ unsafe extern "C" fn document_dispatch_event(raw_cx: *mut JSContext, argc: c_uin
 /// window.scrollTo implementation
 unsafe extern "C" fn window_scroll_to(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    println!("[JS] window.scrollTo called");
+    trace!("[JS] window.scrollTo called");
     // FIXME: Does not update the DOM viewport scroll position or trigger scroll events.
     // Should update DOM_REF viewport_scroll to the given (x, y) coordinates.
     args.rval().set(UndefinedValue());
@@ -2324,7 +2326,7 @@ unsafe extern "C" fn window_scroll_to(raw_cx: *mut JSContext, argc: c_uint, vp: 
 /// window.scrollBy implementation
 unsafe extern "C" fn window_scroll_by(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    println!("[JS] window.scrollBy called");
+    trace!("[JS] window.scrollBy called");
     // FIXME: Does not update the DOM viewport scroll position or trigger scroll events.
     // Should offset DOM_REF viewport_scroll by the given (dx, dy) values.
     args.rval().set(UndefinedValue());
@@ -2622,10 +2624,23 @@ fn approx_eq(a: f32, b: f32) -> bool {
 // ============================================================================
 
 /// location.reload implementation
+// FIXME fix the crash on second time with the test file
 unsafe extern "C" fn location_reload(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    println!("[JS] location.reload() called");
-    // FIXME: Does not actually reload the page. Should trigger a navigation to the current URL.
+    trace!("[JS] location.reload() called");
+
+    DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = dom_ref.borrow().as_ref() {
+            let dom = unsafe { &**dom_ptr };
+            let current_url: Url = (&dom.url).into();
+            dom.nav_provider.navigate_replace(NavigationOptions::new(
+                current_url,
+                String::from("text/plain"),
+                dom.id(),
+            ));
+        }
+    });
+
     args.rval().set(UndefinedValue());
     true
 }
@@ -2641,7 +2656,7 @@ unsafe extern "C" fn location_assign(raw_cx: *mut JSContext, argc: c_uint, vp: *
         String::new()
     };
 
-    println!("[JS] location.assign('{}') called", url);
+    trace!("[JS] location.assign('{}') called", url);
 
     DOM_REF.with(|dom_ref| {
         if let Some(dom_ptr) = dom_ref.borrow().as_ref() {
@@ -2671,7 +2686,7 @@ unsafe extern "C" fn location_replace(raw_cx: *mut JSContext, argc: c_uint, vp: 
         String::new()
     };
 
-    println!("[JS] location.replace('{}') called", url);
+    trace!("[JS] location.replace('{}') called", url);
 
     DOM_REF.with(|dom_ref| {
         if let Some(dom_ptr) = dom_ref.borrow().as_ref() {
@@ -2939,7 +2954,7 @@ unsafe extern "C" fn style_get_property_value(raw_cx: *mut JSContext, argc: c_ui
         String::new()
     };
 
-    println!("[JS] style.getPropertyValue('{}') called", property);
+    trace!("[JS] style.getPropertyValue('{}') called", property);
     // FIXME: Always returns "" — this version is used by getComputedStyle(). It should resolve
     // the computed value from the cascade (author stylesheets, inherited values, initial values)
     // for the target element rather than returning an empty string unconditionally.
@@ -2952,7 +2967,7 @@ unsafe extern "C" fn style_get_property_value(raw_cx: *mut JSContext, argc: c_ui
 unsafe extern "C" fn html_iframe_element_get_content_window(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
-    println!("[JS] HTMLIFrameElement.contentWindow getter called");
+    trace!("[JS] HTMLIFrameElement.contentWindow getter called");
 
     // For now, return null as iframe content window is not implemented
     // In a full implementation, this would return the Window object of the iframe's document
@@ -2966,7 +2981,7 @@ unsafe extern "C" fn html_iframe_element_get_content_window(raw_cx: *mut JSConte
 unsafe extern "C" fn html_iframe_element_set_content_window(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
-    println!("[JS] HTMLIFrameElement.contentWindow setter called");
+    trace!("[JS] HTMLIFrameElement.contentWindow setter called");
 
     // contentWindow is read-only in the spec, but we provide a setter to avoid errors
     args.rval().set(UndefinedValue());
@@ -2978,7 +2993,7 @@ unsafe extern "C" fn html_iframe_element_set_content_window(raw_cx: *mut JSConte
 unsafe extern "C" fn html_iframe_element_get_content_document(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
-    println!("[JS] HTMLIFrameElement.contentDocument getter called");
+    trace!("[JS] HTMLIFrameElement.contentDocument getter called");
 
     // For now, return null as iframe content document is not implemented
     // In a full implementation, this would return the Document object of the iframe
@@ -2991,7 +3006,7 @@ unsafe extern "C" fn html_iframe_element_get_content_document(raw_cx: *mut JSCon
 unsafe extern "C" fn html_iframe_element_set_content_document(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
-    println!("[JS] HTMLIFrameElement.contentDocument setter called");
+    trace!("[JS] HTMLIFrameElement.contentDocument setter called");
 
     // contentDocument is read-only in the spec, but we provide a setter to avoid errors
     args.rval().set(UndefinedValue());
@@ -3004,7 +3019,7 @@ unsafe extern "C" fn html_iframe_element_get_src(raw_cx: *mut JSContext, argc: c
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
-    println!("[JS] HTMLIFrameElement.src getter called");
+    trace!("[JS] HTMLIFrameElement.src getter called");
 
     // For now, return empty string
     // In a full implementation, this would get the src attribute from the element
@@ -3025,7 +3040,7 @@ unsafe extern "C" fn html_iframe_element_set_src(raw_cx: *mut JSContext, argc: c
         String::new()
     };
 
-    println!("[JS] HTMLIFrameElement.src setter called with value: {}", src);
+    trace!("[JS] HTMLIFrameElement.src setter called with value: {}", src);
 
     // In a full implementation, this would set the src attribute and potentially load the iframe
     args.rval().set(UndefinedValue());
@@ -3135,7 +3150,7 @@ pub fn setup_image_constructor_deferred(runtime: &mut JsRuntime) -> Result<(), S
     "#;
 
     runtime.execute(script, false).map_err(|e| {
-        println!("[JS] Warning: Failed to set up Image constructor: {}", e);
+        warn!("[JS] Failed to set up Image constructor: {}", e);
         e
     })?;
 
