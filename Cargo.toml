@@ -76,18 +76,18 @@ stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "2b3d3ac0", f
 dioxus-asset-resolver = { version = "0.7.3", features = ["native"] }
 
 [dependencies.glutin-winit]
-git = "https://github.com/Treetrain1/glutin.git"
+git = "https://github.com/EthanRStokes/glutin.git"
 rev = "48b8f8d"
 default-features = true
 
 [dependencies.glutin]
-git = "https://github.com/Treetrain1/glutin.git"
+git = "https://github.com/EthanRStokes/glutin.git"
 rev = "48b8f8d"
 default-features = true
 
 [patch.crates-io]
-glutin = { git = "https://github.com/Treetrain1/glutin.git" }
-glutin-winit = { git = "https://github.com/Treetrain1/glutin.git" }
+glutin = { git = "https://github.com/EthanRStokes/glutin.git" }
+glutin-winit = { git = "https://github.com/EthanRStokes/glutin.git" }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55.0"

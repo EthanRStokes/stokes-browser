@@ -1438,7 +1438,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 [[package]]
 name = "glutin"
 version = "0.32.3"
-source = "git+https://github.com/Treetrain1/glutin.git?rev=48b8f8d#48b8f8d2954ebcca2cf27f7310ed07071afea762"
+source = "git+https://github.com/EthanRStokes/glutin.git?rev=48b8f8d#48b8f8d2954ebcca2cf27f7310ed07071afea762"
 dependencies = [
  "bitflags 2.11.0",
  "cfg_aliases",
@@ -1462,7 +1462,7 @@ dependencies = [
 [[package]]
 name = "glutin-winit"
 version = "0.5.0"
-source = "git+https://github.com/Treetrain1/glutin.git?rev=48b8f8d#48b8f8d2954ebcca2cf27f7310ed07071afea762"
+source = "git+https://github.com/EthanRStokes/glutin.git?rev=48b8f8d#48b8f8d2954ebcca2cf27f7310ed07071afea762"
 dependencies = [
  "cfg_aliases",
  "glutin",
@@ -1473,7 +1473,7 @@ dependencies = [
 [[package]]
 name = "glutin_egl_sys"
 version = "0.7.1"
-source = "git+https://github.com/Treetrain1/glutin.git?rev=48b8f8d#48b8f8d2954ebcca2cf27f7310ed07071afea762"
+source = "git+https://github.com/EthanRStokes/glutin.git?rev=48b8f8d#48b8f8d2954ebcca2cf27f7310ed07071afea762"
 dependencies = [
  "gl_generator",
  "windows-sys 0.52.0",
@@ -1482,7 +1482,7 @@ dependencies = [
 [[package]]
 name = "glutin_glx_sys"
 version = "0.6.1"
-source = "git+https://github.com/Treetrain1/glutin.git?rev=48b8f8d#48b8f8d2954ebcca2cf27f7310ed07071afea762"
+source = "git+https://github.com/EthanRStokes/glutin.git?rev=48b8f8d#48b8f8d2954ebcca2cf27f7310ed07071afea762"
 dependencies = [
  "gl_generator",
  "x11-dl",
@@ -1491,7 +1491,7 @@ dependencies = [
 [[package]]
 name = "glutin_wgl_sys"
 version = "0.6.1"
-source = "git+https://github.com/Treetrain1/glutin.git?rev=48b8f8d#48b8f8d2954ebcca2cf27f7310ed07071afea762"
+source = "git+https://github.com/EthanRStokes/glutin.git?rev=48b8f8d#48b8f8d2954ebcca2cf27f7310ed07071afea762"
 dependencies = [
  "gl_generator",
 ]
@@ -6838,9 +6838,9 @@ dependencies = [
 [[patch.unused]]
 name = "glutin"
 version = "0.32.3"
-source = "git+https://github.com/Treetrain1/glutin.git#48b8f8d2954ebcca2cf27f7310ed07071afea762"
+source = "git+https://github.com/EthanRStokes/glutin.git#48b8f8d2954ebcca2cf27f7310ed07071afea762"
 
 [[patch.unused]]
 name = "glutin-winit"
 version = "0.5.0"
-source = "git+https://github.com/Treetrain1/glutin.git#48b8f8d2954ebcca2cf27f7310ed07071afea762"
+source = "git+https://github.com/EthanRStokes/glutin.git#48b8f8d2954ebcca2cf27f7310ed07071afea762"
