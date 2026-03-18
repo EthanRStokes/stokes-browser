@@ -80,6 +80,9 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
     // Set up document.currentScript property (must be done after DOM bindings are set up)
     dom_bindings::setup_current_script_deferred(runtime)?;
 
+    // Set up document.implementation and DOMImplementation methods
+    dom_bindings::setup_document_implementation_deferred(runtime)?;
+
     // Set up the global Image / HTMLImageElement constructor
     dom_bindings::setup_image_constructor_deferred(runtime)?;
 

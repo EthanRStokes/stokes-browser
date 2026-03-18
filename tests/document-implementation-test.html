@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>document.implementation Test</title>
+    <style>
+        body { font-family: sans-serif; margin: 24px; }
+        .ok { color: #157347; }
+        .fail { color: #b02a37; }
+        pre { background: #f6f8fa; padding: 12px; border-radius: 6px; }
+    </style>
+</head>
+<body>
+<h1>document.implementation Test</h1>
+<div id="results"></div>
+<pre id="log"></pre>
+<script>
+    const results = document.getElementById('results');
+    const log = document.getElementById('log');
+
+    function write(msg) {
+        log.textContent += msg + '\n';
+        console.log(msg);
+    }
+
+    function test(name, fn) {
+        const item = document.createElement('div');
+        try {
+            fn();
+            item.className = 'ok';
+            item.textContent = 'PASS: ' + name;
+        } catch (err) {
+            item.className = 'fail';
+            item.textContent = 'FAIL: ' + name + ' -> ' + String(err);
+        }
+        results.appendChild(item);
+    }
+
+    test('document.implementation exists', () => {
+        if (!document.implementation || typeof document.implementation !== 'object') {
+            throw new Error('document.implementation missing');
+        }
+    });
+
+    test('has core methods', () => {
+        const impl = document.implementation;
+        if (typeof impl.hasFeature !== 'function') throw new Error('hasFeature missing');
+        if (typeof impl.createHTMLDocument !== 'function') throw new Error('createHTMLDocument missing');
+        if (typeof impl.createDocumentType !== 'function') throw new Error('createDocumentType missing');
+        if (typeof impl.createDocument !== 'function') throw new Error('createDocument missing');
+    });
+
+    test('hasFeature returns true for compatibility', () => {
+        if (document.implementation.hasFeature('html', '1.0') !== true) {
+            throw new Error('expected true');
+        }
+    });
+
+    test('createHTMLDocument builds detached document structure', () => {
+        const detached = document.implementation.createHTMLDocument('Hello');
+        if (!detached || detached.nodeType !== 9) throw new Error('not a document node');
+        if (!detached.documentElement || detached.documentElement.tagName.toLowerCase() !== 'html') {
+            throw new Error('missing html root');
+        }
+        if (!detached.head || detached.head.tagName.toLowerCase() !== 'head') throw new Error('missing head');
+        if (!detached.body || detached.body.tagName.toLowerCase() !== 'body') throw new Error('missing body');
+        if (detached.title !== 'Hello') throw new Error('title mismatch');
+
+        const marker = detached.createElement('div');
+        marker.id = 'marker';
+        detached.body.appendChild(marker);
+
+        const found = detached.querySelector('#marker');
+        if (!found || found.id !== 'marker') throw new Error('querySelector did not find node');
+    });
+
+    test('createDocumentType and createDocument produce detached XML-ish document', () => {
+        const dt = document.implementation.createDocumentType('note', '', '');
+        if (!dt || dt.nodeType !== 10 || dt.name !== 'note') throw new Error('doctype mismatch');
+
+        const xmlDoc = document.implementation.createDocument('urn:test', 'test:root', dt);
+        if (!xmlDoc || xmlDoc.nodeType !== 9) throw new Error('xmlDoc missing');
+        if (!xmlDoc.documentElement) throw new Error('xml root missing');
+        if (!xmlDoc.doctype || xmlDoc.doctype.name !== 'note') throw new Error('doctype not attached');
+    });
+
+    write('Finished document.implementation checks.');
+</script>
+</body>
+</html>
+
