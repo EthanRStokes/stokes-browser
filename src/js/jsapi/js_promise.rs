@@ -4,6 +4,7 @@
 use crate::js::jsapi::error::{get_pending_exception, JsError};
 use crate::js::runtime::{JsRuntime, RUNTIME};
 use mozjs::jsapi::{AddRawValueRoot, GetPromiseState, HandleObject, HandleValue, Heap, JSContext, JSObject, JS_NewUCStringCopyN, NewPromiseObject, PromiseState, RejectPromise, RemoveRawValueRoot, ResolvePromise};
+use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsval::{JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers::JS_GetPromiseResult;
@@ -57,9 +58,10 @@ impl JsPromise {
     ///
     /// # Safety
     /// Must be called within a JS runtime context (inside do_with_jsapi callback)
-    pub unsafe fn new(cx: *mut JSContext) -> Result<Self, JsError> {
-        rooted!(in(cx) let null_executor = ptr::null_mut::<JSObject>());
-        rooted!(in(cx) let promise = NewPromiseObject(cx, HandleObject::from(null_executor.handle())));
+    pub unsafe fn new(cx: &mut SafeJSContext) -> Result<Self, JsError> {
+        let raw_cx = cx.raw_cx();
+        rooted!(in(raw_cx) let null_executor = ptr::null_mut::<JSObject>());
+        rooted!(in(raw_cx) let promise = NewPromiseObject(raw_cx, HandleObject::from(null_executor.handle())));
 
         if promise.get().is_null() {
             return Err(JsError {
@@ -84,7 +86,7 @@ impl JsPromise {
     /// # Safety
     /// - Must be called within a JS runtime context
     /// - The provided object must be a valid Promise object
-    pub unsafe fn from_object(cx: *mut JSContext, promise_obj: *mut JSObject) -> Result<Self, JsError> {
+    pub unsafe fn from_object(cx: &mut SafeJSContext, promise_obj: *mut JSObject) -> Result<Self, JsError> {
         if promise_obj.is_null() {
             return Err(JsError {
                 message: "Cannot create JsPromise from null object".to_string(),
@@ -104,7 +106,8 @@ impl JsPromise {
     }
 
     /// Initialize the root for the Promise object
-    unsafe fn init_root(&mut self, cx: *mut JSContext, obj: *mut JSObject) {
+    unsafe fn init_root(&mut self, cx: &mut SafeJSContext, obj: *mut JSObject) {
+        let raw_cx = cx.raw_cx();
         self.heap_obj.set(obj);
         self.permanent_js_root.set(ObjectValue(obj));
         let c_str = CString::new("JsPromise::root").unwrap();
@@ -113,7 +116,7 @@ impl JsPromise {
         #[cfg(target_arch = "aarch64")]
         let c_str = c_str.as_ptr() as *const u8;
         assert!(AddRawValueRoot(
-            cx,
+            raw_cx,
             self.permanent_js_root.get_unsafe(),
             c_str
         ));
@@ -128,8 +131,9 @@ impl JsPromise {
     ///
     /// # Safety
     /// Must be called within a JS runtime context
-    pub unsafe fn state(&self, _cx: *mut JSContext) -> JsPromiseState {
-        rooted!(in(_cx) let promise = self.heap_obj.get());
+    pub unsafe fn state(&self, cx: &mut SafeJSContext) -> JsPromiseState {
+        let raw_cx = cx.raw_cx();
+        rooted!(in(raw_cx) let promise = self.heap_obj.get());
         let state = GetPromiseState(promise.handle().into());
         JsPromiseState::from(state)
     }
@@ -138,9 +142,10 @@ impl JsPromise {
     ///
     /// # Safety
     /// Must be called within a JS runtime context
-    pub unsafe fn resolve(&self, cx: *mut JSContext, value: HandleValue) -> Result<(), JsError> {
-        rooted!(in(cx) let promise = self.heap_obj.get());
-        let ok = ResolvePromise(cx, promise.handle().into(), value);
+    pub unsafe fn resolve(&self, cx: &mut SafeJSContext, value: HandleValue) -> Result<(), JsError> {
+        let raw_cx = cx.raw_cx();
+        rooted!(in(raw_cx) let promise = self.heap_obj.get());
+        let ok = ResolvePromise(raw_cx, promise.handle().into(), value);
 
         if ok {
             Ok(())
@@ -160,8 +165,9 @@ impl JsPromise {
     ///
     /// # Safety
     /// Must be called within a JS runtime context
-    pub unsafe fn resolve_undefined(&self, cx: *mut JSContext) -> Result<(), JsError> {
-        rooted!(in(cx) let value = UndefinedValue());
+    pub unsafe fn resolve_undefined(&self, cx: &mut SafeJSContext) -> Result<(), JsError> {
+        let raw_cx = cx.raw_cx();
+        rooted!(in(raw_cx) let value = UndefinedValue());
         self.resolve(cx, value.handle().into())
     }
 
@@ -169,10 +175,11 @@ impl JsPromise {
     ///
     /// # Safety
     /// Must be called within a JS runtime context
-    pub unsafe fn resolve_string(&self, cx: *mut JSContext, value: &str) -> Result<(), JsError> {
+    pub unsafe fn resolve_string(&self, cx: &mut SafeJSContext, value: &str) -> Result<(), JsError> {
+        let raw_cx = cx.raw_cx();
         let utf16: Vec<u16> = value.encode_utf16().collect();
-        rooted!(in(cx) let str_obj = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len()));
-        rooted!(in(cx) let str_val = StringValue(&*str_obj.get()));
+        rooted!(in(raw_cx) let str_obj = JS_NewUCStringCopyN(raw_cx, utf16.as_ptr(), utf16.len()));
+        rooted!(in(raw_cx) let str_val = StringValue(&*str_obj.get()));
         self.resolve(cx, str_val.handle().into())
     }
 
@@ -180,9 +187,10 @@ impl JsPromise {
     ///
     /// # Safety
     /// Must be called within a JS runtime context
-    pub unsafe fn reject(&self, cx: *mut JSContext, reason: HandleValue) -> Result<(), JsError> {
-        rooted!(in(cx) let promise = self.heap_obj.get());
-        let ok = RejectPromise(cx, promise.handle().into(), reason);
+    pub unsafe fn reject(&self, cx: &mut SafeJSContext, reason: HandleValue) -> Result<(), JsError> {
+        let raw_cx = cx.raw_cx();
+        rooted!(in(raw_cx) let promise = self.heap_obj.get());
+        let ok = RejectPromise(raw_cx, promise.handle().into(), reason);
 
         if ok {
             Ok(())
@@ -202,10 +210,11 @@ impl JsPromise {
     ///
     /// # Safety
     /// Must be called within a JS runtime context
-    pub unsafe fn reject_string(&self, cx: *mut JSContext, message: &str) -> Result<(), JsError> {
+    pub unsafe fn reject_string(&self, cx: &mut SafeJSContext, message: &str) -> Result<(), JsError> {
+        let raw_cx = cx.raw_cx();
         let utf16: Vec<u16> = message.encode_utf16().collect();
-        rooted!(in(cx) let str_obj = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len()));
-        rooted!(in(cx) let str_val = StringValue(&*str_obj.get()));
+        rooted!(in(raw_cx) let str_obj = JS_NewUCStringCopyN(raw_cx, utf16.as_ptr(), utf16.len()));
+        rooted!(in(raw_cx) let str_val = StringValue(&*str_obj.get()));
         self.reject(cx, str_val.handle().into())
     }
 
@@ -215,14 +224,15 @@ impl JsPromise {
     ///
     /// # Safety
     /// Must be called within a JS runtime context
-    pub unsafe fn get_result(&self, cx: *mut JSContext) -> Option<JSVal> {
+    pub unsafe fn get_result(&self, cx: &mut SafeJSContext) -> Option<JSVal> {
+        let raw_cx = cx.raw_cx();
         let state = self.state(cx);
         if state == JsPromiseState::Pending {
             return None;
         }
 
-        rooted!(in(cx) let promise = self.heap_obj.get());
-        rooted!(in(cx) let mut result = UndefinedValue());
+        rooted!(in(raw_cx) let promise = self.heap_obj.get());
+        rooted!(in(raw_cx) let mut result = UndefinedValue());
         JS_GetPromiseResult(promise.handle().into(), result.handle_mut().into());
         Some(*result)
     }
@@ -283,7 +293,7 @@ impl JsPromiseHandle {
         let result: Result<usize, JsError> = runtime.do_in_es_event_queue_sync(move |_rt| {
             RUNTIME.with(|rc| unsafe {
                 let sm_rt = &mut *rc.borrow_mut().unwrap();
-                sm_rt.do_with_jsapi(|_rt, cx, _global| {
+                sm_rt.do_with_jsapi(|cx, _global| {
                     let promise = JsPromise::new(cx)?;
                     let ptr = promise.get() as usize;
                     *ptr_clone.lock().unwrap() = Some(ptr);
@@ -304,7 +314,7 @@ impl JsPromiseHandle {
     ///
     /// # Safety
     /// Must be called within a JS runtime context
-    pub unsafe fn create_direct(cx: *mut JSContext) -> Result<(*mut JSObject, Self), JsError> {
+    pub unsafe fn create_direct(cx: &mut SafeJSContext) -> Result<(*mut JSObject, Self), JsError> {
         let promise = JsPromise::new(cx)?;
         let ptr = promise.get();
         let ptr_usize = ptr as usize;
@@ -340,7 +350,7 @@ impl JsPromiseHandle {
         runtime.do_in_es_event_queue_sync(move |_rt| {
             RUNTIME.with(|rc| unsafe {
                 let sm_rt = &mut *rc.borrow_mut().unwrap();
-                sm_rt.do_with_jsapi(|_rt, cx, _global| {
+                sm_rt.do_with_jsapi(|cx, _global| {
                     let promise = JsPromise::from_object(cx, ptr as *mut JSObject)?;
                     let result = promise.resolve_undefined(cx);
                     std::mem::forget(promise); // Don't drop - still managed externally
@@ -366,7 +376,7 @@ impl JsPromiseHandle {
         runtime.do_in_es_event_queue_sync(move |_rt| {
             RUNTIME.with(|rc| unsafe {
                 let sm_rt = &mut *rc.borrow_mut().unwrap();
-                sm_rt.do_with_jsapi(|_rt, cx, _global| {
+                sm_rt.do_with_jsapi(|cx, _global| {
                     let promise = JsPromise::from_object(cx, ptr as *mut JSObject)?;
                     let result = promise.resolve_string(cx, &value);
                     std::mem::forget(promise); // Don't drop - still managed externally
@@ -392,7 +402,7 @@ impl JsPromiseHandle {
         runtime.do_in_es_event_queue_sync(move |_rt| {
             RUNTIME.with(|rc| unsafe {
                 let sm_rt = &mut *rc.borrow_mut().unwrap();
-                sm_rt.do_with_jsapi(|_rt, cx, _global| {
+                sm_rt.do_with_jsapi(|cx, _global| {
                     let promise = JsPromise::from_object(cx, ptr as *mut JSObject)?;
                     let result = promise.reject_string(cx, &message);
                     std::mem::forget(promise); // Don't drop - still managed externally
@@ -418,7 +428,7 @@ impl JsPromiseHandle {
         runtime.do_in_es_event_queue_sync(move |_rt| {
             RUNTIME.with(|rc| unsafe {
                 let sm_rt = &mut *rc.borrow_mut().unwrap();
-                sm_rt.do_with_jsapi(|_rt, cx, _global| {
+                sm_rt.do_with_jsapi(|cx, _global| {
                     let promise = JsPromise::from_object(cx, ptr as *mut JSObject)?;
                     let state = promise.state(cx);
                     std::mem::forget(promise); // Don't drop - still managed externally
@@ -445,7 +455,7 @@ impl JsPromiseBuilder {
     ///
     /// # Safety
     /// Must be called within a JS runtime context
-    pub unsafe fn resolved(cx: *mut JSContext, value: HandleValue) -> Result<JsPromise, JsError> {
+    pub unsafe fn resolved(cx: &mut SafeJSContext, value: HandleValue) -> Result<JsPromise, JsError> {
         let promise = JsPromise::new(cx)?;
         promise.resolve(cx, value)?;
         Ok(promise)
@@ -455,7 +465,7 @@ impl JsPromiseBuilder {
     ///
     /// # Safety
     /// Must be called within a JS runtime context
-    pub unsafe fn resolved_undefined(cx: *mut JSContext) -> Result<JsPromise, JsError> {
+    pub unsafe fn resolved_undefined(cx: &mut SafeJSContext) -> Result<JsPromise, JsError> {
         let promise = JsPromise::new(cx)?;
         promise.resolve_undefined(cx)?;
         Ok(promise)
@@ -465,7 +475,7 @@ impl JsPromiseBuilder {
     ///
     /// # Safety
     /// Must be called within a JS runtime context
-    pub unsafe fn resolved_string(cx: *mut JSContext, value: &str) -> Result<JsPromise, JsError> {
+    pub unsafe fn resolved_string(cx: &mut SafeJSContext, value: &str) -> Result<JsPromise, JsError> {
         let promise = JsPromise::new(cx)?;
         promise.resolve_string(cx, value)?;
         Ok(promise)
@@ -475,7 +485,7 @@ impl JsPromiseBuilder {
     ///
     /// # Safety
     /// Must be called within a JS runtime context
-    pub unsafe fn rejected(cx: *mut JSContext, reason: HandleValue) -> Result<JsPromise, JsError> {
+    pub unsafe fn rejected(cx: &mut SafeJSContext, reason: HandleValue) -> Result<JsPromise, JsError> {
         let promise = JsPromise::new(cx)?;
         promise.reject(cx, reason)?;
         Ok(promise)
@@ -485,7 +495,7 @@ impl JsPromiseBuilder {
     ///
     /// # Safety
     /// Must be called within a JS runtime context
-    pub unsafe fn rejected_string(cx: *mut JSContext, message: &str) -> Result<JsPromise, JsError> {
+    pub unsafe fn rejected_string(cx: &mut SafeJSContext, message: &str) -> Result<JsPromise, JsError> {
         let promise = JsPromise::new(cx)?;
         promise.reject_string(cx, message)?;
         Ok(promise)
@@ -517,7 +527,7 @@ impl JsRuntimePromiseExt for JsRuntime {
         self.do_in_es_event_queue_sync(move |_rt| {
             RUNTIME.with(|rc| unsafe {
                 let sm_rt = &mut *rc.borrow_mut().unwrap();
-                sm_rt.do_with_jsapi(|_rt, cx, _global| {
+                sm_rt.do_with_jsapi(|cx, _global| {
                     let promise = JsPromiseBuilder::resolved_string(cx, &value)?;
                     let ptr = promise.get() as usize;
                     std::mem::forget(promise);
@@ -532,7 +542,7 @@ impl JsRuntimePromiseExt for JsRuntime {
         self.do_in_es_event_queue_sync(move |_rt| {
             RUNTIME.with(|rc| unsafe {
                 let sm_rt = &mut *rc.borrow_mut().unwrap();
-                sm_rt.do_with_jsapi(|_rt, cx, _global| {
+                sm_rt.do_with_jsapi(|cx, _global| {
                     let promise = JsPromiseBuilder::rejected_string(cx, &message)?;
                     let ptr = promise.get() as usize;
                     std::mem::forget(promise);
@@ -551,17 +561,18 @@ impl JsRuntimePromiseExt for JsRuntime {
 /// # Safety
 /// Must be called within a JS runtime context
 pub unsafe fn result_to_promise<T, E>(
-    cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     result: Result<T, E>,
-    value_converter: impl FnOnce(*mut JSContext, T) -> Result<JSVal, JsError>,
+    value_converter: impl FnOnce(&mut SafeJSContext, T) -> Result<JSVal, JsError>,
 ) -> Result<JsPromise, JsError>
 where
     E: std::fmt::Display,
 {
     match result {
         Ok(value) => {
+            let raw_cx = cx.raw_cx();
             let js_val = value_converter(cx, value)?;
-            rooted!(in(cx) let val = js_val);
+            rooted!(in(raw_cx) let val = js_val);
             JsPromiseBuilder::resolved(cx, val.handle().into())
         }
         Err(e) => {

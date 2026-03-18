@@ -6,12 +6,12 @@
 //! - `CSS.registerProperty(descriptor)` (stub – no Houdini pipeline yet)
 //! - CSS Typed OM unit factories: `CSS.px()`, `CSS.em()`, `CSS.deg()`, etc.
 
+use crate::js::helpers::ToSafeCx;
 use crate::js::helpers::{create_js_string, define_function, js_value_to_string, set_string_property};
 use crate::js::JsRuntime;
 use cssparser::ParserInput;
-use mozjs::jsapi::{
-    CallArgs, JSContext, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JSPROP_ENUMERATE,
-};
+use mozjs::jsapi::{CallArgs, JSContext, JSObject, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JSPROP_ENUMERATE};
+use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsval::{BooleanValue, DoubleValue, JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use std::ffi::CString;
@@ -29,8 +29,9 @@ use url::Url;
 
 /// Register the `CSS` namespace object on the JS global.
 pub fn setup_css(runtime: &mut JsRuntime) -> Result<(), String> {
-    runtime.do_with_jsapi(|_rt, cx, global| unsafe {
-        rooted!(in(cx) let css_obj = JS_NewPlainObject(cx));
+    runtime.do_with_jsapi(|cx, global| unsafe {
+        let raw_cx = cx.raw_cx();
+        rooted!(in(raw_cx) let css_obj = JS_NewPlainObject(raw_cx));
         if css_obj.get().is_null() {
             return Err("Failed to create CSS object".to_string());
         }
@@ -127,10 +128,10 @@ pub fn setup_css(runtime: &mut JsRuntime) -> Result<(), String> {
         define_function(cx, css_obj.get(), "fr", Some(css_unit_fr), 1)?;
 
         // Attach to global as `CSS`
-        rooted!(in(cx) let css_val = ObjectValue(css_obj.get()));
+        rooted!(in(raw_cx) let css_val = ObjectValue(css_obj.get()));
         let name = CString::new("CSS").unwrap();
         if !JS_DefineProperty(
-            cx,
+            raw_cx,
             global.into(),
             name.as_ptr(),
             css_val.handle().into(),
@@ -156,13 +157,14 @@ pub fn setup_css(runtime: &mut JsRuntime) -> Result<(), String> {
 /// ```
 unsafe extern "C" fn css_supports(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let result = if argc >= 2 {
-        let property = js_value_to_string(raw_cx, *args.get(0));
-        let value = js_value_to_string(raw_cx, *args.get(1));
+        let property = js_value_to_string(safe_cx, *args.get(0));
+        let value = js_value_to_string(safe_cx, *args.get(1));
         property_value_supported(&property, &value)
     } else if argc == 1 {
-        let condition = js_value_to_string(raw_cx, *args.get(0));
+        let condition = js_value_to_string(safe_cx, *args.get(0));
         parse_supports_condition(&condition)
     } else {
         false
@@ -492,6 +494,7 @@ fn contains_top_level_keyword(text: &str, needle: &str) -> bool {
 /// https://www.w3.org/TR/cssom/#the-css.escape()-method
 unsafe extern "C" fn css_escape(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     if argc == 0 {
         // TypeError: not enough arguments
@@ -499,9 +502,9 @@ unsafe extern "C" fn css_escape(raw_cx: *mut JSContext, argc: c_uint, vp: *mut J
         return false;
     }
 
-    let value = js_value_to_string(raw_cx, *args.get(0));
+    let value = js_value_to_string(safe_cx, *args.get(0));
     let escaped = css_escape_ident(&value);
-    args.rval().set(create_js_string(raw_cx, &escaped));
+    args.rval().set(create_js_string(safe_cx, &escaped));
     true
 }
 
@@ -612,10 +615,11 @@ unsafe extern "C" fn css_register_property(
 /// Create a CSSUnitValue-like plain JS object `{ value, unit }` plus a
 /// `toString()` method.
 unsafe fn make_css_unit_value(
-    raw_cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     value: f64,
     unit: &str,
-) -> *mut mozjs::jsapi::JSObject {
+) -> *mut JSObject {
+    let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let obj = JS_NewPlainObject(raw_cx));
     if obj.get().is_null() {
         return std::ptr::null_mut();
@@ -633,11 +637,11 @@ unsafe fn make_css_unit_value(
     );
 
     // obj.unit = <string>
-    let _ = set_string_property(raw_cx, obj.get(), "unit", unit);
+    let _ = set_string_property(cx, obj.get(), "unit", unit);
 
     // obj.toString = function() { return value + unit; }
     // We define a generic toString that reads `this.value` and `this.unit`.
-    define_function(raw_cx, obj.get(), "toString", Some(css_unit_value_to_string), 0).ok();
+    define_function(cx, obj.get(), "toString", Some(css_unit_value_to_string), 0).ok();
 
     obj.get()
 }
@@ -649,10 +653,11 @@ unsafe extern "C" fn css_unit_value_to_string(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, 0);
+    let safe_cx = &mut raw_cx.to_safe_cx();
     let this = args.thisv().get();
 
     if !this.is_object() {
-        args.rval().set(create_js_string(raw_cx, ""));
+        args.rval().set(create_js_string(safe_cx, ""));
         return true;
     }
 
@@ -701,13 +706,13 @@ unsafe extern "C" fn css_unit_value_to_string(
         format!("{}{}", num, unit)
     };
 
-    args.rval().set(create_js_string(raw_cx, &formatted));
+    args.rval().set(create_js_string(safe_cx, &formatted));
     true
 }
 
 /// Shared implementation for all unit factory functions.
 unsafe fn unit_factory(
-    raw_cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     argc: c_uint,
     vp: *mut JSVal,
     unit: &str,
@@ -729,7 +734,7 @@ unsafe fn unit_factory(
         return false;
     };
 
-    let obj = make_css_unit_value(raw_cx, value, unit);
+    let obj = make_css_unit_value(cx, value, unit);
     if obj.is_null() {
         args.rval().set(UndefinedValue());
         return false;
@@ -750,7 +755,8 @@ macro_rules! unit_fn {
             argc: c_uint,
             vp: *mut JSVal,
         ) -> bool {
-            unit_factory(raw_cx, argc, vp, $unit)
+            let safe_cx = &mut raw_cx.to_safe_cx();
+            unit_factory(safe_cx, argc, vp, $unit)
         }
     };
 }

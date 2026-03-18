@@ -2,16 +2,16 @@
 // Provides the global fetch() function and Response object
 
 use crate::js::bindings::dom_bindings::{DOM_REF, USER_AGENT};
-use crate::js::helpers::js_value_to_string;
+use crate::js::helpers::{js_value_to_string, ToSafeCx};
 use crate::js::jsapi::js_promise::JsPromiseHandle;
 use crate::js::JsRuntime;
 use curl::easy::{Easy, List};
 use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::{
     CallArgs, HandleObject, JSContext, JSObject,
-    JS_DefineFunction, JS_DefineProperty, JS_NewPlainObject, JS_NewUCStringCopyN,
-    JS_ParseJSON, NewPromiseObject, RejectPromise, ResolvePromise, JSPROP_ENUMERATE,
+    JSPROP_ENUMERATE,
 };
+use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsval::{Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use std::cell::RefCell;
@@ -20,6 +20,8 @@ use std::ffi::CString;
 use std::os::raw::c_uint;
 use std::ptr::NonNull;
 use std::time::Duration;
+use mozjs::gc::Handle;
+use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JS_ParseJSON, NewPromiseObject, RejectPromise, ResolvePromise};
 use url::Url;
 
 /// Thread-local storage for the pending response data
@@ -59,7 +61,7 @@ pub fn setup_fetch(runtime: &mut JsRuntime, user_agent: String) -> Result<(), St
         *ua.borrow_mut() = user_agent;
     });
 
-    runtime.do_with_jsapi(|_rt, cx, global| unsafe {
+    runtime.do_with_jsapi(|cx, global| unsafe {
         // Define global fetch function
         let fetch_name = CString::new("fetch").unwrap();
         if JS_DefineFunction(
@@ -79,23 +81,24 @@ pub fn setup_fetch(runtime: &mut JsRuntime, user_agent: String) -> Result<(), St
 
 /// The global fetch() function implementation
 /// fetch(url, options?) -> Promise<Response>
-unsafe extern "C" fn js_fetch(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn js_fetch(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     // Must have at least one argument (the URL)
     if argc < 1 {
         // Create rejected promise with error
-        return create_rejected_promise(cx, args.rval(), "fetch requires at least 1 argument");
+        return create_rejected_promise(safe_cx, args.rval(), "fetch requires at least 1 argument");
     }
 
-    let input_url = match extract_fetch_input_url(cx, *args.get(0)) {
+    let input_url = match extract_fetch_input_url(safe_cx, *args.get(0)) {
         Some(v) => v,
-        None => return create_rejected_promise(cx, args.rval(), "fetch: invalid request input"),
+        None => return create_rejected_promise(safe_cx, args.rval(), "fetch: invalid request input"),
     };
 
     let url = match resolve_fetch_url(&input_url) {
         Ok(v) => v,
-        Err(msg) => return create_rejected_promise(cx, args.rval(), &msg),
+        Err(msg) => return create_rejected_promise(safe_cx, args.rval(), &msg),
     };
 
     // Parse request options (method, headers, body)
@@ -105,15 +108,15 @@ unsafe extern "C" fn js_fetch(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) 
 
     if argc > 1 && args.get(1).is_object() {
         let options_obj = args.get(1).to_object();
-        rooted!(in(cx) let options = options_obj);
+        rooted!(in(raw_cx) let options = options_obj);
 
         // Get method
-        if let Some(m) = get_string_property(cx, options.handle().into(), "method") {
+        if let Some(m) = get_string_property(safe_cx, options.handle(), "method") {
             method = m.to_uppercase();
         }
 
         // Get headers
-        if let Some(headers_val) = get_property_value(cx, options.handle().into(), "headers") {
+        if let Some(headers_val) = get_property_value(safe_cx, options.handle(), "headers") {
             if headers_val.is_object() {
                 // FIXME: Request headers object is parsed here but never applied to the curl request.
                 // Should iterate over the object's own enumerable properties and add each as an
@@ -122,13 +125,13 @@ unsafe extern "C" fn js_fetch(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) 
         }
 
         // Get body
-        if let Some(body) = get_string_property(cx, options.handle().into(), "body") {
+        if let Some(body) = get_string_property(safe_cx, options.handle(), "body") {
             request_body = Some(body);
         }
     }
 
     // Create a Promise for the fetch operation
-    let promise_ptr = match JsPromiseHandle::create_direct(cx) {
+    let promise_ptr = match JsPromiseHandle::create_direct(safe_cx) {
         Ok((ptr, _handle)) => ptr,
         Err(e) => {
             eprintln!("fetch: failed to create promise: {}", e.message);
@@ -152,17 +155,17 @@ unsafe extern "C" fn js_fetch(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) 
             });
 
             // Create Response object
-            let response_obj = create_response_object(cx, &response);
-            rooted!(in(cx) let promise = promise_ptr);
-            rooted!(in(cx) let response_val = ObjectValue(response_obj));
-            ResolvePromise(cx, promise.handle().into(), response_val.handle().into());
+            let response_obj = create_response_object(safe_cx, &response);
+            rooted!(in(raw_cx) let promise = promise_ptr);
+            rooted!(in(raw_cx) let response_val = ObjectValue(response_obj));
+            ResolvePromise(safe_cx, promise.handle().into(), response_val.handle().into());
         }
         Err(err) => {
-            rooted!(in(cx) let promise = promise_ptr);
+            rooted!(in(raw_cx) let promise = promise_ptr);
             let error_utf16: Vec<u16> = err.encode_utf16().collect();
-            rooted!(in(cx) let error_str = JS_NewUCStringCopyN(cx, error_utf16.as_ptr(), error_utf16.len()));
-            rooted!(in(cx) let error_val = StringValue(&*error_str.get()));
-            RejectPromise(cx, promise.handle().into(), error_val.handle().into());
+            rooted!(in(raw_cx) let error_str = JS_NewUCStringCopyN(safe_cx, error_utf16.as_ptr(), error_utf16.len()));
+            rooted!(in(raw_cx) let error_val = StringValue(&*error_str.get()));
+            RejectPromise(safe_cx, promise.handle().into(), error_val.handle().into());
         }
     }
 
@@ -191,7 +194,8 @@ fn resolve_fetch_url(input: &str) -> Result<String, String> {
     })
 }
 
-unsafe fn extract_fetch_input_url(cx: *mut JSContext, request_info: JSVal) -> Option<String> {
+unsafe fn extract_fetch_input_url(cx: &mut SafeJSContext, request_info: JSVal) -> Option<String> {
+    let raw_cx = cx.raw_cx();
     if request_info.is_undefined() || request_info.is_null() {
         return None;
     }
@@ -201,11 +205,11 @@ unsafe fn extract_fetch_input_url(cx: *mut JSContext, request_info: JSVal) -> Op
         if js_str.is_null() {
             return None;
         }
-        return Some(jsstr_to_string(cx, NonNull::new(js_str).unwrap()));
+        return Some(jsstr_to_string(raw_cx, NonNull::new(js_str).unwrap()));
     }
 
     if request_info.is_object() {
-        rooted!(in(cx) let obj = request_info.to_object());
+        rooted!(in(raw_cx) let obj = request_info.to_object());
         // Request and URL objects expose a string `url`/`href` we can consume.
         if let Some(url) = get_string_property(cx, obj.handle().into(), "url") {
             return Some(url);
@@ -340,15 +344,16 @@ fn perform_fetch(
 }
 
 /// Create a Response object from FetchResponse
-unsafe fn create_response_object(cx: *mut JSContext, response: &FetchResponse) -> *mut JSObject {
-    rooted!(in(cx) let obj = JS_NewPlainObject(cx));
+unsafe fn create_response_object(cx: &mut SafeJSContext, response: &FetchResponse) -> *mut JSObject {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let obj = JS_NewPlainObject(cx));
     if obj.get().is_null() {
         return std::ptr::null_mut();
     }
 
     // Set status property
     let status_name = CString::new("status").unwrap();
-    rooted!(in(cx) let status_val = Int32Value(response.status as i32));
+    rooted!(in(raw_cx) let status_val = Int32Value(response.status as i32));
     JS_DefineProperty(
         cx,
         obj.handle().into(),
@@ -360,8 +365,8 @@ unsafe fn create_response_object(cx: *mut JSContext, response: &FetchResponse) -
     // Set statusText property
     let status_text_name = CString::new("statusText").unwrap();
     let status_text_utf16: Vec<u16> = response.status_text.encode_utf16().collect();
-    rooted!(in(cx) let status_text_str = JS_NewUCStringCopyN(cx, status_text_utf16.as_ptr(), status_text_utf16.len()));
-    rooted!(in(cx) let status_text_val = StringValue(&*status_text_str.get()));
+    rooted!(in(raw_cx) let status_text_str = JS_NewUCStringCopyN(cx, status_text_utf16.as_ptr(), status_text_utf16.len()));
+    rooted!(in(raw_cx) let status_text_val = StringValue(&*status_text_str.get()));
     JS_DefineProperty(
         cx,
         obj.handle().into(),
@@ -372,7 +377,7 @@ unsafe fn create_response_object(cx: *mut JSContext, response: &FetchResponse) -
 
     // Set ok property
     let ok_name = CString::new("ok").unwrap();
-    rooted!(in(cx) let ok_val = mozjs::jsval::BooleanValue(response.ok));
+    rooted!(in(raw_cx) let ok_val = mozjs::jsval::BooleanValue(response.ok));
     JS_DefineProperty(
         cx,
         obj.handle().into(),
@@ -384,8 +389,8 @@ unsafe fn create_response_object(cx: *mut JSContext, response: &FetchResponse) -
     // Set url property
     let url_name = CString::new("url").unwrap();
     let url_utf16: Vec<u16> = response.url.encode_utf16().collect();
-    rooted!(in(cx) let url_str = JS_NewUCStringCopyN(cx, url_utf16.as_ptr(), url_utf16.len()));
-    rooted!(in(cx) let url_val = StringValue(&*url_str.get()));
+    rooted!(in(raw_cx) let url_str = JS_NewUCStringCopyN(cx, url_utf16.as_ptr(), url_utf16.len()));
+    rooted!(in(raw_cx) let url_val = StringValue(&*url_str.get()));
     JS_DefineProperty(
         cx,
         obj.handle().into(),
@@ -439,12 +444,12 @@ unsafe fn create_response_object(cx: *mut JSContext, response: &FetchResponse) -
     );
 
     // Create headers object
-    rooted!(in(cx) let headers_obj = JS_NewPlainObject(cx));
+    rooted!(in(raw_cx) let headers_obj = JS_NewPlainObject(cx));
     for (key, value) in &response.headers {
         let key_cstr = CString::new(key.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
         let value_utf16: Vec<u16> = value.encode_utf16().collect();
-        rooted!(in(cx) let value_str = JS_NewUCStringCopyN(cx, value_utf16.as_ptr(), value_utf16.len()));
-        rooted!(in(cx) let value_val = StringValue(&*value_str.get()));
+        rooted!(in(raw_cx) let value_str = JS_NewUCStringCopyN(cx, value_utf16.as_ptr(), value_utf16.len()));
+        rooted!(in(raw_cx) let value_val = StringValue(&*value_str.get()));
         JS_DefineProperty(
             cx,
             headers_obj.handle().into(),
@@ -455,7 +460,7 @@ unsafe fn create_response_object(cx: *mut JSContext, response: &FetchResponse) -
     }
 
     let headers_name = CString::new("headers").unwrap();
-    rooted!(in(cx) let headers_val = ObjectValue(headers_obj.get()));
+    rooted!(in(raw_cx) let headers_val = ObjectValue(headers_obj.get()));
     JS_DefineProperty(
         cx,
         obj.handle().into(),
@@ -468,8 +473,9 @@ unsafe fn create_response_object(cx: *mut JSContext, response: &FetchResponse) -
 }
 
 /// Response.text() - Returns a Promise that resolves to the body as text
-unsafe extern "C" fn response_text(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn response_text(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     // Get the stored response body
     let body = PENDING_RESPONSE.with(|pr| {
@@ -477,8 +483,8 @@ unsafe extern "C" fn response_text(cx: *mut JSContext, argc: c_uint, vp: *mut JS
     });
 
     // Create a resolved promise with the body text
-    rooted!(in(cx) let null_obj = std::ptr::null_mut::<JSObject>());
-    rooted!(in(cx) let promise = NewPromiseObject(cx, HandleObject::from(null_obj.handle())));
+    rooted!(in(raw_cx) let null_obj = std::ptr::null_mut::<JSObject>());
+    rooted!(in(raw_cx) let promise = NewPromiseObject(safe_cx, null_obj.handle()));
 
     if promise.get().is_null() {
         args.rval().set(UndefinedValue());
@@ -486,17 +492,18 @@ unsafe extern "C" fn response_text(cx: *mut JSContext, argc: c_uint, vp: *mut JS
     }
 
     let body_utf16: Vec<u16> = body.encode_utf16().collect();
-    rooted!(in(cx) let body_str = JS_NewUCStringCopyN(cx, body_utf16.as_ptr(), body_utf16.len()));
-    rooted!(in(cx) let body_val = StringValue(&*body_str.get()));
+    rooted!(in(raw_cx) let body_str = JS_NewUCStringCopyN(safe_cx, body_utf16.as_ptr(), body_utf16.len()));
+    rooted!(in(raw_cx) let body_val = StringValue(&*body_str.get()));
 
-    ResolvePromise(cx, promise.handle().into(), body_val.handle().into());
+    ResolvePromise(safe_cx, promise.handle().into(), body_val.handle().into());
     args.rval().set(ObjectValue(promise.get()));
     true
 }
 
 /// Response.json() - Returns a Promise that resolves to the body parsed as JSON
-unsafe extern "C" fn response_json(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn response_json(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     // Get the stored response body
     let body = PENDING_RESPONSE.with(|pr| {
@@ -504,8 +511,8 @@ unsafe extern "C" fn response_json(cx: *mut JSContext, argc: c_uint, vp: *mut JS
     });
 
     // Create a promise
-    rooted!(in(cx) let null_obj = std::ptr::null_mut::<JSObject>());
-    rooted!(in(cx) let promise = NewPromiseObject(cx, HandleObject::from(null_obj.handle())));
+    rooted!(in(raw_cx) let null_obj = std::ptr::null_mut::<JSObject>());
+    rooted!(in(raw_cx) let promise = NewPromiseObject(safe_cx, null_obj.handle()));
 
     if promise.get().is_null() {
         args.rval().set(UndefinedValue());
@@ -514,17 +521,17 @@ unsafe extern "C" fn response_json(cx: *mut JSContext, argc: c_uint, vp: *mut JS
 
     // Parse the JSON
     let body_utf16: Vec<u16> = body.encode_utf16().collect();
-    rooted!(in(cx) let mut json_val = UndefinedValue());
+    rooted!(in(raw_cx) let mut json_val = UndefinedValue());
 
-    if JS_ParseJSON(cx, body_utf16.as_ptr(), body_utf16.len() as u32, json_val.handle_mut().into()) {
-        ResolvePromise(cx, promise.handle().into(), json_val.handle().into());
+    if JS_ParseJSON(safe_cx, body_utf16.as_ptr(), body_utf16.len() as u32, json_val.handle_mut().into()) {
+        ResolvePromise(safe_cx, promise.handle().into(), json_val.handle().into());
     } else {
         // JSON parse error - reject the promise
         let error_msg = "JSON parse error";
         let error_utf16: Vec<u16> = error_msg.encode_utf16().collect();
-        rooted!(in(cx) let error_str = JS_NewUCStringCopyN(cx, error_utf16.as_ptr(), error_utf16.len()));
-        rooted!(in(cx) let error_val = StringValue(&*error_str.get()));
-        RejectPromise(cx, promise.handle().into(), error_val.handle().into());
+        rooted!(in(raw_cx) let error_str = JS_NewUCStringCopyN(safe_cx, error_utf16.as_ptr(), error_utf16.len()));
+        rooted!(in(raw_cx) let error_val = StringValue(&*error_str.get()));
+        RejectPromise(safe_cx, promise.handle().into(), error_val.handle().into());
     }
 
     args.rval().set(ObjectValue(promise.get()));
@@ -536,8 +543,9 @@ unsafe extern "C" fn response_json(cx: *mut JSContext, argc: c_uint, vp: *mut JS
 // which means calling .blob() after .text() or .json() on the same Response will return empty
 // data.  A proper implementation should give each Response its own body store that can be
 // consumed only once (per the ReadableStream / Body mixin spec).
-unsafe extern "C" fn response_blob(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn response_blob(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let response = PENDING_RESPONSE.with(|pr| {
         pr.borrow_mut().take().unwrap_or_default()
@@ -547,8 +555,8 @@ unsafe extern "C" fn response_blob(cx: *mut JSContext, argc: c_uint, vp: *mut JS
     let body = &response.body;
 
     // Create a promise
-    rooted!(in(cx) let null_obj = std::ptr::null_mut::<JSObject>());
-    rooted!(in(cx) let promise = NewPromiseObject(cx, HandleObject::from(null_obj.handle())));
+    rooted!(in(raw_cx) let null_obj = std::ptr::null_mut::<JSObject>());
+    rooted!(in(raw_cx) let promise = NewPromiseObject(safe_cx, null_obj.handle()));
 
     if promise.get().is_null() {
         args.rval().set(UndefinedValue());
@@ -556,13 +564,13 @@ unsafe extern "C" fn response_blob(cx: *mut JSContext, argc: c_uint, vp: *mut JS
     }
 
     // Create a simple blob-like object (real Blob API would be more complex)
-    rooted!(in(cx) let blob = JS_NewPlainObject(cx));
+    rooted!(in(raw_cx) let blob = JS_NewPlainObject(safe_cx));
 
     // Set size property
     let size_name = CString::new("size").unwrap();
-    rooted!(in(cx) let size_val = Int32Value(body.len() as i32));
+    rooted!(in(raw_cx) let size_val = Int32Value(body.len() as i32));
     JS_DefineProperty(
-        cx,
+        safe_cx,
         blob.handle().into(),
         size_name.as_ptr(),
         size_val.handle().into(),
@@ -577,18 +585,18 @@ unsafe extern "C" fn response_blob(cx: *mut JSContext, argc: c_uint, vp: *mut JS
         .unwrap_or_else(|| "text/plain".to_string());
     let type_name = CString::new("type").unwrap();
     let type_utf16: Vec<u16> = content_type.encode_utf16().collect();
-    rooted!(in(cx) let type_js_str = JS_NewUCStringCopyN(cx, type_utf16.as_ptr(), type_utf16.len()));
-    rooted!(in(cx) let type_val = StringValue(&*type_js_str.get()));
+    rooted!(in(raw_cx) let type_js_str = JS_NewUCStringCopyN(safe_cx, type_utf16.as_ptr(), type_utf16.len()));
+    rooted!(in(raw_cx) let type_val = StringValue(&*type_js_str.get()));
     JS_DefineProperty(
-        cx,
+        safe_cx,
         blob.handle().into(),
         type_name.as_ptr(),
         type_val.handle().into(),
         JSPROP_ENUMERATE as u32,
     );
 
-    rooted!(in(cx) let blob_val = ObjectValue(blob.get()));
-    ResolvePromise(cx, promise.handle().into(), blob_val.handle().into());
+    rooted!(in(raw_cx) let blob_val = ObjectValue(blob.get()));
+    ResolvePromise(safe_cx, promise.handle().into(), blob_val.handle().into());
     args.rval().set(ObjectValue(promise.get()));
     true
 }
@@ -596,8 +604,9 @@ unsafe extern "C" fn response_blob(cx: *mut JSContext, argc: c_uint, vp: *mut JS
 /// Response.arrayBuffer() - Returns a Promise that resolves to an ArrayBuffer
 /// Note: This is a simplified implementation that creates an empty ArrayBuffer
 /// A full implementation would need to properly copy the response body data
-unsafe extern "C" fn response_array_buffer(cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn response_array_buffer(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     // Get the stored response body
     let body = PENDING_RESPONSE.with(|pr| {
@@ -605,8 +614,8 @@ unsafe extern "C" fn response_array_buffer(cx: *mut JSContext, argc: c_uint, vp:
     });
 
     // Create a promise
-    rooted!(in(cx) let null_obj = std::ptr::null_mut::<JSObject>());
-    rooted!(in(cx) let promise = NewPromiseObject(cx, HandleObject::from(null_obj.handle())));
+    rooted!(in(raw_cx) let null_obj = std::ptr::null_mut::<JSObject>());
+    rooted!(in(raw_cx) let promise = NewPromiseObject(safe_cx, null_obj.handle()));
 
     if promise.get().is_null() {
         args.rval().set(UndefinedValue());
@@ -619,18 +628,18 @@ unsafe extern "C" fn response_array_buffer(cx: *mut JSContext, argc: c_uint, vp:
     // copied into it. Use JS_GetArrayBufferData (or similar) to obtain a mutable pointer to the
     // buffer's backing store and write body_bytes into it so callers receive actual response data.
     let body_bytes = body.as_bytes();
-    rooted!(in(cx) let array_buffer = mozjs::jsapi::NewArrayBuffer(cx, body_bytes.len()));
+    rooted!(in(raw_cx) let array_buffer = mozjs::jsapi::NewArrayBuffer(raw_cx, body_bytes.len()));
 
     if !array_buffer.get().is_null() {
-        rooted!(in(cx) let ab_val = ObjectValue(array_buffer.get()));
-        ResolvePromise(cx, promise.handle().into(), ab_val.handle().into());
+        rooted!(in(raw_cx) let ab_val = ObjectValue(array_buffer.get()));
+        ResolvePromise(safe_cx, promise.handle().into(), ab_val.handle().into());
     } else {
         // Failed to create ArrayBuffer
         let error_msg = "Failed to create ArrayBuffer";
         let error_utf16: Vec<u16> = error_msg.encode_utf16().collect();
-        rooted!(in(cx) let error_str = JS_NewUCStringCopyN(cx, error_utf16.as_ptr(), error_utf16.len()));
-        rooted!(in(cx) let error_val = StringValue(&*error_str.get()));
-        RejectPromise(cx, promise.handle().into(), error_val.handle().into());
+        rooted!(in(raw_cx) let error_str = JS_NewUCStringCopyN(safe_cx, error_utf16.as_ptr(), error_utf16.len()));
+        rooted!(in(raw_cx) let error_val = StringValue(&*error_str.get()));
+        RejectPromise(safe_cx, promise.handle().into(), error_val.handle().into());
     }
 
     args.rval().set(ObjectValue(promise.get()));
@@ -638,9 +647,10 @@ unsafe extern "C" fn response_array_buffer(cx: *mut JSContext, argc: c_uint, vp:
 }
 
 /// Create a rejected promise with an error message
-unsafe fn create_rejected_promise(cx: *mut JSContext, rval: mozjs::jsapi::MutableHandleValue, error_msg: &str) -> bool {
-    rooted!(in(cx) let null_obj = std::ptr::null_mut::<JSObject>());
-    rooted!(in(cx) let promise = NewPromiseObject(cx, HandleObject::from(null_obj.handle())));
+unsafe fn create_rejected_promise(cx: &mut SafeJSContext, rval: mozjs::jsapi::MutableHandleValue, error_msg: &str) -> bool {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let null_obj = std::ptr::null_mut::<JSObject>());
+    rooted!(in(raw_cx) let promise = NewPromiseObject(cx, null_obj.handle()));
 
     if promise.get().is_null() {
         rval.set(UndefinedValue());
@@ -648,8 +658,8 @@ unsafe fn create_rejected_promise(cx: *mut JSContext, rval: mozjs::jsapi::Mutabl
     }
 
     let error_utf16: Vec<u16> = error_msg.encode_utf16().collect();
-    rooted!(in(cx) let error_str = JS_NewUCStringCopyN(cx, error_utf16.as_ptr(), error_utf16.len()));
-    rooted!(in(cx) let error_val = StringValue(&*error_str.get()));
+    rooted!(in(raw_cx) let error_str = JS_NewUCStringCopyN(cx, error_utf16.as_ptr(), error_utf16.len()));
+    rooted!(in(raw_cx) let error_val = StringValue(&*error_str.get()));
 
     RejectPromise(cx, promise.handle().into(), error_val.handle().into());
     rval.set(ObjectValue(promise.get()));
@@ -693,11 +703,12 @@ fn get_status_text(status: u32) -> String {
 }
 
 /// Helper: Get a string property from a JS object
-unsafe fn get_string_property(cx: *mut JSContext, obj: HandleObject, name: &str) -> Option<String> {
+unsafe fn get_string_property(cx: &mut SafeJSContext, obj: Handle<*mut JSObject>, name: &str) -> Option<String> {
+    let raw_cx = cx.raw_cx();
     let name_cstr = CString::new(name).ok()?;
-    rooted!(in(cx) let mut val = UndefinedValue());
+    rooted!(in(raw_cx) let mut val = UndefinedValue());
 
-    if !mozjs::jsapi::JS_GetProperty(cx, obj, name_cstr.as_ptr(), val.handle_mut().into()) {
+    if !JS_GetProperty(cx, obj, name_cstr.as_ptr(), val.handle_mut().into()) {
         return None;
     }
 
@@ -710,18 +721,19 @@ unsafe fn get_string_property(cx: *mut JSContext, obj: HandleObject, name: &str)
         if js_str.is_null() {
             return None;
         }
-        Some(jsstr_to_string(cx, NonNull::new(js_str).unwrap()))
+        Some(jsstr_to_string(raw_cx, NonNull::new(js_str).unwrap()))
     } else {
         None
     }
 }
 
 /// Helper: Get a property value from a JS object
-unsafe fn get_property_value(cx: *mut JSContext, obj: HandleObject, name: &str) -> Option<JSVal> {
+unsafe fn get_property_value(cx: &mut SafeJSContext, obj: Handle<*mut JSObject>, name: &str) -> Option<JSVal> {
+    let raw_cx = cx.raw_cx();
     let name_cstr = CString::new(name).ok()?;
-    rooted!(in(cx) let mut val = UndefinedValue());
+    rooted!(in(raw_cx) let mut val = UndefinedValue());
 
-    if !mozjs::jsapi::JS_GetProperty(cx, obj, name_cstr.as_ptr(), val.handle_mut().into()) {
+    if !JS_GetProperty(cx, obj, name_cstr.as_ptr(), val.handle_mut().into()) {
         return None;
     }
 

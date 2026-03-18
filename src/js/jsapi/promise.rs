@@ -1,8 +1,10 @@
 use crate::js::jsapi::error::{get_pending_exception, JsError};
 use crate::js::helpers::js_value_to_string;
-use mozjs::jsapi::{AddRawValueRoot, CurrentGlobalOrNull, HandleObject, HandleValue, HandleValueArray, Heap, JSContext, JSObject, JS_CallFunctionValue, PromiseRejectionHandlingState, RemoveRawValueRoot, ResolvePromise, SetPromiseRejectionTrackerCallback};
+use mozjs::jsapi::{AddRawValueRoot, CurrentGlobalOrNull, HandleObject, HandleValue, HandleValueArray, Heap, JSAutoRealm, JSContext, JSObject, JS_CallFunctionValue, PromiseRejectionHandlingState, RemoveRawValueRoot, ResolvePromise, SetPromiseRejectionTrackerCallback};
 use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
+use mozjs::context::JSContext as SafeJSContext;
 use mozjs::panic::wrap_panic;
+use mozjs::rust::ValueArray;
 use mozjs::rust::wrappers::JS_GetPromiseResult;
 use mozjs::rust::Runtime;
 use mozjs::rooted;
@@ -12,6 +14,7 @@ use std::ffi::CString;
 use std::os::raw::c_void;
 use std::ptr;
 use std::rc::Rc;
+use mozjs::realm::AutoRealm;
 
 // Thread-local queue for promise jobs
 thread_local! {
@@ -33,11 +36,12 @@ struct PromiseRejectionTransition {
 
 /// resolve a Promise with a given resolution value
 pub fn resolve_promise(
-    context: *mut JSContext,
+    context: &mut mozjs::context::JSContext,
     promise: HandleObject,
     resolution_value: HandleValue,
 ) -> Result<(), JsError> {
-    let ok = unsafe { ResolvePromise(context, promise, resolution_value) };
+    let raw_cx = unsafe { context.raw_cx() };
+    let ok = unsafe { ResolvePromise(raw_cx, promise, resolution_value) };
     if ok {
         Ok(())
     } else if let Some(err) = get_pending_exception(context) {
@@ -52,9 +56,10 @@ pub fn resolve_promise(
     }
 }
 
-pub fn init_rejection_tracker(cx: *mut JSContext) {
+pub fn init_rejection_tracker(cx: &mut SafeJSContext) {
     unsafe {
-        SetPromiseRejectionTrackerCallback(cx, Some(promise_rejection_tracker), ptr::null_mut())
+        let raw_cx = cx.raw_cx();
+        SetPromiseRejectionTrackerCallback(raw_cx, Some(promise_rejection_tracker), ptr::null_mut())
     };
 }
 
@@ -106,7 +111,8 @@ pub(crate) unsafe extern "C" fn enqueue_promise_job(
 ///
 /// This drains queued promise jobs and then reports any rejection transitions.
 /// Returns the number of promise jobs executed.
-pub fn perform_microtask_checkpoint(cx: *mut JSContext) -> usize {
+pub fn perform_microtask_checkpoint(cx: &mut mozjs::context::JSContext) -> usize {
+    let raw_cx = unsafe { cx.raw_cx() };
     let mut executed = 0;
 
     // Process jobs until the queue is empty
@@ -119,7 +125,7 @@ pub fn perform_microtask_checkpoint(cx: *mut JSContext) -> usize {
         match job {
             Some(cb) => {
                 unsafe {
-                    let call_res = cb.call(cx, HandleObject::null());
+                    let call_res = cb.call(raw_cx, HandleObject::null());
                     if call_res.is_err() {
                         if let Some(err) = get_pending_exception(cx) {
                             log::error!(
@@ -141,7 +147,7 @@ pub fn perform_microtask_checkpoint(cx: *mut JSContext) -> usize {
 }
 
 // Backward-compatible alias for existing call sites.
-pub fn run_promise_jobs(cx: *mut JSContext) -> usize {
+pub fn run_promise_jobs(cx: &mut mozjs::context::JSContext) -> usize {
     perform_microtask_checkpoint(cx)
 }
 
@@ -150,7 +156,7 @@ pub fn has_pending_promise_jobs() -> bool {
     PROMISE_JOB_QUEUE.with(|queue| !queue.borrow().is_empty())
 }
 
-fn process_rejection_transitions(cx: *mut JSContext) {
+fn process_rejection_transitions(cx: &mut SafeJSContext) {
     let transitions: Vec<PromiseRejectionTransition> = REJECTION_TRANSITIONS.with(|queue| {
         queue.borrow_mut().drain(..).collect()
     });
@@ -232,20 +238,28 @@ fn process_rejection_transitions(cx: *mut JSContext) {
 }
 
 unsafe fn dispatch_promise_rejection_event(
-    cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     event_type: &str,
     promise_obj: *mut JSObject,
     cancelable: bool,
 ) -> bool {
-    rooted!(in(cx) let global = CurrentGlobalOrNull(cx));
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let promise = promise_obj);
+    if promise.get().is_null() {
+        return true;
+    }
+
+    let mut cx = AutoRealm::new_from_handle(cx, promise.handle());
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let global = CurrentGlobalOrNull(raw_cx));
     if global.get().is_null() {
         return true;
     }
 
-    let reason = promise_rejection_reason(cx, promise_obj);
+    let reason = promise_rejection_reason(&mut cx, promise_obj);
 
     crate::js::bindings::event_listeners::dispatch_window_promise_rejection_event(
-        cx,
+        &mut cx,
         global.get(),
         event_type,
         promise_obj,
@@ -254,14 +268,15 @@ unsafe fn dispatch_promise_rejection_event(
     )
 }
 
-unsafe fn promise_rejection_reason(cx: *mut JSContext, promise_obj: *mut JSObject) -> JSVal {
-    rooted!(in(cx) let promise = promise_obj);
-    rooted!(in(cx) let mut reason = UndefinedValue());
-    JS_GetPromiseResult(promise.handle().into(), reason.handle_mut().into());
+fn promise_rejection_reason(cx: &mut SafeJSContext, promise_obj: *mut JSObject) -> JSVal {
+    let raw_cx = unsafe { cx.raw_cx() };
+    rooted!(in(raw_cx) let promise = promise_obj);
+    rooted!(in(raw_cx) let mut reason = UndefinedValue());
+    unsafe { JS_GetPromiseResult(promise.handle().into(), reason.handle_mut().into()); }
     *reason
 }
 
-unsafe fn promise_reason_to_string(cx: *mut JSContext, promise_obj: *mut JSObject) -> String {
+unsafe fn promise_reason_to_string(cx: &mut SafeJSContext, promise_obj: *mut JSObject) -> String {
     let reason = promise_rejection_reason(cx, promise_obj);
     js_value_to_string(cx, reason)
 }
@@ -284,14 +299,30 @@ impl PromiseJobCallback {
     }
 
     unsafe fn call(&self, cx: *mut JSContext, a_this_obj: HandleObject) -> Result<(), ()> {
+        rooted!(in(cx) let callback_obj = self.parent.callback_holder().get());
+        if callback_obj.get().is_null() {
+            return Err(());
+        }
+
+        // Promise jobs must run in the callback's realm so `CurrentGlobalOrNull`
+        // and any allocation/call internals use the right compartment.
+        let _realm = JSAutoRealm::new(cx, callback_obj.get());
         rooted!(in(cx) let mut rval = UndefinedValue());
         rooted!(in(cx) let callable = ObjectValue(self.parent.callback_holder().get()));
-        //rooted!(in(cx) let rooted_this = a_this_obj.get());
+        rooted!(in(cx) let this_obj = if a_this_obj.get().is_null() {
+            CurrentGlobalOrNull(cx)
+        } else {
+            a_this_obj.get()
+        });
+        if this_obj.get().is_null() {
+            return Err(());
+        }
+        rooted!(in(cx) let zero_args = ValueArray::<0usize>::new([]));
         let ok = JS_CallFunctionValue(
             cx,
-            a_this_obj,
+            this_obj.handle().into(),
             callable.handle().into(),
-            &HandleValueArray::empty(),
+            &HandleValueArray::from(&zero_args),
             rval.handle_mut().into(),
         );
         if !ok {
@@ -383,8 +414,9 @@ impl PersistentRooted {
 impl Drop for PersistentRooted {
     fn drop(&mut self) {
         unsafe {
-            let cx = Runtime::get();
-            RemoveRawValueRoot(cx.unwrap().as_ptr(), self.permanent_js_root.get_unsafe());
+            if let Some(cx) = Runtime::get() {
+                RemoveRawValueRoot(cx.as_ptr(), self.permanent_js_root.get_unsafe());
+            }
         }
     }
 }

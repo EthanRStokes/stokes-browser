@@ -1,35 +1,36 @@
 // Shared helper functions for JavaScript bindings
 use mozjs::conversions::jsstr_to_string;
 use mozjs::gc::Handle;
-use mozjs::jsapi::{
-    CallArgs, HandleValueArray, JSContext, JSNative, JSObject, JS_DefineFunction,
-    JS_DefineProperty, JS_NewUCStringCopyN, NewArrayObject, JSPROP_ENUMERATE,
-};
+use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_NewUCStringCopyN, JS_SetProperty, NewArrayObject};
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers::JS_ValueToSource;
 use std::ptr::NonNull;
 use mozjs::rust::ValueArray;
+use mozjs::context::JSContext as SafeJSContext;
+use mozjs::jsapi::{CallArgs, HandleValueArray, JSContext, JSNative, JSObject, JSPROP_ENUMERATE};
 
 /// Create an empty JavaScript array
-pub unsafe fn create_empty_array(raw_cx: *mut JSContext) -> *mut JSObject {
+pub unsafe fn create_empty_array(cx: &mut SafeJSContext) -> *mut JSObject {
+    let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let array = ValueArray::<0usize>::new([]));
 
-    NewArrayObject(raw_cx, &HandleValueArray::from(&array))
+    NewArrayObject(cx, &HandleValueArray::from(&array))
 }
 
 /// Define a function on a JavaScript object
 pub unsafe fn define_function(
-    raw_cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     obj: *mut JSObject,
     name: &str,
     func: JSNative,
     nargs: u32,
 ) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
     let cname = std::ffi::CString::new(name).unwrap();
     rooted!(in(raw_cx) let obj_rooted = obj);
     if JS_DefineFunction(
-        raw_cx,
+        cx,
         obj_rooted.handle().into(),
         cname.as_ptr(),
         func,
@@ -46,18 +47,19 @@ pub unsafe fn define_function(
 
 /// Set a string property on a JavaScript object
 pub unsafe fn set_string_property(
-    raw_cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     obj: *mut JSObject,
     name: &str,
     value: &str,
 ) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
     let utf16: Vec<u16> = value.encode_utf16().collect();
-    rooted!(in(raw_cx) let str_val = JS_NewUCStringCopyN(raw_cx, utf16.as_ptr(), utf16.len()));
+    rooted!(in(raw_cx) let str_val = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len()));
     rooted!(in(raw_cx) let val = StringValue(&*str_val.get()));
     rooted!(in(raw_cx) let obj_rooted = obj);
     let cname = std::ffi::CString::new(name).unwrap();
     if !JS_DefineProperty(
-        raw_cx,
+        cx,
         obj_rooted.handle().into(),
         cname.as_ptr(),
         val.handle().into(),
@@ -71,16 +73,17 @@ pub unsafe fn set_string_property(
 
 /// Set an integer property on a JavaScript object
 pub unsafe fn set_int_property(
-    raw_cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     obj: *mut JSObject,
     name: &str,
     value: i32,
 ) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let val = Int32Value(value));
     rooted!(in(raw_cx) let obj_rooted = obj);
     let cname = std::ffi::CString::new(name).unwrap();
     if !JS_DefineProperty(
-        raw_cx,
+        cx,
         obj_rooted.handle().into(),
         cname.as_ptr(),
         val.handle().into(),
@@ -94,16 +97,17 @@ pub unsafe fn set_int_property(
 
 /// Set a boolean property on a JavaScript object
 pub unsafe fn set_bool_property(
-    raw_cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     obj: *mut JSObject,
     name: &str,
     value: bool,
 ) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let val = BooleanValue(value));
     rooted!(in(raw_cx) let obj_rooted = obj);
     let cname = std::ffi::CString::new(name).unwrap();
     if !JS_DefineProperty(
-        raw_cx,
+        cx,
         obj_rooted.handle().into(),
         cname.as_ptr(),
         val.handle().into(),
@@ -116,7 +120,8 @@ pub unsafe fn set_bool_property(
 }
 
 /// Convert a JS value to a Rust string
-pub unsafe fn js_value_to_string(raw_cx: *mut JSContext, val: JSVal) -> String {
+pub unsafe fn js_value_to_string(cx: &mut SafeJSContext, val: JSVal) -> String {
+    let raw_cx = cx.raw_cx();
     if val.is_undefined() {
         return "undefined".to_string();
     }
@@ -149,14 +154,16 @@ pub unsafe fn js_value_to_string(raw_cx: *mut JSContext, val: JSVal) -> String {
 }
 
 /// Create a JS string from a Rust string
-pub unsafe fn create_js_string(raw_cx: *mut JSContext, s: &str) -> JSVal {
+pub unsafe fn create_js_string(cx: &mut SafeJSContext, s: &str) -> JSVal {
+    let raw_cx = cx.raw_cx();
     let utf16: Vec<u16> = s.encode_utf16().collect();
-    rooted!(in(raw_cx) let str_val = JS_NewUCStringCopyN(raw_cx, utf16.as_ptr(), utf16.len()));
+    rooted!(in(raw_cx) let str_val = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len()));
     StringValue(&*str_val.get())
 }
 
 /// Get the node ID from a JS element object's `this` value
-pub unsafe fn get_node_id_from_this(raw_cx: *mut JSContext, args: &CallArgs) -> Option<usize> {
+pub unsafe fn get_node_id_from_this(cx: &mut SafeJSContext, args: &CallArgs) -> Option<usize> {
+    let raw_cx = cx.raw_cx();
     let this_val = args.thisv();
     if !this_val.get().is_object() || this_val.get().is_null() {
         return None;
@@ -166,8 +173,8 @@ pub unsafe fn get_node_id_from_this(raw_cx: *mut JSContext, args: &CallArgs) -> 
     rooted!(in(raw_cx) let mut ptr_val = UndefinedValue());
 
     let cname = std::ffi::CString::new("__nodeId").unwrap();
-    if !mozjs::jsapi::JS_GetProperty(
-        raw_cx,
+    if !JS_GetProperty(
+        cx,
         this_obj.handle().into(),
         cname.as_ptr(),
         ptr_val.handle_mut().into(),
@@ -186,15 +193,16 @@ pub unsafe fn get_node_id_from_this(raw_cx: *mut JSContext, args: &CallArgs) -> 
 
 /// Define a property with getter/setter on a JavaScript object using Object.defineProperty
 pub unsafe fn define_property_accessor(
-    raw_cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     obj: *mut JSObject,
     prop_name: &str,
     getter_name: &str,
     setter_name: &str,
 ) -> Result<(), String> {
     use mozjs::jsapi::{Compile1, CurrentGlobalOrNull, Handle, JS_ExecuteScript, MutableHandleValue};
-    use mozjs::context::JSContext as SafeJSContext;
     use mozjs::rust::{transform_str_to_source_text, CompileOptionsWrapper};
+
+    let raw_cx = cx.raw_cx();
 
     // We'll use a well-known temporary variable name
     let temp_var_name = "__definePropertyTarget__";
@@ -209,11 +217,11 @@ pub unsafe fn define_property_accessor(
 
     // Set temporary global variable
     let temp_cname = std::ffi::CString::new(temp_var_name).unwrap();
-    if !mozjs::jsapi::JS_SetProperty(
-        raw_cx,
-        global.handle().into(),
+    if !JS_SetProperty(
+        cx,
+        global.handle(),
         temp_cname.as_ptr(),
-        obj_val.handle().into(),
+        obj_val.handle(),
     ) {
         return Err("Failed to set temporary variable".to_string());
     }
@@ -237,21 +245,18 @@ pub unsafe fn define_property_accessor(
         setter = setter_name
     );
 
-    // Create a safe JSContext wrapper for the compile options
-    // SAFETY: We're within a valid JSContext scope, and the raw pointer is valid
-    let safe_cx: &SafeJSContext = std::mem::transmute(&raw_cx);
-    let options = CompileOptionsWrapper::new(safe_cx, "define_property_accessor".parse().unwrap(), 1);
+    let options = CompileOptionsWrapper::new(cx, "define_property_accessor".parse().unwrap(), 1);
 
     // Compile the script
     let compiled = Compile1(raw_cx, options.ptr, &mut transform_str_to_source_text(&script));
     if compiled.is_null() {
         // Clean up the temporary variable
         rooted!(in(raw_cx) let undefined = UndefinedValue());
-        mozjs::jsapi::JS_SetProperty(
-            raw_cx,
-            global.handle().into(),
+        JS_SetProperty(
+            cx,
+            global.handle(),
             temp_cname.as_ptr(),
-            undefined.handle().into(),
+            undefined.handle(),
         );
         return Err("Failed to compile property definition script".to_string());
     }
@@ -264,11 +269,11 @@ pub unsafe fn define_property_accessor(
 
     // Clean up the temporary variable
     rooted!(in(raw_cx) let undefined = UndefinedValue());
-    mozjs::jsapi::JS_SetProperty(
-        raw_cx,
-        global.handle().into(),
+    JS_SetProperty(
+        cx,
+        global.handle(),
         temp_cname.as_ptr(),
-        undefined.handle().into(),
+        undefined.handle(),
     );
 
     if !success {
@@ -279,7 +284,8 @@ pub unsafe fn define_property_accessor(
 }
 
 /// Get the node ID from an arbitrary JS value (e.g. an argument object) by reading its `__nodeId` property.
-pub unsafe fn get_node_id_from_value(raw_cx: *mut JSContext, val: JSVal) -> Option<usize> {
+pub unsafe fn get_node_id_from_value(cx: &mut SafeJSContext, val: JSVal) -> Option<usize> {
+    let raw_cx = cx.raw_cx();
     if !val.is_object() || val.is_null() {
         return None;
     }
@@ -315,3 +321,20 @@ pub fn to_css_property_name(js_name: &str) -> String {
     result
 }
 
+pub trait ToSafeCx {
+    fn to_safe_cx(self) -> SafeJSContext;
+}
+
+impl ToSafeCx for *mut JSContext {
+    #[inline]
+    fn to_safe_cx(self) -> SafeJSContext {
+        unsafe { SafeJSContext::from_ptr(NonNull::new(self).expect("Failed to unwrap safe JSContext")) }
+    }
+}
+
+impl ToSafeCx for NonNull<JSContext> {
+    #[inline]
+    fn to_safe_cx(self) -> SafeJSContext {
+        unsafe { SafeJSContext::from_ptr(self) }
+    }
+}

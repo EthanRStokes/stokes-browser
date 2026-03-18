@@ -1,6 +1,7 @@
 // Performance API implementation for JavaScript using mozjs
 use crate::js::JsRuntime;
 use mozjs::jsapi::{CallArgs, JSContext, JSNative, JSObject, JS_DefineFunction, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE, JSPROP_READONLY, HandleValueArray};
+use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsval::{JSVal, UndefinedValue, DoubleValue, ObjectValue};
 use mozjs::rooted;
 use std::cell::RefCell;
@@ -192,9 +193,10 @@ pub fn setup_performance(runtime: &mut JsRuntime) -> Result<(), String> {
         *pm.borrow_mut() = Some(perf_manager);
     });
 
-    runtime.do_with_jsapi(|_rt, cx, global| unsafe {
+    runtime.do_with_jsapi(|cx, global| unsafe {
+        let raw_cx = cx.raw_cx();
         // Create performance object
-        rooted!(in(cx) let performance = JS_NewPlainObject(cx));
+        rooted!(in(raw_cx) let performance = JS_NewPlainObject(raw_cx));
         if performance.get().is_null() {
             return Err("Failed to create performance object".to_string());
         }
@@ -226,10 +228,10 @@ pub fn setup_performance(runtime: &mut JsRuntime) -> Result<(), String> {
         // Set performance.timeOrigin as a readonly property
         PERFORMANCE_MANAGER.with(|pm| {
             if let Some(ref manager) = *pm.borrow() {
-                rooted!(in(cx) let time_origin = DoubleValue(manager.start_time));
+                rooted!(in(raw_cx) let time_origin = DoubleValue(manager.start_time));
                 let name = std::ffi::CString::new("timeOrigin").unwrap();
                 if !JS_DefineProperty(
-                    cx,
+                    raw_cx,
                     performance.handle().into(),
                     name.as_ptr(),
                     time_origin.handle().into(),
@@ -242,10 +244,10 @@ pub fn setup_performance(runtime: &mut JsRuntime) -> Result<(), String> {
         })?;
 
         // Set performance on global object
-        rooted!(in(cx) let performance_val = ObjectValue(performance.get()));
+        rooted!(in(raw_cx) let performance_val = ObjectValue(performance.get()));
         let name = std::ffi::CString::new("performance").unwrap();
         if !JS_DefineProperty(
-            cx,
+            raw_cx,
             global.into(),
             name.as_ptr(),
             performance_val.handle().into(),
@@ -259,11 +261,12 @@ pub fn setup_performance(runtime: &mut JsRuntime) -> Result<(), String> {
 }
 
 unsafe fn define_performance_method(
-    raw_cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     performance: *mut JSObject,
     name: &str,
     func: JSNative,
 ) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
     let cname = std::ffi::CString::new(name).unwrap();
     rooted!(in(raw_cx) let performance_rooted = performance);
 

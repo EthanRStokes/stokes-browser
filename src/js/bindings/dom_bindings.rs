@@ -20,10 +20,12 @@ use mozjs::jsapi::{
     CallArgs, JSContext, JSObject, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject,
     JSPROP_ENUMERATE,
 };
+use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use std::cell::RefCell;
 use std::os::raw::c_uint;
+use crate::js::helpers::ToSafeCx;
 
 // Thread-local storage for DOM reference
 thread_local! {
@@ -62,7 +64,8 @@ pub fn setup_dom_bindings(
         set_document_url(url);
     }
 
-    runtime.do_with_jsapi(|_rt, cx, global| unsafe {
+    runtime.do_with_jsapi(|cx, global| unsafe {
+        let raw_cx = cx.raw_cx();
         let global_ptr = global.get();
 
         // Create and set up document object
@@ -87,13 +90,13 @@ pub fn setup_dom_bindings(
         setup_element_constructors(cx, global_ptr)?;
 
         // Set up HTMLFormElement constructor
-        setup_html_form_element_constructor(cx, global_ptr)?;
+        setup_html_form_element_constructor(raw_cx, global_ptr)?;
 
         // Set up HTMLIFrameElement constructor
         setup_html_iframe_element_constructor(cx, global_ptr)?;
 
         // Set up Event and CustomEvent constructors
-        setup_event_constructors(cx, global_ptr)?;
+        setup_event_constructors(raw_cx, global_ptr)?;
 
 
         // Set up atob/btoa functions
@@ -349,7 +352,8 @@ pub fn setup_match_media_deferred(runtime: &mut JsRuntime) -> Result<(), String>
 // ============================================================================
 
 /// Set up the document object
-unsafe fn setup_document(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+unsafe fn setup_document(cx: &mut mozjs::context::JSContext, global: *mut JSObject) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let document = JS_NewPlainObject(raw_cx));
     if document.get().is_null() {
         return Err("Failed to create document object".to_string());
@@ -373,30 +377,30 @@ unsafe fn setup_document(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
     );
 
     // Define document methods
-    define_function(raw_cx, document.get(), "getElementById", Some(document_get_element_by_id), 1)?;
-    define_function(raw_cx, document.get(), "getElementsByTagName", Some(document_get_elements_by_tag_name), 1)?;
-    define_function(raw_cx, document.get(), "getElementsByClassName", Some(document_get_elements_by_class_name), 1)?;
-    define_function(raw_cx, document.get(), "querySelector", Some(document_query_selector), 1)?;
-    define_function(raw_cx, document.get(), "querySelectorAll", Some(document_query_selector_all), 1)?;
-    define_function(raw_cx, document.get(), "createElement", Some(document_create_element), 1)?;
-    define_function(raw_cx, document.get(), "createTextNode", Some(document_create_text_node), 1)?;
-    define_function(raw_cx, document.get(), "createDocumentFragment", Some(document_create_document_fragment), 0)?;
+    define_function(cx, document.get(), "getElementById", Some(document_get_element_by_id), 1)?;
+    define_function(cx, document.get(), "getElementsByTagName", Some(document_get_elements_by_tag_name), 1)?;
+    define_function(cx, document.get(), "getElementsByClassName", Some(document_get_elements_by_class_name), 1)?;
+    define_function(cx, document.get(), "querySelector", Some(document_query_selector), 1)?;
+    define_function(cx, document.get(), "querySelectorAll", Some(document_query_selector_all), 1)?;
+    define_function(cx, document.get(), "createElement", Some(document_create_element), 1)?;
+    define_function(cx, document.get(), "createTextNode", Some(document_create_text_node), 1)?;
+    define_function(cx, document.get(), "createDocumentFragment", Some(document_create_document_fragment), 0)?;
     // Event handling on the document
-    define_function(raw_cx, document.get(), "addEventListener",    Some(document_add_event_listener),    3)?;
-    define_function(raw_cx, document.get(), "removeEventListener", Some(document_remove_event_listener), 3)?;
-    define_function(raw_cx, document.get(), "dispatchEvent",       Some(document_dispatch_event),        1)?;
+    define_function(cx, document.get(), "addEventListener",    Some(document_add_event_listener),    3)?;
+    define_function(cx, document.get(), "removeEventListener", Some(document_remove_event_listener), 3)?;
+    define_function(cx, document.get(), "dispatchEvent",       Some(document_dispatch_event),        1)?;
 
     // Add cookie getter and setter helper functions
-    define_function(raw_cx, document.get(), "__getCookie", Some(document_get_cookie), 0)?;
-    define_function(raw_cx, document.get(), "__setCookie", Some(document_set_cookie), 1)?;
+    define_function(cx, document.get(), "__getCookie", Some(document_get_cookie), 0)?;
+    define_function(cx, document.get(), "__setCookie", Some(document_set_cookie), 1)?;
 
     // Add document.head getter function
-    define_function(raw_cx, document.get(), "__getHead", Some(document_get_head), 0)?;
-    define_function(raw_cx, document.get(), "__getBody", Some(document_get_body), 0)?;
-    define_function(raw_cx, document.get(), "__setBody", Some(document_set_body), 1)?;
+    define_function(cx, document.get(), "__getHead", Some(document_get_head), 0)?;
+    define_function(cx, document.get(), "__getBody", Some(document_get_body), 0)?;
+    define_function(cx, document.get(), "__setBody", Some(document_set_body), 1)?;
 
     // Add document.currentScript helper (getter returns the currently-executing <script> element)
-    define_function(raw_cx, document.get(), "__getCurrentScript", Some(document_get_current_script), 0)?;
+    define_function(cx, document.get(), "__getCurrentScript", Some(document_get_current_script), 0)?;
 
     // Set initial currentScript = null (will be overridden by the deferred property accessor)
     rooted!(in(raw_cx) let null_cs = NullValue());
@@ -411,7 +415,7 @@ unsafe fn setup_document(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
     );
 
     // Create documentElement (represents <html>) using a proper element with methods
-    let doc_elem_val = element_bindings::create_stub_element(raw_cx, "html")?;
+    let doc_elem_val = element_bindings::create_stub_element(cx, "html")?;
     rooted!(in(raw_cx) let doc_elem_val_rooted = doc_elem_val);
     let name = std::ffi::CString::new("documentElement").unwrap();
     rooted!(in(raw_cx) let document_rooted = document.get());
@@ -431,14 +435,14 @@ unsafe fn setup_document(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
             url.as_str().to_string()
         }).unwrap_or_default()
     });
-    set_string_property(raw_cx, document.get(), "baseURI", &base_url_str)?;
-    set_string_property(raw_cx, document.get(), "URL", &base_url_str)?;
-    set_string_property(raw_cx, document.get(), "documentURI", &base_url_str)?;
-    set_string_property(raw_cx, document.get(), "readyState", "complete")?;
-    set_string_property(raw_cx, document.get(), "compatMode", "CSS1Compat")?;
-    set_string_property(raw_cx, document.get(), "characterSet", "UTF-8")?;
-    set_string_property(raw_cx, document.get(), "charset", "UTF-8")?;
-    set_string_property(raw_cx, document.get(), "inputEncoding", "UTF-8")?;
+    set_string_property(cx, document.get(), "baseURI", &base_url_str)?;
+    set_string_property(cx, document.get(), "URL", &base_url_str)?;
+    set_string_property(cx, document.get(), "documentURI", &base_url_str)?;
+    set_string_property(cx, document.get(), "readyState", "complete")?;
+    set_string_property(cx, document.get(), "compatMode", "CSS1Compat")?;
+    set_string_property(cx, document.get(), "characterSet", "UTF-8")?;
+    set_string_property(cx, document.get(), "charset", "UTF-8")?;
+    set_string_property(cx, document.get(), "inputEncoding", "UTF-8")?;
 
     // Set document on global
     rooted!(in(raw_cx) let document_val = ObjectValue(document.get()));
@@ -459,10 +463,11 @@ unsafe fn setup_document(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
 /// Set up the window object (as alias to global)
 // FIXME: Window dimensions, scroll positions, and devicePixelRatio are hardcoded - should get actual values from renderer
 unsafe fn setup_window(
-    raw_cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     global: *mut JSObject,
     _user_agent: &str,
 ) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let global_val = ObjectValue(global));
     rooted!(in(raw_cx) let global_rooted = global);
 
@@ -496,32 +501,32 @@ unsafe fn setup_window(
     }
 
     // Define window functions on global
-    define_function(raw_cx, global, "alert", Some(window_alert), 1)?;
-    define_function(raw_cx, global, "confirm", Some(window_confirm), 1)?;
-    define_function(raw_cx, global, "prompt", Some(window_prompt), 2)?;
-    define_function(raw_cx, global, "requestAnimationFrame", Some(window_request_animation_frame), 1)?;
-    define_function(raw_cx, global, "cancelAnimationFrame", Some(window_cancel_animation_frame), 1)?;
-    define_function(raw_cx, global, "getComputedStyle", Some(window_get_computed_style), 1)?;
-    define_function(raw_cx, global, "addEventListener", Some(window_add_event_listener), 3)?;
-    define_function(raw_cx, global, "removeEventListener", Some(window_remove_event_listener), 3)?;
-    define_function(raw_cx, global, "scrollTo", Some(window_scroll_to), 2)?;
-    define_function(raw_cx, global, "scrollBy", Some(window_scroll_by), 2)?;
-    define_function(raw_cx, global, "__evaluateMediaQuery", Some(window_evaluate_media_query), 1)?;
+    define_function(cx, global, "alert", Some(window_alert), 1)?;
+    define_function(cx, global, "confirm", Some(window_confirm), 1)?;
+    define_function(cx, global, "prompt", Some(window_prompt), 2)?;
+    define_function(cx, global, "requestAnimationFrame", Some(window_request_animation_frame), 1)?;
+    define_function(cx, global, "cancelAnimationFrame", Some(window_cancel_animation_frame), 1)?;
+    define_function(cx, global, "getComputedStyle", Some(window_get_computed_style), 1)?;
+    define_function(cx, global, "addEventListener", Some(window_add_event_listener), 3)?;
+    define_function(cx, global, "removeEventListener", Some(window_remove_event_listener), 3)?;
+    define_function(cx, global, "scrollTo", Some(window_scroll_to), 2)?;
+    define_function(cx, global, "scrollBy", Some(window_scroll_by), 2)?;
+    define_function(cx, global, "__evaluateMediaQuery", Some(window_evaluate_media_query), 1)?;
 
     // Set window dimension properties
-    set_int_property(raw_cx, global, "innerWidth", get_window_width())?;
-    set_int_property(raw_cx, global, "innerHeight", get_window_height())?;
-    set_int_property(raw_cx, global, "outerWidth", 1920)?;
-    set_int_property(raw_cx, global, "outerHeight", 1080)?;
-    set_int_property(raw_cx, global, "screenX", 0)?;
-    set_int_property(raw_cx, global, "screenY", 0)?;
-    set_int_property(raw_cx, global, "scrollX", get_scroll_x())?;
-    set_int_property(raw_cx, global, "scrollY", get_scroll_y())?;
-    set_int_property(raw_cx, global, "pageXOffset", get_scroll_x())?;
-    set_int_property(raw_cx, global, "pageYOffset", get_scroll_y())?;
+    set_int_property(cx, global, "innerWidth", get_window_width())?;
+    set_int_property(cx, global, "innerHeight", get_window_height())?;
+    set_int_property(cx, global, "outerWidth", 1920)?;
+    set_int_property(cx, global, "outerHeight", 1080)?;
+    set_int_property(cx, global, "screenX", 0)?;
+    set_int_property(cx, global, "screenY", 0)?;
+    set_int_property(cx, global, "scrollX", get_scroll_x())?;
+    set_int_property(cx, global, "scrollY", get_scroll_y())?;
+    set_int_property(cx, global, "pageXOffset", get_scroll_x())?;
+    set_int_property(cx, global, "pageYOffset", get_scroll_y())?;
     // FIXME: devicePixelRatio is hardcoded to 1 even though get_device_pixel_ratio() returns the
     // real scale factor from the DOM viewport. Should use that value instead.
-    set_int_property(raw_cx, global, "devicePixelRatio", 1)?;
+    set_int_property(cx, global, "devicePixelRatio", 1)?;
 
     Ok(())
 }
@@ -580,23 +585,24 @@ fn get_device_pixel_ratio() -> f32 {
 // FIXME: Many navigator properties are hardcoded (language, platform) — should be detected from
 // the system at runtime rather than using compile-time constants.
 unsafe fn setup_navigator(
-    raw_cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     global: *mut JSObject,
     user_agent: &str,
 ) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let navigator = JS_NewPlainObject(raw_cx));
     if navigator.get().is_null() {
         return Err("Failed to create navigator object".to_string());
     }
 
-    set_string_property(raw_cx, navigator.get(), "userAgent", user_agent)?;
-    set_string_property(raw_cx, navigator.get(), "language", "en-US")?;
-    set_string_property(raw_cx, navigator.get(), "platform", std::env::consts::OS)?;
-    set_string_property(raw_cx, navigator.get(), "appName", "Stokes Browser")?;
-    set_string_property(raw_cx, navigator.get(), "appVersion", "1.0")?;
-    set_string_property(raw_cx, navigator.get(), "vendor", "Stokes")?;
-    set_bool_property(raw_cx, navigator.get(), "onLine", true)?;
-    set_bool_property(raw_cx, navigator.get(), "cookieEnabled", true)?;
+    set_string_property(cx, navigator.get(), "userAgent", user_agent)?;
+    set_string_property(cx, navigator.get(), "language", "en-US")?;
+    set_string_property(cx, navigator.get(), "platform", std::env::consts::OS)?;
+    set_string_property(cx, navigator.get(), "appName", "Stokes Browser")?;
+    set_string_property(cx, navigator.get(), "appVersion", "1.0")?;
+    set_string_property(cx, navigator.get(), "vendor", "Stokes")?;
+    set_bool_property(cx, navigator.get(), "onLine", true)?;
+    set_bool_property(cx, navigator.get(), "cookieEnabled", true)?;
 
     // Set navigator on global
     rooted!(in(raw_cx) let navigator_val = ObjectValue(navigator.get()));
@@ -615,7 +621,8 @@ unsafe fn setup_navigator(
 
 /// Set up the location object
 // FIXME: Location properties are hardcoded to "about:blank" - should reflect actual page URL
-unsafe fn setup_location(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+unsafe fn setup_location(cx: &mut SafeJSContext, global: *mut JSObject) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let location = JS_NewPlainObject(raw_cx));
     if location.get().is_null() {
         return Err("Failed to create location object".to_string());
@@ -667,20 +674,20 @@ unsafe fn setup_location(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
         }
     });
 
-    set_string_property(raw_cx, location.get(), "href", &href)?;
-    set_string_property(raw_cx, location.get(), "protocol", &protocol)?;
-    set_string_property(raw_cx, location.get(), "host", &host)?;
-    set_string_property(raw_cx, location.get(), "hostname", &hostname)?;
-    set_string_property(raw_cx, location.get(), "port", &port)?;
-    set_string_property(raw_cx, location.get(), "pathname", &pathname)?;
-    set_string_property(raw_cx, location.get(), "search", &search)?;
-    set_string_property(raw_cx, location.get(), "hash", &hash)?;
-    set_string_property(raw_cx, location.get(), "origin", &origin)?;
+    set_string_property(cx, location.get(), "href", &href)?;
+    set_string_property(cx, location.get(), "protocol", &protocol)?;
+    set_string_property(cx, location.get(), "host", &host)?;
+    set_string_property(cx, location.get(), "hostname", &hostname)?;
+    set_string_property(cx, location.get(), "port", &port)?;
+    set_string_property(cx, location.get(), "pathname", &pathname)?;
+    set_string_property(cx, location.get(), "search", &search)?;
+    set_string_property(cx, location.get(), "hash", &hash)?;
+    set_string_property(cx, location.get(), "origin", &origin)?;
 
-    define_function(raw_cx, location.get(), "reload", Some(location_reload), 0)?;
-    define_function(raw_cx, location.get(), "assign", Some(location_assign), 1)?;
-    define_function(raw_cx, location.get(), "replace", Some(location_replace), 1)?;
-    define_function(raw_cx, location.get(), "toString", Some(location_to_string), 0)?;
+    define_function(cx, location.get(), "reload", Some(location_reload), 0)?;
+    define_function(cx, location.get(), "assign", Some(location_assign), 1)?;
+    define_function(cx, location.get(), "replace", Some(location_replace), 1)?;
+    define_function(cx, location.get(), "toString", Some(location_to_string), 0)?;
 
     // Set location on global
     rooted!(in(raw_cx) let location_val = ObjectValue(location.get()));
@@ -699,7 +706,8 @@ unsafe fn setup_location(raw_cx: *mut JSContext, global: *mut JSObject) -> Resul
 
 /// Set up localStorage and sessionStorage
 // TODO: Storage length property is set to 0 and not dynamically updated when items are added/removed
-unsafe fn setup_storage(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+unsafe fn setup_storage(cx: &mut SafeJSContext, global: *mut JSObject) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let global_rooted = global);
 
     // Create localStorage object
@@ -708,14 +716,14 @@ unsafe fn setup_storage(raw_cx: *mut JSContext, global: *mut JSObject) -> Result
         return Err("Failed to create localStorage object".to_string());
     }
 
-    define_function(raw_cx, local_storage.get(), "getItem", Some(local_storage_get_item), 1)?;
-    define_function(raw_cx, local_storage.get(), "setItem", Some(local_storage_set_item), 2)?;
-    define_function(raw_cx, local_storage.get(), "removeItem", Some(local_storage_remove_item), 1)?;
-    define_function(raw_cx, local_storage.get(), "clear", Some(local_storage_clear), 0)?;
-    define_function(raw_cx, local_storage.get(), "key", Some(local_storage_key), 1)?;
+    define_function(cx, local_storage.get(), "getItem", Some(local_storage_get_item), 1)?;
+    define_function(cx, local_storage.get(), "setItem", Some(local_storage_set_item), 2)?;
+    define_function(cx, local_storage.get(), "removeItem", Some(local_storage_remove_item), 1)?;
+    define_function(cx, local_storage.get(), "clear", Some(local_storage_clear), 0)?;
+    define_function(cx, local_storage.get(), "key", Some(local_storage_key), 1)?;
     // FIXME: localStorage.length is set to a static 0 and is never updated when items are added
     // or removed. Should be a property accessor backed by LOCAL_STORAGE.with(|s| s.borrow().len()).
-    set_int_property(raw_cx, local_storage.get(), "length", 0)?;
+    set_int_property(cx, local_storage.get(), "length", 0)?;
 
     rooted!(in(raw_cx) let local_storage_val = ObjectValue(local_storage.get()));
     let name = std::ffi::CString::new("localStorage").unwrap();
@@ -733,14 +741,14 @@ unsafe fn setup_storage(raw_cx: *mut JSContext, global: *mut JSObject) -> Result
         return Err("Failed to create sessionStorage object".to_string());
     }
 
-    define_function(raw_cx, session_storage.get(), "getItem", Some(session_storage_get_item), 1)?;
-    define_function(raw_cx, session_storage.get(), "setItem", Some(session_storage_set_item), 2)?;
-    define_function(raw_cx, session_storage.get(), "removeItem", Some(session_storage_remove_item), 1)?;
-    define_function(raw_cx, session_storage.get(), "clear", Some(session_storage_clear), 0)?;
-    define_function(raw_cx, session_storage.get(), "key", Some(session_storage_key), 1)?;
+    define_function(cx, session_storage.get(), "getItem", Some(session_storage_get_item), 1)?;
+    define_function(cx, session_storage.get(), "setItem", Some(session_storage_set_item), 2)?;
+    define_function(cx, session_storage.get(), "removeItem", Some(session_storage_remove_item), 1)?;
+    define_function(cx, session_storage.get(), "clear", Some(session_storage_clear), 0)?;
+    define_function(cx, session_storage.get(), "key", Some(session_storage_key), 1)?;
     // FIXME: sessionStorage.length is set to a static 0 and is never updated when items are added
     // or removed. Should be a property accessor backed by SESSION_STORAGE.with(|s| s.borrow().len()).
-    set_int_property(raw_cx, session_storage.get(), "length", 0)?;
+    set_int_property(cx, session_storage.get(), "length", 0)?;
 
     rooted!(in(raw_cx) let session_storage_val = ObjectValue(session_storage.get()));
     let name = std::ffi::CString::new("sessionStorage").unwrap();
@@ -762,7 +770,8 @@ unsafe fn setup_storage(raw_cx: *mut JSContext, global: *mut JSObject) -> Result
 /// node.hasChildNodes() – returns true when the node has at least one child in the DOM.
 unsafe extern "C" fn node_has_child_nodes(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let result = if let Some(node_id) = get_node_id_from_value(raw_cx, args.thisv().get()) {
+    let safe_cx = &mut raw_cx.to_safe_cx();
+    let result = if let Some(node_id) = get_node_id_from_value(safe_cx, args.thisv().get()) {
         DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &*dom_ptr;
@@ -793,9 +802,10 @@ unsafe extern "C" fn node_normalize(_raw_cx: *mut JSContext, argc: c_uint, vp: *
 /// object in our DOM).  A full structural comparison is not yet implemented.
 unsafe extern "C" fn node_is_equal_node(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
     let result = if argc > 0 {
-        let this_id = get_node_id_from_value(raw_cx, args.thisv().get());
-        let other_id = get_node_id_from_value(raw_cx, *args.get(0));
+        let this_id = get_node_id_from_value(safe_cx, args.thisv().get());
+        let other_id = get_node_id_from_value(safe_cx, *args.get(0));
         match (this_id, other_id) {
             (Some(a), Some(b)) => a == b,
             _ => false,
@@ -810,9 +820,10 @@ unsafe extern "C" fn node_is_equal_node(raw_cx: *mut JSContext, argc: c_uint, vp
 /// node.isSameNode(otherNode) – identity check: same __nodeId means same node.
 unsafe extern "C" fn node_is_same_node(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
     let result = if argc > 0 {
-        let this_id = get_node_id_from_value(raw_cx, args.thisv().get());
-        let other_id = get_node_id_from_value(raw_cx, *args.get(0));
+        let this_id = get_node_id_from_value(safe_cx, args.thisv().get());
+        let other_id = get_node_id_from_value(safe_cx, *args.get(0));
         match (this_id, other_id) {
             (Some(a), Some(b)) => a == b,
             _ => false,
@@ -828,10 +839,11 @@ unsafe extern "C" fn node_is_same_node(raw_cx: *mut JSContext, argc: c_uint, vp:
 /// Bit flags: DISCONNECTED=1, PRECEDING=2, FOLLOWING=4, CONTAINS=8, CONTAINED_BY=16.
 unsafe extern "C" fn node_compare_document_position(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
-    let this_id = get_node_id_from_value(raw_cx, args.thisv().get());
+    let this_id = get_node_id_from_value(safe_cx, args.thisv().get());
     let other_id = if argc > 0 {
-        get_node_id_from_value(raw_cx, *args.get(0))
+        get_node_id_from_value(safe_cx, *args.get(0))
     } else {
         None
     };
@@ -952,85 +964,86 @@ unsafe extern "C" fn node_is_default_namespace(_raw_cx: *mut JSContext, argc: c_
 }
 
 /// Set up Node constructor with node type constants
-unsafe fn setup_node_constructor(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+unsafe fn setup_node_constructor(cx: &mut SafeJSContext, global: *mut JSObject) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let node = JS_NewPlainObject(raw_cx));
     if node.get().is_null() {
         return Err("Failed to create Node constructor".to_string());
     }
 
-    set_int_property(raw_cx, node.get(), "ELEMENT_NODE", 1)?;
-    set_int_property(raw_cx, node.get(), "ATTRIBUTE_NODE", 2)?;
-    set_int_property(raw_cx, node.get(), "TEXT_NODE", 3)?;
-    set_int_property(raw_cx, node.get(), "CDATA_SECTION_NODE", 4)?;
-    set_int_property(raw_cx, node.get(), "ENTITY_REFERENCE_NODE", 5)?;
-    set_int_property(raw_cx, node.get(), "ENTITY_NODE", 6)?;
-    set_int_property(raw_cx, node.get(), "PROCESSING_INSTRUCTION_NODE", 7)?;
-    set_int_property(raw_cx, node.get(), "COMMENT_NODE", 8)?;
-    set_int_property(raw_cx, node.get(), "DOCUMENT_NODE", 9)?;
-    set_int_property(raw_cx, node.get(), "DOCUMENT_TYPE_NODE", 10)?;
-    set_int_property(raw_cx, node.get(), "DOCUMENT_FRAGMENT_NODE", 11)?;
-    set_int_property(raw_cx, node.get(), "NOTATION_NODE", 12)?;
+    set_int_property(cx, node.get(), "ELEMENT_NODE", 1)?;
+    set_int_property(cx, node.get(), "ATTRIBUTE_NODE", 2)?;
+    set_int_property(cx, node.get(), "TEXT_NODE", 3)?;
+    set_int_property(cx, node.get(), "CDATA_SECTION_NODE", 4)?;
+    set_int_property(cx, node.get(), "ENTITY_REFERENCE_NODE", 5)?;
+    set_int_property(cx, node.get(), "ENTITY_NODE", 6)?;
+    set_int_property(cx, node.get(), "PROCESSING_INSTRUCTION_NODE", 7)?;
+    set_int_property(cx, node.get(), "COMMENT_NODE", 8)?;
+    set_int_property(cx, node.get(), "DOCUMENT_NODE", 9)?;
+    set_int_property(cx, node.get(), "DOCUMENT_TYPE_NODE", 10)?;
+    set_int_property(cx, node.get(), "DOCUMENT_FRAGMENT_NODE", 11)?;
+    set_int_property(cx, node.get(), "NOTATION_NODE", 12)?;
 
     // compareDocumentPosition bit-mask constants (also on Node)
-    set_int_property(raw_cx, node.get(), "DOCUMENT_POSITION_DISCONNECTED", 1)?;
-    set_int_property(raw_cx, node.get(), "DOCUMENT_POSITION_PRECEDING", 2)?;
-    set_int_property(raw_cx, node.get(), "DOCUMENT_POSITION_FOLLOWING", 4)?;
-    set_int_property(raw_cx, node.get(), "DOCUMENT_POSITION_CONTAINS", 8)?;
-    set_int_property(raw_cx, node.get(), "DOCUMENT_POSITION_CONTAINED_BY", 16)?;
-    set_int_property(raw_cx, node.get(), "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC", 32)?;
+    set_int_property(cx, node.get(), "DOCUMENT_POSITION_DISCONNECTED", 1)?;
+    set_int_property(cx, node.get(), "DOCUMENT_POSITION_PRECEDING", 2)?;
+    set_int_property(cx, node.get(), "DOCUMENT_POSITION_FOLLOWING", 4)?;
+    set_int_property(cx, node.get(), "DOCUMENT_POSITION_CONTAINS", 8)?;
+    set_int_property(cx, node.get(), "DOCUMENT_POSITION_CONTAINED_BY", 16)?;
+    set_int_property(cx, node.get(), "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC", 32)?;
 
     // Create Node.prototype with all methods from the Node interface
     rooted!(in(raw_cx) let node_prototype = JS_NewPlainObject(raw_cx));
     if !node_prototype.get().is_null() {
         // Node type constants on prototype as well (spec requires them on both)
-        set_int_property(raw_cx, node_prototype.get(), "ELEMENT_NODE", 1)?;
-        set_int_property(raw_cx, node_prototype.get(), "ATTRIBUTE_NODE", 2)?;
-        set_int_property(raw_cx, node_prototype.get(), "TEXT_NODE", 3)?;
-        set_int_property(raw_cx, node_prototype.get(), "CDATA_SECTION_NODE", 4)?;
-        set_int_property(raw_cx, node_prototype.get(), "ENTITY_REFERENCE_NODE", 5)?;
-        set_int_property(raw_cx, node_prototype.get(), "ENTITY_NODE", 6)?;
-        set_int_property(raw_cx, node_prototype.get(), "PROCESSING_INSTRUCTION_NODE", 7)?;
-        set_int_property(raw_cx, node_prototype.get(), "COMMENT_NODE", 8)?;
-        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_NODE", 9)?;
-        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_TYPE_NODE", 10)?;
-        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_FRAGMENT_NODE", 11)?;
-        set_int_property(raw_cx, node_prototype.get(), "NOTATION_NODE", 12)?;
-        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_POSITION_DISCONNECTED", 1)?;
-        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_POSITION_PRECEDING", 2)?;
-        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_POSITION_FOLLOWING", 4)?;
-        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_POSITION_CONTAINS", 8)?;
-        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_POSITION_CONTAINED_BY", 16)?;
-        set_int_property(raw_cx, node_prototype.get(), "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC", 32)?;
+        set_int_property(cx, node_prototype.get(), "ELEMENT_NODE", 1)?;
+        set_int_property(cx, node_prototype.get(), "ATTRIBUTE_NODE", 2)?;
+        set_int_property(cx, node_prototype.get(), "TEXT_NODE", 3)?;
+        set_int_property(cx, node_prototype.get(), "CDATA_SECTION_NODE", 4)?;
+        set_int_property(cx, node_prototype.get(), "ENTITY_REFERENCE_NODE", 5)?;
+        set_int_property(cx, node_prototype.get(), "ENTITY_NODE", 6)?;
+        set_int_property(cx, node_prototype.get(), "PROCESSING_INSTRUCTION_NODE", 7)?;
+        set_int_property(cx, node_prototype.get(), "COMMENT_NODE", 8)?;
+        set_int_property(cx, node_prototype.get(), "DOCUMENT_NODE", 9)?;
+        set_int_property(cx, node_prototype.get(), "DOCUMENT_TYPE_NODE", 10)?;
+        set_int_property(cx, node_prototype.get(), "DOCUMENT_FRAGMENT_NODE", 11)?;
+        set_int_property(cx, node_prototype.get(), "NOTATION_NODE", 12)?;
+        set_int_property(cx, node_prototype.get(), "DOCUMENT_POSITION_DISCONNECTED", 1)?;
+        set_int_property(cx, node_prototype.get(), "DOCUMENT_POSITION_PRECEDING", 2)?;
+        set_int_property(cx, node_prototype.get(), "DOCUMENT_POSITION_FOLLOWING", 4)?;
+        set_int_property(cx, node_prototype.get(), "DOCUMENT_POSITION_CONTAINS", 8)?;
+        set_int_property(cx, node_prototype.get(), "DOCUMENT_POSITION_CONTAINED_BY", 16)?;
+        set_int_property(cx, node_prototype.get(), "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC", 32)?;
 
         // Tree-mutation methods
-        define_function(raw_cx, node_prototype.get(), "appendChild", Some(element_append_child), 1)?;
-        define_function(raw_cx, node_prototype.get(), "removeChild", Some(element_remove_child), 1)?;
-        define_function(raw_cx, node_prototype.get(), "insertBefore", Some(element_insert_before), 2)?;
-        define_function(raw_cx, node_prototype.get(), "replaceChild", Some(element_replace_child), 2)?;
+        define_function(cx, node_prototype.get(), "appendChild", Some(element_append_child), 1)?;
+        define_function(cx, node_prototype.get(), "removeChild", Some(element_remove_child), 1)?;
+        define_function(cx, node_prototype.get(), "insertBefore", Some(element_insert_before), 2)?;
+        define_function(cx, node_prototype.get(), "replaceChild", Some(element_replace_child), 2)?;
 
         // Clone / compare
-        define_function(raw_cx, node_prototype.get(), "cloneNode", Some(element_clone_node), 1)?;
-        define_function(raw_cx, node_prototype.get(), "isEqualNode", Some(node_is_equal_node), 1)?;
-        define_function(raw_cx, node_prototype.get(), "isSameNode", Some(node_is_same_node), 1)?;
-        define_function(raw_cx, node_prototype.get(), "compareDocumentPosition", Some(node_compare_document_position), 1)?;
+        define_function(cx, node_prototype.get(), "cloneNode", Some(element_clone_node), 1)?;
+        define_function(cx, node_prototype.get(), "isEqualNode", Some(node_is_equal_node), 1)?;
+        define_function(cx, node_prototype.get(), "isSameNode", Some(node_is_same_node), 1)?;
+        define_function(cx, node_prototype.get(), "compareDocumentPosition", Some(node_compare_document_position), 1)?;
 
         // Tree-traversal / query
-        define_function(raw_cx, node_prototype.get(), "getRootNode", Some(element_get_root_node), 1)?;
-        define_function(raw_cx, node_prototype.get(), "contains", Some(element_contains), 1)?;
-        define_function(raw_cx, node_prototype.get(), "hasChildNodes", Some(node_has_child_nodes), 0)?;
+        define_function(cx, node_prototype.get(), "getRootNode", Some(element_get_root_node), 1)?;
+        define_function(cx, node_prototype.get(), "contains", Some(element_contains), 1)?;
+        define_function(cx, node_prototype.get(), "hasChildNodes", Some(node_has_child_nodes), 0)?;
 
         // Normalisation
-        define_function(raw_cx, node_prototype.get(), "normalize", Some(node_normalize), 0)?;
+        define_function(cx, node_prototype.get(), "normalize", Some(node_normalize), 0)?;
 
         // Namespace helpers
-        define_function(raw_cx, node_prototype.get(), "lookupPrefix", Some(node_lookup_prefix), 1)?;
-        define_function(raw_cx, node_prototype.get(), "lookupNamespaceURI", Some(node_lookup_namespace_uri), 1)?;
-        define_function(raw_cx, node_prototype.get(), "isDefaultNamespace", Some(node_is_default_namespace), 1)?;
+        define_function(cx, node_prototype.get(), "lookupPrefix", Some(node_lookup_prefix), 1)?;
+        define_function(cx, node_prototype.get(), "lookupNamespaceURI", Some(node_lookup_namespace_uri), 1)?;
+        define_function(cx, node_prototype.get(), "isDefaultNamespace", Some(node_is_default_namespace), 1)?;
 
         // Event handling
-        define_function(raw_cx, node_prototype.get(), "addEventListener", Some(element_add_event_listener), 3)?;
-        define_function(raw_cx, node_prototype.get(), "removeEventListener", Some(element_remove_event_listener), 3)?;
-        define_function(raw_cx, node_prototype.get(), "dispatchEvent", Some(element_dispatch_event), 1)?;
+        define_function(cx, node_prototype.get(), "addEventListener", Some(element_add_event_listener), 3)?;
+        define_function(cx, node_prototype.get(), "removeEventListener", Some(element_remove_event_listener), 3)?;
+        define_function(cx, node_prototype.get(), "dispatchEvent", Some(element_dispatch_event), 1)?;
 
         rooted!(in(raw_cx) let proto_val = ObjectValue(node_prototype.get()));
         rooted!(in(raw_cx) let node_rooted = node.get());
@@ -1059,12 +1072,13 @@ unsafe fn setup_node_constructor(raw_cx: *mut JSContext, global: *mut JSObject) 
 }
 
 /// Set up Element and HTMLElement constructors
-unsafe fn setup_element_constructors(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+unsafe fn setup_element_constructors(cx: &mut SafeJSContext, global: *mut JSObject) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let element = JS_NewPlainObject(raw_cx));
     if element.get().is_null() {
         return Err("Failed to create Element constructor".to_string());
     }
-    set_int_property(raw_cx, element.get(), "ELEMENT_NODE", 1)?;
+    set_int_property(cx, element.get(), "ELEMENT_NODE", 1)?;
 
     rooted!(in(raw_cx) let element_val = ObjectValue(element.get()));
     rooted!(in(raw_cx) let global_rooted = global);
@@ -1112,8 +1126,10 @@ unsafe fn setup_html_form_element_constructor(raw_cx: *mut JSContext, global: *m
 }
 
 /// Set up HTMLIFrameElement constructor with prototype
-unsafe fn setup_html_iframe_element_constructor(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+unsafe fn setup_html_iframe_element_constructor(cx: &mut mozjs::context::JSContext, global: *mut JSObject) -> Result<(), String> {
     use crate::js::helpers::define_property_accessor;
+
+    let raw_cx = cx.raw_cx();
 
     // Create HTMLIFrameElement constructor
     rooted!(in(raw_cx) let html_iframe_element = JS_NewPlainObject(raw_cx));
@@ -1128,25 +1144,25 @@ unsafe fn setup_html_iframe_element_constructor(raw_cx: *mut JSContext, global: 
     }
 
     // Define getter/setter functions for contentWindow property
-    define_function(raw_cx, prototype.get(), "__getContentWindow", Some(html_iframe_element_get_content_window), 0)?;
-    define_function(raw_cx, prototype.get(), "__setContentWindow", Some(html_iframe_element_set_content_window), 1)?;
+    define_function(cx, prototype.get(), "__getContentWindow", Some(html_iframe_element_get_content_window), 0)?;
+    define_function(cx, prototype.get(), "__setContentWindow", Some(html_iframe_element_set_content_window), 1)?;
 
     // Define getter/setter functions for contentDocument property
-    define_function(raw_cx, prototype.get(), "__getContentDocument", Some(html_iframe_element_get_content_document), 0)?;
-    define_function(raw_cx, prototype.get(), "__setContentDocument", Some(html_iframe_element_set_content_document), 1)?;
+    define_function(cx, prototype.get(), "__getContentDocument", Some(html_iframe_element_get_content_document), 0)?;
+    define_function(cx, prototype.get(), "__setContentDocument", Some(html_iframe_element_set_content_document), 1)?;
 
     // Define getter/setter functions for src property
-    define_function(raw_cx, prototype.get(), "__getSrc", Some(html_iframe_element_get_src), 0)?;
-    define_function(raw_cx, prototype.get(), "__setSrc", Some(html_iframe_element_set_src), 1)?;
+    define_function(cx, prototype.get(), "__getSrc", Some(html_iframe_element_get_src), 0)?;
+    define_function(cx, prototype.get(), "__setSrc", Some(html_iframe_element_set_src), 1)?;
 
     // Define contentWindow as property with getter/setter on prototype
-    define_property_accessor(raw_cx, prototype.get(), "contentWindow", "__getContentWindow", "__setContentWindow")?;
+    define_property_accessor(cx, prototype.get(), "contentWindow", "__getContentWindow", "__setContentWindow")?;
 
     // Define contentDocument as property with getter/setter on prototype
-    define_property_accessor(raw_cx, prototype.get(), "contentDocument", "__getContentDocument", "__setContentDocument")?;
+    define_property_accessor(cx, prototype.get(), "contentDocument", "__getContentDocument", "__setContentDocument")?;
 
     // Define src as property with getter/setter on prototype
-    define_property_accessor(raw_cx, prototype.get(), "src", "__getSrc", "__setSrc")?;
+    define_property_accessor(cx, prototype.get(), "src", "__getSrc", "__setSrc")?;
 
     // Set prototype on constructor
     rooted!(in(raw_cx) let prototype_val = ObjectValue(prototype.get()));
@@ -1209,15 +1225,16 @@ unsafe fn setup_event_constructors(raw_cx: *mut JSContext, global: *mut JSObject
 /// Set up XMLHttpRequest constructor
 
 /// Set up atob/btoa functions
-unsafe fn setup_base64_functions(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
-    define_function(raw_cx, global, "atob", Some(window_atob), 1)?;
-    define_function(raw_cx, global, "btoa", Some(window_btoa), 1)?;
+unsafe fn setup_base64_functions(cx: &mut SafeJSContext, global: *mut JSObject) -> Result<(), String> {
+    define_function(cx, global, "atob", Some(window_atob), 1)?;
+    define_function(cx, global, "btoa", Some(window_btoa), 1)?;
     Ok(())
 }
 
 /// Set up dataLayer for Google Analytics compatibility
-unsafe fn setup_data_layer(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
-    rooted!(in(raw_cx) let data_layer = create_empty_array(raw_cx));
+unsafe fn setup_data_layer(cx: &mut SafeJSContext, global: *mut JSObject) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let data_layer = create_empty_array(cx));
     if data_layer.get().is_null() {
         return Err("Failed to create dataLayer array".to_string());
     }
@@ -1243,6 +1260,7 @@ unsafe fn setup_data_layer(raw_cx: *mut JSContext, global: *mut JSObject) -> Res
 /// document.cookie getter implementation
 unsafe extern "C" fn document_get_cookie(raw_cx: *mut JSContext, _argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, 0);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     ensure_cookie_jar_initialized();
 
@@ -1258,16 +1276,17 @@ unsafe extern "C" fn document_get_cookie(raw_cx: *mut JSContext, _argc: c_uint, 
         }
     });
 
-    args.rval().set(create_js_string(raw_cx, &cookie_string));
+    args.rval().set(create_js_string(safe_cx, &cookie_string));
     true
 }
 
 /// document.cookie setter implementation
 unsafe extern "C" fn document_set_cookie(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let cookie_str = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         args.rval().set(UndefinedValue());
         return true;
@@ -1300,6 +1319,7 @@ unsafe extern "C" fn document_set_cookie(raw_cx: *mut JSContext, argc: c_uint, v
 /// document.head getter implementation
 unsafe extern "C" fn document_get_head(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     println!("[JS] document.head called");
 
@@ -1320,7 +1340,7 @@ unsafe extern "C" fn document_get_head(raw_cx: *mut JSContext, argc: c_uint, vp:
     });
 
     if let Some((node_id, tag_name, attributes)) = head_element {
-        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, node_id, &tag_name, &attributes) {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_id(safe_cx, node_id, &tag_name, &attributes) {
             args.rval().set(js_elem);
         } else {
             args.rval().set(mozjs::jsval::NullValue());
@@ -1336,6 +1356,7 @@ unsafe extern "C" fn document_get_head(raw_cx: *mut JSContext, argc: c_uint, vp:
 /// document.body getter implementation
 unsafe extern "C" fn document_get_body(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let body_element = DOM_REF.with(|dom_ref| {
         let dom_ptr = (*dom_ref.borrow())?;
@@ -1347,7 +1368,7 @@ unsafe extern "C" fn document_get_body(raw_cx: *mut JSContext, argc: c_uint, vp:
     });
 
     if let Some((node_id, tag_name, attributes)) = body_element {
-        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, node_id, &tag_name, &attributes) {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_id(safe_cx, node_id, &tag_name, &attributes) {
             args.rval().set(js_elem);
             return true;
         }
@@ -1360,6 +1381,7 @@ unsafe extern "C" fn document_get_body(raw_cx: *mut JSContext, argc: c_uint, vp:
 /// document.body setter implementation
 unsafe extern "C" fn document_set_body(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     if argc == 0 {
         args.rval().set(UndefinedValue());
@@ -1372,7 +1394,7 @@ unsafe extern "C" fn document_set_body(raw_cx: *mut JSContext, argc: c_uint, vp:
         return true;
     }
 
-    let Some(new_body_id) = get_node_id_from_value(raw_cx, value) else {
+    let Some(new_body_id) = get_node_id_from_value(safe_cx, value) else {
         args.rval().set(UndefinedValue());
         return true;
     };
@@ -1392,6 +1414,7 @@ unsafe extern "C" fn document_set_body(raw_cx: *mut JSContext, argc: c_uint, vp:
 /// <script> element, or null when no script is running synchronously.
 unsafe extern "C" fn document_get_current_script(raw_cx: *mut JSContext, _argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, 0);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let element_data = CURRENT_SCRIPT_NODE_ID.with(|id| {
         let node_id = (*id.borrow())?;
@@ -1408,7 +1431,7 @@ unsafe extern "C" fn document_get_current_script(raw_cx: *mut JSContext, _argc: 
     });
 
     if let Some((node_id, tag_name, attributes)) = element_data {
-        match element_bindings::create_js_element_by_id(raw_cx, node_id, &tag_name, &attributes) {
+        match element_bindings::create_js_element_by_id(safe_cx, node_id, &tag_name, &attributes) {
             Ok(val) => {
                 args.rval().set(val);
                 return true;
@@ -1424,9 +1447,10 @@ unsafe extern "C" fn document_get_current_script(raw_cx: *mut JSContext, _argc: 
 /// document.getElementById implementation
 unsafe extern "C" fn document_get_element_by_id(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let id = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -1455,7 +1479,7 @@ unsafe extern "C" fn document_get_element_by_id(raw_cx: *mut JSContext, argc: c_
     });
 
     if let Some((node_id, tag_name, attributes)) = element_data {
-        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, node_id, &tag_name, &attributes) {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_id(safe_cx, node_id, &tag_name, &attributes) {
             args.rval().set(js_elem);
         } else {
             args.rval().set(mozjs::jsval::NullValue());
@@ -1471,9 +1495,10 @@ unsafe extern "C" fn document_get_element_by_id(raw_cx: *mut JSContext, argc: c_
 /// document.getElementsByTagName implementation
 unsafe extern "C" fn document_get_elements_by_tag_name(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let tag_name = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -1498,10 +1523,10 @@ unsafe extern "C" fn document_get_elements_by_tag_name(raw_cx: *mut JSContext, a
         results
     });
 
-    rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
+    rooted!(in(raw_cx) let array = create_empty_array(safe_cx));
 
     for (index, (node_id, tag, attrs)) in matching_elements.iter().enumerate() {
-        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, *node_id, tag, attrs) {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_id(safe_cx, *node_id, tag, attrs) {
             rooted!(in(raw_cx) let elem_val = js_elem);
             rooted!(in(raw_cx) let array_obj = array.get());
             mozjs::rust::wrappers::JS_SetElement(raw_cx, array_obj.handle().into(), index as u32, elem_val.handle().into());
@@ -1515,9 +1540,10 @@ unsafe extern "C" fn document_get_elements_by_tag_name(raw_cx: *mut JSContext, a
 /// document.getElementsByClassName implementation
 unsafe extern "C" fn document_get_elements_by_class_name(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let class_name = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -1545,10 +1571,10 @@ unsafe extern "C" fn document_get_elements_by_class_name(raw_cx: *mut JSContext,
         results
     });
 
-    rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
+    rooted!(in(raw_cx) let array = create_empty_array(safe_cx));
 
     for (index, (node_id, tag, attrs)) in matching_elements.iter().enumerate() {
-        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, *node_id, tag, attrs) {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_id(safe_cx, *node_id, tag, attrs) {
             rooted!(in(raw_cx) let elem_val = js_elem);
             rooted!(in(raw_cx) let array_obj = array.get());
             mozjs::rust::wrappers::JS_SetElement(raw_cx, array_obj.handle().into(), index as u32, elem_val.handle().into());
@@ -1562,9 +1588,10 @@ unsafe extern "C" fn document_get_elements_by_class_name(raw_cx: *mut JSContext,
 /// document.querySelector implementation
 unsafe extern "C" fn document_query_selector(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let selector = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -1586,7 +1613,7 @@ unsafe extern "C" fn document_query_selector(raw_cx: *mut JSContext, argc: c_uin
     });
 
     if let Some((node_id, tag_name, attributes)) = element_data {
-        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, node_id, &tag_name, &attributes) {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_id(safe_cx, node_id, &tag_name, &attributes) {
             args.rval().set(js_elem);
         } else {
             args.rval().set(mozjs::jsval::NullValue());
@@ -1600,9 +1627,10 @@ unsafe extern "C" fn document_query_selector(raw_cx: *mut JSContext, argc: c_uin
 /// document.querySelectorAll implementation
 unsafe extern "C" fn document_query_selector_all(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let selector = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -1624,10 +1652,10 @@ unsafe extern "C" fn document_query_selector_all(raw_cx: *mut JSContext, argc: c
         results
     });
 
-    rooted!(in(raw_cx) let array = create_empty_array(raw_cx));
+    rooted!(in(raw_cx) let array = create_empty_array(safe_cx));
 
     for (index, (node_id, tag, attrs)) in matching_elements.iter().enumerate() {
-        if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, *node_id, tag, attrs) {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_id(safe_cx, *node_id, tag, attrs) {
             rooted!(in(raw_cx) let elem_val = js_elem);
             rooted!(in(raw_cx) let array_obj = array.get());
             mozjs::rust::wrappers::JS_SetElement(raw_cx, array_obj.handle().into(), index as u32, elem_val.handle().into());
@@ -1641,9 +1669,10 @@ unsafe extern "C" fn document_query_selector_all(raw_cx: *mut JSContext, argc: c
 /// document.createElement implementation
 unsafe extern "C" fn document_create_element(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let tag_name = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -1661,7 +1690,7 @@ unsafe extern "C" fn document_create_element(raw_cx: *mut JSContext, argc: c_uin
             // HTML documents should create elements in the HTML namespace.
             let local = markup5ever::LocalName::from(tag_name.to_lowercase());
             let node_id = dom.create_element(QualName::new(None, ns!(html), local), AttributeMap::empty());
-            if let Ok(js_elem) = element_bindings::create_js_element_by_id(raw_cx, node_id, &tag_name, dom.nodes[node_id].attrs().unwrap()) {
+            if let Ok(js_elem) = element_bindings::create_js_element_by_id(safe_cx, node_id, &tag_name, dom.nodes[node_id].attrs().unwrap()) {
                 args.rval().set(js_elem);
                 println!("Successfully created element '{}'", tag_name);
                 return;
@@ -1674,9 +1703,10 @@ unsafe extern "C" fn document_create_element(raw_cx: *mut JSContext, argc: c_uin
 /// document.createTextNode implementation
 unsafe extern "C" fn document_create_text_node(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let text = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -1689,10 +1719,10 @@ unsafe extern "C" fn document_create_text_node(raw_cx: *mut JSContext, argc: c_u
     // resulting node ID as __nodeId on the returned JS object.
     rooted!(in(raw_cx) let text_node = JS_NewPlainObject(raw_cx));
     if !text_node.get().is_null() {
-        let _ = set_int_property(raw_cx, text_node.get(), "nodeType", 3);
-        let _ = set_string_property(raw_cx, text_node.get(), "nodeName", "#text");
-        let _ = set_string_property(raw_cx, text_node.get(), "textContent", &text);
-        let _ = set_string_property(raw_cx, text_node.get(), "nodeValue", &text);
+        let _ = set_int_property(safe_cx, text_node.get(), "nodeType", 3);
+        let _ = set_string_property(safe_cx, text_node.get(), "nodeName", "#text");
+        let _ = set_string_property(safe_cx, text_node.get(), "textContent", &text);
+        let _ = set_string_property(safe_cx, text_node.get(), "nodeValue", &text);
         args.rval().set(ObjectValue(text_node.get()));
     } else {
         args.rval().set(mozjs::jsval::NullValue());
@@ -1703,6 +1733,7 @@ unsafe extern "C" fn document_create_text_node(raw_cx: *mut JSContext, argc: c_u
 /// document.createDocumentFragment implementation
 unsafe extern "C" fn document_create_document_fragment(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     println!("[JS] document.createDocumentFragment() called");
 
@@ -1712,11 +1743,11 @@ unsafe extern "C" fn document_create_document_fragment(raw_cx: *mut JSContext, a
     // assign __nodeId, and transfer children when the fragment is inserted.
     rooted!(in(raw_cx) let fragment = JS_NewPlainObject(raw_cx));
     if !fragment.get().is_null() {
-        let _ = set_int_property(raw_cx, fragment.get(), "nodeType", 11);
-        let _ = set_string_property(raw_cx, fragment.get(), "nodeName", "#document-fragment");
-        let _ = define_function(raw_cx, fragment.get(), "appendChild", Some(element_append_child), 1);
-        let _ = define_function(raw_cx, fragment.get(), "querySelector", Some(document_query_selector), 1);
-        let _ = define_function(raw_cx, fragment.get(), "querySelectorAll", Some(document_query_selector_all), 1);
+        let _ = set_int_property(safe_cx, fragment.get(), "nodeType", 11);
+        let _ = set_string_property(safe_cx, fragment.get(), "nodeName", "#document-fragment");
+        let _ = define_function(safe_cx, fragment.get(), "appendChild", Some(element_append_child), 1);
+        let _ = define_function(safe_cx, fragment.get(), "querySelector", Some(document_query_selector), 1);
+        let _ = define_function(safe_cx, fragment.get(), "querySelectorAll", Some(document_query_selector_all), 1);
         args.rval().set(ObjectValue(fragment.get()));
     } else {
         args.rval().set(mozjs::jsval::NullValue());
@@ -1731,9 +1762,10 @@ unsafe extern "C" fn document_create_document_fragment(raw_cx: *mut JSContext, a
 /// window.alert implementation
 unsafe extern "C" fn window_alert(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let message = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -1746,9 +1778,10 @@ unsafe extern "C" fn window_alert(raw_cx: *mut JSContext, argc: c_uint, vp: *mut
 /// window.confirm implementation
 unsafe extern "C" fn window_confirm(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let message = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -1763,9 +1796,10 @@ unsafe extern "C" fn window_confirm(raw_cx: *mut JSContext, argc: c_uint, vp: *m
 /// window.prompt implementation
 unsafe extern "C" fn window_prompt(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let message = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -1799,6 +1833,7 @@ unsafe extern "C" fn window_cancel_animation_frame(raw_cx: *mut JSContext, argc:
 /// window.getComputedStyle implementation
 unsafe extern "C" fn window_get_computed_style(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
     println!("[JS] getComputedStyle called");
 
     // FIXME: Returns a stub CSSStyleDeclaration whose getPropertyValue always returns "".
@@ -1806,7 +1841,7 @@ unsafe extern "C" fn window_get_computed_style(raw_cx: *mut JSContext, argc: c_u
     // inline styles) for the target element and return the computed value for each property.
     rooted!(in(raw_cx) let style = JS_NewPlainObject(raw_cx));
     if !style.get().is_null() {
-        let _ = define_function(raw_cx, style.get(), "getPropertyValue", Some(style_get_property_value), 1);
+        let _ = define_function(safe_cx, style.get(), "getPropertyValue", Some(style_get_property_value), 1);
         args.rval().set(ObjectValue(style.get()));
     } else {
         args.rval().set(mozjs::jsval::NullValue());
@@ -1819,9 +1854,10 @@ unsafe extern "C" fn window_add_event_listener(raw_cx: *mut JSContext, argc: c_u
     use crate::js::bindings::event_listeners;
 
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let event_type = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         args.rval().set(UndefinedValue());
         return true;
@@ -1845,7 +1881,7 @@ unsafe extern "C" fn window_add_event_listener(raw_cx: *mut JSContext, argc: c_u
         false
     };
 
-    event_listeners::add_listener(raw_cx, event_listeners::WINDOW_NODE_ID, event_type, callback_obj, use_capture);
+    event_listeners::add_listener(safe_cx, event_listeners::WINDOW_NODE_ID, event_type, callback_obj, use_capture);
 
     args.rval().set(UndefinedValue());
     true
@@ -1856,9 +1892,10 @@ unsafe extern "C" fn window_remove_event_listener(raw_cx: *mut JSContext, argc: 
     use crate::js::bindings::event_listeners;
 
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let event_type = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         args.rval().set(UndefinedValue());
         return true;
@@ -1893,9 +1930,10 @@ unsafe extern "C" fn document_add_event_listener(raw_cx: *mut JSContext, argc: c
     use crate::js::bindings::event_listeners;
 
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let event_type = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         args.rval().set(UndefinedValue());
         return true;
@@ -1930,7 +1968,7 @@ unsafe extern "C" fn document_add_event_listener(raw_cx: *mut JSContext, argc: c
         false
     };
 
-    event_listeners::add_listener(raw_cx, event_listeners::DOCUMENT_NODE_ID, event_type, callback_obj, use_capture);
+    event_listeners::add_listener(safe_cx, event_listeners::DOCUMENT_NODE_ID, event_type, callback_obj, use_capture);
 
     args.rval().set(UndefinedValue());
     true
@@ -1941,9 +1979,10 @@ unsafe extern "C" fn document_remove_event_listener(raw_cx: *mut JSContext, argc
     use crate::js::bindings::event_listeners;
 
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let event_type = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         args.rval().set(UndefinedValue());
         return true;
@@ -1979,6 +2018,7 @@ unsafe extern "C" fn document_dispatch_event(raw_cx: *mut JSContext, argc: c_uin
     use mozjs::jsapi::CurrentGlobalOrNull;
 
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     if argc < 1 {
         args.rval().set(BooleanValue(true));
@@ -1997,7 +2037,7 @@ unsafe extern "C" fn document_dispatch_event(raw_cx: *mut JSContext, argc: c_uin
     let type_cname = std::ffi::CString::new("type").unwrap();
     JS_GetProperty(raw_cx, event_r.handle().into(), type_cname.as_ptr(), type_val.handle_mut().into());
     let event_type = if type_val.get().is_string() {
-        js_value_to_string(raw_cx, *type_val)
+        js_value_to_string(safe_cx, *type_val)
     } else {
         args.rval().set(BooleanValue(true));
         return true;
@@ -2011,7 +2051,7 @@ unsafe extern "C" fn document_dispatch_event(raw_cx: *mut JSContext, argc: c_uin
     // For document.dispatchEvent, the chain is just [DOCUMENT_NODE_ID].
     let chain = [event_listeners::DOCUMENT_NODE_ID];
     rooted!(in(raw_cx) let global = CurrentGlobalOrNull(raw_cx));
-    event_listeners::dispatch_event_obj(raw_cx, global.get(), &chain, &event_type, bubbles, event_obj);
+    event_listeners::dispatch_event_obj(safe_cx, global.get(), &chain, &event_type, bubbles, event_obj);
 
     let not_cancelled = !event_listeners::EVENT_DEFAULT_PREVENTED.with(|f| f.get());
     args.rval().set(BooleanValue(not_cancelled));
@@ -2041,9 +2081,10 @@ unsafe extern "C" fn window_scroll_by(raw_cx: *mut JSContext, argc: c_uint, vp: 
 /// window.atob implementation (base64 decode)
 unsafe extern "C" fn window_atob(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let encoded = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -2052,17 +2093,17 @@ unsafe extern "C" fn window_atob(raw_cx: *mut JSContext, argc: c_uint, vp: *mut 
     match base64::engine::general_purpose::STANDARD.decode(encoded.as_bytes()) {
         Ok(decoded) => {
             if let Ok(s) = String::from_utf8(decoded) {
-                args.rval().set(create_js_string(raw_cx, &s));
+                args.rval().set(create_js_string(safe_cx, &s));
             } else {
                 // FIXME: Non-UTF-8 decoded bytes should be returned as a Latin-1 string (each byte
                 // as a code point), not silently replaced with an empty string.
-                args.rval().set(create_js_string(raw_cx, ""));
+                args.rval().set(create_js_string(safe_cx, ""));
             }
         }
         Err(_) => {
             // FIXME: Should throw a DOMException with name "InvalidCharacterError" instead of
             // returning an empty string when the input is not valid base64.
-            args.rval().set(create_js_string(raw_cx, ""));
+            args.rval().set(create_js_string(safe_cx, ""));
         }
     }
     true
@@ -2071,25 +2112,27 @@ unsafe extern "C" fn window_atob(raw_cx: *mut JSContext, argc: c_uint, vp: *mut 
 /// window.btoa implementation (base64 encode)
 unsafe extern "C" fn window_btoa(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let data = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
 
     use base64::Engine;
     let encoded = base64::engine::general_purpose::STANDARD.encode(data.as_bytes());
-    args.rval().set(create_js_string(raw_cx, &encoded));
+    args.rval().set(create_js_string(safe_cx, &encoded));
     true
 }
 
 /// Internal media query evaluator used by window.matchMedia.
 unsafe extern "C" fn window_evaluate_media_query(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let query = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -2337,9 +2380,10 @@ unsafe extern "C" fn location_reload(raw_cx: *mut JSContext, argc: c_uint, vp: *
 /// location.assign implementation
 unsafe extern "C" fn location_assign(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let url = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -2366,9 +2410,10 @@ unsafe extern "C" fn location_assign(raw_cx: *mut JSContext, argc: c_uint, vp: *
 /// location.replace implementation
 unsafe extern "C" fn location_replace(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let url = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -2395,6 +2440,7 @@ unsafe extern "C" fn location_replace(raw_cx: *mut JSContext, argc: c_uint, vp: 
 /// location.toString implementation
 unsafe extern "C" fn location_to_string(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let href = DOM_REF.with(|dom_ref| {
         if let Some(dom_ptr) = dom_ref.borrow().as_ref() {
@@ -2406,7 +2452,7 @@ unsafe extern "C" fn location_to_string(raw_cx: *mut JSContext, argc: c_uint, vp
         }
     });
 
-    args.rval().set(create_js_string(raw_cx, &href));
+    args.rval().set(create_js_string(safe_cx, &href));
     true
 }
 
@@ -2417,9 +2463,10 @@ unsafe extern "C" fn location_to_string(raw_cx: *mut JSContext, argc: c_uint, vp
 /// localStorage.getItem implementation
 unsafe extern "C" fn local_storage_get_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let key = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -2427,9 +2474,9 @@ unsafe extern "C" fn local_storage_get_item(raw_cx: *mut JSContext, argc: c_uint
     let value = LOCAL_STORAGE.with(|storage| storage.borrow().get(&key).cloned());
 
     if let Some(val) = value {
-        args.rval().set(create_js_string(raw_cx, &val));
+        args.rval().set(create_js_string(safe_cx, &val));
     } else {
-        args.rval().set(mozjs::jsval::NullValue());
+        args.rval().set(NullValue());
     }
     true
 }
@@ -2437,14 +2484,15 @@ unsafe extern "C" fn local_storage_get_item(raw_cx: *mut JSContext, argc: c_uint
 /// localStorage.setItem implementation
 unsafe extern "C" fn local_storage_set_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let key = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
     let value = if argc > 1 {
-        js_value_to_string(raw_cx, *args.get(1))
+        js_value_to_string(safe_cx, *args.get(1))
     } else {
         String::new()
     };
@@ -2460,9 +2508,10 @@ unsafe extern "C" fn local_storage_set_item(raw_cx: *mut JSContext, argc: c_uint
 /// localStorage.removeItem implementation
 unsafe extern "C" fn local_storage_remove_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let key = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -2490,6 +2539,7 @@ unsafe extern "C" fn local_storage_clear(raw_cx: *mut JSContext, argc: c_uint, v
 /// localStorage.key implementation
 unsafe extern "C" fn local_storage_key(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let index = if argc > 0 {
         let val = *args.get(0);
@@ -2510,7 +2560,7 @@ unsafe extern "C" fn local_storage_key(raw_cx: *mut JSContext, argc: c_uint, vp:
     });
 
     if let Some(k) = key {
-        args.rval().set(create_js_string(raw_cx, &k));
+        args.rval().set(create_js_string(safe_cx, &k));
     } else {
         args.rval().set(mozjs::jsval::NullValue());
     }
@@ -2520,9 +2570,10 @@ unsafe extern "C" fn local_storage_key(raw_cx: *mut JSContext, argc: c_uint, vp:
 /// sessionStorage.getItem implementation
 unsafe extern "C" fn session_storage_get_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let key = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -2530,7 +2581,7 @@ unsafe extern "C" fn session_storage_get_item(raw_cx: *mut JSContext, argc: c_ui
     let value = SESSION_STORAGE.with(|storage| storage.borrow().get(&key).cloned());
 
     if let Some(val) = value {
-        args.rval().set(create_js_string(raw_cx, &val));
+        args.rval().set(create_js_string(safe_cx, &val));
     } else {
         args.rval().set(mozjs::jsval::NullValue());
     }
@@ -2540,14 +2591,15 @@ unsafe extern "C" fn session_storage_get_item(raw_cx: *mut JSContext, argc: c_ui
 /// sessionStorage.setItem implementation
 unsafe extern "C" fn session_storage_set_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let key = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
     let value = if argc > 1 {
-        js_value_to_string(raw_cx, *args.get(1))
+        js_value_to_string(safe_cx, *args.get(1))
     } else {
         String::new()
     };
@@ -2563,9 +2615,10 @@ unsafe extern "C" fn session_storage_set_item(raw_cx: *mut JSContext, argc: c_ui
 /// sessionStorage.removeItem implementation
 unsafe extern "C" fn session_storage_remove_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let key = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -2593,6 +2646,7 @@ unsafe extern "C" fn session_storage_clear(raw_cx: *mut JSContext, argc: c_uint,
 /// sessionStorage.key implementation
 unsafe extern "C" fn session_storage_key(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let index = if argc > 0 {
         let val = *args.get(0);
@@ -2613,7 +2667,7 @@ unsafe extern "C" fn session_storage_key(raw_cx: *mut JSContext, argc: c_uint, v
     });
 
     if let Some(k) = key {
-        args.rval().set(create_js_string(raw_cx, &k));
+        args.rval().set(create_js_string(safe_cx, &k));
     } else {
         args.rval().set(mozjs::jsval::NullValue());
     }
@@ -2624,9 +2678,10 @@ unsafe extern "C" fn session_storage_key(raw_cx: *mut JSContext, argc: c_uint, v
 /// style.getPropertyValue implementation
 unsafe extern "C" fn style_get_property_value(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let property = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };
@@ -2635,7 +2690,7 @@ unsafe extern "C" fn style_get_property_value(raw_cx: *mut JSContext, argc: c_ui
     // FIXME: Always returns "" — this version is used by getComputedStyle(). It should resolve
     // the computed value from the cascade (author stylesheets, inherited values, initial values)
     // for the target element rather than returning an empty string unconditionally.
-    args.rval().set(create_js_string(raw_cx, ""));
+    args.rval().set(create_js_string(safe_cx, ""));
     true
 }
 
@@ -2694,12 +2749,13 @@ unsafe extern "C" fn html_iframe_element_set_content_document(raw_cx: *mut JSCon
 // FIXME: Always returns "" instead of reading the src attribute from the element's backing DOM node.
 unsafe extern "C" fn html_iframe_element_get_src(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     println!("[JS] HTMLIFrameElement.src getter called");
 
     // For now, return empty string
     // In a full implementation, this would get the src attribute from the element
-    args.rval().set(create_js_string(raw_cx, ""));
+    args.rval().set(create_js_string(safe_cx, ""));
     true
 }
 
@@ -2708,9 +2764,10 @@ unsafe extern "C" fn html_iframe_element_get_src(raw_cx: *mut JSContext, argc: c
 // trigger loading the iframe URL.
 unsafe extern "C" fn html_iframe_element_set_src(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let src = if argc > 0 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         String::new()
     };

@@ -11,14 +11,14 @@ use mozjs::context::JSContext;
 use mozjs::conversions::jsstr_to_string;
 use mozjs::gc::HandleObject;
 use mozjs::glue::JobQueueTraps;
-use mozjs::jsapi::{CallArgs, JSContext as ApiJSContext};
-use mozjs::jsapi::{Compile1, CompileModule1, Handle, Heap, JSAutoRealm, JSContext as RawJSContext, JSObject, JSScript, JS_ClearPendingException, JS_ExecuteScript, JS_GetPendingException, JS_IsExceptionPending, ModuleEvaluate, ModuleLink, MutableHandleValue, OnNewGlobalHookOption, SetScriptPrivate};
+use mozjs::jsapi::{CallArgs, JSContext as ApiJSContext, SetModuleMetadataHook, SetScriptPrivate};
+use mozjs::jsapi::{Handle, Heap, JSAutoRealm, JSContext as RawJSContext, JSObject, JSScript, OnNewGlobalHookOption};
 // JavaScript runtime management using Mozilla's SpiderMonkey (mozjs)
-use mozjs::jsval::{PrivateValue, UndefinedValue};
+use mozjs::jsval::{PrivateValue, StringValue, UndefinedValue};
 use mozjs::panic::{maybe_resume_unwind};
 use mozjs::rooted;
-use mozjs::rust::wrappers2::{JS_GetScriptPrivate, JS_NewGlobalObject, JS_ValueToSource};
-use mozjs::rust::{transform_str_to_source_text, CompileOptionsWrapper, JSEngine, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS};
+use mozjs::rust::wrappers2::{Compile1, CompileModule1, JS_ClearPendingException, JS_DefineProperty, JS_ExecuteScript, JS_GetPendingException, JS_GetScriptPrivate, JS_IsExceptionPending, JS_NewGlobalObject, JS_NewUCStringCopyN, JS_ValueToSource, ModuleEvaluate, ModuleLink};
+use mozjs::rust::{transform_str_to_source_text, CompileOptionsWrapper, JSEngine, MutableHandleValue, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::os::raw::c_void;
@@ -26,8 +26,10 @@ use std::ptr;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::Duration;
+use mozjs::realm::AutoRealm;
 use url::Url;
 use crate::js::bindings::initialize_bindings;
+use crate::js::helpers::ToSafeCx;
 
 lazy_static! {
     static ref ENGINE_HANDLER_PRODUCER: EventLoop = EventLoop::new();
@@ -127,14 +129,15 @@ impl JsRuntime {
     fn enter_realm_and_initialize(&mut self, dom: *mut Dom, user_agent: String, timer_manager: Rc<TimerManager>) -> JsResult<()> {
         // Get raw pointers before entering the realm to avoid borrow conflicts
         let raw_cx = unsafe { self.runtime.cx().raw_cx() };
+        let cx = &mut raw_cx.to_safe_cx();
         let global_ptr = self.global.get();
 
         unsafe {
             rooted!(in(raw_cx) let global_root = global_ptr);
-            let _realm = mozjs::jsapi::JSAutoRealm::new(raw_cx, global_root.get());
+            let cx = AutoRealm::new_from_handle(cx, global_root.handle());
 
             // Required for import.meta support in module scripts.
-            mozjs::jsapi::SetModuleMetadataHook(self.runtime.rt(), Some(module_metadata_hook));
+            SetModuleMetadataHook(self.runtime.rt(), Some(module_metadata_hook));
 
             initialize_bindings(self, dom, user_agent, timer_manager)?;
         }
@@ -165,7 +168,8 @@ impl JsRuntime {
             }
 
             // Must enter the realm before compiling or executing scripts
-            let _realm = mozjs::jsapi::JSAutoRealm::new(raw_cx, global.get());
+            let mut cx = &mut AutoRealm::new_from_handle(cx, global.handle());
+            let raw_cx = cx.raw_cx();
 
             rooted!(in(raw_cx) let mut rval = UndefinedValue());
             let rval = rval.handle_mut();
@@ -179,10 +183,10 @@ impl JsRuntime {
 
             if compiled_script.is_null() {
                 // Handle compilation error
-                if JS_IsExceptionPending(raw_cx) {
+                if JS_IsExceptionPending(cx) {
                     rooted!(in(raw_cx) let mut exception = UndefinedValue());
-                    if JS_GetPendingException(raw_cx, MutableHandleValue::from(exception.handle_mut())) {
-                        JS_ClearPendingException(raw_cx);
+                    if JS_GetPendingException(cx, MutableHandleValue::from(exception.handle_mut())) {
+                        JS_ClearPendingException(cx);
                         rooted!(in(raw_cx) let exc_str = JS_ValueToSource(cx, exception.handle()));
                         if !exc_str.get().is_null() {
                             let msg = jsstr_to_string(raw_cx, NonNull::new(exc_str.handle().get()).unwrap());
@@ -198,12 +202,12 @@ impl JsRuntime {
 
             let script = NonNull::new(*compiled_script).expect("Can't be null");
 
-            if !Self::evaluate_script(raw_cx, script, url, MutableHandleValue::from(rval)) {
+            if !Self::evaluate_script(cx, script, url, MutableHandleValue::from(rval)) {
                 // Handle evaluation error
-                if JS_IsExceptionPending(raw_cx) {
+                if JS_IsExceptionPending(cx) {
                     rooted!(in(raw_cx) let mut exception = UndefinedValue());
-                    if JS_GetPendingException(raw_cx, MutableHandleValue::from(exception.handle_mut())) {
-                        JS_ClearPendingException(raw_cx);
+                    if JS_GetPendingException(cx, MutableHandleValue::from(exception.handle_mut())) {
+                        JS_ClearPendingException(cx);
                         rooted!(in(raw_cx) let exc_str = JS_ValueToSource(cx, exception.handle()));
                         if !exc_str.get().is_null() {
                             let msg = jsstr_to_string(raw_cx, NonNull::new(exc_str.handle().get()).unwrap());
@@ -230,7 +234,7 @@ impl JsRuntime {
         let options = unsafe { CompileOptionsWrapper::new(&context, filename.parse().unwrap(), line_number) };
 
         // First try to compile the script as-is
-        let result = unsafe { Compile1(context.raw_cx(), options.ptr, &mut transform_str_to_source_text(text)) };
+        let result = unsafe { Compile1(context, options.ptr, &mut transform_str_to_source_text(text)) };
 
         // If compilation failed and the code looks like a JSON object or array,
         // wrap it in parentheses to make it a valid expression.
@@ -241,13 +245,13 @@ impl JsRuntime {
                 || (trimmed.starts_with('[') && trimmed.ends_with(']'))
             {
                 // Clear any pending exception from the first compile attempt
-                unsafe { JS_ClearPendingException(context.raw_cx()) };
+                unsafe { JS_ClearPendingException(context) };
 
                 // Wrap as an assignment to window.__INLINE_DATA__ so other scripts can access it
                 // This mimics how browsers handle inline JSON configuration scripts
                 let wrapped = format!("(window.__INLINE_DATA__ = window.__INLINE_DATA__ || []).push({})", text);
                 let options = unsafe { CompileOptionsWrapper::new(&context, filename.parse().unwrap(), line_number) };
-                return unsafe { Compile1(context.raw_cx(), options.ptr, &mut transform_str_to_source_text(&wrapped)) };
+                return unsafe { Compile1(context, options.ptr, &mut transform_str_to_source_text(&wrapped)) };
             }
         }
 
@@ -255,13 +259,14 @@ impl JsRuntime {
     }
 
     fn evaluate_script(
-        context: *mut RawJSContext,
+        context: &mut JSContext,
         compiled_script: NonNull<JSScript>,
         url: Url,
         rval: MutableHandleValue,
     ) -> bool {
-        rooted!(in(context) let record = compiled_script.as_ptr());
-        rooted!(in(context) let mut script_private = UndefinedValue());
+        let raw_cx = unsafe { context.raw_cx() };
+        rooted!(in(raw_cx) let record = compiled_script.as_ptr());
+        rooted!(in(raw_cx) let mut script_private = UndefinedValue());
 
         unsafe { JS_GetScriptPrivate(*record, script_private.handle_mut()) };
 
@@ -271,7 +276,7 @@ impl JsRuntime {
             unsafe { SetScriptPrivate(*record, &PrivateValue(Rc::into_raw(url) as *const _)) };
         }
 
-        unsafe { JS_ExecuteScript(context, Handle::from(record.handle()), rval) }
+        unsafe { JS_ExecuteScript(context, record.handle(), rval) }
     }
 
     /// Execute JavaScript code from a script tag
@@ -302,7 +307,7 @@ impl JsRuntime {
         line_number: u32,
     ) -> *mut JSObject {
         let options = unsafe { CompileOptionsWrapper::new(&context, filename.parse().unwrap(), line_number) };
-        unsafe { CompileModule1(context.raw_cx(), options.ptr, &mut transform_str_to_source_text(text)) }
+        unsafe { CompileModule1(context, options.ptr, &mut transform_str_to_source_text(text)) }
     }
 
     unsafe fn extract_js_exception(
@@ -312,10 +317,10 @@ impl JsRuntime {
         code: &str,
         print_error: bool,
     ) -> String {
-        if JS_IsExceptionPending(raw_cx) {
+        if JS_IsExceptionPending(context) {
             rooted!(in(raw_cx) let mut exception = UndefinedValue());
-            if JS_GetPendingException(raw_cx, MutableHandleValue::from(exception.handle_mut())) {
-                JS_ClearPendingException(raw_cx);
+            if JS_GetPendingException(context, MutableHandleValue::from(exception.handle_mut())) {
+                JS_ClearPendingException(context);
                 rooted!(in(raw_cx) let exc_str = JS_ValueToSource(context, exception.handle()));
                 if !exc_str.get().is_null() {
                     let msg = jsstr_to_string(raw_cx, NonNull::new(exc_str.handle().get()).unwrap());
@@ -354,19 +359,19 @@ impl JsRuntime {
             }
 
             let source_url_utf16: Vec<u16> = source_name.encode_utf16().collect();
-            rooted!(in(raw_cx) let source_url_js = mozjs::jsapi::JS_NewUCStringCopyN(raw_cx, source_url_utf16.as_ptr(), source_url_utf16.len()));
-            rooted!(in(raw_cx) let module_private = mozjs::jsval::StringValue(&*source_url_js.get()));
+            rooted!(in(raw_cx) let source_url_js = JS_NewUCStringCopyN(cx, source_url_utf16.as_ptr(), source_url_utf16.len()));
+            rooted!(in(raw_cx) let module_private = StringValue(&*source_url_js.get()));
             let module_private_value = module_private.get();
             mozjs::jsapi::SetModulePrivate(module.get(), &module_private_value);
 
-            if !ModuleLink(raw_cx, module.handle().into()) {
+            if !ModuleLink(cx, module.handle().into()) {
                 let msg = Self::extract_js_exception(cx, raw_cx, "JavaScript MODULE INSTANTIATE error", code, print_eval_error);
                 eprintln!("Module script execution error: {}", msg);
                 return Err(msg);
             }
 
             rooted!(in(raw_cx) let mut eval_result = UndefinedValue());
-            if !ModuleEvaluate(raw_cx, module.handle().into(), eval_result.handle_mut().into()) {
+            if !ModuleEvaluate(cx, module.handle().into(), eval_result.handle_mut().into()) {
                 let msg = Self::extract_js_exception(cx, raw_cx, "JavaScript MODULE EVAL error", code, print_eval_error);
                 eprintln!("Module script execution error: {}", msg);
                 return Err(msg);
@@ -384,7 +389,7 @@ impl JsRuntime {
     pub fn run_pending_jobs(&mut self) {
         use crate::js::jsapi::promise::perform_microtask_checkpoint;
 
-        self.do_with_jsapi(|_rt, cx, _global| {
+        self.do_with_jsapi(|cx, _global| {
             let executed = perform_microtask_checkpoint(cx);
             if executed > 0 {
                 log::trace!("Executed {} promise jobs", executed);
@@ -430,18 +435,17 @@ impl JsRuntime {
 
     pub fn do_with_jsapi<C, R>(&mut self, consumer: C) -> R
     where
-        C: FnOnce(&Runtime, *mut ApiJSContext, HandleObject) -> R,
+        C: FnOnce(&mut JSContext, HandleObject) -> R,
     {
         let rt = &mut self.runtime;
-        let cx = unsafe { rt.cx().raw_cx() };
-        let global = &self.global;
-
-        rooted!(in (cx) let global_root = global.get());
+        let cx = rt.cx();
+        let global = unsafe { self.global.handle() };
+        let safe_global = unsafe { mozjs::gc::Handle::from_raw(global) };
 
         let ret;
         {
-            let _ac = JSAutoRealm::new(cx, global.get());
-            ret = consumer(rt, cx, global_root.handle().into());
+            let mut cx = AutoRealm::new_from_handle(cx, safe_global);
+            ret = consumer(&mut cx, safe_global);
         }
         ret
     }
@@ -455,9 +459,9 @@ impl JsRuntime {
             global_ops.insert(name, Box::new(func));
         });
 
-        self.do_with_jsapi(|_rt, cx, global| {
+        self.do_with_jsapi(|cx, global| unsafe {
             define_native_function(
-                cx,
+                cx.raw_cx(),
                 global,
                 name,
                 Some(global_op_native_method),
@@ -475,8 +479,9 @@ impl JsRuntime {
         let async_job = || {
             RUNTIME.with(|engine| unsafe {
                 let mut engine = engine.borrow_mut();
-                let engine = engine.as_mut().unwrap();;
-                job(&mut &**engine)
+                if let Some(engine) = engine.as_mut() {
+                    job(&mut &**engine)
+                }
             });
         };
 
@@ -493,12 +498,29 @@ impl JsRuntime {
         let job = || {
             RUNTIME.with(|engine| unsafe {
                 let mut engine = engine.borrow_mut();
-                let engine = engine.as_mut().unwrap();
+                let engine = engine
+                    .as_mut()
+                    .expect("JsRuntime event queue called without an active runtime pointer");
                 job(&mut &**engine)
             })
         };
 
         self.event_loop.exe(job)
+    }
+}
+
+impl Drop for JsRuntime {
+    fn drop(&mut self) {
+        // Prevent later callbacks from dereferencing a stale thread-local runtime pointer.
+        let self_ptr = self as *mut JsRuntime;
+        RUNTIME.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if let Some(ptr) = *slot {
+                if ptr == self_ptr {
+                    *slot = None;
+                }
+            }
+        });
     }
 }
 
@@ -524,9 +546,10 @@ unsafe extern "C" fn global_op_native_method(
     vp: *mut mozjs::jsapi::Value
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut cx.to_safe_cx();
     let callee = args.callee();
     let prop_name = get_obj_prop_val_as_string(
-        cx,
+        safe_cx,
         HandleObject::from_marked_location(&callee),
         "name",
     );
@@ -541,19 +564,21 @@ unsafe extern "C" fn global_op_native_method(
 }
 
 unsafe extern "C" fn module_metadata_hook(
-    cx: *mut ApiJSContext,
+    raw_cx: *mut ApiJSContext,
     private_value: mozjs::jsapi::HandleValue,
     meta_object: mozjs::jsapi::HandleObject,
 ) -> bool {
-    rooted!(in(cx) let module_private = private_value.get());
+    let safe_cx = &mut raw_cx.to_safe_cx();
+    rooted!(in(raw_cx) let module_private = private_value.get());
     if !module_private.get().is_string() {
         return true;
     }
 
     let cname = std::ffi::CString::new("url").unwrap();
-    mozjs::jsapi::JS_DefineProperty(
-        cx,
-        meta_object,
+    rooted!(in(raw_cx) let meta_object = meta_object.get());
+    JS_DefineProperty(
+        safe_cx,
+        meta_object.handle(),
         cname.as_ptr(),
         module_private.handle().into(),
         mozjs::jsapi::JSPROP_ENUMERATE as u32,

@@ -25,24 +25,24 @@
 /// | `google.tick` | Top-level tick recorder — delegates to the load-timer store |
 
 use crate::js::bindings::dom_bindings::DOM_REF;
-use crate::js::helpers::{
-    define_function, get_node_id_from_value, js_value_to_string, set_bool_property,
-    set_int_property,
-};
+use crate::js::helpers::{define_function, get_node_id_from_value, js_value_to_string, set_bool_property, set_int_property, ToSafeCx};
 use crate::js::JsRuntime;
 use mozjs::jsapi::{
     CallArgs, CurrentGlobalOrNull, HandleValueArray, JSContext, JSObject,
     JS_CallFunctionValue, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject,
     JSPROP_ENUMERATE, JSPROP_PERMANENT, JSPROP_READONLY,
 };
+use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsval::{DoubleValue, Int32Value, JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
+use mozjs::rust::ValueArray;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::os::raw::c_uint;
 use std::time::{SystemTime, UNIX_EPOCH};
-
+use mozjs::realm::AutoRealm;
+use mozjs::rust::wrappers2::JS_ClearPendingException;
 // ============================================================================
 // Thread-local state
 // ============================================================================
@@ -81,7 +81,7 @@ pub fn setup_google_polyfill(runtime: &mut JsRuntime) -> Result<(), String> {
     // Snapshot the navigation start time once per page load.
     NAV_START_MS.with(|ns| *ns.borrow_mut() = epoch_ms());
 
-    runtime.do_with_jsapi(|_rt, cx, global| unsafe {
+    runtime.do_with_jsapi(|cx, global| unsafe {
         setup_google(cx, global.get())
     })
 }
@@ -91,12 +91,12 @@ pub fn setup_google_polyfill(runtime: &mut JsRuntime) -> Result<(), String> {
 // ============================================================================
 
 unsafe fn define_prop(
-    raw_cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     parent: *mut JSObject,
     name: &str,
     val: JSVal,
 ) -> Result<(), String> {
-    define_prop_with_flags(raw_cx, parent, name, val, JSPROP_ENUMERATE as u32)
+    define_prop_with_flags(cx, parent, name, val, JSPROP_ENUMERATE as u32)
 }
 
 /// Define a property that cannot be deleted or overwritten via assignment.
@@ -108,13 +108,13 @@ unsafe fn define_prop(
 /// Individual named properties *on* the protected object are still writable,
 /// so Google's XJS modules can still upgrade individual functions.
 unsafe fn define_prop_sealed(
-    raw_cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     parent: *mut JSObject,
     name: &str,
     val: JSVal,
 ) -> Result<(), String> {
     define_prop_with_flags(
-        raw_cx,
+        cx,
         parent,
         name,
         val,
@@ -123,12 +123,13 @@ unsafe fn define_prop_sealed(
 }
 
 unsafe fn define_prop_with_flags(
-    raw_cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     parent: *mut JSObject,
     name: &str,
     val: JSVal,
     flags: u32,
 ) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let parent_root = parent);
     rooted!(in(raw_cx) let val_root = val);
     let cname = CString::new(name).unwrap();
@@ -145,8 +146,8 @@ unsafe fn define_prop_with_flags(
     }
 }
 
-unsafe fn new_plain_object(raw_cx: *mut JSContext, name: &str) -> Result<*mut JSObject, String> {
-    let obj = JS_NewPlainObject(raw_cx);
+unsafe fn new_plain_object(cx: &mut SafeJSContext, name: &str) -> Result<*mut JSObject, String> {
+    let obj = JS_NewPlainObject(cx.raw_cx());
     if obj.is_null() {
         Err(format!("Failed to create object for '{}'", name))
     } else {
@@ -154,12 +155,13 @@ unsafe fn new_plain_object(raw_cx: *mut JSContext, name: &str) -> Result<*mut JS
     }
 }
 
-unsafe fn setup_google(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
+unsafe fn setup_google(cx: &mut mozjs::context::JSContext, global: *mut JSObject) -> Result<(), String> {
     // ------------------------------------------------------------------
     // Retrieve or create the top-level `google` object.
     // Google's own inline HTML scripts may have already set `window.google`
     // to a plain object — we extend it rather than replace it.
     // ------------------------------------------------------------------
+    let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let global_root = global);
     rooted!(in(raw_cx) let mut existing = UndefinedValue());
     let google_cname = CString::new("google").unwrap();
@@ -173,13 +175,13 @@ unsafe fn setup_google(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<
     rooted!(in(raw_cx) let google = if existing.get().is_object() && !existing.get().is_null() {
         existing.get().to_object()
     } else {
-        let obj = new_plain_object(raw_cx, "google")?;
+        let obj = new_plain_object(cx, "google")?;
         // Seal window.google so Google's own page-init script
         // (`var google = {kEI:…, c:{e:…}}`) cannot replace this object and
         // lose our polyfill functions.  In sloppy mode the assignment silently
         // fails; individual property writes (google.kEI = '…') still work
         // because only the container reference is sealed, not its members.
-        define_prop_sealed(raw_cx, global, "google", ObjectValue(obj))?;
+        define_prop_sealed(cx, global, "google", ObjectValue(obj))?;
         obj
     });
 
@@ -191,23 +193,23 @@ unsafe fn setup_google(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<
     let cv_cname = CString::new("cv").unwrap();
     JS_GetProperty(raw_cx, google.handle().into(), cv_cname.as_ptr(), cv_val.handle_mut().into());
     if !cv_val.get().is_object() {
-        define_function(raw_cx, google.get(), "cv", Some(google_cv), 3)?;
+        define_function(cx, google.get(), "cv", Some(google_cv), 3)?;
     }
 
     // google.rll — Register Lazy Load
-    define_function(raw_cx, google.get(), "rll", Some(google_rll), 3)?;
+    define_function(cx, google.get(), "rll", Some(google_rll), 3)?;
 
     // google.ml — Error logger
-    define_function(raw_cx, google.get(), "ml", Some(google_ml), 3)?;
+    define_function(cx, google.get(), "ml", Some(google_ml), 3)?;
 
     // google.fce — Failure / error callback executor
-    define_function(raw_cx, google.get(), "fce", Some(google_fce), 3)?;
+    define_function(cx, google.get(), "fce", Some(google_fce), 3)?;
 
     // google.drty — Mark element dirty / request re-layout
-    define_function(raw_cx, google.get(), "drty", Some(google_drty), 1)?;
+    define_function(cx, google.get(), "drty", Some(google_drty), 1)?;
 
     // google.tick — top-level timing tick (google.tick(timer, key, value, label))
-    define_function(raw_cx, google.get(), "tick", Some(google_tick), 4)?;
+    define_function(cx, google.get(), "tick", Some(google_tick), 4)?;
 
     // ------------------------------------------------------------------
     // google.c — CSI / timing sub-object
@@ -215,81 +217,112 @@ unsafe fn setup_google(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<
     // that do `google.c = {…}` cannot replace it with an object that lacks
     // our polyfill functions (e.g. maft, miml, u, q).
     // ------------------------------------------------------------------
-    rooted!(in(raw_cx) let google_c = setup_google_c(raw_cx)?);
-    define_prop_sealed(raw_cx, google.get(), "c", ObjectValue(google_c.get()))?;
+    rooted!(in(raw_cx) let google_c = setup_google_c(cx)?);
+    define_prop_sealed(cx, google.get(), "c", ObjectValue(google_c.get()))?;
 
     // ------------------------------------------------------------------
     // google.timers — timer tracking sub-object (also sealed)
     // ------------------------------------------------------------------
-    rooted!(in(raw_cx) let google_timers = setup_google_timers(raw_cx)?);
-    define_prop_sealed(raw_cx, google.get(), "timers", ObjectValue(google_timers.get()))?;
+    rooted!(in(raw_cx) let google_timers = setup_google_timers(cx)?);
+    define_prop_sealed(cx, google.get(), "timers", ObjectValue(google_timers.get()))?;
 
     // ------------------------------------------------------------------
     // google.stvsc — navigation-start / scroll checkpoint (also sealed)
     // ------------------------------------------------------------------
-    rooted!(in(raw_cx) let google_stvsc = new_plain_object(raw_cx, "stvsc")?);
+    rooted!(in(raw_cx) let google_stvsc = new_plain_object(cx, "stvsc")?);
     let ns = NAV_START_MS.with(|v| *v.borrow());
-    define_prop(raw_cx, google_stvsc.get(), "ns", DoubleValue(ns))?;
-    define_prop_sealed(raw_cx, google.get(), "stvsc", ObjectValue(google_stvsc.get()))?;
+    define_prop(cx, google_stvsc.get(), "ns", DoubleValue(ns))?;
+    define_prop_sealed(cx, google.get(), "stvsc", ObjectValue(google_stvsc.get()))?;
 
     // ------------------------------------------------------------------
     // google.xsrf — XSRF token map (populated later by server responses)
     // ------------------------------------------------------------------
-    rooted!(in(raw_cx) let google_xsrf = new_plain_object(raw_cx, "xsrf")?);
-    define_prop(raw_cx, google.get(), "xsrf", ObjectValue(google_xsrf.get()))?;
+    rooted!(in(raw_cx) let google_xsrf = new_plain_object(cx, "xsrf")?);
+    define_prop(cx, google.get(), "xsrf", ObjectValue(google_xsrf.get()))?;
 
     Ok(())
 }
 
-unsafe fn setup_google_c(raw_cx: *mut JSContext) -> Result<*mut JSObject, String> {
-    let c = new_plain_object(raw_cx, "google.c")?;
+unsafe fn invoke_callback_with_global_this(cx: &mut SafeJSContext, callback_val: JSVal) {
+    let raw_cx = cx.raw_cx();
+    if !callback_val.is_object() || callback_val.is_null() {
+        return;
+    }
+
+    rooted!(in(raw_cx) let callback_obj = callback_val.to_object());
+    let mut cx = AutoRealm::new_from_handle(cx, callback_obj.handle());
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let this = CurrentGlobalOrNull(raw_cx));
+    if this.get().is_null() {
+        return;
+    }
+
+    rooted!(in(raw_cx) let mut rval = UndefinedValue());
+    rooted!(in(raw_cx) let callable = callback_val);
+    rooted!(in(raw_cx) let zero_args = ValueArray::<0usize>::new([]));
+
+    JS_CallFunctionValue(
+        raw_cx,
+        this.handle().into(),
+        callable.handle().into(),
+        &HandleValueArray::from(&zero_args),
+        rval.handle_mut().into(),
+    );
+
+    // Ignore any JS exception thrown by the callback — these hooks are fire-and-forget.
+    JS_ClearPendingException(&cx);
+}
+
+unsafe fn setup_google_c(cx: &mut SafeJSContext) -> Result<*mut JSObject, String> {
+    let raw_cx = cx.raw_cx();
+    let c = new_plain_object(cx, "google.c")?;
 
     // Timing recorders
-    define_function(raw_cx, c, "e", Some(google_c_e), 3)?;
-    define_function(raw_cx, c, "r", Some(google_c_r), 2)?;
-    define_function(raw_cx, c, "b", Some(google_c_b), 2)?;
+    define_function(cx, c, "e", Some(google_c_e), 3)?;
+    define_function(cx, c, "r", Some(google_c_r), 2)?;
+    define_function(cx, c, "b", Some(google_c_b), 2)?;
 
     // Mark Above-Fold Time — called as google.c.maft(timestamp, label)
-    define_function(raw_cx, c, "maft", Some(google_c_maft), 2)?;
+    define_function(cx, c, "maft", Some(google_c_maft), 2)?;
 
     // Mark Initial Markup Loaded — called as google.c.miml(timestamp)
-    define_function(raw_cx, c, "miml", Some(google_c_miml), 1)?;
+    define_function(cx, c, "miml", Some(google_c_miml), 1)?;
 
     // Update timing mark — called as google.c.u(key)
-    define_function(raw_cx, c, "u", Some(google_c_u), 1)?;
+    define_function(cx, c, "u", Some(google_c_u), 1)?;
 
     // Queue callback for a timing mark — called as google.c.q(key, callback)
-    define_function(raw_cx, c, "q", Some(google_c_q), 2)?;
+    define_function(cx, c, "q", Some(google_c_q), 2)?;
 
     // Boolean flags read by inline Google scripts.
     // ubf  — "update before first": if true, google.c.u("frt") is called before maft
-    set_bool_property(raw_cx, c, "ubf", false)?;
+    set_bool_property(cx, c, "ubf", false)?;
     // cae  — "content already evaluated": if true, maft is skipped
-    set_bool_property(raw_cx, c, "cae", false)?;
+    set_bool_property(cx, c, "cae", false)?;
     // wpr  — "wait for page ready": if true, ATF is gated through google.c.q
-    set_bool_property(raw_cx, c, "wpr", false)?;
+    set_bool_property(cx, c, "wpr", false)?;
     // uchfv — flag used to select the wh threshold in the polling loop
-    set_bool_property(raw_cx, c, "uchfv", false)?;
+    set_bool_property(cx, c, "uchfv", false)?;
     // wh   — wait-hint frame count used by the polling loop when wpr is true
-    set_int_property(raw_cx, c, "wh", 0)?;
+    set_int_property(cx, c, "wh", 0)?;
 
     // iim  — "immediately-invoke metrics" map, populated by other inline scripts
-    rooted!(in(raw_cx) let iim = new_plain_object(raw_cx, "google.c.iim")?);
-    define_prop(raw_cx, c, "iim", ObjectValue(iim.get()))?;
+    rooted!(in(raw_cx) let iim = new_plain_object(cx, "google.c.iim")?);
+    define_prop(cx, c, "iim", ObjectValue(iim.get()))?;
 
     Ok(c)
 }
 
-unsafe fn setup_google_timers(raw_cx: *mut JSContext) -> Result<*mut JSObject, String> {
+unsafe fn setup_google_timers(cx: &mut SafeJSContext) -> Result<*mut JSObject, String> {
     // google.timers = { load: { e: {}, t: {}, tick: fn } }
-    let timers = new_plain_object(raw_cx, "google.timers")?;
-    let load = new_plain_object(raw_cx, "google.timers.load")?;
-    let e_obj = new_plain_object(raw_cx, "google.timers.load.e")?;
-    let t_obj = new_plain_object(raw_cx, "google.timers.load.t")?;
-    define_prop(raw_cx, load, "e", ObjectValue(e_obj))?;
-    define_prop(raw_cx, load, "t", ObjectValue(t_obj))?;
-    define_function(raw_cx, load, "tick", Some(google_timers_load_tick), 2)?;
-    define_prop(raw_cx, timers, "load", ObjectValue(load))?;
+    let timers = new_plain_object(cx, "google.timers")?;
+    let load = new_plain_object(cx, "google.timers.load")?;
+    let e_obj = new_plain_object(cx, "google.timers.load.e")?;
+    let t_obj = new_plain_object(cx, "google.timers.load.t")?;
+    define_prop(cx, load, "e", ObjectValue(e_obj))?;
+    define_prop(cx, load, "t", ObjectValue(t_obj))?;
+    define_function(cx, load, "tick", Some(google_timers_load_tick), 2)?;
+    define_prop(cx, timers, "load", ObjectValue(load))?;
     Ok(timers)
 }
 
@@ -360,10 +393,11 @@ fn viewport_bitmask(node_id: usize) -> i32 {
 ///                that it no longer needs to wait for this element
 unsafe extern "C" fn google_cv(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     // Extract the node_id from the element passed as the first argument.
     let bitmask = if argc >= 1 {
-        match get_node_id_from_value(raw_cx, *args.get(0)) {
+        match get_node_id_from_value(safe_cx, *args.get(0)) {
             Some(node_id) => viewport_bitmask(node_id),
             // Non-DOM argument (e.g. a plain object): not in viewport, but
             // still set the completion bit so ATF finalisation can proceed.
@@ -391,6 +425,7 @@ unsafe extern "C" fn google_cv(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JS
 /// resources do not stall page rendering indefinitely.
 unsafe extern "C" fn google_rll(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     if argc < 3 {
         args.rval().set(UndefinedValue());
@@ -398,7 +433,7 @@ unsafe extern "C" fn google_rll(raw_cx: *mut JSContext, argc: c_uint, vp: *mut J
     }
 
     // Determine whether the element is in the viewport.
-    let in_viewport = if let Some(node_id) = get_node_id_from_value(raw_cx, *args.get(0)) {
+    let in_viewport = if let Some(node_id) = get_node_id_from_value(safe_cx, *args.get(0)) {
         viewport_bitmask(node_id) & 1 != 0
     } else {
         false
@@ -413,20 +448,7 @@ unsafe extern "C" fn google_rll(raw_cx: *mut JSContext, argc: c_uint, vp: *mut J
     let _ = in_viewport; // used above; keep variable for clarity
     let _ = eager;
 
-    if callback_val.is_object() {
-        rooted!(in(raw_cx) let mut rval = UndefinedValue());
-        rooted!(in(raw_cx) let cb = callback_val);
-        rooted!(in(raw_cx) let this = CurrentGlobalOrNull(raw_cx));
-        JS_CallFunctionValue(
-            raw_cx,
-            this.handle().into(),
-            cb.handle().into(),
-            &HandleValueArray::empty(),
-            rval.handle_mut().into(),
-        );
-        // Ignore any JS exception thrown by the callback — rll is fire-and-forget.
-        mozjs::jsapi::JS_ClearPendingException(raw_cx);
-    }
+    invoke_callback_with_global_this(safe_cx, callback_val);
 
     args.rval().set(UndefinedValue());
     true
@@ -442,9 +464,10 @@ unsafe extern "C" fn google_rll(raw_cx: *mut JSContext, argc: c_uint, vp: *mut J
 /// writes it to the browser's console output.
 unsafe extern "C" fn google_ml(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let error_str = if argc >= 1 {
-        js_value_to_string(raw_cx, *args.get(0))
+        js_value_to_string(safe_cx, *args.get(0))
     } else {
         "unknown error".to_string()
     };
@@ -471,15 +494,16 @@ unsafe extern "C" fn google_ml(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JS
 /// failure so it appears in the browser's debug output.
 unsafe extern "C" fn google_fce(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let callback_id = if argc >= 2 {
-        js_value_to_string(raw_cx, *args.get(1))
+        js_value_to_string(safe_cx, *args.get(1))
     } else {
         "(unknown)".to_string()
     };
 
     let error_str = if argc >= 3 {
-        js_value_to_string(raw_cx, *args.get(2))
+        js_value_to_string(safe_cx, *args.get(2))
     } else {
         "(no error details)".to_string()
     };
@@ -500,9 +524,10 @@ unsafe extern "C" fn google_fce(raw_cx: *mut JSContext, argc: c_uint, vp: *mut J
 /// re-rendered.  Triggers layout invalidation on the identified DOM node.
 unsafe extern "C" fn google_drty(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     if argc >= 1 {
-        if let Some(node_id) = get_node_id_from_value(raw_cx, *args.get(0)) {
+        if let Some(node_id) = get_node_id_from_value(safe_cx, *args.get(0)) {
             DOM_REF.with(|dom_ref| {
                 let borrow = dom_ref.borrow();
                 if let Some(dom_ptr) = *borrow {
@@ -533,10 +558,11 @@ unsafe extern "C" fn google_drty(raw_cx: *mut JSContext, argc: c_uint, vp: *mut 
 /// Records a CSI (Client-Side Instrumentation) timing mark.
 unsafe extern "C" fn google_c_e(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     if argc >= 3 {
-        let timer = js_value_to_string(raw_cx, *args.get(0));
-        let key = js_value_to_string(raw_cx, *args.get(1));
+        let timer = js_value_to_string(safe_cx, *args.get(0));
+        let key = js_value_to_string(safe_cx, *args.get(1));
         let value = if (*args.get(2)).is_number() {
             (*args.get(2)).to_number()
         } else {
@@ -554,10 +580,11 @@ unsafe extern "C" fn google_c_e(raw_cx: *mut JSContext, argc: c_uint, vp: *mut J
 /// `google.c.r(timerName, key)` — read a previously stored CSI mark.
 unsafe extern "C" fn google_c_r(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let result = if argc >= 2 {
-        let timer = js_value_to_string(raw_cx, *args.get(0));
-        let key = js_value_to_string(raw_cx, *args.get(1));
+        let timer = js_value_to_string(safe_cx, *args.get(0));
+        let key = js_value_to_string(safe_cx, *args.get(1));
         CSI_MARKS.with(|m| m.borrow().get(&(timer, key)).copied())
     } else {
         None
@@ -574,9 +601,10 @@ unsafe extern "C" fn google_c_r(raw_cx: *mut JSContext, argc: c_uint, vp: *mut J
 /// synthetic timer name).
 unsafe extern "C" fn google_c_b(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     if argc >= 1 {
-        let key = js_value_to_string(raw_cx, *args.get(0));
+        let key = js_value_to_string(safe_cx, *args.get(0));
         let time = if argc >= 2 && (*args.get(1)).is_number() {
             (*args.get(1)).to_number()
         } else {
@@ -648,9 +676,10 @@ unsafe extern "C" fn google_c_miml(_raw_cx: *mut JSContext, argc: c_uint, vp: *m
 /// wall-clock time.
 unsafe extern "C" fn google_c_u(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     if argc >= 1 {
-        let key = js_value_to_string(raw_cx, *args.get(0));
+        let key = js_value_to_string(safe_cx, *args.get(0));
         let ts = epoch_ms();
         CSI_MARKS.with(|m| m.borrow_mut().insert(("load".to_string(), key), ts));
     }
@@ -673,24 +702,13 @@ unsafe extern "C" fn google_c_u(raw_cx: *mut JSContext, argc: c_uint, vp: *mut J
 /// it is provided here as a fallback in case any script calls it directly.
 unsafe extern "C" fn google_c_q(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     // arg 0: key (string, ignored — we fire immediately)
     // arg 1: callback (function)
     if argc >= 2 {
         let callback_val = *args.get(1);
-        if callback_val.is_object() {
-            rooted!(in(raw_cx) let mut rval = UndefinedValue());
-            rooted!(in(raw_cx) let cb = callback_val);
-            rooted!(in(raw_cx) let this = CurrentGlobalOrNull(raw_cx));
-            JS_CallFunctionValue(
-                raw_cx,
-                this.handle().into(),
-                cb.handle().into(),
-                &HandleValueArray::empty(),
-                rval.handle_mut().into(),
-            );
-            mozjs::jsapi::JS_ClearPendingException(raw_cx);
-        }
+        invoke_callback_with_global_this(safe_cx, callback_val);
     }
 
     args.rval().set(UndefinedValue());
@@ -708,10 +726,11 @@ unsafe extern "C" fn google_c_q(raw_cx: *mut JSContext, argc: c_uint, vp: *mut J
 /// so that later `google.c.r("load", key)` calls can retrieve it.
 unsafe extern "C" fn google_tick(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     if argc >= 2 {
-        let timer = js_value_to_string(raw_cx, *args.get(0));
-        let key = js_value_to_string(raw_cx, *args.get(1));
+        let timer = js_value_to_string(safe_cx, *args.get(0));
+        let key = js_value_to_string(safe_cx, *args.get(1));
         let ts = if argc >= 3 && (*args.get(2)).is_number() {
             (*args.get(2)).to_number()
         } else {
@@ -740,9 +759,10 @@ unsafe extern "C" fn google_timers_load_tick(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     if argc >= 1 {
-        let key = js_value_to_string(raw_cx, *args.get(0));
+        let key = js_value_to_string(safe_cx, *args.get(0));
         let time = if argc >= 2 && (*args.get(1)).is_number() {
             (*args.get(1)).to_number()
         } else {

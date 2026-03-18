@@ -10,9 +10,10 @@ use std::ptr::NonNull;
 
 /// Set up the console object in the JavaScript context
 pub fn setup_console(runtime: &mut JsRuntime) -> Result<(), String> {
-    runtime.do_with_jsapi(|_rt, cx, global| unsafe {
+    runtime.do_with_jsapi(|cx, global| unsafe {
+        let raw_cx = cx.raw_cx();
         // Create console object
-        rooted!(in(cx) let console = JS_NewPlainObject(cx));
+        rooted!(in(raw_cx) let console = JS_NewPlainObject(raw_cx));
         if console.get().is_null() {
             return Err("Failed to create console object".to_string());
         }
@@ -33,10 +34,10 @@ pub fn setup_console(runtime: &mut JsRuntime) -> Result<(), String> {
         define_console_method(cx, console.handle().get(), "debug", Some(console_debug))?;
 
         // Set console on global object
-        rooted!(in(cx) let console_val = mozjs::jsval::ObjectValue(console.get()));
+        rooted!(in(raw_cx) let console_val = mozjs::jsval::ObjectValue(console.get()));
         let name = std::ffi::CString::new("console").unwrap();
         if !JS_DefineProperty(
-            cx,
+            raw_cx,
             global.into(),
             name.as_ptr(),
             console_val.handle().into(),
@@ -50,11 +51,12 @@ pub fn setup_console(runtime: &mut JsRuntime) -> Result<(), String> {
 }
 
 unsafe fn define_console_method(
-    raw_cx: *mut JSContext,
+    cx: &mut mozjs::context::JSContext,
     console: *mut JSObject,
     name: &str,
     func: JSNative,
 ) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
     let cname = std::ffi::CString::new(name).unwrap();
     rooted!(in(raw_cx) let console_rooted = console);
 

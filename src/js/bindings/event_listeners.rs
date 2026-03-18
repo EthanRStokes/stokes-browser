@@ -7,25 +7,23 @@ use std::ffi::CString;
 use std::os::raw::c_char;
 
 use keyboard_types::Modifiers;
-use mozjs::jsapi::{
-    AddRawValueRoot, HandleValueArray, Heap, JSContext, JSObject,
+use mozjs::rust::wrappers2::{
+    AddRawValueRoot,
     JS_CallFunctionValue, JS_ClearPendingException, JS_DefineProperty,
     JS_GetProperty,
     JS_IsExceptionPending, JS_NewPlainObject, RemoveRawValueRoot,
-    JSPROP_ENUMERATE,
 };
+use mozjs::context::JSContext as SafeJSContext;
+use mozjs::jsapi::{CallArgs, HandleValueArray, Heap, JSContext, JSObject, JSPROP_ENUMERATE};
 use mozjs::jsval::{DoubleValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::Runtime;
-
 use crate::dom::events::EventHandler;
 use crate::dom::Dom;
 use crate::events::{
     BlitzPointerId, BlitzWheelDelta, DomEvent, DomEventData, EventState,
 };
-use crate::js::helpers::{
-    define_function, set_bool_property, set_int_property, set_string_property,
-};
+use crate::js::helpers::{define_function, set_bool_property, set_int_property, set_string_property, ToSafeCx};
 use crate::js::runtime::RUNTIME;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -50,7 +48,7 @@ unsafe impl Sync for PinnedCallback {}
 impl PinnedCallback {
     /// # Safety
     /// `cx` must be the active JS context. `obj` must be a valid callable `JSObject`.
-    pub unsafe fn new(cx: *mut JSContext, obj: *mut JSObject) -> Self {
+    pub unsafe fn new(cx: &mut SafeJSContext, obj: *mut JSObject) -> Self {
         let heap_obj: Box<Heap<*mut JSObject>> = Box::new(Heap::default());
         heap_obj.set(obj);
         let permanent_root: Box<Heap<JSVal>> = Box::new(Heap::default());
@@ -71,7 +69,7 @@ impl Drop for PinnedCallback {
         // If the JS runtime is still alive on this thread, unroot the value.
         unsafe {
             if let Some(cx) = Runtime::get() {
-                RemoveRawValueRoot(cx.as_ptr(), self.permanent_root.get_unsafe());
+                RemoveRawValueRoot(&cx.to_safe_cx(), self.permanent_root.get_unsafe());
             }
         }
     }
@@ -104,7 +102,7 @@ thread_local! {
 /// # Safety
 /// `cx` must be a valid JS context. `callback_obj` must be a callable JS object.
 pub unsafe fn add_listener(
-    cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     node_id: usize,
     event_type: String,
     callback_obj: *mut JSObject,
@@ -164,9 +162,9 @@ unsafe extern "C" fn js_stop_propagation(
 unsafe extern "C" fn js_stop_immediate_propagation(
     _cx: *mut JSContext, argc: u32, vp: *mut JSVal,
 ) -> bool {
-    let args = mozjs::jsapi::CallArgs::from_vp(vp, argc);
-    EVENT_PROPAGATION_STOPPED.with(|f| f.set(true));
-    EVENT_IMMEDIATE_STOPPED.with(|f| f.set(true));
+    let args = CallArgs::from_vp(vp, argc);
+    EVENT_PROPAGATION_STOPPED.set(true);
+    EVENT_IMMEDIATE_STOPPED.set(true);
     args.rval().set(UndefinedValue());
     true
 }
@@ -175,21 +173,22 @@ unsafe extern "C" fn js_stop_immediate_propagation(
 unsafe extern "C" fn js_prevent_default(
     _cx: *mut JSContext, argc: u32, vp: *mut JSVal,
 ) -> bool {
-    let args = mozjs::jsapi::CallArgs::from_vp(vp, argc);
-    EVENT_DEFAULT_PREVENTED.with(|f| f.set(true));
+    let args = CallArgs::from_vp(vp, argc);
+    EVENT_DEFAULT_PREVENTED.set(true);
     args.rval().set(UndefinedValue());
     true
 }
 
 /// Helper: define a `f64` property on a JS object.
 pub(crate) unsafe fn set_double_property(
-    cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     obj: *mut JSObject,
     name: &str,
     value: f64,
 ) {
-    rooted!(in(cx) let val = DoubleValue(value));
-    rooted!(in(cx) let obj_r = obj);
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let val = DoubleValue(value));
+    rooted!(in(raw_cx) let obj_r = obj);
     let cname = CString::new(name).unwrap();
     JS_DefineProperty(
         cx, obj_r.handle().into(), cname.as_ptr(),
@@ -230,19 +229,20 @@ pub(crate) fn key_to_key_code(key: &keyboard_types::Key) -> u32 {
 }
 
 /// Build a JS Event-like plain object from a Rust `DomEvent`.
-pub unsafe fn build_event_object(cx: *mut JSContext, event: &DomEvent) -> *mut JSObject {
+pub unsafe fn build_event_object(cx: &mut SafeJSContext, event: &DomEvent) -> *mut JSObject {
     build_event_object_with_type(cx, event.name(), event.bubbles, event.cancelable, &event.data)
 }
 
 /// Build a JS Event-like object with fully specified parameters.
 pub unsafe fn build_event_object_with_type(
-    cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     event_type: &str,
     bubbles: bool,
     cancelable: bool,
     data: &DomEventData,
 ) -> *mut JSObject {
-    rooted!(in(cx) let obj = JS_NewPlainObject(cx));
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let obj = JS_NewPlainObject(cx));
     if obj.get().is_null() { return std::ptr::null_mut(); }
 
     let _ = set_string_property(cx, obj.get(), "type",            event_type);
@@ -253,10 +253,10 @@ pub unsafe fn build_event_object_with_type(
     set_double_property(cx, obj.get(), "timeStamp", 0.0);
 
     // Set target / currentTarget to null initially; updated during dispatch.
-    rooted!(in(cx) let null_v = NullValue());
+    rooted!(in(raw_cx) let null_v = NullValue());
     for prop in &["target", "currentTarget", "relatedTarget"] {
         let cname = CString::new(*prop).unwrap();
-        rooted!(in(cx) let obj_r = obj.get());
+        rooted!(in(raw_cx) let obj_r = obj.get());
         JS_DefineProperty(cx, obj_r.handle().into(), cname.as_ptr(),
             null_v.handle().into(), JSPROP_ENUMERATE as u32);
     }
@@ -393,10 +393,11 @@ unsafe extern "C" fn noop_init_event(
 // ── Low-level dispatch helpers ─────────────────────────────────────────────────
 
 /// Set an object-valued property with `__nodeId` as a target/currentTarget stub.
-unsafe fn make_target_proxy(cx: *mut JSContext, node_id: usize) -> *mut JSObject {
-    rooted!(in(cx) let t = JS_NewPlainObject(cx));
+unsafe fn make_target_proxy(cx: &mut SafeJSContext, node_id: usize) -> *mut JSObject {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let t = JS_NewPlainObject(cx));
     if t.get().is_null() { return std::ptr::null_mut(); }
-    rooted!(in(cx) let id_val = DoubleValue(node_id as f64));
+    rooted!(in(raw_cx) let id_val = DoubleValue(node_id as f64));
     let cname = CString::new("__nodeId").unwrap();
     JS_DefineProperty(cx, t.handle().into(), cname.as_ptr(),
         id_val.handle().into(), 0);
@@ -404,31 +405,34 @@ unsafe fn make_target_proxy(cx: *mut JSContext, node_id: usize) -> *mut JSObject
 }
 
 /// Update `event.target` on the JS event object.
-unsafe fn set_event_target(cx: *mut JSContext, event_obj: *mut JSObject, node_id: usize) {
+unsafe fn set_event_target(cx: &mut SafeJSContext, event_obj: *mut JSObject, node_id: usize) {
+    let raw_cx = cx.raw_cx();
     let proxy = make_target_proxy(cx, node_id);
     if proxy.is_null() { return; }
-    rooted!(in(cx) let ev = event_obj);
-    rooted!(in(cx) let pv = ObjectValue(proxy));
+    rooted!(in(raw_cx) let ev = event_obj);
+    rooted!(in(raw_cx) let pv = ObjectValue(proxy));
     let tname = CString::new("target").unwrap();
     JS_DefineProperty(cx, ev.handle().into(), tname.as_ptr(),
         pv.handle().into(), JSPROP_ENUMERATE as u32);
 }
 
 /// Update `event.currentTarget` on the JS event object.
-unsafe fn set_event_current_target(cx: *mut JSContext, event_obj: *mut JSObject, node_id: usize) {
+unsafe fn set_event_current_target(cx: &mut SafeJSContext, event_obj: *mut JSObject, node_id: usize) {
+    let raw_cx = cx.raw_cx();
     let proxy = make_target_proxy(cx, node_id);
     if proxy.is_null() { return; }
-    rooted!(in(cx) let ev = event_obj);
-    rooted!(in(cx) let pv = ObjectValue(proxy));
+    rooted!(in(raw_cx) let ev = event_obj);
+    rooted!(in(raw_cx) let pv = ObjectValue(proxy));
     let tname = CString::new("currentTarget").unwrap();
     JS_DefineProperty(cx, ev.handle().into(), tname.as_ptr(),
         pv.handle().into(), JSPROP_ENUMERATE as u32);
 }
 
 /// Update `event.eventPhase`.
-unsafe fn set_event_phase(cx: *mut JSContext, event_obj: *mut JSObject, phase: i32) {
-    rooted!(in(cx) let ev = event_obj);
-    rooted!(in(cx) let pv = mozjs::jsval::Int32Value(phase));
+unsafe fn set_event_phase(cx: &mut SafeJSContext, event_obj: *mut JSObject, phase: i32) {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let ev = event_obj);
+    rooted!(in(raw_cx) let pv = mozjs::jsval::Int32Value(phase));
     let tname = CString::new("eventPhase").unwrap();
     JS_DefineProperty(cx, ev.handle().into(), tname.as_ptr(),
         pv.handle().into(), JSPROP_ENUMERATE as u32);
@@ -438,7 +442,7 @@ unsafe fn set_event_phase(cx: *mut JSContext, event_obj: *mut JSObject, phase: i
 ///
 /// Returns `true` if `stopImmediatePropagation()` was called by a listener.
 unsafe fn fire_on_node(
-    cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     global: *mut JSObject,
     node_id: usize,
     event_obj: *mut JSObject,
@@ -446,6 +450,7 @@ unsafe fn fire_on_node(
     capture: bool,
     at_target: bool,
 ) -> bool {
+    let raw_cx = cx.raw_cx();
     // Snapshot raw callback pointers while briefly holding the borrow.
     // This avoids holding a borrow while JS is running (re-entrancy).
     let callbacks: Vec<*mut JSObject> = JS_EVENT_LISTENERS.with(|map| {
@@ -462,10 +467,10 @@ unsafe fn fire_on_node(
 
     for cb in callbacks {
         // Root the callback on the current JS stack to protect it from GC.
-        rooted!(in(cx) let callable = ObjectValue(cb));
-        rooted!(in(cx) let this_v  = global);
-        rooted!(in(cx) let evt_v   = ObjectValue(event_obj));
-        rooted!(in(cx) let mut rv  = UndefinedValue());
+        rooted!(in(raw_cx) let callable = ObjectValue(cb));
+        rooted!(in(raw_cx) let this_v  = global);
+        rooted!(in(raw_cx) let evt_v   = ObjectValue(event_obj));
+        rooted!(in(raw_cx) let mut rv  = UndefinedValue());
 
         let args_arr: [JSVal; 1] = [*evt_v];
         let handle_arr = HandleValueArray { length_: 1, elements_: args_arr.as_ptr() };
@@ -497,7 +502,7 @@ unsafe fn fire_on_node(
 ///
 /// `chain[0]` is the event target; subsequent elements are ancestors toward the root.
 pub unsafe fn fire_js_event_on_chain(
-    cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     global: *mut JSObject,
     chain: &[usize],
     event: &DomEvent,
@@ -512,17 +517,18 @@ pub unsafe fn fire_js_event_on_chain(
 /// Used by `element.dispatchEvent(event)` where the event object comes from JS.
 /// `event_type` should match `event_obj.type`, `bubbles` should match `event_obj.bubbles`.
 pub unsafe fn dispatch_event_obj(
-    cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     global: *mut JSObject,
     chain: &[usize],
     event_type: &str,
     bubbles: bool,
     event_obj: *mut JSObject,
 ) {
+    let raw_cx = cx.raw_cx();
     // Reset per-dispatch flags.
-    EVENT_DEFAULT_PREVENTED.with(|f| f.set(false));
-    EVENT_PROPAGATION_STOPPED.with(|f| f.set(false));
-    EVENT_IMMEDIATE_STOPPED.with(|f| f.set(false));
+    EVENT_DEFAULT_PREVENTED.set(false);
+    EVENT_PROPAGATION_STOPPED.set(false);
+    EVENT_IMMEDIATE_STOPPED.set(false);
 
     let target_id = chain.first().copied().unwrap_or(0);
     set_event_target(cx, event_obj, target_id);
@@ -538,7 +544,7 @@ pub unsafe fn dispatch_event_obj(
     }
 
     // ── At-target phase ───────────────────────────────────────────────────
-    if !EVENT_PROPAGATION_STOPPED.with(|f| f.get()) {
+    if !EVENT_PROPAGATION_STOPPED.get() {
         set_event_phase(cx, event_obj, 2); // AT_TARGET
         set_event_current_target(cx, event_obj, target_id);
         fire_on_node(cx, global, target_id, event_obj, event_type, false, true);
@@ -548,23 +554,23 @@ pub unsafe fn dispatch_event_obj(
     if bubbles {
         set_event_phase(cx, event_obj, 3); // BUBBLING_PHASE
         for &node_id in chain[1..].iter() {
-            if EVENT_PROPAGATION_STOPPED.with(|f| f.get()) { break; }
+            if EVENT_PROPAGATION_STOPPED.get() { break; }
             set_event_current_target(cx, event_obj, node_id);
             fire_on_node(cx, global, node_id, event_obj, event_type, false, false);
         }
         // Bubble to document-level listeners.
-        if !EVENT_PROPAGATION_STOPPED.with(|f| f.get()) {
+        if !EVENT_PROPAGATION_STOPPED.get() {
             fire_on_node(cx, global, DOCUMENT_NODE_ID, event_obj, event_type, false, false);
         }
         // Bubble to window-level listeners.
-        if !EVENT_PROPAGATION_STOPPED.with(|f| f.get()) {
+        if !EVENT_PROPAGATION_STOPPED.get() {
             fire_on_node(cx, global, WINDOW_NODE_ID, event_obj, event_type, false, false);
         }
     }
 
     // Reset currentTarget to null when dispatch is complete.
-    rooted!(in(cx) let ev = event_obj);
-    rooted!(in(cx) let null_v = NullValue());
+    rooted!(in(raw_cx) let ev = event_obj);
+    rooted!(in(raw_cx) let null_v = NullValue());
     let ct = CString::new("currentTarget").unwrap();
     JS_DefineProperty(cx, ev.handle().into(), ct.as_ptr(),
         null_v.handle().into(), JSPROP_ENUMERATE as u32);
@@ -575,18 +581,19 @@ pub unsafe fn dispatch_event_obj(
 ///
 /// Returns `true` if the event was not canceled via `preventDefault()`.
 pub unsafe fn dispatch_window_promise_rejection_event(
-    cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     global: *mut JSObject,
     event_type: &str,
     promise_obj: *mut JSObject,
     reason: JSVal,
     cancelable: bool,
 ) -> bool {
-    EVENT_DEFAULT_PREVENTED.with(|f| f.set(false));
-    EVENT_PROPAGATION_STOPPED.with(|f| f.set(false));
-    EVENT_IMMEDIATE_STOPPED.with(|f| f.set(false));
+    EVENT_DEFAULT_PREVENTED.set(false);
+    EVENT_PROPAGATION_STOPPED.set(false);
+    EVENT_IMMEDIATE_STOPPED.set(false);
 
-    rooted!(in(cx) let event_obj = JS_NewPlainObject(cx));
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let event_obj = JS_NewPlainObject(cx));
     if event_obj.get().is_null() {
         return true;
     }
@@ -599,8 +606,8 @@ pub unsafe fn dispatch_window_promise_rejection_event(
     let _ = define_function(cx, event_obj.get(), "stopImmediatePropagation", Some(js_stop_immediate_propagation), 0);
     let _ = define_function(cx, event_obj.get(), "preventDefault", Some(js_prevent_default), 0);
 
-    rooted!(in(cx) let promise_v = ObjectValue(promise_obj));
-    rooted!(in(cx) let reason_v = reason);
+    rooted!(in(raw_cx) let promise_v = ObjectValue(promise_obj));
+    rooted!(in(raw_cx) let reason_v = reason);
     let promise_name = CString::new("promise").unwrap();
     let reason_name = CString::new("reason").unwrap();
     JS_DefineProperty(
@@ -640,16 +647,17 @@ pub unsafe fn dispatch_window_promise_rejection_event(
 }
 
 unsafe fn invoke_window_event_handler_property(
-    cx: *mut JSContext,
+    cx: &mut SafeJSContext,
     global: *mut JSObject,
     event_obj: *mut JSObject,
     event_type: &str,
 ) {
+    let raw_cx = cx.raw_cx();
     let prop_name = format!("on{event_type}");
     let c_name = CString::new(prop_name).unwrap();
 
-    rooted!(in(cx) let global_r = global);
-    rooted!(in(cx) let mut handler_val = UndefinedValue());
+    rooted!(in(raw_cx) let global_r = global);
+    rooted!(in(raw_cx) let mut handler_val = UndefinedValue());
     if !JS_GetProperty(
         cx,
         global_r.handle().into(),
@@ -663,11 +671,11 @@ unsafe fn invoke_window_event_handler_property(
         return;
     }
 
-    rooted!(in(cx) let handler = handler_val.get().to_object());
-    rooted!(in(cx) let this_v = global);
-    rooted!(in(cx) let callable = ObjectValue(handler.get()));
-    rooted!(in(cx) let evt_v = ObjectValue(event_obj));
-    rooted!(in(cx) let mut rv = UndefinedValue());
+    rooted!(in(raw_cx) let handler = handler_val.get().to_object());
+    rooted!(in(raw_cx) let this_v = global);
+    rooted!(in(raw_cx) let callable = ObjectValue(handler.get()));
+    rooted!(in(raw_cx) let evt_v = ObjectValue(event_obj));
+    rooted!(in(raw_cx) let mut rv = UndefinedValue());
     let args_arr: [JSVal; 1] = [*evt_v];
     let handle_arr = HandleValueArray { length_: 1, elements_: args_arr.as_ptr() };
 
@@ -695,13 +703,14 @@ pub fn fire_load_events(dom: &Dom) {
     let root_id = dom.root_node().id;
     let chain = vec![root_id];
 
-    rt.do_with_jsapi(|_rt_ref, cx, global| unsafe {
+    rt.do_with_jsapi(|cx, global| unsafe {
         // DOMContentLoaded — fires on document, does not bubble to window in the
         // standard sense, but we fire on both DOCUMENT_NODE_ID and WINDOW_NODE_ID.
-        EVENT_DEFAULT_PREVENTED.with(|f| f.set(false));
-        EVENT_PROPAGATION_STOPPED.with(|f| f.set(false));
-        EVENT_IMMEDIATE_STOPPED.with(|f| f.set(false));
-        rooted!(in(cx) let dcl_obj = JS_NewPlainObject(cx));
+        EVENT_DEFAULT_PREVENTED.set(false);
+        EVENT_PROPAGATION_STOPPED.set(false);
+        EVENT_IMMEDIATE_STOPPED.set(false);
+        let raw_cx = cx.raw_cx();
+        rooted!(in(raw_cx) let dcl_obj = JS_NewPlainObject(cx));
         if !dcl_obj.get().is_null() {
             let _ = set_string_property(cx, dcl_obj.get(), "type",    "DOMContentLoaded");
             let _ = set_bool_property(cx, dcl_obj.get(),   "bubbles", true);
@@ -716,10 +725,10 @@ pub fn fire_load_events(dom: &Dom) {
         }
 
         // load event — fires on window.
-        EVENT_DEFAULT_PREVENTED.with(|f| f.set(false));
-        EVENT_PROPAGATION_STOPPED.with(|f| f.set(false));
-        EVENT_IMMEDIATE_STOPPED.with(|f| f.set(false));
-        rooted!(in(cx) let load_obj = JS_NewPlainObject(cx));
+        EVENT_DEFAULT_PREVENTED.set(false);
+        EVENT_PROPAGATION_STOPPED.set(false);
+        EVENT_IMMEDIATE_STOPPED.set(false);
+        rooted!(in(raw_cx) let load_obj = JS_NewPlainObject(cx));
         if !load_obj.get().is_null() {
             let _ = set_string_property(cx, load_obj.get(), "type",    "load");
             let _ = set_bool_property(cx, load_obj.get(),   "bubbles", false);
@@ -755,14 +764,14 @@ impl EventHandler for JsEventHandler {
         let Some(rt_ptr) = rt_ptr else { return; };
         let rt = unsafe { &mut *rt_ptr };
 
-        rt.do_with_jsapi(|_rt_ref, cx, global| {
+        rt.do_with_jsapi(|cx, global| {
             unsafe {
                 fire_js_event_on_chain(cx, global.get(), chain, event);
             }
         });
 
         // Propagate preventDefault() back to the Rust EventState.
-        if EVENT_DEFAULT_PREVENTED.with(|f| f.get()) {
+        if EVENT_DEFAULT_PREVENTED.get() {
             event_state.prevent_default();
         }
     }
