@@ -52,12 +52,23 @@ pub unsafe fn set_string_property(
     name: &str,
     value: &str,
 ) -> Result<(), String> {
+    if obj.is_null() {
+        return Err(format!("Failed to set property {}: null JS object", name));
+    }
+
     let raw_cx = cx.raw_cx();
+    // Root object first: JS_NewUCStringCopyN can trigger GC and move objects.
+    rooted!(in(raw_cx) let obj_rooted = obj);
+
     let utf16: Vec<u16> = value.encode_utf16().collect();
     rooted!(in(raw_cx) let str_val = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len()));
+    if str_val.get().is_null() {
+        return Err(format!("Failed to allocate JS string for property {}", name));
+    }
+
     rooted!(in(raw_cx) let val = StringValue(&*str_val.get()));
-    rooted!(in(raw_cx) let obj_rooted = obj);
-    let cname = std::ffi::CString::new(name).unwrap();
+    let cname = std::ffi::CString::new(name)
+        .map_err(|_| format!("Property name contains NUL byte: {}", name))?;
     if !JS_DefineProperty(
         cx,
         obj_rooted.handle().into(),
@@ -158,6 +169,9 @@ pub unsafe fn create_js_string(cx: &mut SafeJSContext, s: &str) -> JSVal {
     let raw_cx = cx.raw_cx();
     let utf16: Vec<u16> = s.encode_utf16().collect();
     rooted!(in(raw_cx) let str_val = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len()));
+    if str_val.get().is_null() {
+        return UndefinedValue();
+    }
     StringValue(&*str_val.get())
 }
 

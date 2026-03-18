@@ -407,9 +407,9 @@ unsafe fn make_target_proxy(cx: &mut SafeJSContext, node_id: usize) -> *mut JSOb
 /// Update `event.target` on the JS event object.
 unsafe fn set_event_target(cx: &mut SafeJSContext, event_obj: *mut JSObject, node_id: usize) {
     let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let ev = event_obj);
     let proxy = make_target_proxy(cx, node_id);
     if proxy.is_null() { return; }
-    rooted!(in(raw_cx) let ev = event_obj);
     rooted!(in(raw_cx) let pv = ObjectValue(proxy));
     let tname = CString::new("target").unwrap();
     JS_DefineProperty(cx, ev.handle().into(), tname.as_ptr(),
@@ -419,9 +419,9 @@ unsafe fn set_event_target(cx: &mut SafeJSContext, event_obj: *mut JSObject, nod
 /// Update `event.currentTarget` on the JS event object.
 unsafe fn set_event_current_target(cx: &mut SafeJSContext, event_obj: *mut JSObject, node_id: usize) {
     let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let ev = event_obj);
     let proxy = make_target_proxy(cx, node_id);
     if proxy.is_null() { return; }
-    rooted!(in(raw_cx) let ev = event_obj);
     rooted!(in(raw_cx) let pv = ObjectValue(proxy));
     let tname = CString::new("currentTarget").unwrap();
     JS_DefineProperty(cx, ev.handle().into(), tname.as_ptr(),
@@ -525,51 +525,56 @@ pub unsafe fn dispatch_event_obj(
     event_obj: *mut JSObject,
 ) {
     let raw_cx = cx.raw_cx();
+    if event_obj.is_null() { return; }
+    // Keep the event object rooted for the full dispatch. JS callbacks can
+    // trigger GC/compaction, which can move objects and invalidate raw pointers.
+    rooted!(in(raw_cx) let event_obj_r = event_obj);
+
     // Reset per-dispatch flags.
     EVENT_DEFAULT_PREVENTED.set(false);
     EVENT_PROPAGATION_STOPPED.set(false);
     EVENT_IMMEDIATE_STOPPED.set(false);
 
     let target_id = chain.first().copied().unwrap_or(0);
-    set_event_target(cx, event_obj, target_id);
+    set_event_target(cx, event_obj_r.get(), target_id);
 
     // ── Capture phase: root → parent-of-target ────────────────────────────
     if bubbles && chain.len() > 1 {
-        set_event_phase(cx, event_obj, 1); // CAPTURING_PHASE
+        set_event_phase(cx, event_obj_r.get(), 1); // CAPTURING_PHASE
         for &node_id in chain[1..].iter().rev() {
             if EVENT_PROPAGATION_STOPPED.with(|f| f.get()) { break; }
-            set_event_current_target(cx, event_obj, node_id);
-            fire_on_node(cx, global, node_id, event_obj, event_type, true, false);
+            set_event_current_target(cx, event_obj_r.get(), node_id);
+            fire_on_node(cx, global, node_id, event_obj_r.get(), event_type, true, false);
         }
     }
 
     // ── At-target phase ───────────────────────────────────────────────────
     if !EVENT_PROPAGATION_STOPPED.get() {
-        set_event_phase(cx, event_obj, 2); // AT_TARGET
-        set_event_current_target(cx, event_obj, target_id);
-        fire_on_node(cx, global, target_id, event_obj, event_type, false, true);
+        set_event_phase(cx, event_obj_r.get(), 2); // AT_TARGET
+        set_event_current_target(cx, event_obj_r.get(), target_id);
+        fire_on_node(cx, global, target_id, event_obj_r.get(), event_type, false, true);
     }
 
     // ── Bubble phase: parent-of-target → root ─────────────────────────────
     if bubbles {
-        set_event_phase(cx, event_obj, 3); // BUBBLING_PHASE
+        set_event_phase(cx, event_obj_r.get(), 3); // BUBBLING_PHASE
         for &node_id in chain[1..].iter() {
             if EVENT_PROPAGATION_STOPPED.get() { break; }
-            set_event_current_target(cx, event_obj, node_id);
-            fire_on_node(cx, global, node_id, event_obj, event_type, false, false);
+            set_event_current_target(cx, event_obj_r.get(), node_id);
+            fire_on_node(cx, global, node_id, event_obj_r.get(), event_type, false, false);
         }
         // Bubble to document-level listeners.
         if !EVENT_PROPAGATION_STOPPED.get() {
-            fire_on_node(cx, global, DOCUMENT_NODE_ID, event_obj, event_type, false, false);
+            fire_on_node(cx, global, DOCUMENT_NODE_ID, event_obj_r.get(), event_type, false, false);
         }
         // Bubble to window-level listeners.
         if !EVENT_PROPAGATION_STOPPED.get() {
-            fire_on_node(cx, global, WINDOW_NODE_ID, event_obj, event_type, false, false);
+            fire_on_node(cx, global, WINDOW_NODE_ID, event_obj_r.get(), event_type, false, false);
         }
     }
 
     // Reset currentTarget to null when dispatch is complete.
-    rooted!(in(raw_cx) let ev = event_obj);
+    rooted!(in(raw_cx) let ev = event_obj_r.get());
     rooted!(in(raw_cx) let null_v = NullValue());
     let ct = CString::new("currentTarget").unwrap();
     JS_DefineProperty(cx, ev.handle().into(), ct.as_ptr(),
