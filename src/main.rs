@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Main browser process
-    println!("Starting Web Browser...");
+    println!("Starting Stokes Browser...");
 
     // Check for a URL passed as a command-line argument (e.g. when launched as the default browser)
     let startup_url: Option<String> = args.iter().skip(1).find(|a| {

@@ -1121,51 +1121,46 @@ impl Dom {
     /// For text nodes, replaces the text content
     /// For element nodes, removes all children and creates a single text node child
     pub fn set_text_content(&mut self, node_id: usize, value: String) {
-        println!("Setting text content of node {} to '{}'", self.id, value);
+        println!("Setting text content of node {} to '{}'", node_id, value);
 
-        let text = match self.nodes[node_id].data {
-            NodeData::Text(ref mut text) => text,
-            NodeData::Element(ref element) => {
-                // find child text node
-                if let Some(child_id) = self.nodes[node_id].children.clone().iter().find(|child_id| {
-                    matches!(self.tree()[**child_id].data, NodeData::Text { .. })
-                }) {
-                    // TODO check if this is correct
-                    //self.nodes[*child_id].data.element_mut().is_some_and().inline_layout_data = None;
-                    if let NodeData::Text(ref mut text) = self.nodes[*child_id].data {
-                        text
-                    } else {
-                        unreachable!()
-                    }
-                } else {
-                    // no existing text node, create one
-                    let text_data = TextData::new(value.to_string());
-                    let text_node = self.create_node(NodeData::Text(text_data));
-                    self.nodes[node_id].add_child(text_node);
-                    if let NodeData::Text(ref mut text) = self.nodes[text_node].data {
-                        text
-                    } else {
-                        unreachable!()
-                    }
+        match self.nodes[node_id].data {
+            NodeData::Text(ref mut text) => {
+                if text.content == value {
+                    return;
+                }
+
+                text.content.clear();
+                text.content.push_str(&value);
+                self.nodes[node_id].insert_damage(ALL_DAMAGE);
+                self.nodes[node_id].mark_ancestors_dirty();
+
+                if let Some(parent_id) = self.nodes[node_id].parent {
+                    self.nodes[parent_id].insert_damage(ALL_DAMAGE);
+                    self.maybe_record_node(parent_id);
                 }
             }
-            _ => return,
-        };
+            NodeData::Element(_) => {
+                let old_text = self.nodes[node_id].text_content();
+                if old_text == value {
+                    return;
+                }
 
-        let changed = text.content != value;
-        if changed {
-            println!("changing text content to {value}");
-            text.content.clear();
-            text.content.push_str(&value);
-            self.nodes[node_id].insert_damage(ALL_DAMAGE);
-            self.nodes[node_id].mark_ancestors_dirty();
+                // `Element.textContent = value` replaces all children with one text node.
+                let child_ids = self.nodes[node_id].children.clone();
+                for child_id in child_ids {
+                    self.remove_node(child_id);
+                }
 
-            let parent_id = self.nodes[node_id].parent;
-            if let Some(parent_id) = parent_id {
-                self.nodes[parent_id].insert_damage(ALL_DAMAGE);
+                if !value.is_empty() {
+                    let text_node = self.create_text_node(&value);
+                    self.append_children(node_id, &[text_node]);
+                }
+
+                self.nodes[node_id].insert_damage(ALL_DAMAGE);
+                self.nodes[node_id].mark_ancestors_dirty();
+                self.maybe_record_node(node_id);
             }
-
-            self.maybe_record_node(parent_id);
+            _ => {}
         }
     }
 

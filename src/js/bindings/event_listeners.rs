@@ -7,6 +7,7 @@ use std::ffi::CString;
 use std::os::raw::c_char;
 
 use keyboard_types::Modifiers;
+use markup5ever::local_name;
 use mozjs::rust::wrappers2::{
     AddRawValueRoot,
     JS_CallFunctionValue, JS_ClearPendingException, JS_DefineProperty,
@@ -19,10 +20,11 @@ use mozjs::jsval::{DoubleValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::Runtime;
 use crate::dom::events::EventHandler;
-use crate::dom::Dom;
+use crate::dom::{Dom, NodeData};
 use crate::events::{
     BlitzPointerId, BlitzWheelDelta, DomEvent, DomEventData, EventState,
 };
+use crate::js::bindings::dom_bindings::DOM_REF;
 use crate::js::helpers::{define_function, set_bool_property, set_int_property, set_string_property, ToSafeCx};
 use crate::js::runtime::RUNTIME;
 
@@ -228,6 +230,31 @@ pub(crate) fn key_to_key_code(key: &keyboard_types::Key) -> u32 {
     }
 }
 
+/// Map a `keyboard_types::Key` to a browser-like DOM `event.key` string.
+pub(crate) fn key_to_dom_key(key: &keyboard_types::Key) -> String {
+    use keyboard_types::Key;
+    match key {
+        Key::Character(s) => s.clone(),
+        Key::Backspace => "Backspace".to_string(),
+        Key::Tab => "Tab".to_string(),
+        Key::Enter => "Enter".to_string(),
+        Key::Shift => "Shift".to_string(),
+        Key::Control => "Control".to_string(),
+        Key::Alt => "Alt".to_string(),
+        Key::Escape => "Escape".to_string(),
+        Key::PageUp => "PageUp".to_string(),
+        Key::PageDown => "PageDown".to_string(),
+        Key::End => "End".to_string(),
+        Key::Home => "Home".to_string(),
+        Key::ArrowLeft => "ArrowLeft".to_string(),
+        Key::ArrowUp => "ArrowUp".to_string(),
+        Key::ArrowRight => "ArrowRight".to_string(),
+        Key::ArrowDown => "ArrowDown".to_string(),
+        Key::Delete => "Delete".to_string(),
+        _ => key.to_string(),
+    }
+}
+
 /// Build a JS Event-like plain object from a Rust `DomEvent`.
 pub unsafe fn build_event_object(cx: &mut SafeJSContext, event: &DomEvent) -> *mut JSObject {
     build_event_object_with_type(cx, event.name(), event.bubbles, event.cancelable, &event.data)
@@ -325,7 +352,7 @@ pub unsafe fn build_event_object_with_type(
             let _ = set_int_property(cx, obj.get(), "detail", 0);
         }
         DomEventData::KeyDown(kev) | DomEventData::KeyUp(kev) | DomEventData::KeyPress(kev) => {
-            let key_str  = kev.key.to_string();
+            let key_str  = key_to_dom_key(&kev.key);
             let code_str = format!("{:?}", kev.code);
             let _ = set_string_property(cx, obj.get(), "key",  &key_str);
             let _ = set_string_property(cx, obj.get(), "code", &code_str);
@@ -401,6 +428,31 @@ unsafe fn make_target_proxy(cx: &mut SafeJSContext, node_id: usize) -> *mut JSOb
     let cname = CString::new("__nodeId").unwrap();
     JS_DefineProperty(cx, t.handle().into(), cname.as_ptr(),
         id_val.handle().into(), 0);
+
+    // Expose common target fields (notably `value`) expected by form/input listeners.
+    DOM_REF.with(|dom_ref| {
+        let Some(dom_ptr) = *dom_ref.borrow() else { return; };
+        let dom = unsafe { &*dom_ptr };
+        let Some(node) = dom.get_node(node_id) else { return; };
+
+        if let NodeData::Element(ref elem_data) = node.data {
+            let tag_name = elem_data.name.local.to_string();
+            let _ = set_string_property(cx, t.get(), "localName", &tag_name);
+            let _ = set_string_property(cx, t.get(), "tagName", &tag_name.to_uppercase());
+
+            if let Some(id_attr) = elem_data.attr(local_name!("id")) {
+                let _ = set_string_property(cx, t.get(), "id", id_attr);
+            }
+
+            if let Some(input_data) = elem_data.text_input_data() {
+                let value = input_data.editor.raw_text().to_string();
+                let _ = set_string_property(cx, t.get(), "value", &value);
+            } else if let Some(value_attr) = elem_data.attr(local_name!("value")) {
+                let _ = set_string_property(cx, t.get(), "value", value_attr);
+            }
+        }
+    });
+
     t.get()
 }
 

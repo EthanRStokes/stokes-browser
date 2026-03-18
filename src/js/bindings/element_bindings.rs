@@ -10,7 +10,7 @@ use html5ever::ns;
 use html5ever::local_name;
 use markup5ever::QualName;
 use mozjs::jsapi::{CallArgs, HandleValueArray, JSContext, JSObject, JSPROP_ENUMERATE};
-use mozjs::rust::wrappers2::{CurrentGlobalOrNull, JS_CallFunctionValue, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_SetElement};
+use mozjs::rust::wrappers2::{CurrentGlobalOrNull, JS_CallFunctionValue, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_SetElement, JS_SetProperty};
 use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsval::{BooleanValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::rooted;
@@ -2715,11 +2715,41 @@ unsafe extern "C" fn element_get_text_content(raw_cx: *mut JSContext, argc: c_ui
                 let dom = &*dom_ptr;
                 if let Some(node) = dom.get_node(node_id) {
                     let text_content = node.text_content();
+                    // Mirror into a wrapper-local cache so repeated reads continue to work
+                    // even if node lookup fails for subsequent calls.
+                    if args.thisv().is_object() && !args.thisv().is_null() {
+                        rooted!(in(raw_cx) let this_obj = args.thisv().to_object());
+                        rooted!(in(raw_cx) let cache_val = create_js_string(safe_cx, &text_content));
+                        let cache_name = std::ffi::CString::new("__textContentCache").unwrap();
+                        JS_SetProperty(
+                            safe_cx,
+                            this_obj.handle(),
+                            cache_name.as_ptr(),
+                            cache_val.handle(),
+                        );
+                    }
                     args.rval().set(create_js_string(safe_cx, &text_content));
                     return;
                 }
             }
         });
+    }
+
+    // Fallback to wrapper-local cache when no DOM node could be resolved.
+    if args.thisv().is_object() && !args.thisv().is_null() {
+        rooted!(in(raw_cx) let this_obj = args.thisv().to_object());
+        rooted!(in(raw_cx) let mut cache_val = UndefinedValue());
+        let cache_name = std::ffi::CString::new("__textContentCache").unwrap();
+        if JS_GetProperty(
+            safe_cx,
+            this_obj.handle().into(),
+            cache_name.as_ptr(),
+            cache_val.handle_mut().into(),
+        ) && cache_val.get().is_string() {
+            let cached = js_value_to_string(safe_cx, cache_val.get());
+            args.rval().set(create_js_string(safe_cx, &cached));
+            return true;
+        }
     }
 
     args.rval().set(create_js_string(safe_cx, ""));
@@ -2738,6 +2768,19 @@ unsafe extern "C" fn element_set_text_content(raw_cx: *mut JSContext, argc: c_ui
     };
 
     println!("[JS] element.__setTextContent('{}') called", text);
+
+    // Keep a wrapper-local mirror for robustness during immediate read/modify/write loops.
+    if args.thisv().is_object() && !args.thisv().is_null() {
+        rooted!(in(raw_cx) let this_obj = args.thisv().to_object());
+        rooted!(in(raw_cx) let cache_val = create_js_string(safe_cx, &text));
+        let cache_name = std::ffi::CString::new("__textContentCache").unwrap();
+        JS_SetProperty(
+            safe_cx,
+            this_obj.handle(),
+            cache_name.as_ptr(),
+            cache_val.handle(),
+        );
+    }
 
     if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
         DOM_REF.with(|dom_ref| {

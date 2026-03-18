@@ -187,7 +187,7 @@ impl BrowserApp {
                 self.ui.as_mut().unwrap().set_active_tab(&active_id);
                 if let Some(tab) = self.tab_manager.get_tab(&active_id) {
                     self.ui.as_mut().unwrap().update_address_bar(&tab.url);
-                    self.env.as_ref().unwrap().window.set_title(&format!("{} - Web Browser", tab.title));
+                    self.env.as_ref().unwrap().window.set_title(&format!("{} - Stokes Browser", tab.title));
                 }
             }
 
@@ -205,7 +205,7 @@ impl BrowserApp {
 
             if let Some(tab) = self.tab_manager.get_tab(tab_id) {
                 ui.update_address_bar(&tab.url);
-                self.env.as_ref().unwrap().window.set_title(&format!("{} - Web Browser", tab.title));
+                self.env.as_ref().unwrap().window.set_title(&format!("{} - Stokes Browser", tab.title));
             }
             ui.clear_focus();
         }
@@ -354,14 +354,14 @@ impl BrowserApp {
                 TabToParentMessage::TitleChanged(title) => {
                     self.ui.as_mut().unwrap().update_tab_title(&tab_id, &title);
                     if Some(&tab_id) == self.active_tab_id() {
-                        env.window.set_title(&format!("{} - Web Browser", title));
+                        env.window.set_title(&format!("{} - Stokes Browser", title));
                     }
                 }
                 TabToParentMessage::NavigationCompleted { url, title } => {
                     self.ui.as_mut().unwrap().update_tab_title(&tab_id, &title);
                     if Some(&tab_id) == self.active_tab_id() {
                         self.ui.as_mut().unwrap().update_address_bar(&url);
-                        env.window.set_title(&format!("{} - Web Browser", title));
+                        env.window.set_title(&format!("{} - Stokes Browser", title));
                     }
                 }
                 TabToParentMessage::LoadingStateChanged(_is_loading) => {
@@ -402,7 +402,7 @@ impl BrowserApp {
                             env.window.set_cursor(Cursor::Icon(CursorIcon::from_str(&cursor).unwrap()));
                         }
                         ShellProviderMessage::SetWindowTitle(title) => {
-                            env.window.set_title(&title);
+                            env.window.set_title(&format!("{} - Stokes Browser", title));
                         }
                         ShellProviderMessage::SetImeEnabled(enabled) => {
                             if enabled {

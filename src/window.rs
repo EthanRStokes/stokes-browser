@@ -41,7 +41,7 @@ pub(crate) fn create_window(el: &dyn ActiveEventLoop) -> Env {
 
     // Create window
     let window_attrs = WindowAttributes::default()
-        .with_title("Web Browser")
+        .with_title("Stokes Browser")
         .with_surface_size(LogicalSize::new(1024, 768))
         .with_min_surface_size(LogicalSize::new(500, crate::ui::BrowserUI::CHROME_HEIGHT as i32))
         .with_window_icon(Some(icon));
