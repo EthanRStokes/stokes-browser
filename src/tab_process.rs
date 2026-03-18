@@ -20,9 +20,11 @@ use skia_safe::gpu::surfaces::wrap_backend_render_target;
 use skia_safe::gpu::{backend_render_targets, DirectContext};
 use skia_safe::gpu::{self};
 use skia_safe::{ColorType, Surface};
+use std::cmp::Ordering as CmpOrdering;
 use std::ffi::CString;
 use std::io;
 use std::num::NonZeroU32;
+use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -61,7 +63,30 @@ struct HeadlessGlRenderer {
     gr_context: DirectContext,
     surface: Surface,
     fb_info: FramebufferInfo,
-    readback: Vec<u8>,
+    readback: ReadbackPipeline,
+    readback_stats: ReadbackStats,
+}
+
+enum ReadbackPipeline {
+    Sync,
+    Async(AsyncReadback),
+}
+
+struct AsyncReadback {
+    slots: Vec<ReadbackSlot>,
+    bytes_per_frame: usize,
+}
+
+struct ReadbackSlot {
+    pbo: gl::types::GLuint,
+    fence: Option<gl::types::GLsync>,
+}
+
+#[derive(Default)]
+struct ReadbackStats {
+    total_frames: u64,
+    async_frames: u64,
+    sync_fallback_frames: u64,
 }
 
 impl HeadlessGlRenderer {
@@ -132,14 +157,196 @@ impl HeadlessGlRenderer {
             gl_config.stencil_size() as usize,
         )?;
 
+        let readback = match AsyncReadback::new((width * height * 4) as usize) {
+            Ok(async_readback) => ReadbackPipeline::Async(async_readback),
+            Err(e) => {
+                eprintln!("[readback] async path unavailable, using sync mode: {e}");
+                ReadbackPipeline::Sync
+            }
+        };
+
         Ok(Self {
             _gl_surface: gl_surface,
             _gl_context: gl_context,
             gr_context,
             surface,
             fb_info,
-            readback: vec![0; (width * height * 4) as usize],
+            readback,
+            readback_stats: ReadbackStats::default(),
         })
+    }
+
+    fn readback_into_shmem(&mut self, dst: &mut [u8], width: u32, height: u32) -> io::Result<()> {
+        self.readback_stats.total_frames = self.readback_stats.total_frames.saturating_add(1);
+        match &mut self.readback {
+            ReadbackPipeline::Sync => {
+                self.readback_stats.sync_fallback_frames =
+                    self.readback_stats.sync_fallback_frames.saturating_add(1);
+                sync_readback(self.fb_info.fboid, dst, width, height)?;
+            }
+            ReadbackPipeline::Async(async_readback) => {
+                if async_readback
+                    .enqueue_readback(self.fb_info.fboid, width, height)
+                    .and_then(|_| async_readback.try_harvest(dst))
+                    .unwrap_or(false)
+                {
+                    self.readback_stats.async_frames = self.readback_stats.async_frames.saturating_add(1);
+                } else {
+                    // Always deliver a frame even if no async slot is ready yet.
+                    self.readback_stats.sync_fallback_frames =
+                        self.readback_stats.sync_fallback_frames.saturating_add(1);
+                    sync_readback(self.fb_info.fboid, dst, width, height)?;
+                }
+            }
+        }
+
+        // Emit periodic telemetry so we can confirm whether async is actually active.
+        if self.readback_stats.total_frames % 120 == 0 {
+            eprintln!(
+                "[readback] frames={} async={} sync_fallback={}",
+                self.readback_stats.total_frames,
+                self.readback_stats.async_frames,
+                self.readback_stats.sync_fallback_frames
+            );
+        }
+
+        Ok(())
+    }
+}
+
+impl AsyncReadback {
+    const SLOT_COUNT: usize = 3;
+
+    fn new(bytes_per_frame: usize) -> io::Result<Self> {
+        if bytes_per_frame == 0 {
+            return Err(io::Error::other("Invalid readback size"));
+        }
+
+        let mut slots = Vec::with_capacity(Self::SLOT_COUNT);
+        for _ in 0..Self::SLOT_COUNT {
+            let mut pbo: gl::types::GLuint = 0;
+            unsafe {
+                gl::GenBuffers(1, &mut pbo);
+                if pbo == 0 {
+                    return Err(io::Error::other("Failed to allocate PBO"));
+                }
+                gl::BindBuffer(gl::PIXEL_PACK_BUFFER, pbo);
+                gl::BufferData(
+                    gl::PIXEL_PACK_BUFFER,
+                    bytes_per_frame as isize,
+                    ptr::null(),
+                    gl::STREAM_READ,
+                );
+                gl::BindBuffer(gl::PIXEL_PACK_BUFFER, 0);
+            }
+
+            slots.push(ReadbackSlot { pbo, fence: None });
+        }
+
+        Ok(Self {
+            slots,
+            bytes_per_frame,
+        })
+    }
+
+    fn enqueue_readback(&mut self, fboid: u32, width: u32, height: u32) -> io::Result<()> {
+        let Some(slot) = self.slots.iter_mut().find(|slot| slot.fence.is_none()) else {
+            return Ok(());
+        };
+
+        unsafe {
+            gl::BindFramebuffer(gl::FRAMEBUFFER, fboid);
+            gl::PixelStorei(gl::PACK_ALIGNMENT, 1);
+            gl::BindBuffer(gl::PIXEL_PACK_BUFFER, slot.pbo);
+            gl::ReadPixels(
+                0,
+                0,
+                width as i32,
+                height as i32,
+                gl::RGBA,
+                gl::UNSIGNED_BYTE,
+                ptr::null_mut(),
+            );
+
+            let fence = gl::FenceSync(gl::SYNC_GPU_COMMANDS_COMPLETE, 0);
+            gl::BindBuffer(gl::PIXEL_PACK_BUFFER, 0);
+
+            if fence.is_null() {
+                return Err(io::Error::other("Failed to create GL fence"));
+            }
+
+            slot.fence = Some(fence);
+        }
+
+        Ok(())
+    }
+
+    fn try_harvest(&mut self, dst: &mut [u8]) -> io::Result<bool> {
+        if dst.len() < self.bytes_per_frame {
+            return Err(io::Error::other("Shared-memory destination too small"));
+        }
+
+        // Prefer harvesting older slots first to keep queue depth bounded.
+        self.slots.sort_by(|a, b| match (a.fence.is_some(), b.fence.is_some()) {
+            (true, false) => CmpOrdering::Less,
+            (false, true) => CmpOrdering::Greater,
+            _ => CmpOrdering::Equal,
+        });
+
+        for slot in &mut self.slots {
+            let Some(fence) = slot.fence else {
+                continue;
+            };
+
+            let status = unsafe { gl::ClientWaitSync(fence, 0, 0) };
+            if status != gl::ALREADY_SIGNALED && status != gl::CONDITION_SATISFIED {
+                continue;
+            }
+
+            unsafe {
+                gl::BindBuffer(gl::PIXEL_PACK_BUFFER, slot.pbo);
+                let mapped = gl::MapBufferRange(
+                    gl::PIXEL_PACK_BUFFER,
+                    0,
+                    self.bytes_per_frame as isize,
+                    gl::MAP_READ_BIT,
+                );
+
+                if mapped.is_null() {
+                    gl::BindBuffer(gl::PIXEL_PACK_BUFFER, 0);
+                    gl::DeleteSync(fence);
+                    slot.fence = None;
+                    return Err(io::Error::other("Failed to map PBO readback buffer"));
+                }
+
+                ptr::copy_nonoverlapping(mapped as *const u8, dst.as_mut_ptr(), self.bytes_per_frame);
+                gl::UnmapBuffer(gl::PIXEL_PACK_BUFFER);
+                gl::BindBuffer(gl::PIXEL_PACK_BUFFER, 0);
+
+                gl::DeleteSync(fence);
+                slot.fence = None;
+            }
+
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+}
+
+impl Drop for AsyncReadback {
+    fn drop(&mut self) {
+        for slot in &mut self.slots {
+            unsafe {
+                if let Some(fence) = slot.fence.take() {
+                    gl::DeleteSync(fence);
+                }
+                if slot.pbo != 0 {
+                    gl::DeleteBuffers(1, &slot.pbo);
+                    slot.pbo = 0;
+                }
+            }
+        }
     }
 }
 
@@ -200,13 +407,27 @@ fn io_other<E: std::fmt::Display>(error: E) -> io::Error {
     io::Error::other(error.to_string())
 }
 
-fn copy_flipped_rgba(src: &[u8], dst: &mut [u8], width: u32, height: u32) {
-    let row_bytes = (width as usize) * 4;
-    for row in 0..(height as usize) {
-        let src_row = (height as usize - 1 - row) * row_bytes;
-        let dst_row = row * row_bytes;
-        dst[dst_row..dst_row + row_bytes].copy_from_slice(&src[src_row..src_row + row_bytes]);
+fn sync_readback(fboid: u32, dst: &mut [u8], width: u32, height: u32) -> io::Result<()> {
+    let required = (width as usize) * (height as usize) * 4;
+    if dst.len() < required {
+        return Err(io::Error::other("Shared-memory destination too small"));
     }
+
+    unsafe {
+        gl::BindFramebuffer(gl::FRAMEBUFFER, fboid);
+        gl::PixelStorei(gl::PACK_ALIGNMENT, 1);
+        gl::ReadPixels(
+            0,
+            0,
+            width as i32,
+            height as i32,
+            gl::RGBA,
+            gl::UNSIGNED_BYTE,
+            dst.as_mut_ptr() as *mut _,
+        );
+    }
+
+    Ok(())
 }
 
 impl TabProcess {
@@ -679,24 +900,13 @@ impl TabProcess {
                 }
             }
 
-            shared.renderer.gr_context.flush_submit_and_sync_cpu();
-
-            unsafe {
-                gl::BindFramebuffer(gl::FRAMEBUFFER, shared.renderer.fb_info.fboid);
-                gl::PixelStorei(gl::PACK_ALIGNMENT, 1);
-                gl::ReadPixels(
-                    0,
-                    0,
-                    shared.width as i32,
-                    shared.height as i32,
-                    gl::RGBA,
-                    gl::UNSIGNED_BYTE,
-                    shared.renderer.readback.as_mut_ptr() as *mut _,
-                );
-            }
+            shared.renderer.gr_context.flush_and_submit();
 
             let dst = unsafe { shared.shmem.as_slice_mut() };
-            copy_flipped_rgba(&shared.renderer.readback, dst, shared.width, shared.height);
+
+            shared
+                .renderer
+                .readback_into_shmem(dst, shared.width, shared.height)?;
 
             self.scene_cache.next_gen();
 

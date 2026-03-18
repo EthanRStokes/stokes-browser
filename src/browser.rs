@@ -1,7 +1,6 @@
 use anyrender::PaintScene;
 use blitz_traits::shell::Viewport;
 use glutin::surface::GlSurface;
-use kurbo::Affine;
 use cursor_icon::CursorIcon;
 use parley::{FontContext, LayoutContext};
 use std::num::NonZeroU32;
@@ -518,9 +517,13 @@ impl BrowserApp {
         if let Some(image) = frame_to_render {
             // Offset the page content so it renders below the chrome
             let chrome_offset = BrowserUI::CHROME_HEIGHT * self.viewport.as_ref().unwrap().hidpi_scale;
-            painter.set_matrix(Affine::translate((0.0, 0.0)));
 
-            canvas.draw_image(image, (0.0, chrome_offset), None);
+            // GL readback is bottom-up; flip in canvas space to avoid a CPU flip/copy.
+            canvas.save();
+            canvas.translate((0.0, chrome_offset + image.height() as f32));
+            canvas.scale((1.0, -1.0));
+            canvas.draw_image(image, (0.0, 0.0), None);
+            canvas.restore();
         }
 
         // Render UI on top

@@ -1,6 +1,6 @@
 // Tab Manager - manages tab processes from the parent process
 use crate::ipc::{IpcServer, ParentIpcChannel, ParentToTabMessage, TabToParentMessage};
-use shared_memory::ShmemConf;
+use shared_memory::{Shmem, ShmemConf};
 use skia_safe::{AlphaType, ColorType, Data, Image, ImageInfo};
 use std::collections::HashMap;
 use std::io;
@@ -20,6 +20,12 @@ pub struct ManagedTab {
     process: Child,
     channel: ParentIpcChannel,
     pub rendered_frame: Option<RenderedFrame>,
+    frame_source: Option<SharedFrameSource>,
+}
+
+struct SharedFrameSource {
+    shmem_name: String,
+    shmem: Shmem,
 }
 
 /// A rendered frame from a tab process
@@ -76,6 +82,7 @@ impl TabManager {
             process: child,
             channel,
             rendered_frame: None,
+            frame_source: None,
         };
 
         self.tabs.insert(tab_id.clone(), managed_tab);
@@ -143,7 +150,7 @@ impl TabManager {
                 }
                 TabToParentMessage::FrameRendered { shmem_name, width, height } => {
                     // Load the frame from shared memory
-                    if let Ok(frame) = Self::load_frame_from_shmem(&shmem_name, width, height) {
+                    if let Ok(frame) = Self::load_frame_from_shmem(tab, &shmem_name, width, height) {
                         tab.rendered_frame = Some(frame);
                     }
                 }
@@ -175,11 +182,31 @@ impl TabManager {
     }
 
     /// Load a rendered frame from shared memory
-    fn load_frame_from_shmem(shmem_name: &str, width: u32, height: u32) -> io::Result<RenderedFrame> {
-        let shmem = ShmemConf::new()
-            .os_id(shmem_name)
-            .open()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    fn load_frame_from_shmem(
+        tab: &mut ManagedTab,
+        shmem_name: &str,
+        width: u32,
+        height: u32,
+    ) -> io::Result<RenderedFrame> {
+        let needs_reopen = tab
+            .frame_source
+            .as_ref()
+            .map(|source| source.shmem_name.as_str() != shmem_name)
+            .unwrap_or(true);
+
+        if needs_reopen {
+            let shmem = ShmemConf::new()
+                .os_id(shmem_name)
+                .open()
+                .map_err(io::Error::other)?;
+
+            tab.frame_source = Some(SharedFrameSource {
+                shmem_name: shmem_name.to_string(),
+                shmem,
+            });
+        }
+
+        let shmem = &tab.frame_source.as_ref().expect("frame_source must be initialized").shmem;
 
         let size = (width * height * 4) as usize;
 
