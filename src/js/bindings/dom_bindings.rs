@@ -15,7 +15,7 @@ use crate::js::selectors::matches_selector;
 use crate::js::JsRuntime;
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use html5ever::ns;
-use markup5ever::QualName;
+use markup5ever::{LocalName, Namespace, QualName};
 use mozjs::jsapi::{
     CallArgs, JSContext, JSObject, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject,
     JSPROP_ENUMERATE,
@@ -377,12 +377,14 @@ unsafe fn setup_document(cx: &mut mozjs::context::JSContext, global: *mut JSObje
     );
 
     // Define document methods
+    define_function(cx, document.get(), "hasChildNodes", Some(node_has_child_nodes), 0)?;
     define_function(cx, document.get(), "getElementById", Some(document_get_element_by_id), 1)?;
     define_function(cx, document.get(), "getElementsByTagName", Some(document_get_elements_by_tag_name), 1)?;
     define_function(cx, document.get(), "getElementsByClassName", Some(document_get_elements_by_class_name), 1)?;
     define_function(cx, document.get(), "querySelector", Some(document_query_selector), 1)?;
     define_function(cx, document.get(), "querySelectorAll", Some(document_query_selector_all), 1)?;
     define_function(cx, document.get(), "createElement", Some(document_create_element), 1)?;
+    define_function(cx, document.get(), "createElementNS", Some(document_create_element_ns), 2)?;
     define_function(cx, document.get(), "createTextNode", Some(document_create_text_node), 1)?;
     define_function(cx, document.get(), "createDocumentFragment", Some(document_create_document_fragment), 0)?;
     // Event handling on the document
@@ -412,6 +414,18 @@ unsafe fn setup_document(cx: &mut mozjs::context::JSContext, global: *mut JSObje
         cs_name.as_ptr(),
         null_cs.handle().into(),
         JSPROP_ENUMERATE as u32,
+    );
+
+    // Mark the document wrapper as a real DOM node so Node-like helpers (e.g. hasChildNodes)
+    // can resolve against the root document node.
+    rooted!(in(raw_cx) let doc_node_id = mozjs::jsval::DoubleValue(0.0));
+    let node_id_name = std::ffi::CString::new("__nodeId").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        document_rooted_cs.handle().into(),
+        node_id_name.as_ptr(),
+        doc_node_id.handle().into(),
+        0,
     );
 
     // Create documentElement (represents <html>) using a proper element with methods
@@ -788,6 +802,67 @@ unsafe extern "C" fn node_has_child_nodes(raw_cx: *mut JSContext, argc: c_uint, 
     true
 }
 
+unsafe extern "C" fn document_fragment_has_child_nodes(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    let result = if args.thisv().is_object() && !args.thisv().is_null() {
+        rooted!(in(raw_cx) let this_obj = args.thisv().to_object());
+        rooted!(in(raw_cx) let mut count_val = UndefinedValue());
+        let count_name = std::ffi::CString::new("__childCount").unwrap();
+        if JS_GetProperty(raw_cx, this_obj.handle().into(), count_name.as_ptr(), count_val.handle_mut().into()) {
+            if count_val.get().is_int32() {
+                count_val.get().to_int32() > 0
+            } else if count_val.get().is_double() {
+                count_val.get().to_double() > 0.0
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    args.rval().set(BooleanValue(result));
+    true
+}
+
+unsafe extern "C" fn document_fragment_append_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    if argc == 0 {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let child = *args.get(0);
+    if child.is_null() || child.is_undefined() {
+        args.rval().set(child);
+        return true;
+    }
+
+    if args.thisv().is_object() && !args.thisv().is_null() {
+        rooted!(in(raw_cx) let this_obj = args.thisv().to_object());
+        rooted!(in(raw_cx) let mut count_val = UndefinedValue());
+        let count_name = std::ffi::CString::new("__childCount").unwrap();
+        let mut count = 0;
+        if JS_GetProperty(raw_cx, this_obj.handle().into(), count_name.as_ptr(), count_val.handle_mut().into()) {
+            if count_val.get().is_int32() {
+                count = count_val.get().to_int32();
+            } else if count_val.get().is_double() {
+                count = count_val.get().to_double() as i32;
+            }
+        }
+        let _ = set_int_property(safe_cx, this_obj.get(), "__childCount", count.saturating_add(1));
+    }
+
+    args.rval().set(child);
+    true
+}
+
 /// node.normalize() – stub; merges adjacent text nodes in a real UA. No-op here.
 unsafe extern "C" fn node_normalize(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -1102,6 +1177,67 @@ unsafe fn setup_element_constructors(cx: &mut SafeJSContext, global: *mut JSObje
     );
 
     Ok(())
+}
+
+/// Set up callable SVG constructors (`SVGElement`, `SVGSVGElement`) with the right prototype
+/// relationship. This runs as JS to avoid low-level function object plumbing in mozjs bindings.
+pub fn setup_svg_constructors_deferred(runtime: &mut JsRuntime) -> Result<(), String> {
+    let script = r#"
+        (function() {
+            const root = typeof globalThis !== 'undefined' ? globalThis : window;
+
+            if (typeof root.SVGElement !== 'function') {
+                function SVGElement() {
+                    throw new TypeError('Illegal constructor');
+                }
+
+                if (typeof root.Element === 'function' && root.Element.prototype) {
+                    Object.setPrototypeOf(SVGElement.prototype, root.Element.prototype);
+                    Object.setPrototypeOf(SVGElement, root.Element);
+                }
+
+                root.SVGElement = SVGElement;
+            }
+
+            if (typeof root.SVGSVGElement !== 'function') {
+                function SVGSVGElement() {
+                    throw new TypeError('Illegal constructor');
+                }
+
+                if (typeof root.SVGElement === 'function' && root.SVGElement.prototype) {
+                    Object.setPrototypeOf(SVGSVGElement.prototype, root.SVGElement.prototype);
+                    Object.setPrototypeOf(SVGSVGElement, root.SVGElement);
+                }
+
+                root.SVGSVGElement = SVGSVGElement;
+            }
+        })();
+    "#;
+
+    runtime.execute(script, false).map_err(|e| {
+        println!("[JS] Warning: Failed to set up SVG constructors: {}", e);
+        e
+    })?;
+
+    Ok(())
+}
+
+fn namespace_from_uri(ns_uri: &str) -> Namespace {
+    match ns_uri {
+        "http://www.w3.org/1999/xhtml" => ns!(html),
+        "http://www.w3.org/2000/svg" => ns!(svg),
+        "http://www.w3.org/1998/Math/MathML" => ns!(mathml),
+        _ => Namespace::from(ns_uri),
+    }
+}
+
+fn split_qualified_name(qualified_name: &str) -> (Option<String>, String) {
+    if let Some((prefix, local)) = qualified_name.split_once(':') {
+        if !prefix.is_empty() && !local.is_empty() {
+            return (Some(prefix.to_string()), local.to_string());
+        }
+    }
+    (None, qualified_name.to_string())
 }
 
 /// Set up HTMLFormElement constructor
@@ -1700,6 +1836,65 @@ unsafe extern "C" fn document_create_element(raw_cx: *mut JSContext, argc: c_uin
     true
 }
 
+/// document.createElementNS(namespace, qualifiedName) implementation
+unsafe extern "C" fn document_create_element_ns(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    if argc < 2 {
+        args.rval().set(NullValue());
+        return true;
+    }
+
+    let ns_arg = *args.get(0);
+    let qualified_name = js_value_to_string(safe_cx, *args.get(1));
+    if qualified_name.is_empty() {
+        args.rval().set(NullValue());
+        return true;
+    }
+
+    let namespace_uri = if ns_arg.is_null() || ns_arg.is_undefined() {
+        None
+    } else {
+        let uri = js_value_to_string(safe_cx, ns_arg);
+        if uri.is_empty() { None } else { Some(uri) }
+    };
+
+    let (prefix, local_name) = split_qualified_name(&qualified_name);
+    if local_name.is_empty() {
+        args.rval().set(NullValue());
+        return true;
+    }
+
+    DOM_REF.with(|dom| {
+        if let Some(dom_ptr) = *dom.borrow() {
+            let dom = &mut *dom_ptr;
+            let ns = namespace_uri
+                .as_deref()
+                .map(namespace_from_uri)
+                .unwrap_or_else(|| ns!());
+            let qname = QualName::new(
+                prefix.map(|p| p.into()),
+                ns,
+                LocalName::from(local_name.clone()),
+            );
+            let node_id = dom.create_element(qname, AttributeMap::empty());
+            if let Ok(js_elem) = element_bindings::create_js_element_by_id(
+                safe_cx,
+                node_id,
+                &local_name,
+                dom.nodes[node_id].attrs().unwrap(),
+            ) {
+                args.rval().set(js_elem);
+                return;
+            }
+        }
+        args.rval().set(NullValue());
+    });
+
+    true
+}
+
 /// document.createTextNode implementation
 unsafe extern "C" fn document_create_text_node(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -1719,6 +1914,7 @@ unsafe extern "C" fn document_create_text_node(raw_cx: *mut JSContext, argc: c_u
     // resulting node ID as __nodeId on the returned JS object.
     rooted!(in(raw_cx) let text_node = JS_NewPlainObject(raw_cx));
     if !text_node.get().is_null() {
+        let _ = define_function(safe_cx, text_node.get(), "hasChildNodes", Some(node_has_child_nodes), 0);
         let _ = set_int_property(safe_cx, text_node.get(), "nodeType", 3);
         let _ = set_string_property(safe_cx, text_node.get(), "nodeName", "#text");
         let _ = set_string_property(safe_cx, text_node.get(), "textContent", &text);
@@ -1743,9 +1939,11 @@ unsafe extern "C" fn document_create_document_fragment(raw_cx: *mut JSContext, a
     // assign __nodeId, and transfer children when the fragment is inserted.
     rooted!(in(raw_cx) let fragment = JS_NewPlainObject(raw_cx));
     if !fragment.get().is_null() {
+        let _ = define_function(safe_cx, fragment.get(), "hasChildNodes", Some(document_fragment_has_child_nodes), 0);
+        let _ = set_int_property(safe_cx, fragment.get(), "__childCount", 0);
         let _ = set_int_property(safe_cx, fragment.get(), "nodeType", 11);
         let _ = set_string_property(safe_cx, fragment.get(), "nodeName", "#document-fragment");
-        let _ = define_function(safe_cx, fragment.get(), "appendChild", Some(element_append_child), 1);
+        let _ = define_function(safe_cx, fragment.get(), "appendChild", Some(document_fragment_append_child), 1);
         let _ = define_function(safe_cx, fragment.get(), "querySelector", Some(document_query_selector), 1);
         let _ = define_function(safe_cx, fragment.get(), "querySelectorAll", Some(document_query_selector_all), 1);
         args.rval().set(ObjectValue(fragment.get()));

@@ -6,6 +6,7 @@ use crate::engine::script_type::executable_script_kind;
 use crate::js::bindings::dom_bindings::DOM_REF;
 use crate::js::helpers::{create_empty_array, create_js_string, define_function, define_property_accessor, get_node_id_from_this, get_node_id_from_value, js_value_to_string, set_int_property, set_string_property, to_css_property_name, ToSafeCx};
 use crate::js::selectors::matches_selector;
+use html5ever::ns;
 use html5ever::local_name;
 use markup5ever::QualName;
 use mozjs::jsapi::{CallArgs, HandleValueArray, JSContext, JSObject, JSPROP_ENUMERATE};
@@ -87,9 +88,59 @@ unsafe fn create_js_element_impl(
         .map(|attr| attr.value.as_ref())
         .unwrap_or("");
 
+    let (resolved_local_name, namespace_uri, is_html_element, is_svg_element, constructor_name) =
+        DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &*dom_ptr;
+                if let Some(node) = dom.get_node(node_id) {
+                    if let NodeData::Element(ref elem_data) = node.data {
+                        let local_name = elem_data.name.local.to_string();
+                        let namespace_uri = if elem_data.name.ns == ns!(html) {
+                            Some("http://www.w3.org/1999/xhtml".to_string())
+                        } else if elem_data.name.ns == ns!(svg) {
+                            Some("http://www.w3.org/2000/svg".to_string())
+                        } else if elem_data.name.ns == ns!(mathml) {
+                            Some("http://www.w3.org/1998/Math/MathML".to_string())
+                        } else {
+                            let ns_str = elem_data.name.ns.to_string();
+                            if ns_str.is_empty() { None } else { Some(ns_str) }
+                        };
+                        let is_html = elem_data.name.ns == ns!(html);
+                        let is_svg = elem_data.name.ns == ns!(svg);
+                        let constructor = if is_svg {
+                            if local_name.eq_ignore_ascii_case("svg") {
+                                "SVGSVGElement"
+                            } else {
+                                "SVGElement"
+                            }
+                        } else {
+                            "HTMLElement"
+                        };
+                        return (local_name, namespace_uri, is_html, is_svg, constructor.to_string());
+                    }
+                }
+            }
+
+            // Fallback for synthetic/stub elements not backed by a DOM node.
+            (
+                tag_name.to_string(),
+                Some("http://www.w3.org/1999/xhtml".to_string()),
+                true,
+                false,
+                "HTMLElement".to_string(),
+            )
+        });
+
+    let display_name = if is_html_element {
+        resolved_local_name.to_uppercase()
+    } else {
+        resolved_local_name.clone()
+    };
+
     // Set basic properties
-    set_string_property(cx, element.get(), "tagName", &tag_name.to_uppercase())?;
-    set_string_property(cx, element.get(), "nodeName", &tag_name.to_uppercase())?;
+    set_string_property(cx, element.get(), "tagName", &display_name)?;
+    set_string_property(cx, element.get(), "nodeName", &display_name)?;
+    set_string_property(cx, element.get(), "localName", &resolved_local_name)?;
     set_int_property(cx, element.get(), "nodeType", 1)?; // ELEMENT_NODE
     set_string_property(cx, element.get(), "id", id_attr)?;
     set_string_property(cx, element.get(), "className", class_attr)?;
@@ -97,7 +148,7 @@ unsafe fn create_js_element_impl(
     set_string_property(cx, element.get(), "innerHTML", "")?;
     // FIXME: outerHTML returns a stub "<tag></tag>" instead of the element's full serialized HTML
     // including its attributes and child subtree.
-    set_string_property(cx, element.get(), "outerHTML", &format!("<{0}></{0}>", tag_name.to_lowercase()))?;
+    set_string_property(cx, element.get(), "outerHTML", &format!("<{0}></{0}>", resolved_local_name))?;
     // Note: textContent will be defined as a property accessor below
 
     // Store the node_id for reference to the actual DOM node
@@ -111,6 +162,57 @@ unsafe fn create_js_element_impl(
         ptr_val.handle().into(),
         0, // Hidden property
     );
+
+    // Expose namespaceURI as null for no-namespace nodes and as a URI string otherwise.
+    let namespace_name = std::ffi::CString::new("namespaceURI").unwrap();
+    if let Some(uri) = namespace_uri.as_deref() {
+        rooted!(in(raw_cx) let namespace_val = create_js_string(cx, uri));
+        JS_DefineProperty(
+            cx,
+            element_rooted.handle().into(),
+            namespace_name.as_ptr(),
+            namespace_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    } else {
+        rooted!(in(raw_cx) let null_namespace = NullValue());
+        JS_DefineProperty(
+            cx,
+            element_rooted.handle().into(),
+            namespace_name.as_ptr(),
+            null_namespace.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+
+    rooted!(in(raw_cx) let svg_marker = BooleanValue(is_svg_element));
+    let svg_flag_name = std::ffi::CString::new("__isSvgElement").unwrap();
+    JS_DefineProperty(
+        cx,
+        element_rooted.handle().into(),
+        svg_flag_name.as_ptr(),
+        svg_marker.handle().into(),
+        0,
+    );
+
+    // Point element.constructor at the best available global constructor object.
+    rooted!(in(raw_cx) let global = CurrentGlobalOrNull(cx));
+    if !global.get().is_null() {
+        let ctor_name = std::ffi::CString::new(constructor_name).unwrap();
+        rooted!(in(raw_cx) let mut ctor_val = UndefinedValue());
+        if JS_GetProperty(cx, global.handle().into(), ctor_name.as_ptr(), ctor_val.handle_mut().into())
+            && ctor_val.get().is_object()
+        {
+            let constructor_prop = std::ffi::CString::new("constructor").unwrap();
+            JS_DefineProperty(
+                cx,
+                element_rooted.handle().into(),
+                constructor_prop.as_ptr(),
+                ctor_val.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+    }
 
     // Define element methods
     define_function(cx, element.get(), "getAttribute", Some(element_get_attribute), 1)?;
@@ -136,6 +238,7 @@ unsafe fn create_js_element_impl(
     define_function(cx, element.get(), "closest", Some(element_closest), 1)?;
     define_function(cx, element.get(), "matches", Some(element_matches), 1)?;
     define_function(cx, element.get(), "contains", Some(element_contains), 1)?;
+    define_function(cx, element.get(), "hasChildNodes", Some(element_has_child_nodes), 0)?;
     define_function(cx, element.get(), "getRootNode", Some(element_get_root_node), 1)?;
     define_function(cx, element.get(), "attachShadow", Some(element_attach_shadow), 1)?;
 
@@ -505,6 +608,28 @@ unsafe fn parse_shadow_root_mode(cx: &mut SafeJSContext, args: &CallArgs, argc: 
     } else {
         ShadowRootMode::Open
     }
+}
+
+unsafe extern "C" fn element_has_child_nodes(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    let result = if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
+        DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &*dom_ptr;
+                if let Some(node) = dom.get_node(node_id) {
+                    return !node.children.is_empty();
+                }
+            }
+            false
+        })
+    } else {
+        false
+    };
+
+    args.rval().set(BooleanValue(result));
+    true
 }
 
 unsafe extern "C" fn element_attach_shadow(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {

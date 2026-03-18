@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>hasChildNodes Test</title>
+    <style>
+        body { font-family: sans-serif; padding: 16px; }
+        .ok { color: #0a7f2e; }
+        .fail { color: #b00020; }
+        pre { background: #f5f5f5; padding: 12px; border-radius: 6px; }
+    </style>
+</head>
+<body>
+    <h1>Node.hasChildNodes() regression test</h1>
+    <p>Validates that common Node wrappers expose <code>hasChildNodes()</code>.</p>
+
+    <div id="root">
+        <span id="leaf">leaf text</span>
+    </div>
+
+    <pre id="log"></pre>
+
+    <script>
+        (function () {
+            var logEl = document.getElementById("log");
+            var failures = 0;
+
+            function line(text, ok) {
+                var div = document.createElement("div");
+                div.className = ok ? "ok" : "fail";
+                div.textContent = (ok ? "PASS: " : "FAIL: ") + text;
+                logEl.appendChild(div);
+                if (!ok) failures++;
+            }
+
+            function check(name, fn) {
+                try {
+                    var value = fn();
+                    line(name + " => " + value, value === true || value === false);
+                } catch (err) {
+                    line(name + " threw " + String(err), false);
+                }
+            }
+
+            // 1) Document should expose hasChildNodes.
+            check("document.hasChildNodes()", function () {
+                return document.hasChildNodes();
+            });
+
+            // 2) Element wrappers should expose hasChildNodes.
+            var root = document.getElementById("root");
+            check("element.hasChildNodes()", function () {
+                return root.hasChildNodes();
+            });
+
+            // 3) Text nodes should expose hasChildNodes and return false.
+            var textNode = document.createTextNode("hello");
+            check("textNode.hasChildNodes()", function () {
+                return textNode.hasChildNodes() === false;
+            });
+
+            // 4) DocumentFragment should expose hasChildNodes before/after append.
+            var frag = document.createDocumentFragment();
+            check("fragment.hasChildNodes() before append", function () {
+                return frag.hasChildNodes() === false;
+            });
+            frag.appendChild(document.createElement("i"));
+            check("fragment.hasChildNodes() after append", function () {
+                return frag.hasChildNodes() === true;
+            });
+
+            if (failures === 0) {
+                console.log("has-child-nodes-test: all checks passed");
+            } else {
+                console.log("has-child-nodes-test: " + failures + " failures");
+            }
+        })();
+    </script>
+</body>
+</html>
+
