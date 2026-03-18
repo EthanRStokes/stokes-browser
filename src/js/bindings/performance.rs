@@ -1,6 +1,6 @@
 // Performance API implementation for JavaScript using mozjs
 use crate::js::JsRuntime;
-use mozjs::jsapi::{CallArgs, JSContext, JSNative, JSObject, JSPROP_ENUMERATE, JSPROP_READONLY, HandleValueArray};
+use mozjs::jsapi::{CallArgs, JSContext, JSNative, JSObject, JSPROP_ENUMERATE, JSPROP_READONLY};
 use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsval::{JSVal, UndefinedValue, DoubleValue, ObjectValue};
 use mozjs::rooted;
@@ -10,7 +10,8 @@ use std::os::raw::c_uint;
 use std::ptr::NonNull;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use mozjs::conversions::jsstr_to_string;
-use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty, JS_NewPlainObject, NewArrayObject};
+use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty, JS_NewPlainObject};
+use crate::js::helpers::create_empty_array;
 use crate::js::helpers::ToSafeCx;
 
 /// Performance mark entry
@@ -296,6 +297,16 @@ unsafe fn js_value_to_string_perf(raw_cx: *mut JSContext, val: JSVal) -> Option<
     Some(jsstr_to_string(raw_cx, NonNull::new(jsstr).unwrap()))
 }
 
+unsafe fn set_empty_array_result(raw_cx: *mut JSContext, args: &CallArgs) {
+    let safe_cx = &mut raw_cx.to_safe_cx();
+    rooted!(in(raw_cx) let array = create_empty_array(safe_cx));
+    if array.get().is_null() {
+        args.rval().set(UndefinedValue());
+    } else {
+        args.rval().set(ObjectValue(array.get()));
+    }
+}
+
 /// performance.now() implementation
 unsafe extern "C" fn performance_now(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let result = PERFORMANCE_MANAGER.with(|pm| {
@@ -428,20 +439,16 @@ unsafe extern "C" fn performance_clear_measures(raw_cx: *mut JSContext, argc: c_
 /// performance.getEntriesByType() implementation
 unsafe extern "C" fn performance_get_entries_by_type(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let safe_cx = &mut raw_cx.to_safe_cx();
 
     if argc < 1 {
-        // Return empty array
-        rooted!(in(raw_cx) let array = NewArrayObject(safe_cx, &HandleValueArray::empty()));
-        args.rval().set(ObjectValue(array.get()));
+        set_empty_array_result(raw_cx, &args);
         return true;
     }
 
     let entry_type = match js_value_to_string_perf(raw_cx, *args.get(0)) {
         Some(s) => s,
         None => {
-            rooted!(in(raw_cx) let array = NewArrayObject(safe_cx, &HandleValueArray::empty()));
-            args.rval().set(ObjectValue(array.get()));
+            set_empty_array_result(raw_cx, &args);
             return true;
         }
     };
@@ -455,35 +462,26 @@ unsafe extern "C" fn performance_get_entries_by_type(raw_cx: *mut JSContext, arg
     });
 
     // Create an array to return
-    rooted!(in(raw_cx) let array = NewArrayObject(safe_cx, &HandleValueArray::empty()));
-    if array.get().is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-
     // FIXME: `_entries` is fetched above but never written into `array`. Each entry should be
     // serialized as a PerformanceEntry-like object {name, entryType, startTime, duration} and
     // pushed into the array before returning.
-    args.rval().set(ObjectValue(array.get()));
+    set_empty_array_result(raw_cx, &args);
     true
 }
 
 /// performance.getEntriesByName() implementation
 unsafe extern "C" fn performance_get_entries_by_name(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let safe_cx = &mut raw_cx.to_safe_cx();
 
     if argc < 1 {
-        rooted!(in(raw_cx) let array = NewArrayObject(safe_cx, &HandleValueArray::empty()));
-        args.rval().set(ObjectValue(array.get()));
+        set_empty_array_result(raw_cx, &args);
         return true;
     }
 
     let name = match js_value_to_string_perf(raw_cx, *args.get(0)) {
         Some(s) => s,
         None => {
-            rooted!(in(raw_cx) let array = NewArrayObject(safe_cx, &HandleValueArray::empty()));
-            args.rval().set(ObjectValue(array.get()));
+            set_empty_array_result(raw_cx, &args);
             return true;
         }
     };
@@ -497,34 +495,22 @@ unsafe extern "C" fn performance_get_entries_by_name(raw_cx: *mut JSContext, arg
     });
 
     // Create an array to return
-    rooted!(in(raw_cx) let array = NewArrayObject(safe_cx, &HandleValueArray::empty()));
-    if array.get().is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-
     // FIXME: `_entries` is fetched above but never written into `array`. Each entry should be
     // serialized as a PerformanceEntry-like object {name, entryType, startTime, duration} and
     // pushed into the array before returning.
-    args.rval().set(ObjectValue(array.get()));
+    set_empty_array_result(raw_cx, &args);
     true
 }
 
 /// performance.getEntries() implementation
 unsafe extern "C" fn performance_get_entries(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let safe_cx = &mut raw_cx.to_safe_cx();
 
     // Create an array to return (returns empty array for now)
-    rooted!(in(raw_cx) let array = NewArrayObject(safe_cx, &HandleValueArray::empty()));
-    if array.get().is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
+    set_empty_array_result(raw_cx, &args);
 
     // FIXME: Should return all recorded marks and measures as an array of PerformanceEntry-like
     // objects instead of always returning an empty array.
-    args.rval().set(ObjectValue(array.get()));
     true
 }
 
