@@ -1,10 +1,12 @@
 use mozjs::gc::HandleObject;
-use mozjs::jsapi::{JSContext, JSFunction, JSNative, JS_DefineFunction};
+use mozjs::jsapi::{JSFunction, JSNative};
+use mozjs::context::JSContext;
+use mozjs::rust::wrappers2::JS_DefineFunction;
 
 /// define a new native function on an object
 // todo refactor to accept MutableHandleValue #26
 pub fn define_native_function(
-    cx: *mut JSContext,
+    cx: &mut JSContext,
     obj: HandleObject,
     function_name: &str,
     native_function: JSNative,

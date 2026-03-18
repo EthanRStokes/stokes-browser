@@ -6,22 +6,23 @@ use crate::js::helpers::{js_value_to_string, ToSafeCx};
 use crate::js::jsapi::js_promise::JsPromiseHandle;
 use crate::js::JsRuntime;
 use curl::easy::{Easy, List};
+use mozjs::context::JSContext as SafeJSContext;
 use mozjs::conversions::jsstr_to_string;
+use mozjs::gc::Handle;
 use mozjs::jsapi::{
-    CallArgs, HandleObject, JSContext, JSObject,
+    CallArgs, JSContext, JSObject,
     JSPROP_ENUMERATE,
 };
-use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsval::{Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
+use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JS_ParseJSON, NewArrayBuffer, NewPromiseObject, RejectPromise, ResolvePromise};
+use mozjs::rust::MutableHandleValue;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::os::raw::c_uint;
 use std::ptr::NonNull;
 use std::time::Duration;
-use mozjs::gc::Handle;
-use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JS_ParseJSON, NewPromiseObject, RejectPromise, ResolvePromise};
 use url::Url;
 
 /// Thread-local storage for the pending response data
@@ -88,17 +89,17 @@ unsafe extern "C" fn js_fetch(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSV
     // Must have at least one argument (the URL)
     if argc < 1 {
         // Create rejected promise with error
-        return create_rejected_promise(safe_cx, args.rval(), "fetch requires at least 1 argument");
+        return create_rejected_promise(safe_cx, MutableHandleValue::from_raw(args.rval().into()), "fetch requires at least 1 argument");
     }
 
     let input_url = match extract_fetch_input_url(safe_cx, *args.get(0)) {
         Some(v) => v,
-        None => return create_rejected_promise(safe_cx, args.rval(), "fetch: invalid request input"),
+        None => return create_rejected_promise(safe_cx, MutableHandleValue::from_raw(args.rval()), "fetch: invalid request input"),
     };
 
     let url = match resolve_fetch_url(&input_url) {
         Ok(v) => v,
-        Err(msg) => return create_rejected_promise(safe_cx, args.rval(), &msg),
+        Err(msg) => return create_rejected_promise(safe_cx, MutableHandleValue::from_raw(args.rval()), &msg),
     };
 
     // Parse request options (method, headers, body)
@@ -628,7 +629,7 @@ unsafe extern "C" fn response_array_buffer(raw_cx: *mut JSContext, argc: c_uint,
     // copied into it. Use JS_GetArrayBufferData (or similar) to obtain a mutable pointer to the
     // buffer's backing store and write body_bytes into it so callers receive actual response data.
     let body_bytes = body.as_bytes();
-    rooted!(in(raw_cx) let array_buffer = mozjs::jsapi::NewArrayBuffer(raw_cx, body_bytes.len()));
+    rooted!(in(raw_cx) let array_buffer = NewArrayBuffer(safe_cx, body_bytes.len()));
 
     if !array_buffer.get().is_null() {
         rooted!(in(raw_cx) let ab_val = ObjectValue(array_buffer.get()));
@@ -647,7 +648,7 @@ unsafe extern "C" fn response_array_buffer(raw_cx: *mut JSContext, argc: c_uint,
 }
 
 /// Create a rejected promise with an error message
-unsafe fn create_rejected_promise(cx: &mut SafeJSContext, rval: mozjs::jsapi::MutableHandleValue, error_msg: &str) -> bool {
+unsafe fn create_rejected_promise(cx: &mut SafeJSContext, mut rval: MutableHandleValue, error_msg: &str) -> bool {
     let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let null_obj = std::ptr::null_mut::<JSObject>());
     rooted!(in(raw_cx) let promise = NewPromiseObject(cx, null_obj.handle()));

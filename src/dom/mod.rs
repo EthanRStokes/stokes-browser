@@ -166,9 +166,8 @@ pub trait AbstractDom: Any + 'static {
     /// Update the [`Document`] in response to a [`UiEvent`] (click, keypress, etc)
     fn handle_ui_event(&mut self, event: UiEvent) {
         let mut doc = self.inner_mut();
-        // TODO: enable event listeners
-        //let mut driver = EventDriver::new(&mut *doc, JsEventHandler);
-        let mut driver = EventDriver::new(&mut *doc, NoopEventHandler);
+        let mut driver = EventDriver::new(&mut *doc, JsEventHandler);
+        //let mut driver = EventDriver::new(&mut *doc, NoopEventHandler);
         driver.handle_ui_event(event);
     }
 

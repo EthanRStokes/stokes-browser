@@ -1,12 +1,12 @@
 // Shared helper functions for JavaScript bindings
 use mozjs::conversions::jsstr_to_string;
 use mozjs::gc::Handle;
-use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_NewUCStringCopyN, JS_SetProperty, NewArrayObject};
+use mozjs::rust::wrappers2::{Compile1, CurrentGlobalOrNull, JS_DefineFunction, JS_DefineProperty, JS_ExecuteScript, JS_GetProperty, JS_NewUCStringCopyN, JS_SetProperty, NewArrayObject};
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers::JS_ValueToSource;
 use std::ptr::NonNull;
-use mozjs::rust::ValueArray;
+use mozjs::rust::{transform_str_to_source_text, CompileOptionsWrapper, MutableHandleValue, ValueArray};
 use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsapi::{CallArgs, HandleValueArray, JSContext, JSNative, JSObject, JSPROP_ENUMERATE};
 
@@ -199,9 +199,6 @@ pub unsafe fn define_property_accessor(
     getter_name: &str,
     setter_name: &str,
 ) -> Result<(), String> {
-    use mozjs::jsapi::{Compile1, CurrentGlobalOrNull, Handle, JS_ExecuteScript, MutableHandleValue};
-    use mozjs::rust::{transform_str_to_source_text, CompileOptionsWrapper};
-
     let raw_cx = cx.raw_cx();
 
     // We'll use a well-known temporary variable name
@@ -210,7 +207,7 @@ pub unsafe fn define_property_accessor(
     rooted!(in(raw_cx) let obj_val = mozjs::jsval::ObjectValue(obj));
 
     // Get the global object
-    rooted!(in(raw_cx) let global = CurrentGlobalOrNull(raw_cx));
+    rooted!(in(raw_cx) let global = CurrentGlobalOrNull(cx));
     if global.is_null() {
         return Err("No global object".to_string());
     }
@@ -248,7 +245,7 @@ pub unsafe fn define_property_accessor(
     let options = CompileOptionsWrapper::new(cx, "define_property_accessor".parse().unwrap(), 1);
 
     // Compile the script
-    let compiled = Compile1(raw_cx, options.ptr, &mut transform_str_to_source_text(&script));
+    let compiled = Compile1(cx, options.ptr, &mut transform_str_to_source_text(&script));
     if compiled.is_null() {
         // Clean up the temporary variable
         rooted!(in(raw_cx) let undefined = UndefinedValue());
@@ -265,7 +262,7 @@ pub unsafe fn define_property_accessor(
     rooted!(in(raw_cx) let mut rval = UndefinedValue());
 
     // Execute the script
-    let success = JS_ExecuteScript(raw_cx, Handle::from(script_root.handle()), MutableHandleValue::from(rval.handle_mut()));
+    let success = JS_ExecuteScript(cx, script_root.handle(), MutableHandleValue::from(rval.handle_mut()));
 
     // Clean up the temporary variable
     rooted!(in(raw_cx) let undefined = UndefinedValue());
@@ -294,7 +291,7 @@ pub unsafe fn get_node_id_from_value(cx: &mut SafeJSContext, val: JSVal) -> Opti
     rooted!(in(raw_cx) let mut ptr_val = UndefinedValue());
 
     let cname = std::ffi::CString::new("__nodeId").unwrap();
-    if !mozjs::jsapi::JS_GetProperty(raw_cx, obj.handle().into(), cname.as_ptr(), ptr_val.handle_mut().into()) {
+    if !JS_GetProperty(cx, obj.handle(), cname.as_ptr(), ptr_val.handle_mut()) {
         return None;
     }
 

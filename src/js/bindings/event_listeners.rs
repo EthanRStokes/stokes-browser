@@ -152,7 +152,7 @@ pub fn clear_listeners_for_node(node_id: usize) {
 unsafe extern "C" fn js_stop_propagation(
     _cx: *mut JSContext, argc: u32, vp: *mut JSVal,
 ) -> bool {
-    let args = mozjs::jsapi::CallArgs::from_vp(vp, argc);
+    let args = CallArgs::from_vp(vp, argc);
     EVENT_PROPAGATION_STOPPED.with(|f| f.set(true));
     args.rval().set(UndefinedValue());
     true
@@ -385,7 +385,7 @@ pub unsafe fn build_event_object_with_type(
 unsafe extern "C" fn noop_init_event(
     _cx: *mut JSContext, argc: u32, vp: *mut JSVal,
 ) -> bool {
-    let args = mozjs::jsapi::CallArgs::from_vp(vp, argc);
+    let args = CallArgs::from_vp(vp, argc);
     args.rval().set(UndefinedValue());
     true
 }

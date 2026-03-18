@@ -7,12 +7,12 @@ use crate::js::jsapi::promise::enqueue_promise_job;
 use hirofa_utils::eventloop::EventLoop;
 use lazy_static::lazy_static;
 use log::trace;
-use mozjs::context::JSContext;
+use mozjs::context::{JSContext, RawJSContext};
 use mozjs::conversions::jsstr_to_string;
 use mozjs::gc::HandleObject;
 use mozjs::glue::JobQueueTraps;
-use mozjs::jsapi::{CallArgs, JSContext as ApiJSContext, SetModuleMetadataHook, SetScriptPrivate};
-use mozjs::jsapi::{Handle, Heap, JSAutoRealm, JSContext as RawJSContext, JSObject, JSScript, OnNewGlobalHookOption};
+use mozjs::jsapi::{CallArgs, JSContext as ApiJSContext, SetModuleMetadataHook, SetModulePrivate, SetScriptPrivate, SourceText};
+use mozjs::jsapi::{Heap, JSObject, JSScript, OnNewGlobalHookOption};
 // JavaScript runtime management using Mozilla's SpiderMonkey (mozjs)
 use mozjs::jsval::{PrivateValue, StringValue, UndefinedValue};
 use mozjs::panic::{maybe_resume_unwind};
@@ -348,7 +348,8 @@ impl JsRuntime {
                 return Err("No global object".to_string());
             }
 
-            let _realm = JSAutoRealm::new(raw_cx, global.get());
+            let cx = &mut AutoRealm::new_from_handle(cx, global.handle());
+            let raw_cx = cx.raw_cx();
 
             rooted!(in(raw_cx) let mut module = ptr::null_mut::<JSObject>());
             module.set(Self::compile_module_script(cx, code, &source_name, 1));
@@ -362,7 +363,7 @@ impl JsRuntime {
             rooted!(in(raw_cx) let source_url_js = JS_NewUCStringCopyN(cx, source_url_utf16.as_ptr(), source_url_utf16.len()));
             rooted!(in(raw_cx) let module_private = StringValue(&*source_url_js.get()));
             let module_private_value = module_private.get();
-            mozjs::jsapi::SetModulePrivate(module.get(), &module_private_value);
+            SetModulePrivate(module.get(), &module_private_value);
 
             if !ModuleLink(cx, module.handle().into()) {
                 let msg = Self::extract_js_exception(cx, raw_cx, "JavaScript MODULE INSTANTIATE error", code, print_eval_error);
@@ -461,7 +462,7 @@ impl JsRuntime {
 
         self.do_with_jsapi(|cx, global| unsafe {
             define_native_function(
-                cx.raw_cx(),
+                cx,
                 global,
                 name,
                 Some(global_op_native_method),
@@ -586,9 +587,9 @@ unsafe extern "C" fn module_metadata_hook(
 }
 
 /// Helper to convert a Rust string to a SourceText for SpiderMonkey
-unsafe fn transform_u16_to_source_text(code: &str) -> mozjs::jsapi::SourceText<u16> {
+unsafe fn transform_u16_to_source_text(code: &str) -> SourceText<u16> {
     let utf16: Vec<u16> = code.encode_utf16().collect();
-    let mut source = mozjs::jsapi::SourceText {
+    let mut source = SourceText {
         units_: ptr::null_mut(),
         length_: 0,
         ownsUnits_: false,

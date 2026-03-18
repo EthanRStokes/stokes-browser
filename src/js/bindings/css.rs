@@ -10,12 +10,13 @@ use crate::js::helpers::ToSafeCx;
 use crate::js::helpers::{create_js_string, define_function, js_value_to_string, set_string_property};
 use crate::js::JsRuntime;
 use cssparser::ParserInput;
-use mozjs::jsapi::{CallArgs, JSContext, JSObject, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JSPROP_ENUMERATE};
+use mozjs::jsapi::{CallArgs, JSContext, JSObject, JSPROP_ENUMERATE};
 use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsval::{BooleanValue, DoubleValue, JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use std::ffi::CString;
 use std::os::raw::c_uint;
+use mozjs::rust::wrappers2::{JS_DefineProperty, JS_GetProperty, JS_NewPlainObject};
 use style::parser::ParserContext;
 use style::properties::{PropertyDeclaration, PropertyId, SourcePropertyDeclaration};
 use style::servo_arc::Arc as ServoArc;
@@ -31,7 +32,7 @@ use url::Url;
 pub fn setup_css(runtime: &mut JsRuntime) -> Result<(), String> {
     runtime.do_with_jsapi(|cx, global| unsafe {
         let raw_cx = cx.raw_cx();
-        rooted!(in(raw_cx) let css_obj = JS_NewPlainObject(raw_cx));
+        rooted!(in(raw_cx) let css_obj = JS_NewPlainObject(cx));
         if css_obj.get().is_null() {
             return Err("Failed to create CSS object".to_string());
         }
@@ -131,7 +132,7 @@ pub fn setup_css(runtime: &mut JsRuntime) -> Result<(), String> {
         rooted!(in(raw_cx) let css_val = ObjectValue(css_obj.get()));
         let name = CString::new("CSS").unwrap();
         if !JS_DefineProperty(
-            raw_cx,
+            cx,
             global.into(),
             name.as_ptr(),
             css_val.handle().into(),
@@ -620,7 +621,7 @@ unsafe fn make_css_unit_value(
     unit: &str,
 ) -> *mut JSObject {
     let raw_cx = cx.raw_cx();
-    rooted!(in(raw_cx) let obj = JS_NewPlainObject(raw_cx));
+    rooted!(in(raw_cx) let obj = JS_NewPlainObject(cx));
     if obj.get().is_null() {
         return std::ptr::null_mut();
     }
@@ -629,7 +630,7 @@ unsafe fn make_css_unit_value(
     rooted!(in(raw_cx) let val = DoubleValue(value));
     let value_name = CString::new("value").unwrap();
     JS_DefineProperty(
-        raw_cx,
+        cx,
         obj.handle().into(),
         value_name.as_ptr(),
         val.handle().into(),
@@ -667,8 +668,8 @@ unsafe extern "C" fn css_unit_value_to_string(
     rooted!(in(raw_cx) let mut val_val = UndefinedValue());
     let value_name = CString::new("value").unwrap();
     JS_GetProperty(
-        raw_cx,
-        this_obj.handle().into(),
+        safe_cx,
+        this_obj.handle(),
         value_name.as_ptr(),
         val_val.handle_mut().into(),
     );
@@ -677,8 +678,8 @@ unsafe extern "C" fn css_unit_value_to_string(
     rooted!(in(raw_cx) let mut unit_val = UndefinedValue());
     let unit_name = CString::new("unit").unwrap();
     JS_GetProperty(
-        raw_cx,
-        this_obj.handle().into(),
+        safe_cx,
+        this_obj.handle(),
         unit_name.as_ptr(),
         unit_val.handle_mut().into(),
     );

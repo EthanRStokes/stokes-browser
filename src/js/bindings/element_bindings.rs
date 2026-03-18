@@ -8,9 +8,7 @@ use crate::js::helpers::{create_empty_array, create_js_string, define_function, 
 use crate::js::selectors::matches_selector;
 use html5ever::local_name;
 use markup5ever::QualName;
-use mozjs::jsapi::{
-    CallArgs, JSContext, JSObject, JSPROP_ENUMERATE,
-};
+use mozjs::jsapi::{CallArgs, HandleValueArray, JSContext, JSObject, JSPROP_ENUMERATE};
 use mozjs::rust::wrappers2::{CurrentGlobalOrNull, JS_CallFunctionValue, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_SetElement};
 use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsval::{BooleanValue, JSVal, NullValue, ObjectValue, UndefinedValue};
@@ -47,7 +45,7 @@ unsafe fn maybe_patch_mutation_observer_node(cx: &mut SafeJSContext, node_obj: *
         cx,
         node_rooted.handle().into(),
         patch_fn.handle().into(),
-        &mozjs::jsapi::HandleValueArray::from(&call_args),
+        &HandleValueArray::from(&call_args),
         rval.handle_mut().into(),
     );
 }

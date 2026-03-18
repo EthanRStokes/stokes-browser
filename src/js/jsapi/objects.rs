@@ -1,12 +1,12 @@
 use crate::js::jsapi::error::{get_pending_exception, JsError};
 use mozjs::conversions::jsstr_to_string;
 use mozjs::glue::{RUST_JSID_IS_STRING, RUST_JSID_TO_STRING};
-use mozjs::jsapi::{HandleObject as RawHandleObject, JSContext, JS_GetProperty, MutableHandleValue};
 use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
-use mozjs::rust::HandleObject;
+use mozjs::rust::{HandleObject, MutableHandleValue};
 use std::ptr::NonNull;
+use mozjs::rust::wrappers2::JS_GetProperty;
 
 /// get a single member of a JSObject
 #[allow(dead_code)]
@@ -16,22 +16,21 @@ pub fn get_obj_prop_val(
     prop_name: &str,
     ret_val: MutableHandleValue,
 ) -> Result<(), JsError> {
-    get_obj_prop_val_raw(context, obj.into(), prop_name, ret_val)
+    get_obj_prop_val_raw(context, obj, prop_name, ret_val)
 }
 
 /// get a single member of a JSObject
 #[allow(dead_code)]
 pub fn get_obj_prop_val_raw(
     context: &mut SafeJSContext,
-    obj: RawHandleObject,
+    obj: HandleObject,
     prop_name: &str,
     ret_val: MutableHandleValue,
 ) -> Result<(), JsError> {
-    let raw_cx = unsafe { context.raw_cx() };
     let n = format!("{}\0", prop_name);
     let ok = unsafe {
         JS_GetProperty(
-            raw_cx,
+            context,
             obj,
             n.as_ptr() as *const libc::c_char,
             ret_val.into(),

@@ -3,8 +3,7 @@ use crate::js::helpers::{create_empty_array, create_js_string, define_function, 
 use crate::js::JsRuntime;
 use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::{
-    CallArgs, HandleObject, JSContext, JSObject, JS_DefineFunction, JS_DefineProperty,
-    JS_GetProperty, JS_NewPlainObject, JSPROP_ENUMERATE,
+    CallArgs, HandleObject, JSContext, JSObject, JSPROP_ENUMERATE,
 };
 use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, UndefinedValue};
@@ -12,15 +11,16 @@ use mozjs::rooted;
 use std::ffi::CString;
 use std::os::raw::c_uint;
 use std::ptr::NonNull;
+use mozjs::gc::Handle;
+use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject};
 use url::Url;
 
 /// Register global URL-related constructors.
 pub fn setup_url(runtime: &mut JsRuntime) -> Result<(), String> {
     runtime.do_with_jsapi(|cx, global| unsafe {
-        let raw_cx = cx.raw_cx();
         let url_name = CString::new("URL").unwrap();
         if JS_DefineFunction(
-            raw_cx,
+            cx,
             global.into(),
             url_name.as_ptr(),
             Some(url_constructor),
@@ -34,7 +34,7 @@ pub fn setup_url(runtime: &mut JsRuntime) -> Result<(), String> {
 
         let params_name = CString::new("URLSearchParams").unwrap();
         if JS_DefineFunction(
-            raw_cx,
+            cx,
             global.into(),
             params_name.as_ptr(),
             Some(url_search_params_constructor),
@@ -106,7 +106,7 @@ unsafe extern "C" fn url_constructor(raw_cx: *mut JSContext, argc: c_uint, vp: *
         }
     };
 
-    rooted!(in(raw_cx) let url_obj = JS_NewPlainObject(raw_cx));
+    rooted!(in(raw_cx) let url_obj = JS_NewPlainObject(safe_cx));
     if url_obj.get().is_null() {
         args.rval().set(UndefinedValue());
         return false;
@@ -428,10 +428,10 @@ unsafe fn set_url_properties(cx: &mut SafeJSContext, obj: *mut JSObject, url: &U
     rooted!(in(raw_cx) let obj_rooted = obj);
     let name = CString::new("searchParams").unwrap();
     JS_DefineProperty(
-        raw_cx,
-        obj_rooted.handle().into(),
+        cx,
+        obj_rooted.handle(),
         name.as_ptr(),
-        params_val.handle().into(),
+        params_val.handle(),
         JSPROP_ENUMERATE as u32,
     );
 
@@ -490,7 +490,7 @@ unsafe fn create_url_search_params_object(
     raw: &str,
 ) -> Result<*mut JSObject, String> {
     let raw_cx = cx.raw_cx();
-    rooted!(in(raw_cx) let obj = JS_NewPlainObject(raw_cx));
+    rooted!(in(raw_cx) let obj = JS_NewPlainObject(cx));
     if obj.get().is_null() {
         return Err("Failed to create URLSearchParams object".to_string());
     }
@@ -537,12 +537,12 @@ unsafe fn write_params_pairs_to_this(
     Ok(())
 }
 
-unsafe fn get_string_property(cx: &mut SafeJSContext, obj: HandleObject, name: &str) -> Option<String> {
+unsafe fn get_string_property(cx: &mut SafeJSContext, obj: Handle<*mut JSObject>, name: &str) -> Option<String> {
     let raw_cx = cx.raw_cx();
     let name_cstr = CString::new(name).ok()?;
     rooted!(in(raw_cx) let mut val = UndefinedValue());
 
-    if !JS_GetProperty(raw_cx, obj, name_cstr.as_ptr(), val.handle_mut().into()) {
+    if !JS_GetProperty(cx, obj, name_cstr.as_ptr(), val.handle_mut()) {
         return None;
     }
 

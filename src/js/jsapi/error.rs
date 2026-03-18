@@ -1,8 +1,9 @@
 use crate::js::jsapi::objects::{get_obj_prop_val_as_i32, get_obj_prop_val_as_string};
-use mozjs::jsapi::{JS_ClearPendingException, JS_GetPendingException, JS_IsExceptionPending};
-use mozjs::context::JSContext as SafeJSContext;
+use mozjs::context::JSContext;
+use mozjs::jsapi::JSObject;
 use mozjs::jsval::UndefinedValue;
 use mozjs::rooted;
+use mozjs::rust::wrappers2::{JS_ClearPendingException, JS_GetPendingException, JS_IsExceptionPending};
 use tracing::debug;
 
 #[derive(Debug)]
@@ -35,12 +36,12 @@ impl Clone for JsError {
 
 /// see if there is a pending exception and return it as a JsError
 #[allow(dead_code)]
-pub fn get_pending_exception(cx: &mut SafeJSContext) -> Option<JsError> {
+pub fn get_pending_exception(cx: &mut JSContext) -> Option<JsError> {
     let raw_cx = unsafe { cx.raw_cx() };
-    if unsafe { JS_IsExceptionPending(raw_cx) } {
+    if unsafe { JS_IsExceptionPending(cx) } {
         rooted!(in(raw_cx) let mut error_value = UndefinedValue());
-        if unsafe { JS_GetPendingException(raw_cx, error_value.handle_mut().into()) } {
-            let js_error_obj: *mut mozjs::jsapi::JSObject = error_value.to_object();
+        if unsafe { JS_GetPendingException(cx, error_value.handle_mut().into()) } {
+            let js_error_obj: *mut JSObject = error_value.to_object();
             rooted!(in(raw_cx) let mut js_error_obj_root = js_error_obj);
 
             let message =
@@ -68,7 +69,7 @@ pub fn get_pending_exception(cx: &mut SafeJSContext) -> Option<JsError> {
                 error_info.message, error_info.filename, error_info.lineno, error_info.column
             );
 
-            unsafe { JS_ClearPendingException(raw_cx) };
+            unsafe { JS_ClearPendingException(cx) };
             Some(error_info)
         } else {
             None

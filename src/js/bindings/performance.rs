@@ -1,6 +1,6 @@
 // Performance API implementation for JavaScript using mozjs
 use crate::js::JsRuntime;
-use mozjs::jsapi::{CallArgs, JSContext, JSNative, JSObject, JS_DefineFunction, JS_DefineProperty, JS_NewPlainObject, JSPROP_ENUMERATE, JSPROP_READONLY, HandleValueArray};
+use mozjs::jsapi::{CallArgs, JSContext, JSNative, JSObject, JSPROP_ENUMERATE, JSPROP_READONLY, HandleValueArray};
 use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsval::{JSVal, UndefinedValue, DoubleValue, ObjectValue};
 use mozjs::rooted;
@@ -10,6 +10,8 @@ use std::os::raw::c_uint;
 use std::ptr::NonNull;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use mozjs::conversions::jsstr_to_string;
+use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty, JS_NewPlainObject, NewArrayObject};
+use crate::js::helpers::ToSafeCx;
 
 /// Performance mark entry
 #[derive(Debug, Clone)]
@@ -196,7 +198,7 @@ pub fn setup_performance(runtime: &mut JsRuntime) -> Result<(), String> {
     runtime.do_with_jsapi(|cx, global| unsafe {
         let raw_cx = cx.raw_cx();
         // Create performance object
-        rooted!(in(raw_cx) let performance = JS_NewPlainObject(raw_cx));
+        rooted!(in(raw_cx) let performance = JS_NewPlainObject(cx));
         if performance.get().is_null() {
             return Err("Failed to create performance object".to_string());
         }
@@ -231,7 +233,7 @@ pub fn setup_performance(runtime: &mut JsRuntime) -> Result<(), String> {
                 rooted!(in(raw_cx) let time_origin = DoubleValue(manager.start_time));
                 let name = std::ffi::CString::new("timeOrigin").unwrap();
                 if !JS_DefineProperty(
-                    raw_cx,
+                    cx,
                     performance.handle().into(),
                     name.as_ptr(),
                     time_origin.handle().into(),
@@ -247,7 +249,7 @@ pub fn setup_performance(runtime: &mut JsRuntime) -> Result<(), String> {
         rooted!(in(raw_cx) let performance_val = ObjectValue(performance.get()));
         let name = std::ffi::CString::new("performance").unwrap();
         if !JS_DefineProperty(
-            raw_cx,
+            cx,
             global.into(),
             name.as_ptr(),
             performance_val.handle().into(),
@@ -271,7 +273,7 @@ unsafe fn define_performance_method(
     rooted!(in(raw_cx) let performance_rooted = performance);
 
     if !JS_DefineFunction(
-        raw_cx,
+        cx,
         performance_rooted.handle().into(),
         cname.as_ptr(),
         func,
@@ -426,10 +428,11 @@ unsafe extern "C" fn performance_clear_measures(raw_cx: *mut JSContext, argc: c_
 /// performance.getEntriesByType() implementation
 unsafe extern "C" fn performance_get_entries_by_type(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     if argc < 1 {
         // Return empty array
-        rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &HandleValueArray::empty()));
+        rooted!(in(raw_cx) let array = NewArrayObject(safe_cx, &HandleValueArray::empty()));
         args.rval().set(ObjectValue(array.get()));
         return true;
     }
@@ -437,7 +440,7 @@ unsafe extern "C" fn performance_get_entries_by_type(raw_cx: *mut JSContext, arg
     let entry_type = match js_value_to_string_perf(raw_cx, *args.get(0)) {
         Some(s) => s,
         None => {
-            rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &HandleValueArray::empty()));
+            rooted!(in(raw_cx) let array = NewArrayObject(safe_cx, &HandleValueArray::empty()));
             args.rval().set(ObjectValue(array.get()));
             return true;
         }
@@ -452,7 +455,7 @@ unsafe extern "C" fn performance_get_entries_by_type(raw_cx: *mut JSContext, arg
     });
 
     // Create an array to return
-    rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &HandleValueArray::empty()));
+    rooted!(in(raw_cx) let array = NewArrayObject(safe_cx, &HandleValueArray::empty()));
     if array.get().is_null() {
         args.rval().set(UndefinedValue());
         return true;
@@ -468,9 +471,10 @@ unsafe extern "C" fn performance_get_entries_by_type(raw_cx: *mut JSContext, arg
 /// performance.getEntriesByName() implementation
 unsafe extern "C" fn performance_get_entries_by_name(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     if argc < 1 {
-        rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &HandleValueArray::empty()));
+        rooted!(in(raw_cx) let array = NewArrayObject(safe_cx, &HandleValueArray::empty()));
         args.rval().set(ObjectValue(array.get()));
         return true;
     }
@@ -478,7 +482,7 @@ unsafe extern "C" fn performance_get_entries_by_name(raw_cx: *mut JSContext, arg
     let name = match js_value_to_string_perf(raw_cx, *args.get(0)) {
         Some(s) => s,
         None => {
-            rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &HandleValueArray::empty()));
+            rooted!(in(raw_cx) let array = NewArrayObject(safe_cx, &HandleValueArray::empty()));
             args.rval().set(ObjectValue(array.get()));
             return true;
         }
@@ -493,7 +497,7 @@ unsafe extern "C" fn performance_get_entries_by_name(raw_cx: *mut JSContext, arg
     });
 
     // Create an array to return
-    rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &HandleValueArray::empty()));
+    rooted!(in(raw_cx) let array = NewArrayObject(safe_cx, &HandleValueArray::empty()));
     if array.get().is_null() {
         args.rval().set(UndefinedValue());
         return true;
@@ -509,9 +513,10 @@ unsafe extern "C" fn performance_get_entries_by_name(raw_cx: *mut JSContext, arg
 /// performance.getEntries() implementation
 unsafe extern "C" fn performance_get_entries(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
 
     // Create an array to return (returns empty array for now)
-    rooted!(in(raw_cx) let array = mozjs::jsapi::NewArrayObject(raw_cx, &HandleValueArray::empty()));
+    rooted!(in(raw_cx) let array = NewArrayObject(safe_cx, &HandleValueArray::empty()));
     if array.get().is_null() {
         args.rval().set(UndefinedValue());
         return true;

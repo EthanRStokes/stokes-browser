@@ -28,8 +28,7 @@ use crate::js::bindings::dom_bindings::DOM_REF;
 use crate::js::helpers::{define_function, get_node_id_from_value, js_value_to_string, set_bool_property, set_int_property, ToSafeCx};
 use crate::js::JsRuntime;
 use mozjs::jsapi::{
-    CallArgs, CurrentGlobalOrNull, HandleValueArray, JSContext, JSObject,
-    JS_CallFunctionValue, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject,
+    CallArgs, HandleValueArray, JSContext, JSObject,
     JSPROP_ENUMERATE, JSPROP_PERMANENT, JSPROP_READONLY,
 };
 use mozjs::context::JSContext as SafeJSContext;
@@ -42,7 +41,7 @@ use std::ffi::CString;
 use std::os::raw::c_uint;
 use std::time::{SystemTime, UNIX_EPOCH};
 use mozjs::realm::AutoRealm;
-use mozjs::rust::wrappers2::JS_ClearPendingException;
+use mozjs::rust::wrappers2::{CurrentGlobalOrNull, JS_CallFunctionValue, JS_ClearPendingException, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject};
 // ============================================================================
 // Thread-local state
 // ============================================================================
@@ -134,7 +133,7 @@ unsafe fn define_prop_with_flags(
     rooted!(in(raw_cx) let val_root = val);
     let cname = CString::new(name).unwrap();
     if !JS_DefineProperty(
-        raw_cx,
+        cx,
         parent_root.handle().into(),
         cname.as_ptr(),
         val_root.handle().into(),
@@ -147,7 +146,7 @@ unsafe fn define_prop_with_flags(
 }
 
 unsafe fn new_plain_object(cx: &mut SafeJSContext, name: &str) -> Result<*mut JSObject, String> {
-    let obj = JS_NewPlainObject(cx.raw_cx());
+    let obj = JS_NewPlainObject(cx);
     if obj.is_null() {
         Err(format!("Failed to create object for '{}'", name))
     } else {
@@ -166,7 +165,7 @@ unsafe fn setup_google(cx: &mut mozjs::context::JSContext, global: *mut JSObject
     rooted!(in(raw_cx) let mut existing = UndefinedValue());
     let google_cname = CString::new("google").unwrap();
     JS_GetProperty(
-        raw_cx,
+        cx,
         global_root.handle().into(),
         google_cname.as_ptr(),
         existing.handle_mut().into(),
@@ -191,7 +190,7 @@ unsafe fn setup_google(cx: &mut mozjs::context::JSContext, global: *mut JSObject
     // Only install if not already provided by a Google XJS bundle.
     rooted!(in(raw_cx) let mut cv_val = UndefinedValue());
     let cv_cname = CString::new("cv").unwrap();
-    JS_GetProperty(raw_cx, google.handle().into(), cv_cname.as_ptr(), cv_val.handle_mut().into());
+    JS_GetProperty(cx, google.handle().into(), cv_cname.as_ptr(), cv_val.handle_mut().into());
     if !cv_val.get().is_object() {
         define_function(cx, google.get(), "cv", Some(google_cv), 3)?;
     }
@@ -252,7 +251,7 @@ unsafe fn invoke_callback_with_global_this(cx: &mut SafeJSContext, callback_val:
     rooted!(in(raw_cx) let callback_obj = callback_val.to_object());
     let mut cx = AutoRealm::new_from_handle(cx, callback_obj.handle());
     let raw_cx = cx.raw_cx();
-    rooted!(in(raw_cx) let this = CurrentGlobalOrNull(raw_cx));
+    rooted!(in(raw_cx) let this = CurrentGlobalOrNull(&cx));
     if this.get().is_null() {
         return;
     }
@@ -262,7 +261,7 @@ unsafe fn invoke_callback_with_global_this(cx: &mut SafeJSContext, callback_val:
     rooted!(in(raw_cx) let zero_args = ValueArray::<0usize>::new([]));
 
     JS_CallFunctionValue(
-        raw_cx,
+        &mut cx,
         this.handle().into(),
         callable.handle().into(),
         &HandleValueArray::from(&zero_args),
