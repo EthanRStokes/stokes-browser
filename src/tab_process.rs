@@ -2,22 +2,34 @@ use crate::dom::{AbstractDom, Dom};
 use crate::engine::nav_provider::{NavigationProviderMessage, StokesNavigationProvider};
 // Tab process module - runs the browser engine in a separate process
 use crate::engine::{Engine, EngineConfig, ENGINE_REF, USER_AGENT_REF};
+use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
 use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage};
+use crate::shell_provider::{ShellProviderMessage, StokesShellProvider};
 use crate::{js, networking};
 use crate::renderer::painter::{ScenePainter, SkiaCache};
 use blitz_traits::shell::{ShellProvider, Viewport};
+use gl::types::GLint;
+use glutin::config::{Config, ConfigSurfaceTypes, ConfigTemplateBuilder, GlConfig};
+use glutin::context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext};
+use glutin::display::{Display as GlutinDisplay, DisplayApiPreference, GetGlDisplay, GlDisplay};
+use glutin::surface::{PbufferSurface, Surface as GlutinSurface, SurfaceAttributesBuilder};
+use raw_window_handle::{RawDisplayHandle, XlibDisplayHandle};
 use shared_memory::{Shmem, ShmemConf};
-use skia_safe::{AlphaType, ColorType, ImageInfo, Surface};
+use skia_safe::gpu::gl::{Format, FramebufferInfo, Interface};
+use skia_safe::gpu::surfaces::wrap_backend_render_target;
+use skia_safe::gpu::{backend_render_targets, DirectContext};
+use skia_safe::gpu::{self};
+use skia_safe::{ColorType, Surface};
+use std::ffi::CString;
 use std::io;
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use crate::shell_provider::{StokesShellProvider, ShellProviderMessage};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tracing::Level;
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::util::SubscriberInitExt;
-use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
@@ -37,10 +49,164 @@ pub struct TabProcess {
 /// Shared memory surface for efficient rendering data transfer
 struct SharedSurface {
     shmem: Shmem,
-    surface: Surface,
+    shmem_name: String,
+    renderer: HeadlessGlRenderer,
     width: u32,
     height: u32,
-    generation: u32,
+}
+
+struct HeadlessGlRenderer {
+    _gl_surface: GlutinSurface<PbufferSurface>,
+    _gl_context: PossiblyCurrentContext,
+    gr_context: DirectContext,
+    surface: Surface,
+    fb_info: FramebufferInfo,
+    readback: Vec<u8>,
+}
+
+impl HeadlessGlRenderer {
+    fn new(width: u32, height: u32) -> io::Result<Self> {
+        let width = width.max(1);
+        let height = height.max(1);
+        let display = create_headless_display()?;
+        let gl_config = pick_gl_config(&display, width, height)?;
+
+        let context_attributes = ContextAttributesBuilder::new().build(None);
+        let fallback_context_attributes =
+            ContextAttributesBuilder::new().with_context_api(ContextApi::Gles(None)).build(None);
+
+        let not_current_gl_context = unsafe {
+            display
+                .create_context(&gl_config, &context_attributes)
+                .or_else(|_| display.create_context(&gl_config, &fallback_context_attributes))
+                .map_err(io_other)?
+        };
+
+        let attrs = SurfaceAttributesBuilder::<PbufferSurface>::new().build(
+            NonZeroU32::new(width).ok_or_else(|| io::Error::other("Invalid pbuffer width"))?,
+            NonZeroU32::new(height).ok_or_else(|| io::Error::other("Invalid pbuffer height"))?,
+        );
+
+        let gl_surface = unsafe {
+            display
+                .create_pbuffer_surface(&gl_config, &attrs)
+                .map_err(io_other)?
+        };
+        let gl_context = not_current_gl_context
+            .make_current(&gl_surface)
+            .map_err(io_other)?;
+
+        gl::load_with(|symbol| {
+            gl_config
+                .display()
+                .get_proc_address(CString::new(symbol).unwrap().as_c_str())
+        });
+
+        let interface = Interface::new_load_with(|name| {
+            if name == "eglGetCurrentDisplay" {
+                return std::ptr::null();
+            }
+            gl_config
+                .display()
+                .get_proc_address(CString::new(name).unwrap().as_c_str())
+        })
+        .ok_or_else(|| io::Error::other("Could not create GL interface"))?;
+
+        let mut gr_context = gpu::direct_contexts::make_gl(interface, Some(&gpu::ContextOptions::default()))
+            .ok_or_else(|| io::Error::other("Failed to create Skia GL context"))?;
+
+        let mut fboid: GLint = 0;
+        unsafe { gl::GetIntegerv(gl::FRAMEBUFFER_BINDING, &mut fboid) };
+        let fb_info = FramebufferInfo {
+            fboid: fboid.try_into().map_err(io_other)?,
+            format: Format::RGBA8.into(),
+            ..Default::default()
+        };
+
+        let surface = create_skia_gl_surface(
+            width,
+            height,
+            fb_info,
+            &mut gr_context,
+            gl_config.num_samples() as usize,
+            gl_config.stencil_size() as usize,
+        )?;
+
+        Ok(Self {
+            _gl_surface: gl_surface,
+            _gl_context: gl_context,
+            gr_context,
+            surface,
+            fb_info,
+            readback: vec![0; (width * height * 4) as usize],
+        })
+    }
+}
+
+fn create_headless_display() -> io::Result<GlutinDisplay> {
+    let raw_display = RawDisplayHandle::Xlib(XlibDisplayHandle::new(None, 0));
+    unsafe { GlutinDisplay::new(raw_display, DisplayApiPreference::Egl).map_err(io_other) }
+}
+
+fn pick_gl_config(display: &GlutinDisplay, width: u32, height: u32) -> io::Result<Config> {
+    let pbuffer_width =
+        NonZeroU32::new(width.max(1)).ok_or_else(|| io::Error::other("Invalid pbuffer width"))?;
+    let pbuffer_height =
+        NonZeroU32::new(height.max(1)).ok_or_else(|| io::Error::other("Invalid pbuffer height"))?;
+
+    let template = ConfigTemplateBuilder::new()
+        .with_alpha_size(8)
+        .with_surface_type(ConfigSurfaceTypes::PBUFFER)
+        .with_pbuffer_sizes(pbuffer_width, pbuffer_height)
+        .build();
+
+    unsafe {
+        display
+            .find_configs(template)
+            .map_err(io_other)?
+            .reduce(|best, config| {
+                if config.num_samples() < best.num_samples() {
+                    config
+                } else {
+                    best
+                }
+            })
+            .ok_or_else(|| io::Error::other("No GL config available for headless renderer"))
+    }
+}
+
+fn create_skia_gl_surface(
+    width: u32,
+    height: u32,
+    fb_info: FramebufferInfo,
+    gr_context: &mut DirectContext,
+    num_samples: usize,
+    stencil_size: usize,
+) -> io::Result<Surface> {
+    let backend_render_target =
+        backend_render_targets::make_gl((width as i32, height as i32), num_samples, stencil_size, fb_info);
+    wrap_backend_render_target(
+        gr_context,
+        &backend_render_target,
+        gpu::SurfaceOrigin::BottomLeft,
+        ColorType::RGBA8888,
+        None,
+        None,
+    )
+    .ok_or_else(|| io::Error::other("Failed to wrap backend render target"))
+}
+
+fn io_other<E: std::fmt::Display>(error: E) -> io::Error {
+    io::Error::other(error.to_string())
+}
+
+fn copy_flipped_rgba(src: &[u8], dst: &mut [u8], width: u32, height: u32) {
+    let row_bytes = (width as usize) * 4;
+    for row in 0..(height as usize) {
+        let src_row = (height as usize - 1 - row) * row_bytes;
+        let dst_row = row * row_bytes;
+        dst[dst_row..dst_row + row_bytes].copy_from_slice(&src[src_row..src_row + row_bytes]);
+    }
 }
 
 impl TabProcess {
@@ -102,6 +268,9 @@ impl TabProcess {
 
     /// Initialize shared memory surface
     fn init_shared_surface(&mut self, width: u32, height: u32) -> io::Result<()> {
+        let width = width.max(1);
+        let height = height.max(1);
+
         // Drop the old shared memory surface first to avoid conflicts
         if let Some(old_surface) = self.shared_surface.take() {
             // Explicitly drop the old shmem to release the OS resource
@@ -120,25 +289,16 @@ impl TabProcess {
             .size(size)
             .os_id(&shmem_name)
             .create()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io_other)?;
 
-        // Create a reusable raster surface
-        let image_info = ImageInfo::new(
-            (width as i32, height as i32),
-            ColorType::RGBA8888,
-            AlphaType::Premul,
-            None,
-        );
-
-        let surface = skia_safe::surfaces::raster(&image_info, None, None)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to create surface"))?;
+        let renderer = HeadlessGlRenderer::new(width, height)?;
 
         self.shared_surface = Some(SharedSurface {
             shmem,
-            surface,
+            shmem_name,
+            renderer,
             width,
             height,
-            generation: self.surface_generation,
         });
 
         Ok(())
@@ -495,47 +655,54 @@ impl TabProcess {
     fn render_frame(&mut self) -> io::Result<()> {
         let animation_time = self.animation_time();
         if let Some(ref mut shared) = self.shared_surface {
-            let canvas = shared.surface.canvas();
+            {
+                let canvas = shared.renderer.surface.canvas();
 
-            // Clear the canvas to prevent old frames from showing through
-            canvas.restore_to_count(1);
-            canvas.clear(skia_safe::Color::WHITE);
+                // Clear the canvas to prevent old frames from showing through
+                canvas.restore_to_count(1);
+                canvas.clear(skia_safe::Color::WHITE);
 
-        let mut painter = ScenePainter {
-            inner: canvas,
-            cache: &mut self.scene_cache,
-        };
+                let mut painter = ScenePainter {
+                    inner: canvas,
+                    cache: &mut self.scene_cache,
+                };
 
-        let engine = &mut self.engine;
-        if engine.dom.is_some() {
-            engine.render(&mut painter, animation_time);
+                let engine = &mut self.engine;
+                if engine.dom.is_some() {
+                    engine.render(&mut painter, animation_time);
 
-            let dom = engine.dom.as_ref().unwrap();
-            // todo check if window is visible
-            if dom.animating() {
-                dom.shell_provider.request_redraw();
-            }
-        }
-
-            // Copy the pixel data to shared memory
-            if let Some(pixmap) = shared.surface.peek_pixels() {
-                if let Some(src) = pixmap.bytes() {
-                    let dst = unsafe { shared.shmem.as_slice_mut() };
-
-                    // Copy all pixel data at once
-                    dst.copy_from_slice(src);
-                } else {
-                    return Err(io::Error::new(io::ErrorKind::Other, "Failed to get pixel bytes"));
+                    let dom = engine.dom.as_ref().unwrap();
+                    // todo check if window is visible
+                    if dom.animating() {
+                        dom.shell_provider.request_redraw();
+                    }
                 }
-            } else {
-                return Err(io::Error::new(io::ErrorKind::Other, "Failed to peek pixels"));
             }
+
+            shared.renderer.gr_context.flush_submit_and_sync_cpu();
+
+            unsafe {
+                gl::BindFramebuffer(gl::FRAMEBUFFER, shared.renderer.fb_info.fboid);
+                gl::PixelStorei(gl::PACK_ALIGNMENT, 1);
+                gl::ReadPixels(
+                    0,
+                    0,
+                    shared.width as i32,
+                    shared.height as i32,
+                    gl::RGBA,
+                    gl::UNSIGNED_BYTE,
+                    shared.renderer.readback.as_mut_ptr() as *mut _,
+                );
+            }
+
+            let dst = unsafe { shared.shmem.as_slice_mut() };
+            copy_flipped_rgba(&shared.renderer.readback, dst, shared.width, shared.height);
 
             self.scene_cache.next_gen();
 
             // Notify parent that frame is ready
             self.channel.send(&TabToParentMessage::FrameRendered {
-                shmem_name: format!("stokes_tab_{}_{}_{}", self.tab_id, std::process::id(), shared.generation),
+                shmem_name: shared.shmem_name.clone(),
                 width: shared.width,
                 height: shared.height,
             })?;
