@@ -20,6 +20,7 @@ use crate::renderer::text::{draw_text_selection, stroke_text, SELECTION_COLOR};
 use crate::renderer::painter::ToColorColor;
 use anyrender::{CustomPaint, Paint, PaintScene};
 use color::{AlphaColor, Srgb};
+use euclid::Transform3D;
 use kurbo::{Affine, BezPath, Insets, Point, Rect, Stroke, Vec2};
 use markup5ever::local_name;
 use parley::PositionedLayoutItem;
@@ -393,8 +394,8 @@ impl HtmlRenderer<'_> {
 
         let scaled_padding_border = (padding + border).map(f64::from);
         let content_pos = Point {
-            x: position.x + scaled_padding_border.left,
-            y: position.y + scaled_padding_border.top,
+            x: scaled_padding_border.left,
+            y: scaled_padding_border.top,
         };
         let content_box_size = kurbo::Size {
             width: (size.width as f64 - scaled_padding_border.left - scaled_padding_border.right) * self.scale_factor,
@@ -438,8 +439,8 @@ impl HtmlRenderer<'_> {
                 };
                 maybe_with_layer(painter, should_clip, 1.0, element.transform, clip, |painter| {
                     let position = Point {
-                        x: position.x - node.scroll_offset.x,
-                        y: position.y - node.scroll_offset.y,
+                        x: content_pos.x - node.scroll_offset.x,
+                        y: content_pos.y - node.scroll_offset.y,
                     };
                     element.position = Point {
                         x: element.position.x - node.scroll_offset.x,
@@ -494,7 +495,62 @@ impl HtmlRenderer<'_> {
 
         let frame = create_css_rect(&style, &layout, scale);
 
-        let transform = Affine::translate(position.to_vec2() * scale);
+        let mut transform = Affine::translate(position.to_vec2() * scale);
+
+        // Reference box for resolve percentage transforms
+        let reference_box = euclid::Rect::new(
+            euclid::Point2D::new(CSSPixelLength::new(0.0), CSSPixelLength::new(0.0)),
+            euclid::Size2D::new(
+                CSSPixelLength::new((frame.border_box.width() / scale) as f32),
+                CSSPixelLength::new((frame.border_box.height() / scale) as f32),
+            ),
+        );
+
+        // Apply CSS transform property (where transforms are 2d)
+        //
+        // TODO: Handle hit testing correctly for transformed nodes
+        // TODO: Implement nested transforms
+        let (t, has_3d) = &style
+            .get_box()
+            .transform
+            .to_transform_3d_matrix(Some(&reference_box))
+            .unwrap_or((Transform3D::default(), false));
+        if !has_3d {
+            // See: https://drafts.csswg.org/css-transforms-2/#two-dimensional-subset
+            // And https://docs.rs/kurbo/latest/kurbo/struct.Affine.html#method.new
+            let kurbo_transform = Affine::new(
+                [
+                    t.m11,
+                    t.m12,
+                    t.m21,
+                    t.m22,
+                    // Scale the translation but not the scale or skew
+                    t.m41 * scale as f32,
+                    t.m42 * scale as f32,
+                ]
+                    .map(|v| v as f64),
+            );
+
+            // Apply the transform origin by:
+            //   - Translating by the origin offset
+            //   - Applying our transform
+            //   - Translating by the inverse of the origin offset
+            let transform_origin = &style.get_box().transform_origin;
+            let origin_translation = Affine::translate(Vec2 {
+                x: transform_origin
+                    .horizontal
+                    .resolve(CSSPixelLength::new(frame.border_box.width() as f32))
+                    .px() as f64,
+                y: transform_origin
+                    .vertical
+                    .resolve(CSSPixelLength::new(frame.border_box.height() as f32))
+                    .px() as f64,
+            });
+            let kurbo_transform =
+                origin_translation * kurbo_transform * origin_translation.inverse();
+
+            transform *= kurbo_transform;
+        }
 
         let element = node.element_data().unwrap();
 
@@ -652,7 +708,7 @@ impl Element<'_> {
             });
 
             let transform =
-                Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor));
+                Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor)) * self.transform;
 
             if let Some(&(start, end)) = self.context.selection_ranges.get(&self.node.id) {
                 draw_text_selection(
