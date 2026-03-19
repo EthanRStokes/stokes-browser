@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>TextEncoder Test</title>
+    <style>
+        body { font-family: sans-serif; margin: 24px; }
+        .ok { color: #157347; }
+        .fail { color: #b02a37; }
+        pre { background: #f6f8fa; padding: 12px; border-radius: 6px; }
+    </style>
+</head>
+<body>
+<h1>TextEncoder Test</h1>
+<div id="results"></div>
+<pre id="log"></pre>
+<script>
+    const results = document.getElementById('results');
+    const log = document.getElementById('log');
+
+    function write(msg) {
+        log.textContent += msg + '\n';
+        console.log(msg);
+    }
+
+    function test(name, fn) {
+        const item = document.createElement('div');
+        try {
+            fn();
+            item.className = 'ok';
+            item.textContent = 'PASS: ' + name;
+        } catch (err) {
+            item.className = 'fail';
+            item.textContent = 'FAIL: ' + name + ' -> ' + String(err);
+        }
+        results.appendChild(item);
+    }
+
+    function assertBytesEqual(actual, expected, label) {
+        if (!(actual instanceof Uint8Array)) {
+            throw new Error(label + ': expected Uint8Array result');
+        }
+        if (actual.length !== expected.length) {
+            throw new Error(label + ': length mismatch ' + actual.length + ' !== ' + expected.length);
+        }
+        for (let i = 0; i < expected.length; i += 1) {
+            if (actual[i] !== expected[i]) {
+                throw new Error(label + ': byte mismatch at ' + i + ' (' + actual[i] + ' !== ' + expected[i] + ')');
+            }
+        }
+    }
+
+    test('TextEncoder exists and is constructable', () => {
+        if (typeof TextEncoder !== 'function') {
+            throw new Error('TextEncoder is not a constructor');
+        }
+        const enc = new TextEncoder();
+        if (enc.encoding !== 'utf-8') {
+            throw new Error('encoding=' + enc.encoding);
+        }
+    });
+
+    test('encode handles ASCII and multibyte UTF-8', () => {
+        const enc = new TextEncoder();
+        assertBytesEqual(enc.encode('A'), [0x41], 'A');
+        assertBytesEqual(enc.encode('¢'), [0xC2, 0xA2], 'cent');
+        assertBytesEqual(enc.encode('😀'), [0xF0, 0x9F, 0x98, 0x80], 'grinning face');
+    });
+
+    test('encode replaces lone surrogates with U+FFFD', () => {
+        const enc = new TextEncoder();
+        assertBytesEqual(enc.encode('\uD800'), [0xEF, 0xBF, 0xBD], 'lone high surrogate');
+        assertBytesEqual(enc.encode('\uDC00'), [0xEF, 0xBF, 0xBD], 'lone low surrogate');
+    });
+
+    test('encodeInto writes full scalar values only', () => {
+        const enc = new TextEncoder();
+        const buf = new Uint8Array(5);
+        const res = enc.encodeInto('A😀B', buf);
+
+        if (res.read !== 3 || res.written !== 5) {
+            throw new Error('unexpected counters read=' + res.read + ' written=' + res.written);
+        }
+        assertBytesEqual(buf, [0x41, 0xF0, 0x9F, 0x98, 0x80], 'encodeInto result');
+    });
+
+    test('encodeInto does not split multibyte sequence', () => {
+        const enc = new TextEncoder();
+        const buf = new Uint8Array(3);
+        const res = enc.encodeInto('😀', buf);
+
+        if (res.read !== 0 || res.written !== 0) {
+            throw new Error('unexpected counters read=' + res.read + ' written=' + res.written);
+        }
+    });
+
+    test('encodeInto requires Uint8Array destination', () => {
+        const enc = new TextEncoder();
+        let threw = false;
+        try {
+            enc.encodeInto('x', new Uint16Array(4));
+        } catch (_err) {
+            threw = true;
+        }
+        if (!threw) {
+            throw new Error('expected TypeError for non-Uint8Array destination');
+        }
+    });
+
+    write('Finished TextEncoder checks.');
+</script>
+</body>
+</html>
+

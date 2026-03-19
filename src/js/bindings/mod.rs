@@ -21,6 +21,7 @@ pub mod event_listeners;
 pub mod fetch;
 pub mod google;
 pub mod performance;
+pub mod text_encoding;
 pub mod url;
 pub mod xhr;
 
@@ -49,6 +50,9 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
 
     // Set up CSS namespace object (CSS.supports, CSS.escape, CSS Typed OM, etc.)
     css::setup_css(runtime)?;
+
+    // Set up TextEncoder (UTF-8 encoding support)
+    text_encoding::setup_text_encoder(runtime)?;
 
     // Set up DOM bindings
     dom_bindings::setup_dom_bindings(runtime, document_root, user_agent)?;
