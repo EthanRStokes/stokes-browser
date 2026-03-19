@@ -8,6 +8,7 @@ use html5ever::local_name;
 use markup5ever::{ns, QualName};
 use parley::{FontContext, FontWeight, GenericFamily, InlineBox, InlineBoxKind, LayoutContext, LineHeight, StyleProperty, TextStyle, TreeBuilder, WhiteSpaceCollapse};
 use slab::Slab;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::sync::Arc;
 use blitz_traits::net::{NetProvider, Request};
@@ -18,6 +19,7 @@ use style::servo::url::ComputedUrl;
 use style::shared_lock::StylesheetGuards;
 use style::values::computed::{Content, ContentItem, Display, Float, Image, PositionProperty};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
+use style_traits::ToCss;
 use taffy::{compute_root_layout, round_layout, AvailableSpace, NodeId};
 use crate::layout::list::collect_list_item_children;
 
@@ -807,6 +809,62 @@ fn resolve_line_height(line_height: parley::LineHeight, font_size: f32) -> f32 {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum TextTransformMode {
+    #[default]
+    None,
+    Uppercase,
+    Lowercase,
+    Capitalize,
+}
+
+fn parse_text_transform(css_value: &str) -> Option<TextTransformMode> {
+    for token in css_value.split_ascii_whitespace() {
+        match token {
+            "none" => return Some(TextTransformMode::None),
+            "uppercase" => return Some(TextTransformMode::Uppercase),
+            "lowercase" => return Some(TextTransformMode::Lowercase),
+            "capitalize" => return Some(TextTransformMode::Capitalize),
+            _ => continue,
+        }
+    }
+
+    None
+}
+
+fn inherited_text_transform(style: &style::properties::ComputedValues) -> TextTransformMode {
+    let css_value = style.get_inherited_text().text_transform.to_css_string();
+    parse_text_transform(&css_value).unwrap_or(TextTransformMode::None)
+}
+
+fn transformed_text<'a>(text: &'a str, mode: TextTransformMode) -> Cow<'a, str> {
+    match mode {
+        TextTransformMode::None => Cow::Borrowed(text),
+        TextTransformMode::Uppercase => Cow::Owned(text.chars().flat_map(char::to_uppercase).collect()),
+        TextTransformMode::Lowercase => Cow::Owned(text.chars().flat_map(char::to_lowercase).collect()),
+        TextTransformMode::Capitalize => {
+            let mut out = String::with_capacity(text.len());
+            let mut at_word_start = true;
+
+            for ch in text.chars() {
+                if at_word_start && ch.is_alphabetic() {
+                    out.extend(ch.to_uppercase());
+                    at_word_start = false;
+                } else {
+                    out.push(ch);
+                    if ch.is_alphanumeric() {
+                        at_word_start = false;
+                    } else {
+                        at_word_start = true;
+                    }
+                }
+            }
+
+            Cow::Owned(out)
+        }
+    }
+}
+
 /// Build the inline layout for a node that is an inline root.
 /// This traverses the inline children and builds the parley layout with proper text and styles.
 pub(crate) fn build_inline_layout(
@@ -831,6 +889,10 @@ pub(crate) fn build_inline_layout(
         .unwrap_or_default();
 
     let root_line_height = resolve_line_height(parley_style.line_height, parley_style.font_size);
+    let root_text_transform = root_node_style
+        .as_ref()
+        .map(|s| inherited_text_transform(s))
+        .unwrap_or_default();
 
     // Create a parley tree builder
     let mut builder = layout_ctx.tree_builder(font_ctx, scale, true, &parley_style);
@@ -847,8 +909,15 @@ pub(crate) fn build_inline_layout(
         position: ListItemLayoutPosition::Inside,
     }) = root_node.element_data().and_then(|el| el.list_item_data.as_deref()) {
         match marker {
-            Marker::Char(char) => builder.push_text(&format!("{char} ")),
-            Marker::String(str) => builder.push_text(str),
+            Marker::Char(char) => {
+                let text = format!("{char} ");
+                let marker_text = transformed_text(&text, root_text_transform);
+                builder.push_text(marker_text.as_ref());
+            }
+            Marker::String(str) => {
+                let marker_text = transformed_text(str, root_text_transform);
+                builder.push_text(marker_text.as_ref());
+            }
         }
     }
 
@@ -860,6 +929,7 @@ pub(crate) fn build_inline_layout(
             before_id,
             collapse_mode,
             root_line_height,
+            root_text_transform,
         );
     }
     for child_id in root_node.children.iter().copied() {
@@ -870,6 +940,7 @@ pub(crate) fn build_inline_layout(
             child_id,
             collapse_mode,
             root_line_height,
+            root_text_transform,
         );
     }
     if let Some(shadow_root_id) = root_node.shadow_root {
@@ -880,6 +951,7 @@ pub(crate) fn build_inline_layout(
             shadow_root_id,
             collapse_mode,
             root_line_height,
+            root_text_transform,
         );
     }
     if let Some(after_id) = root_node.after {
@@ -890,6 +962,7 @@ pub(crate) fn build_inline_layout(
             after_id,
             collapse_mode,
             root_line_height,
+            root_text_transform,
         );
     }
 
@@ -903,6 +976,7 @@ pub(crate) fn build_inline_layout(
         node_id: usize,
         collapse_mode: WhiteSpaceCollapse,
         root_line_height: f32,
+        inherited_transform: TextTransformMode,
     ) {
         let node = &nodes[node_id];
 
@@ -911,6 +985,9 @@ pub(crate) fn build_inline_layout(
 
         let style = node.primary_styles();
         let style = style.as_ref();
+        let text_transform = style
+            .map(|s| inherited_text_transform(s))
+            .unwrap_or(inherited_transform);
 
         // Set whitespace collapsing mode
         let collapse_mode = style
@@ -955,6 +1032,7 @@ pub(crate) fn build_inline_layout(
                                 child_id,
                                 collapse_mode,
                                 root_line_height,
+                                text_transform,
                             );
                         }
                         if let Some(shadow_root_id) = node.shadow_root {
@@ -965,6 +1043,7 @@ pub(crate) fn build_inline_layout(
                                 shadow_root_id,
                                 collapse_mode,
                                 root_line_height,
+                                text_transform,
                             );
                         }
                     }
@@ -1025,6 +1104,7 @@ pub(crate) fn build_inline_layout(
                                     before_id,
                                     collapse_mode,
                                     root_line_height,
+                                    text_transform,
                                 );
                             }
 
@@ -1036,6 +1116,7 @@ pub(crate) fn build_inline_layout(
                                     child_id,
                                     collapse_mode,
                                     root_line_height,
+                                    text_transform,
                                 );
                             }
                             if let Some(after_id) = node.after {
@@ -1046,6 +1127,7 @@ pub(crate) fn build_inline_layout(
                                     after_id,
                                     collapse_mode,
                                     root_line_height,
+                                    text_transform,
                                 );
                             }
 
@@ -1075,13 +1157,15 @@ pub(crate) fn build_inline_layout(
                         child_id,
                         collapse_mode,
                         root_line_height,
+                        text_transform,
                     );
                 }
             }
             NodeData::Text(text) => {
                 // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
                 // dbg!(&data.content);
-                builder.push_text(&text.content);
+                let text = transformed_text(&text.content, text_transform);
+                builder.push_text(text.as_ref());
             }
             NodeData::Comment => {
                 // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
@@ -1089,6 +1173,32 @@ pub(crate) fn build_inline_layout(
             NodeData::Doctype { .. } => {},
             NodeData::Document => unreachable!(),
         }
+    }
+}
+
+#[cfg(test)]
+mod text_transform_tests {
+    use super::{parse_text_transform, transformed_text, TextTransformMode};
+
+    #[test]
+    fn text_transform_parsing_prefers_supported_keyword() {
+        assert_eq!(parse_text_transform("uppercase"), Some(TextTransformMode::Uppercase));
+        assert_eq!(
+            parse_text_transform("full-width lowercase"),
+            Some(TextTransformMode::Lowercase)
+        );
+        assert_eq!(parse_text_transform("full-width"), None);
+    }
+
+    #[test]
+    fn text_transform_modes_apply_expected_changes() {
+        assert_eq!(transformed_text("Hello world", TextTransformMode::None), "Hello world");
+        assert_eq!(transformed_text("Hello world", TextTransformMode::Uppercase), "HELLO WORLD");
+        assert_eq!(transformed_text("Hello world", TextTransformMode::Lowercase), "hello world");
+        assert_eq!(
+            transformed_text("hello, world! 42times", TextTransformMode::Capitalize),
+            "Hello, World! 42times"
+        );
     }
 }
 
