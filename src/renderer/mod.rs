@@ -7,6 +7,7 @@ mod layers;
 mod shadow;
 mod gradient;
 mod sizing;
+mod svg;
 pub mod painter;
 mod form;
 
@@ -33,8 +34,6 @@ use style::properties::ComputedValues;
 use style::servo_arc::Arc;
 use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, OutlineStyle, Overflow};
 use style::values::generics::color::{GenericColor, GenericColorOrAuto};
-use style::values::generics::image::GenericImage;
-use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use taffy::Layout;
 use painter::ScenePainter;
 use crate::renderer::background::{to_image_quality, to_peniko_image};
@@ -46,6 +45,8 @@ pub struct HtmlRenderer<'dom> {
     pub(crate) scale_factor: f64,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    pub(crate) initial_x: f64,
+    pub(crate) initial_y: f64,
     pub(crate) selection_ranges: HashMap<usize, (usize, usize)>,
     /// Debug: Show hitboxes for all elements
     pub(crate) debug_hitboxes: bool,
@@ -66,7 +67,7 @@ impl HtmlRenderer<'_> {
     pub fn render(
         &mut self,
         painter: &mut ScenePainter,
-        node: &DomNode,
+        _node: &DomNode,
     ) {
         reset_layer_stats();
 
@@ -106,7 +107,10 @@ impl HtmlRenderer<'_> {
 
         if let Some(bg_color) = background_color {
             let bg_color = bg_color.as_color_color();
-            let rect = Rect::from_origin_size((0.0, 0.0), (bg_width as f64, bg_height as f64));
+            let rect = Rect::from_origin_size(
+                (self.initial_x * self.scale_factor, self.initial_y * self.scale_factor),
+                (bg_width as f64, bg_height as f64),
+            );
             painter.fill(Fill::NonZero, Affine::IDENTITY, bg_color, None, &rect);
         }
 
@@ -114,8 +118,8 @@ impl HtmlRenderer<'_> {
             painter,
             root_id,
             Point {
-                x: -scroll.x,
-                y: -scroll.y,
+                x: self.initial_x - scroll.x,
+                y: self.initial_y - scroll.y,
             },
         );
 
@@ -402,7 +406,7 @@ impl HtmlRenderer<'_> {
             height: (size.height as f64 - scaled_padding_border.top - scaled_padding_border.bottom) * self.scale_factor,
         };
 
-        let scaled_y = position.y * self.scale_factor;
+        let scaled_y = (position.y - self.initial_y) * self.scale_factor;
         let scaled_content_height = content_size.height.max(size.height) as f64 * self.scale_factor;
         if scaled_y > self.height as f64 || scaled_y + scaled_content_height < 0.0 {
             return; // Skip rendering boxes outside viewport
@@ -624,7 +628,17 @@ struct Element<'a> {
     list_item: Option<&'a ListItemLayout>,
 }
 
+/// Converts parley BoundingBox into peniko Rect
+fn convert_rect(rect: &parley::BoundingBox) -> kurbo::Rect {
+    peniko::kurbo::Rect::new(rect.x0, rect.y0, rect.x1, rect.y1)
+}
+
 impl Element<'_> {
+    fn stroke_devtools(&self, _painter: &mut ScenePainter) {
+        // This is a placeholder for devtools visualization
+        // The actual devtools functionality can be implemented later
+    }
+
     fn draw_children(&self, painter: &mut ScenePainter) {
         // Negative z_index hoisted nodes
         if let Some(hoisted) = &self.node.stacking_context {
@@ -689,7 +703,7 @@ impl Element<'_> {
             };
 
             let transform =
-                Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor));
+                Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor)) * self.transform;
 
             stroke_text(
                 painter,
@@ -738,25 +752,25 @@ impl Element<'_> {
                 y: pos.y + y_offset,
             };
 
-            let transform = Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor));
+            let transform = Affine::translate((pos.x * self.scale_factor, pos.y * self.scale_factor)) * self.transform;
 
             if self.node.is_focused() {
                 // Render selection/caret
-                for (rect, |line_idx) in input_data.editor.selection_geometry().iter() {
+                for (rect, _line_idx) in input_data.editor.selection_geometry().iter() {
                     painter.fill(
                         Fill::NonZero,
                         transform,
                         SELECTION_COLOR,
                         None,
-                        &Rect::new(rect.x0, rect.y0, rect.x1, rect.y1),
-                    )
+                        &convert_rect(rect),
+                    );
                 }
 
                 if let Some(cursor) = input_data.editor.cursor_geometry(1.5) {
                     let color = self.style.get_inherited_text().color;
                     let caret_color = match &self.style.get_inherited_ui().caret_color.0 {
-                        GenericColorOrAuto::Color(caret_color) => caret_color.resolve_to_absolute(&color),
                         GenericColorOrAuto::Auto => color,
+                        GenericColorOrAuto::Color(caret_color) => caret_color.resolve_to_absolute(&color),
                     };
 
                     painter.fill(
@@ -764,7 +778,7 @@ impl Element<'_> {
                         transform,
                         caret_color.as_color_color(),
                         None,
-                        &Rect::new(cursor.x0, cursor.y0, cursor.x1, cursor.y1),
+                        &convert_rect(&cursor),
                     );
                 }
             }
@@ -861,10 +875,14 @@ impl Element<'_> {
             BorderStyle::None | BorderStyle::Hidden => return,
             BorderStyle::Solid => self.frame.outline(),
 
-            _ => {
-                // TODO For other styles, just draw solid for now
-                self.frame.outline()
-            }
+            // TODO: Implement other border styles
+            BorderStyle::Inset
+            | BorderStyle::Groove
+            | BorderStyle::Outset
+            | BorderStyle::Ridge
+            | BorderStyle::Dotted
+            | BorderStyle::Dashed
+            | BorderStyle::Double => self.frame.outline(),
         };
 
         painter.fill(Fill::NonZero, self.transform, color, None, &path)
@@ -960,8 +978,6 @@ impl Element<'_> {
     }
 
     fn draw_svg(&self, scene: &mut impl PaintScene) {
-        use style::properties::generated::longhands::object_fit::computed_value::T as ObjectFit;
-
         let Some(svg) = self.svg else {
             return;
         };
@@ -973,7 +989,7 @@ impl Element<'_> {
         let x = self.frame.content_box.origin().x;
         let y = self.frame.content_box.origin().y;
 
-        // let object_fit = self.style.clone_object_fit();
+        let object_fit = self.style.clone_object_fit();
         let object_position = self.style.clone_object_position();
 
         // Apply object-fit algorithm
@@ -985,7 +1001,7 @@ impl Element<'_> {
             width: svg_size.width(),
             height: svg_size.height(),
         };
-        let paint_size = compute_object_fit(container_size, Some(object_size), ObjectFit::Contain);
+        let paint_size = compute_object_fit(container_size, Some(object_size), object_fit);
 
         // Compute object-position
         let x_offset = object_position.horizontal.resolve(
@@ -1002,10 +1018,10 @@ impl Element<'_> {
 
         let transform = self
             .transform
-            .pre_scale_non_uniform(x_scale, y_scale)
-            .then_translate(Vec2 { x, y });
+            .pre_translate(Vec2 { x, y })
+            .pre_scale_non_uniform(x_scale, y_scale);
 
-        anyrender_svg::render_svg_tree(scene, svg, transform);
+        svg::render_svg_tree(scene, svg, transform);
     }
 
     fn draw_image(&self, painter: &mut ScenePainter) {

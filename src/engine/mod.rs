@@ -250,10 +250,12 @@ impl Engine {
             .collect();
 
         let mut renderer = HtmlRenderer {
-            dom: &dom,
+            dom,
             scale_factor: self.viewport.scale_f64(),
             width: self.viewport_width() as u32,
             height: self.viewport_height() as u32,
+            initial_x: 0.0,
+            initial_y: 0.0,
             selection_ranges: selection,
             debug_hitboxes: self.config.debug_hitboxes,
         };

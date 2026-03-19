@@ -536,6 +536,14 @@ fn collect_complex_layout_children(
                 stylo_element_data.styles.primary = Some(style);
                 stylo_element_data.set_restyled();
                 *doc.nodes[node_id].stylo_data.borrow_mut() = Some(stylo_element_data);
+                if doc.nodes[container_node_id]
+                    .flags
+                    .contains(DomNodeFlags::IS_IN_DOCUMENT)
+                {
+                    doc.nodes[node_id]
+                        .flags
+                        .insert(DomNodeFlags::IS_IN_DOCUMENT);
+                }
                 doc.nodes[node_id].parent = Some(container_node_id);
                 doc.nodes[node_id]
                     .layout_parent
@@ -642,19 +650,19 @@ pub(crate) fn find_inline_layout_embedded_boxes(
             layout_children,
         );
     }
-    if let Some(after_id) = root_node.after {
-        find_inline_layout_embedded_boxes_recursive(
-            &doc.nodes,
-            inline_context_root_node_id,
-            after_id,
-            layout_children,
-        );
-    }
     if let Some(shadow_root_id) = root_node.shadow_root {
         find_inline_layout_embedded_boxes_recursive(
             &doc.nodes,
             inline_context_root_node_id,
             shadow_root_id,
+            layout_children,
+        );
+    }
+    if let Some(after_id) = root_node.after {
+        find_inline_layout_embedded_boxes_recursive(
+            &doc.nodes,
+            inline_context_root_node_id,
+            after_id,
             layout_children,
         );
     }

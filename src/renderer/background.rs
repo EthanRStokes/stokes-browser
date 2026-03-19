@@ -186,7 +186,7 @@ impl Element<'_> {
         ))
             .pre_scale_non_uniform(x_ratio, y_ratio);
 
-        anyrender_svg::render_svg_tree(scene, svg.as_ref(), transform);
+        crate::renderer::svg::render_svg_tree(scene, svg.as_ref(), transform);
     }
 
     fn draw_raster_bg_image(&self, scene: &mut impl PaintScene, idx: usize) {

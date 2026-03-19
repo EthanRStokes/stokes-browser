@@ -82,36 +82,33 @@ pub fn replaced_measure_function(
     let max_size = style
         .max_size
         .maybe_resolve(basis_for_max_and_preferred, resolve_calc_value)
+        .or(available_space.into_options())
+        .maybe_min(available_space.into_options())
         .maybe_max(min_size)
         .maybe_sub(box_sizing_adjustment);
     let attr_size = image_context.attr_size;
 
     let unclamped_size = 'size: {
         if known_dimensions.width.is_some() | known_dimensions.height.is_some() {
-            break 'size known_dimensions
+            let content_box_known_dimensions = known_dimensions.maybe_sub(pb_sum);
+            break 'size content_box_known_dimensions
                 .maybe_apply_aspect_ratio(Some(aspect_ratio))
                 .map(|s| s.unwrap());
         }
 
         if style_size.width.is_some() | style_size.height.is_some() {
             break 'size style_size
-                // .maybe_clamp(min_size, max_size)
                 .maybe_apply_aspect_ratio(Some(aspect_ratio))
                 .map(|s| s.unwrap());
         }
 
         if attr_size.width.is_some() | attr_size.height.is_some() {
             break 'size attr_size
-                // .maybe_clamp(min_size, max_size)
                 .maybe_apply_aspect_ratio(Some(aspect_ratio))
                 .map(|s| s.unwrap());
         }
 
         inherent_size
-            // .maybe_clamp(min_size, max_size)
-            .map(Some)
-            .maybe_apply_aspect_ratio(Some(aspect_ratio))
-            .map(|s| s.unwrap())
     };
 
     // Floor size at zero
