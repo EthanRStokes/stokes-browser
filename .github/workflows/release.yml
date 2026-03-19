@@ -27,7 +27,8 @@ jobs:
             libwayland-dev \
             libegl1-mesa-dev \
             libgl1-mesa-dev \
-            libfontconfig1-dev
+            libfontconfig1-dev \
+            libdbus-1-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -84,6 +85,7 @@ jobs:
             libegl1-mesa-dev \
             libgl1-mesa-dev \
             libfontconfig1-dev \
+            libdbus-1-dev \
             cargo-binutils \
             librust-cargo-binutils-dev
 
