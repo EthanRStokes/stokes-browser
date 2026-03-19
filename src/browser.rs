@@ -595,7 +595,7 @@ impl ApplicationHandler for BrowserApp {
         if let Some(url) = self.startup_url.clone() {
             self.add_tab_with_url(Some(&url));
         } else {
-            self.add_tab();
+            self.add_tab_with_url(Some("https://html.duckduckgo.com"));
         }
         self.startup_url = None;
     }
