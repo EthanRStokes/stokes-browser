@@ -29,9 +29,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
-use tracing::Level;
+use tracing::trace;
 use tracing::metadata::LevelFilter;
-use tracing_subscriber::util::SubscriberInitExt;
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
@@ -201,8 +200,8 @@ impl HeadlessGlRenderer {
         }
 
         // Emit periodic telemetry so we can confirm whether async is actually active.
-        if self.readback_stats.total_frames % 120 == 0 {
-            eprintln!(
+        if self.readback_stats.total_frames.is_multiple_of(120) {
+            trace!(
                 "[readback] frames={} async={} sync_fallback={}",
                 self.readback_stats.total_frames,
                 self.readback_stats.async_frames,
