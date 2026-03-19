@@ -20,6 +20,7 @@ pub enum InputAction {
     ReloadPage,
     GoBack,
     GoForward,
+    GoHome,
     ForwardToTab(KeyboardInput),
     OpenSettings,
     SetDefaultBrowser,
@@ -89,6 +90,9 @@ pub fn handle_mouse_click_ui(
         } else if component_id == "refresh" {
             println!("Refresh button clicked");
             return InputAction::ReloadPage;
+        } else if component_id == "home" {
+            println!("Home button clicked");
+            return InputAction::GoHome;
         } else if component_id == "new_tab" {
             println!("New tab button clicked");
             return InputAction::AddTab;

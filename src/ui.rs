@@ -98,6 +98,7 @@ pub enum IconType {
     Back,
     Forward,
     Refresh,
+    Home,
     NewTab,
     Close,
     Settings,
@@ -243,6 +244,7 @@ pub struct BrowserUI {
     pub back_svg: Tree,
     pub forward_svg: Tree,
     pub reload_svg: Tree,
+    pub home_svg: Tree,
     pub new_tab_svg: Tree,
     pub close_tab_svg: Tree,
     pub settings_svg: Tree,
@@ -273,9 +275,10 @@ impl BrowserUI {
                 UiComponent::navigation_button("back", "<", scaled(Self::BUTTON_MARGIN), IconType::Back, "Back", scale_factor),
                 UiComponent::navigation_button("forward", ">", scaled(Self::BUTTON_MARGIN * 2.0 + Self::BUTTON_SIZE), IconType::Forward, "Forward", scale_factor),
                 UiComponent::navigation_button("refresh", "⟳", scaled(Self::BUTTON_MARGIN * 3.0 + Self::BUTTON_SIZE * 2.0), IconType::Refresh, "Refresh", scale_factor),
+                UiComponent::navigation_button("home", "H", scaled(Self::BUTTON_MARGIN * 4.0 + Self::BUTTON_SIZE * 3.0), IconType::Home, "Home", scale_factor),
                 UiComponent::address_bar("",
-                    scaled(Self::BUTTON_MARGIN * 4.0 + Self::BUTTON_SIZE * 3.0),
-                    window_width - scaled(Self::BUTTON_MARGIN * 6.0 + Self::BUTTON_SIZE * 4.0), scale_factor),
+                    scaled(Self::BUTTON_MARGIN * 5.0 + Self::BUTTON_SIZE * 4.0),
+                    window_width - scaled(Self::BUTTON_MARGIN * 7.0 + Self::BUTTON_SIZE * 5.0), scale_factor),
                 // Settings button - positioned to the right of the address bar
                 UiComponent::Button {
                     id: "settings".to_string(),
@@ -317,6 +320,7 @@ impl BrowserUI {
             back_svg: load_svg(include_str!("../assets/left_arrow.svg")).unwrap(),
             forward_svg: load_svg(include_str!("../assets/right_arrow.svg")).unwrap(),
             reload_svg: load_svg(include_str!("../assets/reload.svg")).unwrap(),
+            home_svg: load_svg(include_str!("../assets/home.svg")).unwrap(),
             new_tab_svg: load_svg(include_str!("../assets/plus.svg")).unwrap(),
             close_tab_svg: load_svg(include_str!("../assets/close.svg")).unwrap(),
             settings_svg: load_svg(include_str!("../assets/settings.svg")).unwrap(),
@@ -334,7 +338,7 @@ impl BrowserUI {
         for comp in &mut self.components {
             match comp {
                 UiComponent::TextField { id, width, is_flexible: true, .. } if id == "address_bar" => {
-                    let available_width = window_width - scaled(Self::BUTTON_MARGIN * 6.0 + Self::BUTTON_SIZE * 4.0);
+                    let available_width = window_width - scaled(Self::BUTTON_MARGIN * 7.0 + Self::BUTTON_SIZE * 5.0);
                     *width = available_width.max(scaled(Self::MIN_ADDRESS_BAR_WIDTH));
                 }
                 UiComponent::Button { id, x, .. } if id == "settings" => {
@@ -1789,6 +1793,9 @@ impl BrowserUI {
             }
             IconType::Refresh => {
                 Self::render_svg(painter, &self.reload_svg, rect, icon_color, hidpi_scale);
+            }
+            IconType::Home => {
+                Self::render_svg(painter, &self.home_svg, rect, icon_color, hidpi_scale);
             }
             IconType::NewTab => {
                 Self::render_svg(painter, &self.new_tab_svg, rect, icon_color, hidpi_scale);

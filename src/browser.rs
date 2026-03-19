@@ -33,6 +33,8 @@ enum TabCloseResult {
     NoAction,
 }
 
+const DEFAULT_HOMEPAGE: &str = "https://html.duckduckgo.com";
+
 /// The main browser application (parent process)
 pub(crate) struct BrowserApp {
     env: Option<Env>,
@@ -317,6 +319,9 @@ impl BrowserApp {
                     let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::GoForward);
                 }
             }
+            input::InputAction::GoHome => {
+                self.navigate_to_url(DEFAULT_HOMEPAGE);
+            }
             input::InputAction::OpenSettings => {
                 self.ui.as_mut().unwrap().toggle_settings();
             }
@@ -595,7 +600,7 @@ impl ApplicationHandler for BrowserApp {
         if let Some(url) = self.startup_url.clone() {
             self.add_tab_with_url(Some(&url));
         } else {
-            self.add_tab_with_url(Some("https://html.duckduckgo.com"));
+            self.add_tab_with_url(Some(DEFAULT_HOMEPAGE));
         }
         self.startup_url = None;
     }
