@@ -5,7 +5,7 @@ use crate::engine::js_provider::ScriptKind;
 use crate::engine::script_type::executable_script_kind;
 use crate::js::bindings::dom_bindings::DOM_REF;
 use crate::js::helpers::{create_empty_array, create_js_string, define_function, define_property_accessor, get_node_id_from_this, get_node_id_from_value, js_value_to_string, set_int_property, set_string_property, to_css_property_name, ToSafeCx};
-use crate::js::selectors::matches_selector;
+use crate::js::selectors::{matches_parsed_selector, parse_selector};
 use html5ever::ns;
 use html5ever::local_name;
 use markup5ever::QualName;
@@ -16,6 +16,24 @@ use mozjs::jsval::{BooleanValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::ValueArray;
 use std::os::raw::c_uint;
+use tracing::trace;
+
+fn simple_id_selector(selector: &str) -> Option<&str> {
+    let trimmed = selector.trim();
+    let id = trimmed.strip_prefix('#')?;
+    if id.is_empty() {
+        return None;
+    }
+
+    if id
+        .chars()
+        .any(|c| matches!(c, '.' | '#' | '[' | ']' | ' ' | '\t' | '\n' | '\r' | '>' | '+' | '~' | ',' | ':'))
+    {
+        return None;
+    }
+
+    Some(id)
+}
 
 unsafe fn maybe_patch_mutation_observer_node(cx: &mut SafeJSContext, node_obj: *mut JSObject) {
     let raw_cx = cx.raw_cx();
@@ -85,6 +103,15 @@ pub unsafe fn create_js_element_by_id(
     create_js_element_impl(cx, node_id, tag_name, attributes, true, true)
 }
 
+/// Create a JS element wrapper from a DOM node id without requiring caller-side
+/// tag/attribute extraction and cloning.
+pub unsafe fn create_js_element_by_dom_id(
+    cx: &mut mozjs::context::JSContext,
+    node_id: usize,
+) -> Result<JSVal, String> {
+    create_js_element_impl(cx, node_id, "", &AttributeMap::empty(), true, true)
+}
+
 /// Internal element wrapper builder.
 /// `with_parent` controls whether lazy parent lookup is enabled for this wrapper.
 /// When false, `parentNode`/`parentElement` resolve to null.
@@ -94,7 +121,7 @@ unsafe fn create_js_element_impl(
     tag_name: &str,
     attributes: &AttributeMap,
     with_parent: bool,
-    with_tree_relations: bool,
+    _with_tree_relations: bool,
 ) -> Result<JSVal, String> {
     let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let element = JS_NewPlainObject(cx));
@@ -326,7 +353,7 @@ unsafe fn create_js_element_impl(
     define_property_accessor(cx, element.get(), "type", "__getType", "__setType")?;
     define_property_accessor(cx, element.get(), "async", "__getAsync", "__setAsync")?;
 
-    if tag_name.eq_ignore_ascii_case("form") {
+    if resolved_local_name.eq_ignore_ascii_case("form") {
         setup_form_element_bindings(cx, element.get())?;
     }
 
@@ -398,13 +425,33 @@ unsafe fn create_js_element_impl(
     // Create dataset object populated with data-* attributes
     rooted!(in(raw_cx) let dataset = JS_NewPlainObject(cx));
     if !dataset.get().is_null() {
-        for attr in attributes.iter() {
-            let attr_name = attr.name.local.as_ref();
-            if let Some(data_key) = attr_name.strip_prefix("data-") {
-                let camel_key = hyphen_to_camel_case(data_key);
-                let _ = set_string_property(cx, dataset.get(), &camel_key, attr.value.as_ref());
+        let mut populate_dataset = |attrs: &AttributeMap| {
+            for attr in attrs.iter() {
+                let attr_name = attr.name.local.as_ref();
+                if let Some(data_key) = attr_name.strip_prefix("data-") {
+                    let camel_key = hyphen_to_camel_case(data_key);
+                    let _ = set_string_property(cx, dataset.get(), &camel_key, attr.value.as_ref());
+                }
             }
+        };
+
+        let populated_from_dom = DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &*dom_ptr;
+                if let Some(node) = dom.get_node(node_id) {
+                    if let NodeData::Element(ref elem_data) = node.data {
+                        populate_dataset(&elem_data.attributes);
+                        return true;
+                    }
+                }
+            }
+            false
+        });
+
+        if !populated_from_dom {
+            populate_dataset(attributes);
         }
+
         rooted!(in(raw_cx) let dataset_val = ObjectValue(dataset.get()));
         let cname = std::ffi::CString::new("dataset").unwrap();
         JS_DefineProperty(
@@ -554,7 +601,7 @@ unsafe fn create_js_comment_node_by_id(cx: &mut SafeJSContext, node_id: usize) -
 
 unsafe fn create_js_node_wrapper_by_id(cx: &mut SafeJSContext, node_id: usize) -> Option<JSVal> {
     enum NodeWrapperSeed {
-        Element(String, AttributeMap),
+        Element,
         Text(String),
         Comment,
     }
@@ -564,10 +611,7 @@ unsafe fn create_js_node_wrapper_by_id(cx: &mut SafeJSContext, node_id: usize) -
             let dom = &*dom_ptr;
             if let Some(node) = dom.get_node(node_id) {
                 return match &node.data {
-                    NodeData::Element(elem_data) => Some(NodeWrapperSeed::Element(
-                        elem_data.name.local.to_string(),
-                        elem_data.attributes.clone(),
-                    )),
+                    NodeData::Element(_) => Some(NodeWrapperSeed::Element),
                     NodeData::Text(text_data) => Some(NodeWrapperSeed::Text(text_data.content.clone())),
                     NodeData::Comment => Some(NodeWrapperSeed::Comment),
                     _ => None,
@@ -578,9 +622,7 @@ unsafe fn create_js_node_wrapper_by_id(cx: &mut SafeJSContext, node_id: usize) -
     });
 
     match seed {
-        Some(NodeWrapperSeed::Element(tag, attrs)) => {
-            create_js_element_impl(cx, node_id, &tag, &attrs, false, false).ok()
-        }
+        Some(NodeWrapperSeed::Element) => create_js_element_impl(cx, node_id, "", &AttributeMap::empty(), false, false).ok(),
         Some(NodeWrapperSeed::Text(text)) => create_js_text_node_by_id(cx, node_id, &text).ok(),
         Some(NodeWrapperSeed::Comment) => create_js_comment_node_by_id(cx, node_id).ok(),
         None => None,
@@ -1484,30 +1526,63 @@ unsafe extern "C" fn element_query_selector(raw_cx: *mut JSContext, argc: c_uint
         String::new()
     };
 
-    println!("[JS] element.querySelector('{}') called", selector);
+    trace!("[JS] element.querySelector('{}') called", selector);
 
     if selector.is_empty() {
         args.rval().set(NullValue());
         return true;
     }
 
+    if let (Some(root_id), Some(id)) = (get_node_id_from_this(safe_cx, &args), simple_id_selector(&selector)) {
+        let match_id = DOM_REF.with(|dom_ref| {
+            let dom_ptr = (*dom_ref.borrow())?;
+            let dom = &*dom_ptr;
+            let &candidate_id = dom.nodes_to_id.get(id)?;
+
+            let mut current = Some(candidate_id);
+            while let Some(cur_id) = current {
+                if cur_id == root_id {
+                    return Some(candidate_id);
+                }
+                current = dom.get_node(cur_id).and_then(|node| node.parent);
+            }
+            None
+        });
+
+        if let Some(match_id) = match_id {
+            if let Ok(elem) = create_js_element_by_dom_id(safe_cx, match_id) {
+                args.rval().set(elem);
+                return true;
+            }
+        }
+
+        args.rval().set(NullValue());
+        return true;
+    }
+
+    let parsed_selector = parse_selector(&selector);
+
     if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
         // Search descendants of this element
-        let matching_element = DOM_REF.with(|dom_ref| {
+        let matching_node_id = DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &*dom_ptr;
                 // Traverse the subtree looking for a match
-                fn find_in_subtree(dom: &crate::dom::Dom, parent_id: usize, selector: &str) -> Option<(usize, String, crate::dom::AttributeMap)> {
+                fn find_in_subtree(
+                    dom: &crate::dom::Dom,
+                    parent_id: usize,
+                    parsed_selector: &crate::js::selectors::ParsedSelector<'_>,
+                ) -> Option<usize> {
                     if let Some(parent_node) = dom.get_node(parent_id) {
                         for child_id in &parent_node.children {
                             if let Some(child_node) = dom.get_node(*child_id) {
                                 if let crate::dom::NodeData::Element(ref elem_data) = child_node.data {
-                                    if matches_selector(selector, &elem_data.name.local.to_string(), &elem_data.attributes) {
-                                        return Some((*child_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
+                                    if matches_parsed_selector(parsed_selector, elem_data.name.local.as_ref(), &elem_data.attributes) {
+                                        return Some(*child_id);
                                     }
                                 }
                                 // Recurse into light-DOM descendants only.
-                                if let Some(result) = find_in_subtree(dom, *child_id, selector) {
+                                if let Some(result) = find_in_subtree(dom, *child_id, parsed_selector) {
                                     return Some(result);
                                 }
                             }
@@ -1515,13 +1590,13 @@ unsafe extern "C" fn element_query_selector(raw_cx: *mut JSContext, argc: c_uint
                     }
                     None
                 }
-                return find_in_subtree(dom, node_id, &selector);
+                return find_in_subtree(dom, node_id, &parsed_selector);
             }
             None
         });
 
-        if let Some((match_id, tag_name, attributes)) = matching_element {
-            match create_js_element_by_id(safe_cx, match_id, &tag_name, &attributes) {
+        if let Some(match_id) = matching_node_id {
+            match create_js_element_by_dom_id(safe_cx, match_id) {
                 Ok(elem) => {
                     args.rval().set(elem);
                     return true;
@@ -1546,40 +1621,74 @@ unsafe extern "C" fn element_query_selector_all(raw_cx: *mut JSContext, argc: c_
         String::new()
     };
 
-    println!("[JS] element.querySelectorAll('{}') called", selector);
+    trace!("[JS] element.querySelectorAll('{}') called", selector);
 
     // Create JS array
     rooted!(in(raw_cx) let array = create_empty_array(safe_cx));
 
     if !selector.is_empty() {
+        if let (Some(root_id), Some(id)) = (get_node_id_from_this(safe_cx, &args), simple_id_selector(&selector)) {
+            let match_id = DOM_REF.with(|dom_ref| {
+                let dom_ptr = (*dom_ref.borrow())?;
+                let dom = &*dom_ptr;
+                let &candidate_id = dom.nodes_to_id.get(id)?;
+
+                let mut current = Some(candidate_id);
+                while let Some(cur_id) = current {
+                    if cur_id == root_id {
+                        return Some(candidate_id);
+                    }
+                    current = dom.get_node(cur_id).and_then(|node| node.parent);
+                }
+                None
+            });
+
+            if let Some(match_id) = match_id {
+                if let Ok(js_elem) = create_js_element_by_dom_id(safe_cx, match_id) {
+                    rooted!(in(raw_cx) let elem_val = js_elem);
+                    rooted!(in(raw_cx) let array_obj = array.get());
+                    JS_SetElement(safe_cx, array_obj.handle().into(), 0, elem_val.handle().into());
+                }
+            }
+
+            args.rval().set(ObjectValue(array.get()));
+            return true;
+        }
+
+        let parsed_selector = parse_selector(&selector);
         if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
-            let matching_elements: Vec<(usize, String, crate::dom::AttributeMap)> = DOM_REF.with(|dom_ref| {
+            let matching_node_ids: Vec<usize> = DOM_REF.with(|dom_ref| {
                 let mut results = Vec::new();
                 if let Some(dom_ptr) = *dom_ref.borrow() {
                     let dom = &*dom_ptr;
                     // Collect all matching descendants
-                    fn collect_in_subtree(dom: &crate::dom::Dom, parent_id: usize, selector: &str, results: &mut Vec<(usize, String, crate::dom::AttributeMap)>) {
+                    fn collect_in_subtree(
+                        dom: &crate::dom::Dom,
+                        parent_id: usize,
+                        parsed_selector: &crate::js::selectors::ParsedSelector<'_>,
+                        results: &mut Vec<usize>,
+                    ) {
                         if let Some(parent_node) = dom.get_node(parent_id) {
                             for child_id in &parent_node.children {
                                 if let Some(child_node) = dom.get_node(*child_id) {
                                     if let crate::dom::NodeData::Element(ref elem_data) = child_node.data {
-                                        if matches_selector(selector, &elem_data.name.local.to_string(), &elem_data.attributes) {
-                                            results.push((*child_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
+                                        if matches_parsed_selector(parsed_selector, elem_data.name.local.as_ref(), &elem_data.attributes) {
+                                            results.push(*child_id);
                                         }
                                     }
                                     // Recurse into light-DOM descendants only.
-                                    collect_in_subtree(dom, *child_id, selector, results);
+                                    collect_in_subtree(dom, *child_id, parsed_selector, results);
                                 }
                             }
                         }
                     }
-                    collect_in_subtree(dom, node_id, &selector, &mut results);
+                    collect_in_subtree(dom, node_id, &parsed_selector, &mut results);
                 }
                 results
             });
 
-            for (index, (match_id, tag, attrs)) in matching_elements.iter().enumerate() {
-                if let Ok(js_elem) = create_js_element_by_id(safe_cx, *match_id, tag, attrs) {
+            for (index, match_id) in matching_node_ids.iter().enumerate() {
+                if let Ok(js_elem) = create_js_element_by_dom_id(safe_cx, *match_id) {
                     rooted!(in(raw_cx) let elem_val = js_elem);
                     rooted!(in(raw_cx) let array_obj = array.get());
                     JS_SetElement(safe_cx, array_obj.handle().into(), index as u32, elem_val.handle().into());
@@ -1842,16 +1951,18 @@ unsafe extern "C" fn element_closest(raw_cx: *mut JSContext, argc: c_uint, vp: *
         String::new()
     };
 
-    println!("[JS] element.closest('{}') called", selector);
+    trace!("[JS] element.closest('{}') called", selector);
 
     if selector.is_empty() {
         args.rval().set(NullValue());
         return true;
     }
 
+    let parsed_selector = parse_selector(&selector);
+
     if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
         // Traverse up the parent chain looking for a match
-        let matching_element = DOM_REF.with(|dom_ref| {
+        let matching_node_id = DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &*dom_ptr;
                 let mut current_id = Some(node_id);
@@ -1860,8 +1971,8 @@ unsafe extern "C" fn element_closest(raw_cx: *mut JSContext, argc: c_uint, vp: *
                     if let Some(node) = dom.get_node(id) {
                         if let NodeData::Element(ref elem_data) = node.data {
                             // Check if this element matches the selector
-                            if matches_selector(&selector, &elem_data.name.local.to_string(), &elem_data.attributes) {
-                                return Some((id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
+                            if matches_parsed_selector(&parsed_selector, elem_data.name.local.as_ref(), &elem_data.attributes) {
+                                return Some(id);
                             }
                         }
                         current_id = node.parent;
@@ -1873,8 +1984,8 @@ unsafe extern "C" fn element_closest(raw_cx: *mut JSContext, argc: c_uint, vp: *
             None
         });
 
-        if let Some((match_id, tag_name, attributes)) = matching_element {
-            match create_js_element_by_id(safe_cx, match_id, &tag_name, &attributes) {
+        if let Some(match_id) = matching_node_id {
+            match create_js_element_by_dom_id(safe_cx, match_id) {
                 Ok(elem) => {
                     args.rval().set(elem);
                     return true;
@@ -1899,18 +2010,19 @@ unsafe extern "C" fn element_matches(raw_cx: *mut JSContext, argc: c_uint, vp: *
         String::new()
     };
 
-    println!("[JS] element.matches('{}') called", selector);
+    trace!("[JS] element.matches('{}') called", selector);
 
     let mut result = false;
 
     if !selector.is_empty() {
+        let parsed_selector = parse_selector(&selector);
         if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
             DOM_REF.with(|dom_ref| {
                 if let Some(dom_ptr) = *dom_ref.borrow() {
                     let dom = &*dom_ptr;
                     if let Some(node) = dom.get_node(node_id) {
                         if let NodeData::Element(ref elem_data) = node.data {
-                            result = matches_selector(&selector, &elem_data.name.local.to_string(), &elem_data.attributes);
+                            result = matches_parsed_selector(&parsed_selector, elem_data.name.local.as_ref(), &elem_data.attributes);
                         }
                     }
                 }

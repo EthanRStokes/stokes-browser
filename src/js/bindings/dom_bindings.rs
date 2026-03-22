@@ -11,7 +11,7 @@ use crate::js::bindings::element_bindings::{
     element_clone_node, element_contains, element_get_root_node,
     element_add_event_listener, element_remove_event_listener, element_dispatch_event,
 };
-use crate::js::selectors::matches_selector;
+use crate::js::selectors::{matches_parsed_selector, parse_selector};
 use crate::js::JsRuntime;
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use html5ever::ns;
@@ -37,6 +37,23 @@ thread_local! {
     pub(crate) static SESSION_STORAGE: RefCell<std::collections::HashMap<String, String>> = RefCell::new(std::collections::HashMap::new());
     /// Node ID of the currently-executing script element (for document.currentScript)
     pub(crate) static CURRENT_SCRIPT_NODE_ID: RefCell<Option<usize>> = RefCell::new(None);
+}
+
+fn simple_id_selector(selector: &str) -> Option<&str> {
+    let trimmed = selector.trim();
+    let id = trimmed.strip_prefix('#')?;
+    if id.is_empty() {
+        return None;
+    }
+
+    if id
+        .chars()
+        .any(|c| matches!(c, '.' | '#' | '[' | ']' | ' ' | '\t' | '\n' | '\r' | '>' | '+' | '~' | ',' | ':'))
+    {
+        return None;
+    }
+
+    Some(id)
 }
 
 /// Set the node ID of the currently-executing script element.
@@ -1747,15 +1764,14 @@ unsafe extern "C" fn document_get_head(raw_cx: *mut JSContext, argc: c_uint, vp:
 
     trace!("[JS] document.head called");
 
-    let head_element = DOM_REF.with(|dom_ref| {
+    let head_node_id = DOM_REF.with(|dom_ref| {
         if let Some(ref dom) = *dom_ref.borrow() {
             let dom = &**dom;
             // Search through all nodes to find the head element
             for (node_id, node) in dom.nodes.iter() {
                 if let crate::dom::NodeData::Element(ref elem_data) = node.data {
-                    let tag_name = elem_data.name.local.to_string().to_lowercase();
-                    if tag_name == "head" {
-                        return Some((node_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
+                    if elem_data.name.local.as_ref().eq_ignore_ascii_case("head") {
+                        return Some(node_id);
                     }
                 }
             }
@@ -1763,8 +1779,8 @@ unsafe extern "C" fn document_get_head(raw_cx: *mut JSContext, argc: c_uint, vp:
         None
     });
 
-    if let Some((node_id, tag_name, attributes)) = head_element {
-        if let Ok(js_elem) = element_bindings::create_js_element_by_id(safe_cx, node_id, &tag_name, &attributes) {
+    if let Some(node_id) = head_node_id {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_dom_id(safe_cx, node_id) {
             args.rval().set(js_elem);
         } else {
             args.rval().set(mozjs::jsval::NullValue());
@@ -1782,17 +1798,17 @@ unsafe extern "C" fn document_get_body(raw_cx: *mut JSContext, argc: c_uint, vp:
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
-    let body_element = DOM_REF.with(|dom_ref| {
+    let body_node_id = DOM_REF.with(|dom_ref| {
         let dom_ptr = (*dom_ref.borrow())?;
         let dom = unsafe { &*dom_ptr };
         let node_id = dom.body_id()?;
         let node = dom.get_node(node_id)?;
-        let elem_data = node.element_data()?;
-        Some((node_id, elem_data.name.local.to_string(), elem_data.attributes.clone()))
+        node.element_data()?;
+        Some(node_id)
     });
 
-    if let Some((node_id, tag_name, attributes)) = body_element {
-        if let Ok(js_elem) = element_bindings::create_js_element_by_id(safe_cx, node_id, &tag_name, &attributes) {
+    if let Some(node_id) = body_node_id {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_dom_id(safe_cx, node_id) {
             args.rval().set(js_elem);
             return true;
         }
@@ -1840,22 +1856,22 @@ unsafe extern "C" fn document_get_current_script(raw_cx: *mut JSContext, _argc: 
     let args = CallArgs::from_vp(vp, 0);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
-    let element_data = CURRENT_SCRIPT_NODE_ID.with(|id| {
+    let element_node_id = CURRENT_SCRIPT_NODE_ID.with(|id| {
         let node_id = (*id.borrow())?;
         DOM_REF.with(|dom_ref| {
             let dom_ptr = (*dom_ref.borrow())?;
             let dom = &*dom_ptr;
             let node = dom.get_node(node_id)?;
-            if let crate::dom::NodeData::Element(ref elem_data) = node.data {
-                Some((node_id, elem_data.name.local.to_string(), elem_data.attributes.clone()))
+            if matches!(node.data, crate::dom::NodeData::Element(_)) {
+                Some(node_id)
             } else {
                 None
             }
         })
     });
 
-    if let Some((node_id, tag_name, attributes)) = element_data {
-        match element_bindings::create_js_element_by_id(safe_cx, node_id, &tag_name, &attributes) {
+    if let Some(node_id) = element_node_id {
+        match element_bindings::create_js_element_by_dom_id(safe_cx, node_id) {
             Ok(val) => {
                 args.rval().set(val);
                 return true;
@@ -1886,24 +1902,20 @@ unsafe extern "C" fn document_get_element_by_id(raw_cx: *mut JSContext, argc: c_
 
     trace!("[JS] document.getElementById('{}') called", id);
 
-    let element_data = DOM_REF.with(|dom_ref| {
+    let node_id = DOM_REF.with(|dom_ref| {
         if let Some(ref dom) = *dom_ref.borrow() {
             let dom = &**dom;
             if let Some(&node_id) = dom.nodes_to_id.get(&id) {
-                if let Some(node) = dom.get_node(node_id) {
-                    if let crate::dom::NodeData::Element(ref elem_data) = node.data {
-                        let tag_name = elem_data.name.local.to_string();
-                        let attributes = elem_data.attributes.clone();
-                        return Some((node_id, tag_name, attributes));
-                    }
+                if matches!(dom.get_node(node_id).map(|node| &node.data), Some(crate::dom::NodeData::Element(_))) {
+                    return Some(node_id);
                 }
             }
         }
         None
     });
 
-    if let Some((node_id, tag_name, attributes)) = element_data {
-        if let Ok(js_elem) = element_bindings::create_js_element_by_id(safe_cx, node_id, &tag_name, &attributes) {
+    if let Some(node_id) = node_id {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_dom_id(safe_cx, node_id) {
             args.rval().set(js_elem);
         } else {
             args.rval().set(mozjs::jsval::NullValue());
@@ -1929,17 +1941,16 @@ unsafe extern "C" fn document_get_elements_by_tag_name(raw_cx: *mut JSContext, a
 
     trace!("[JS] document.getElementsByTagName('{}') called", tag_name);
 
-    let matching_elements: Vec<(usize, String, AttributeMap)> = DOM_REF.with(|dom_ref| {
+    let matching_node_ids: Vec<usize> = DOM_REF.with(|dom_ref| {
         let mut results = Vec::new();
         if let Some(ref dom) = *dom_ref.borrow() {
             let dom = &**dom;
-            let tag_name_lower = tag_name.to_lowercase();
+            let match_any = tag_name == "*";
 
             for (node_id, node) in dom.nodes.iter() {
                 if let crate::dom::NodeData::Element(ref elem_data) = node.data {
-                    let node_tag = elem_data.name.local.to_string().to_lowercase();
-                    if tag_name_lower == "*" || node_tag == tag_name_lower {
-                        results.push((node_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
+                    if match_any || elem_data.name.local.as_ref().eq_ignore_ascii_case(&tag_name) {
+                        results.push(node_id);
                     }
                 }
             }
@@ -1949,8 +1960,8 @@ unsafe extern "C" fn document_get_elements_by_tag_name(raw_cx: *mut JSContext, a
 
     rooted!(in(raw_cx) let array = create_empty_array(safe_cx));
 
-    for (index, (node_id, tag, attrs)) in matching_elements.iter().enumerate() {
-        if let Ok(js_elem) = element_bindings::create_js_element_by_id(safe_cx, *node_id, tag, attrs) {
+    for (index, node_id) in matching_node_ids.iter().enumerate() {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_dom_id(safe_cx, *node_id) {
             rooted!(in(raw_cx) let elem_val = js_elem);
             rooted!(in(raw_cx) let array_obj = array.get());
             mozjs::rust::wrappers::JS_SetElement(raw_cx, array_obj.handle().into(), index as u32, elem_val.handle().into());
@@ -1976,7 +1987,7 @@ unsafe extern "C" fn document_get_elements_by_class_name(raw_cx: *mut JSContext,
 
     let search_classes: Vec<&str> = class_name.split_whitespace().collect();
 
-    let matching_elements: Vec<(usize, String, AttributeMap)> = DOM_REF.with(|dom_ref| {
+    let matching_node_ids: Vec<usize> = DOM_REF.with(|dom_ref| {
         let mut results = Vec::new();
         if let Some(ref dom) = *dom_ref.borrow() {
             let dom = &**dom;
@@ -1984,9 +1995,11 @@ unsafe extern "C" fn document_get_elements_by_class_name(raw_cx: *mut JSContext,
             for (node_id, node) in dom.nodes.iter() {
                 if let crate::dom::NodeData::Element(ref elem_data) = node.data {
                     if let Some(class_attr) = elem_data.attributes.iter().find(|attr| attr.name.local.as_ref() == "class") {
-                        let element_classes: Vec<&str> = class_attr.value.split_whitespace().collect();
-                        if search_classes.iter().all(|sc| element_classes.contains(sc)) {
-                            results.push((node_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
+                        if search_classes
+                            .iter()
+                            .all(|sc| class_attr.value.split_whitespace().any(|c| c == *sc))
+                        {
+                            results.push(node_id);
                         }
                     }
                 }
@@ -1997,8 +2010,8 @@ unsafe extern "C" fn document_get_elements_by_class_name(raw_cx: *mut JSContext,
 
     rooted!(in(raw_cx) let array = create_empty_array(safe_cx));
 
-    for (index, (node_id, tag, attrs)) in matching_elements.iter().enumerate() {
-        if let Ok(js_elem) = element_bindings::create_js_element_by_id(safe_cx, *node_id, tag, attrs) {
+    for (index, node_id) in matching_node_ids.iter().enumerate() {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_dom_id(safe_cx, *node_id) {
             rooted!(in(raw_cx) let elem_val = js_elem);
             rooted!(in(raw_cx) let array_obj = array.get());
             mozjs::rust::wrappers::JS_SetElement(raw_cx, array_obj.handle().into(), index as u32, elem_val.handle().into());
@@ -2022,13 +2035,35 @@ unsafe extern "C" fn document_query_selector(raw_cx: *mut JSContext, argc: c_uin
 
     trace!("[JS] document.querySelector('{}') called", selector);
 
-    let element_data = DOM_REF.with(|dom_ref| {
+    if let Some(id) = simple_id_selector(&selector) {
+        let node_id = DOM_REF.with(|dom_ref| {
+            let dom_ptr = (*dom_ref.borrow())?;
+            let dom = unsafe { &*dom_ptr };
+            let &node_id = dom.nodes_to_id.get(id)?;
+            matches!(dom.get_node(node_id).map(|node| &node.data), Some(crate::dom::NodeData::Element(_)))
+                .then_some(node_id)
+        });
+
+        if let Some(node_id) = node_id {
+            if let Ok(js_elem) = element_bindings::create_js_element_by_dom_id(safe_cx, node_id) {
+                args.rval().set(js_elem);
+                return true;
+            }
+        }
+
+        args.rval().set(NullValue());
+        return true;
+    }
+
+    let parsed_selector = parse_selector(&selector);
+
+    let node_id = DOM_REF.with(|dom_ref| {
         if let Some(ref dom) = *dom_ref.borrow() {
             let dom = &**dom;
             for (node_id, node) in dom.nodes.iter() {
                 if let crate::dom::NodeData::Element(ref elem_data) = node.data {
-                    if matches_selector(&selector, &elem_data.name.local.to_string(), &elem_data.attributes) {
-                        return Some((node_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
+                    if matches_parsed_selector(&parsed_selector, elem_data.name.local.as_ref(), &elem_data.attributes) {
+                        return Some(node_id);
                     }
                 }
             }
@@ -2036,8 +2071,8 @@ unsafe extern "C" fn document_query_selector(raw_cx: *mut JSContext, argc: c_uin
         None
     });
 
-    if let Some((node_id, tag_name, attributes)) = element_data {
-        if let Ok(js_elem) = element_bindings::create_js_element_by_id(safe_cx, node_id, &tag_name, &attributes) {
+    if let Some(node_id) = node_id {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_dom_id(safe_cx, node_id) {
             args.rval().set(js_elem);
         } else {
             args.rval().set(mozjs::jsval::NullValue());
@@ -2061,14 +2096,39 @@ unsafe extern "C" fn document_query_selector_all(raw_cx: *mut JSContext, argc: c
 
     trace!("[JS] document.querySelectorAll('{}') called", selector);
 
-    let matching_elements: Vec<(usize, String, AttributeMap)> = DOM_REF.with(|dom_ref| {
+    rooted!(in(raw_cx) let array = create_empty_array(safe_cx));
+
+    if let Some(id) = simple_id_selector(&selector) {
+        let node_id = DOM_REF.with(|dom_ref| {
+            let dom_ptr = (*dom_ref.borrow())?;
+            let dom = unsafe { &*dom_ptr };
+            let &node_id = dom.nodes_to_id.get(id)?;
+            matches!(dom.get_node(node_id).map(|node| &node.data), Some(crate::dom::NodeData::Element(_)))
+                .then_some(node_id)
+        });
+
+        if let Some(node_id) = node_id {
+            if let Ok(js_elem) = element_bindings::create_js_element_by_dom_id(safe_cx, node_id) {
+                rooted!(in(raw_cx) let elem_val = js_elem);
+                rooted!(in(raw_cx) let array_obj = array.get());
+                mozjs::rust::wrappers::JS_SetElement(raw_cx, array_obj.handle().into(), 0, elem_val.handle().into());
+            }
+        }
+
+        args.rval().set(ObjectValue(array.get()));
+        return true;
+    }
+
+    let parsed_selector = parse_selector(&selector);
+
+    let matching_node_ids: Vec<usize> = DOM_REF.with(|dom_ref| {
         let mut results = Vec::new();
         if let Some(ref dom) = *dom_ref.borrow() {
             let dom = &**dom;
             for (node_id, node) in dom.nodes.iter() {
                 if let crate::dom::NodeData::Element(ref elem_data) = node.data {
-                    if matches_selector(&selector, &elem_data.name.local.to_string(), &elem_data.attributes) {
-                        results.push((node_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
+                    if matches_parsed_selector(&parsed_selector, elem_data.name.local.as_ref(), &elem_data.attributes) {
+                        results.push(node_id);
                     }
                 }
             }
@@ -2076,10 +2136,8 @@ unsafe extern "C" fn document_query_selector_all(raw_cx: *mut JSContext, argc: c
         results
     });
 
-    rooted!(in(raw_cx) let array = create_empty_array(safe_cx));
-
-    for (index, (node_id, tag, attrs)) in matching_elements.iter().enumerate() {
-        if let Ok(js_elem) = element_bindings::create_js_element_by_id(safe_cx, *node_id, tag, attrs) {
+    for (index, node_id) in matching_node_ids.iter().enumerate() {
+        if let Ok(js_elem) = element_bindings::create_js_element_by_dom_id(safe_cx, *node_id) {
             rooted!(in(raw_cx) let elem_val = js_elem);
             rooted!(in(raw_cx) let array_obj = array.get());
             mozjs::rust::wrappers::JS_SetElement(raw_cx, array_obj.handle().into(), index as u32, elem_val.handle().into());
@@ -2114,7 +2172,7 @@ unsafe extern "C" fn document_create_element(raw_cx: *mut JSContext, argc: c_uin
             // HTML documents should create elements in the HTML namespace.
             let local = markup5ever::LocalName::from(tag_name.to_lowercase());
             let node_id = dom.create_element(QualName::new(None, ns!(html), local), AttributeMap::empty());
-            if let Ok(js_elem) = element_bindings::create_js_element_by_id(safe_cx, node_id, &tag_name, dom.nodes[node_id].attrs().unwrap()) {
+            if let Ok(js_elem) = element_bindings::create_js_element_by_dom_id(safe_cx, node_id) {
                 args.rval().set(js_elem);
                 println!("Successfully created element '{}'", tag_name);
                 return;
@@ -2167,12 +2225,7 @@ unsafe extern "C" fn document_create_element_ns(raw_cx: *mut JSContext, argc: c_
                 LocalName::from(local_name.clone()),
             );
             let node_id = dom.create_element(qname, AttributeMap::empty());
-            if let Ok(js_elem) = element_bindings::create_js_element_by_id(
-                safe_cx,
-                node_id,
-                &local_name,
-                dom.nodes[node_id].attrs().unwrap(),
-            ) {
+            if let Ok(js_elem) = element_bindings::create_js_element_by_dom_id(safe_cx, node_id) {
                 args.rval().set(js_elem);
                 return;
             }

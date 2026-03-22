@@ -1,111 +1,191 @@
 // CSS selector matching for JavaScript bindings
 use crate::dom::AttributeMap;
 
-/// Basic CSS selector matching for single selectors
-/// Supports: tag, .class, #id, tag.class, tag#id, [attr], [attr=value], and various attribute operators
-// TODO: Doesn't support complex selectors (descendant, child, sibling combinators, :pseudo-classes, ::pseudo-elements)
-pub fn matches_selector(selector: &str, tag_name: &str, attributes: &AttributeMap) -> bool {
-    // Handle comma-separated selectors (any match)
-    if selector.contains(',') {
-        return selector
-            .split(',')
-            .any(|s| matches_selector(s.trim(), tag_name, attributes));
-    }
+#[derive(Clone, Copy)]
+enum SimpleSelector<'a> {
+    Universal,
+    Id { id: &'a str, class: Option<&'a str>, attr: Option<&'a str> },
+    Class { classes: &'a str, attr: Option<&'a str> },
+    Attr(&'a str),
+    Tag { tag: &'a str, class_list: Option<&'a str>, id: Option<&'a str>, attr: Option<&'a str> },
+}
 
-    // Get element's id and class
-    let id_attr = attributes
+pub struct ParsedSelector<'a> {
+    parts: Vec<SimpleSelector<'a>>,
+}
+
+pub fn parse_selector(selector: &str) -> ParsedSelector<'_> {
+    let mut parts = Vec::new();
+    for part in selector.split(',') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        parts.push(parse_simple_selector(trimmed));
+    }
+    ParsedSelector { parts }
+}
+
+pub fn matches_parsed_selector(parsed: &ParsedSelector<'_>, tag_name: &str, attributes: &AttributeMap) -> bool {
+    parsed
+        .parts
         .iter()
-        .find(|attr| attr.name.local.as_ref() == "id")
-        .map(|attr| attr.value.as_str())
-        .unwrap_or("");
-    let class_attr = attributes
-        .iter()
-        .find(|attr| attr.name.local.as_ref() == "class")
-        .map(|attr| attr.value.as_str())
-        .unwrap_or("");
-    let classes: Vec<&str> = class_attr.split_whitespace().collect();
+        .copied()
+        .any(|selector| matches_simple_selector(selector, tag_name, attributes))
+}
 
-    let selector = selector.trim();
-
-    // ID selector: #id
-    if selector.starts_with('#') {
-        let id = &selector[1..];
-        // Could be #id.class or #id[attr]
-        if let Some(dot_pos) = id.find('.') {
-            let (id_part, class_part) = id.split_at(dot_pos);
-            return id_attr == id_part && classes.contains(&&class_part[1..]);
-        }
-        if let Some(bracket_pos) = id.find('[') {
-            let id_part = &id[..bracket_pos];
-            return id_attr == id_part
-                && matches_attribute_selector(&id[bracket_pos..], attributes);
-        }
-        return id_attr == id;
-    }
-
-    // Class selector: .class
-    if selector.starts_with('.') {
-        let class_selector = &selector[1..];
-        // Could be .class1.class2
-        if class_selector.contains('.') {
-            return class_selector
-                .split('.')
-                .all(|c| !c.is_empty() && classes.contains(&c));
-        }
-        // Could be .class[attr]
-        if let Some(bracket_pos) = class_selector.find('[') {
-            let class_part = &class_selector[..bracket_pos];
-            return classes.contains(&class_part)
-                && matches_attribute_selector(&class_selector[bracket_pos..], attributes);
-        }
-        return classes.contains(&class_selector);
-    }
-
-    // Attribute selector: [attr] or [attr=value]
-    if selector.starts_with('[') {
-        return matches_attribute_selector(selector, attributes);
-    }
-
-    // Tag selector: tag, tag.class, tag#id, tag[attr]
-    let tag_lower = tag_name.to_lowercase();
-
-    // Handle tag.class
-    if let Some(dot_pos) = selector.find('.') {
-        let tag_part = &selector[..dot_pos];
-        let class_part = &selector[dot_pos + 1..];
-        if !tag_part.is_empty() && tag_lower != tag_part.to_lowercase() {
-            return false;
-        }
-        // Handle multiple classes: tag.class1.class2
-        return class_part
-            .split('.')
-            .all(|c| !c.is_empty() && classes.contains(&c));
-    }
-
-    // Handle tag#id
-    if let Some(hash_pos) = selector.find('#') {
-        let tag_part = &selector[..hash_pos];
-        let id_part = &selector[hash_pos + 1..];
-        if !tag_part.is_empty() && tag_lower != tag_part.to_lowercase() {
-            return false;
-        }
-        return id_attr == id_part;
-    }
-
-    // Handle tag[attr]
-    if let Some(bracket_pos) = selector.find('[') {
-        let tag_part = &selector[..bracket_pos];
-        if !tag_part.is_empty() && tag_lower != tag_part.to_lowercase() {
-            return false;
-        }
-        return matches_attribute_selector(&selector[bracket_pos..], attributes);
-    }
-
-    // Simple tag match
+fn parse_simple_selector(selector: &str) -> SimpleSelector<'_> {
     if selector == "*" {
-        return true;
+        return SimpleSelector::Universal;
     }
-    tag_lower == selector.to_lowercase()
+
+    if let Some(id_selector) = selector.strip_prefix('#') {
+        if let Some(dot_pos) = id_selector.find('.') {
+            let (id_part, class_part) = id_selector.split_at(dot_pos);
+            return SimpleSelector::Id {
+                id: id_part,
+                class: Some(&class_part[1..]),
+                attr: None,
+            };
+        }
+        if let Some(bracket_pos) = id_selector.find('[') {
+            return SimpleSelector::Id {
+                id: &id_selector[..bracket_pos],
+                class: None,
+                attr: Some(&id_selector[bracket_pos..]),
+            };
+        }
+        return SimpleSelector::Id {
+            id: id_selector,
+            class: None,
+            attr: None,
+        };
+    }
+
+    if let Some(class_selector) = selector.strip_prefix('.') {
+        if let Some(bracket_pos) = class_selector.find('[') {
+            return SimpleSelector::Class {
+                classes: &class_selector[..bracket_pos],
+                attr: Some(&class_selector[bracket_pos..]),
+            };
+        }
+        return SimpleSelector::Class {
+            classes: class_selector,
+            attr: None,
+        };
+    }
+
+    if selector.starts_with('[') {
+        return SimpleSelector::Attr(selector);
+    }
+
+    if let Some(dot_pos) = selector.find('.') {
+        return SimpleSelector::Tag {
+            tag: &selector[..dot_pos],
+            class_list: Some(&selector[dot_pos + 1..]),
+            id: None,
+            attr: None,
+        };
+    }
+
+    if let Some(hash_pos) = selector.find('#') {
+        return SimpleSelector::Tag {
+            tag: &selector[..hash_pos],
+            class_list: None,
+            id: Some(&selector[hash_pos + 1..]),
+            attr: None,
+        };
+    }
+
+    if let Some(bracket_pos) = selector.find('[') {
+        return SimpleSelector::Tag {
+            tag: &selector[..bracket_pos],
+            class_list: None,
+            id: None,
+            attr: Some(&selector[bracket_pos..]),
+        };
+    }
+
+    SimpleSelector::Tag {
+        tag: selector,
+        class_list: None,
+        id: None,
+        attr: None,
+    }
+}
+
+fn get_attribute<'a>(attributes: &'a AttributeMap, name: &str) -> Option<&'a str> {
+    attributes
+        .iter()
+        .find(|attr| attr.name.local.as_ref() == name)
+        .map(|attr| attr.value.as_str())
+}
+
+fn has_class(class_attr: &str, class_name: &str) -> bool {
+    class_attr.split_whitespace().any(|c| c == class_name)
+}
+
+fn has_all_classes(class_attr: &str, class_list: &str) -> bool {
+    class_list
+        .split('.')
+        .all(|c| !c.is_empty() && has_class(class_attr, c))
+}
+
+fn matches_simple_selector(selector: SimpleSelector<'_>, tag_name: &str, attributes: &AttributeMap) -> bool {
+    let id_attr = get_attribute(attributes, "id").unwrap_or("");
+    let class_attr = get_attribute(attributes, "class").unwrap_or("");
+
+    match selector {
+        SimpleSelector::Universal => true,
+        SimpleSelector::Id { id, class, attr } => {
+            if id_attr != id {
+                return false;
+            }
+            if let Some(class_name) = class {
+                if !has_class(class_attr, class_name) {
+                    return false;
+                }
+            }
+            if let Some(attr_selector) = attr {
+                return matches_attribute_selector(attr_selector, attributes);
+            }
+            true
+        }
+        SimpleSelector::Class { classes, attr } => {
+            if classes.contains('.') {
+                if !has_all_classes(class_attr, classes) {
+                    return false;
+                }
+            } else if !has_class(class_attr, classes) {
+                return false;
+            }
+
+            if let Some(attr_selector) = attr {
+                return matches_attribute_selector(attr_selector, attributes);
+            }
+            true
+        }
+        SimpleSelector::Attr(attr_selector) => matches_attribute_selector(attr_selector, attributes),
+        SimpleSelector::Tag { tag, class_list, id, attr } => {
+            if !tag.is_empty() && !tag_name.eq_ignore_ascii_case(tag) {
+                return false;
+            }
+
+            if let Some(classes) = class_list {
+                return has_all_classes(class_attr, classes);
+            }
+
+            if let Some(expected_id) = id {
+                return id_attr == expected_id;
+            }
+
+            if let Some(attr_selector) = attr {
+                return matches_attribute_selector(attr_selector, attributes);
+            }
+
+            true
+        }
+    }
 }
 
 /// Match an attribute selector like [attr], [attr=value], [attr^=value], etc.
@@ -149,7 +229,11 @@ fn matches_attribute_selector(selector: &str, attributes: &AttributeMap) -> bool
                 "$=" => val.ends_with(attr_value),
                 "*=" => val.contains(attr_value),
                 "~=" => val.split_whitespace().any(|v| v == attr_value),
-                "|=" => val == attr_value || val.starts_with(&format!("{}-", attr_value)),
+                "|=" => {
+                    val == attr_value
+                        || (val.starts_with(attr_value)
+                            && val.as_bytes().get(attr_value.len()) == Some(&b'-'))
+                }
                 _ => false,
             },
             None => false,
