@@ -158,6 +158,13 @@ pub fn has_pending_promise_jobs() -> bool {
     PROMISE_JOB_QUEUE.with(|queue| !queue.borrow().is_empty())
 }
 
+/// Clear promise-job and rejection bookkeeping for a fresh navigation context.
+pub fn clear_pending_jobs_for_navigation() {
+    PROMISE_JOB_QUEUE.with(|queue| queue.borrow_mut().clear());
+    REJECTION_TRANSITIONS.with(|queue| queue.borrow_mut().clear());
+    REPORTED_UNHANDLED_PROMISES.with(|set| set.borrow_mut().clear());
+}
+
 fn process_rejection_transitions(cx: &mut JSContext) {
     let transitions: Vec<PromiseRejectionTransition> = REJECTION_TRANSITIONS.with(|queue| {
         queue.borrow_mut().drain(..).collect()

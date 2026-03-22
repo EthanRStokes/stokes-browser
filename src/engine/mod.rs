@@ -131,10 +131,8 @@ impl Engine {
 
             // Store the DOM
             self.dom = Some(dom);
-            if invalidate_js {
-                let js = self.js_runtime.take();
-                drop(js);
-                self.js_runtime = None;
+            if invalidate_js && self.config.enable_javascript {
+                self.prepare_js_runtime_for_navigation();
             }
 
             // Reset scroll position
@@ -172,6 +170,23 @@ impl Engine {
         }
 
         result
+    }
+
+    fn prepare_js_runtime_for_navigation(&mut self) {
+        let Some(dom_ptr) = self.dom.as_mut().map(|dom| dom as *mut Dom) else {
+            return;
+        };
+        let user_agent = self.config.user_agent.clone();
+
+        if let Some(runtime) = self.js_runtime.as_mut() {
+            if let Err(err) = runtime.reset_for_navigation(dom_ptr, user_agent.clone()) {
+                eprintln!("JavaScript runtime reset failed during navigation: {err}. Recreating runtime.");
+                self.js_runtime = None;
+                self.initialize_js_runtime();
+            }
+        } else {
+            self.initialize_js_runtime();
+        }
     }
 
     /// Update the viewport size

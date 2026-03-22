@@ -1,12 +1,12 @@
 // Shared helper functions for JavaScript bindings
 use mozjs::conversions::jsstr_to_string;
 use mozjs::gc::Handle;
-use mozjs::rust::wrappers2::{Compile1, CurrentGlobalOrNull, JS_DefineFunction, JS_DefineProperty, JS_ExecuteScript, JS_GetProperty, JS_NewUCStringCopyN, JS_SetProperty, NewArrayObject};
-use mozjs::jsval::{BooleanValue, Int32Value, JSVal, StringValue, UndefinedValue};
+use mozjs::rust::wrappers2::{CurrentGlobalOrNull, JS_CallFunctionValue, JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JS_SetProperty, NewArrayObject};
+use mozjs::jsval::{BooleanValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers::JS_ValueToSource;
 use std::ptr::NonNull;
-use mozjs::rust::{transform_str_to_source_text, CompileOptionsWrapper, MutableHandleValue, ValueArray};
+use mozjs::rust::ValueArray;
 use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsapi::{CallArgs, HandleValueArray, JSContext, JSNative, JSObject, JSPROP_ENUMERATE};
 
@@ -214,81 +214,108 @@ pub unsafe fn define_property_accessor(
     setter_name: &str,
 ) -> Result<(), String> {
     let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let obj_rooted = obj);
 
-    // We'll use a well-known temporary variable name
-    let temp_var_name = "__definePropertyTarget__";
-
-    rooted!(in(raw_cx) let obj_val = mozjs::jsval::ObjectValue(obj));
-
-    // Get the global object
+    // Resolve Object.defineProperty once per call without compiling helper scripts.
     rooted!(in(raw_cx) let global = CurrentGlobalOrNull(cx));
-    if global.is_null() {
+    if global.get().is_null() {
         return Err("No global object".to_string());
     }
 
-    // Set temporary global variable
-    let temp_cname = std::ffi::CString::new(temp_var_name).unwrap();
-    if !JS_SetProperty(
+    rooted!(in(raw_cx) let mut object_ctor_val = UndefinedValue());
+    let object_name = std::ffi::CString::new("Object").unwrap();
+    if !JS_GetProperty(
         cx,
-        global.handle(),
-        temp_cname.as_ptr(),
-        obj_val.handle(),
-    ) {
-        return Err("Failed to set temporary variable".to_string());
+        global.handle().into(),
+        object_name.as_ptr(),
+        object_ctor_val.handle_mut().into(),
+    ) || !object_ctor_val.get().is_object() {
+        return Err("Failed to resolve global Object constructor".to_string());
+    }
+    rooted!(in(raw_cx) let object_ctor_obj = object_ctor_val.get().to_object());
+
+    rooted!(in(raw_cx) let mut define_property_fn = UndefinedValue());
+    let define_property_name = std::ffi::CString::new("defineProperty").unwrap();
+    if !JS_GetProperty(
+        cx,
+        object_ctor_obj.handle().into(),
+        define_property_name.as_ptr(),
+        define_property_fn.handle_mut().into(),
+    ) || !define_property_fn.get().is_object() {
+        return Err("Failed to resolve Object.defineProperty".to_string());
     }
 
-    // Execute script to define the property
-    let script = format!(
-        r#"(function() {{
-            Object.defineProperty(__definePropertyTarget__, '{prop}', {{
-                get: function() {{
-                    return this.{getter}();
-                }},
-                set: function(value) {{
-                    this.{setter}(value);
-                }},
-                configurable: true,
-                enumerable: true
-            }});
-        }})();"#,
-        prop = prop_name,
-        getter = getter_name,
-        setter = setter_name
-    );
-
-    let options = CompileOptionsWrapper::new(cx, "define_property_accessor".parse().unwrap(), 1);
-
-    // Compile the script
-    let compiled = Compile1(cx, options.ptr, &mut transform_str_to_source_text(&script));
-    if compiled.is_null() {
-        // Clean up the temporary variable
-        rooted!(in(raw_cx) let undefined = UndefinedValue());
-        JS_SetProperty(
-            cx,
-            global.handle(),
-            temp_cname.as_ptr(),
-            undefined.handle(),
-        );
-        return Err("Failed to compile property definition script".to_string());
+    rooted!(in(raw_cx) let mut getter_val = UndefinedValue());
+    let getter_cname = std::ffi::CString::new(getter_name).unwrap();
+    if !JS_GetProperty(
+        cx,
+        obj_rooted.handle().into(),
+        getter_cname.as_ptr(),
+        getter_val.handle_mut().into(),
+    ) || !getter_val.get().is_object() {
+        return Err(format!("Failed to resolve getter function {}", getter_name));
     }
 
-    rooted!(in(raw_cx) let script_root = compiled);
+    rooted!(in(raw_cx) let mut setter_val = UndefinedValue());
+    let setter_cname = std::ffi::CString::new(setter_name).unwrap();
+    if !JS_GetProperty(
+        cx,
+        obj_rooted.handle().into(),
+        setter_cname.as_ptr(),
+        setter_val.handle_mut().into(),
+    ) || !setter_val.get().is_object() {
+        return Err(format!("Failed to resolve setter function {}", setter_name));
+    }
+
+    rooted!(in(raw_cx) let descriptor = JS_NewPlainObject(cx));
+    if descriptor.get().is_null() {
+        return Err("Failed to create property descriptor object".to_string());
+    }
+
+    rooted!(in(raw_cx) let getter_obj = getter_val.get());
+    let get_key = std::ffi::CString::new("get").unwrap();
+    if !JS_SetProperty(cx, descriptor.handle(), get_key.as_ptr(), getter_obj.handle()) {
+        return Err("Failed to define descriptor.get".to_string());
+    }
+
+    rooted!(in(raw_cx) let setter_obj = setter_val.get());
+    let set_key = std::ffi::CString::new("set").unwrap();
+    if !JS_SetProperty(cx, descriptor.handle(), set_key.as_ptr(), setter_obj.handle()) {
+        return Err("Failed to define descriptor.set".to_string());
+    }
+
+    rooted!(in(raw_cx) let enumerable = BooleanValue(true));
+    let enumerable_key = std::ffi::CString::new("enumerable").unwrap();
+    if !JS_SetProperty(cx, descriptor.handle(), enumerable_key.as_ptr(), enumerable.handle()) {
+        return Err("Failed to define descriptor.enumerable".to_string());
+    }
+
+    rooted!(in(raw_cx) let configurable = BooleanValue(true));
+    let configurable_key = std::ffi::CString::new("configurable").unwrap();
+    if !JS_SetProperty(cx, descriptor.handle(), configurable_key.as_ptr(), configurable.handle()) {
+        return Err("Failed to define descriptor.configurable".to_string());
+    }
+
+    rooted!(in(raw_cx) let prop_name_val = create_js_string(cx, prop_name));
+    if prop_name_val.get().is_undefined() {
+        return Err(format!("Failed to create JS string for property {}", prop_name));
+    }
+
+    rooted!(in(raw_cx) let define_args = ValueArray::<3usize>::new([
+        ObjectValue(obj_rooted.get()),
+        prop_name_val.get(),
+        ObjectValue(descriptor.get()),
+    ]));
     rooted!(in(raw_cx) let mut rval = UndefinedValue());
 
-    // Execute the script
-    let success = JS_ExecuteScript(cx, script_root.handle(), MutableHandleValue::from(rval.handle_mut()));
-
-    // Clean up the temporary variable
-    rooted!(in(raw_cx) let undefined = UndefinedValue());
-    JS_SetProperty(
+    if !JS_CallFunctionValue(
         cx,
-        global.handle(),
-        temp_cname.as_ptr(),
-        undefined.handle(),
-    );
-
-    if !success {
-        Err("Failed to execute property definition script".to_string())
+        object_ctor_obj.handle().into(),
+        define_property_fn.handle().into(),
+        &HandleValueArray::from(&define_args),
+        rval.handle_mut().into(),
+    ) {
+        Err(format!("Failed to define accessor property {}", prop_name))
     } else {
         Ok(())
     }

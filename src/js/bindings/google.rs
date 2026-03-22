@@ -41,7 +41,7 @@ use std::ffi::CString;
 use std::os::raw::c_uint;
 use std::time::{SystemTime, UNIX_EPOCH};
 use mozjs::realm::AutoRealm;
-use mozjs::rust::wrappers2::{CurrentGlobalOrNull, JS_CallFunctionValue, JS_ClearPendingException, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject};
+use mozjs::rust::wrappers2::{CurrentGlobalOrNull, JS_CallFunctionValue, JS_ClearPendingException, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_SetProperty};
 // ============================================================================
 // Thread-local state
 // ============================================================================
@@ -154,6 +154,100 @@ unsafe fn new_plain_object(cx: &mut SafeJSContext, name: &str) -> Result<*mut JS
     }
 }
 
+unsafe fn get_existing_object_property(
+    cx: &mut SafeJSContext,
+    parent: *mut JSObject,
+    name: &str,
+) -> Option<*mut JSObject> {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let parent_root = parent);
+    rooted!(in(raw_cx) let mut existing = UndefinedValue());
+    let cname = CString::new(name).unwrap();
+    if !JS_GetProperty(
+        cx,
+        parent_root.handle().into(),
+        cname.as_ptr(),
+        existing.handle_mut().into(),
+    ) {
+        return None;
+    }
+    if existing.get().is_object() && !existing.get().is_null() {
+        Some(existing.get().to_object())
+    } else {
+        None
+    }
+}
+
+unsafe fn get_or_create_object_property(
+    cx: &mut SafeJSContext,
+    parent: *mut JSObject,
+    name: &str,
+    sealed: bool,
+) -> Result<(*mut JSObject, bool), String> {
+    if let Some(obj) = get_existing_object_property(cx, parent, name) {
+        return Ok((obj, false));
+    }
+
+    let obj = new_plain_object(cx, name)?;
+    if sealed {
+        define_prop_sealed(cx, parent, name, ObjectValue(obj))?;
+    } else {
+        define_prop(cx, parent, name, ObjectValue(obj))?;
+    }
+    Ok((obj, true))
+}
+
+unsafe fn ensure_function(
+    cx: &mut SafeJSContext,
+    obj: *mut JSObject,
+    name: &str,
+    func: Option<unsafe extern "C" fn(*mut JSContext, c_uint, *mut JSVal) -> bool>,
+    nargs: u32,
+) -> Result<(), String> {
+    if get_existing_object_property(cx, obj, name).is_some() {
+        return Ok(());
+    }
+    define_function(cx, obj, name, func, nargs)
+}
+
+unsafe fn ensure_bool_prop(cx: &mut SafeJSContext, obj: *mut JSObject, name: &str, value: bool) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let obj_root = obj);
+    rooted!(in(raw_cx) let mut existing = UndefinedValue());
+    let cname = CString::new(name).unwrap();
+    if !JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        cname.as_ptr(),
+        existing.handle_mut().into(),
+    ) {
+        return Err(format!("Failed to read property '{}'", name));
+    }
+    if existing.get().is_undefined() {
+        set_bool_property(cx, obj, name, value)?;
+    }
+    Ok(())
+}
+
+unsafe fn ensure_int_prop(cx: &mut SafeJSContext, obj: *mut JSObject, name: &str, value: i32) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let obj_root = obj);
+    rooted!(in(raw_cx) let mut existing = UndefinedValue());
+    let cname = CString::new(name).unwrap();
+    if !JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        cname.as_ptr(),
+        existing.handle_mut().into(),
+    ) {
+        return Err(format!("Failed to read property '{}'", name));
+    }
+    if existing.get().is_undefined() {
+        set_int_property(cx, obj, name, value)?;
+    }
+    Ok(())
+}
+
 unsafe fn setup_google(cx: &mut mozjs::context::JSContext, global: *mut JSObject) -> Result<(), String> {
     // ------------------------------------------------------------------
     // Retrieve or create the top-level `google` object.
@@ -216,28 +310,36 @@ unsafe fn setup_google(cx: &mut mozjs::context::JSContext, global: *mut JSObject
     // that do `google.c = {…}` cannot replace it with an object that lacks
     // our polyfill functions (e.g. maft, miml, u, q).
     // ------------------------------------------------------------------
-    rooted!(in(raw_cx) let google_c = setup_google_c(cx)?);
-    define_prop_sealed(cx, google.get(), "c", ObjectValue(google_c.get()))?;
+    let (google_c, _) = get_or_create_object_property(cx, google.get(), "c", true)?;
+    setup_google_c(cx, google_c)?;
 
     // ------------------------------------------------------------------
     // google.timers — timer tracking sub-object (also sealed)
     // ------------------------------------------------------------------
-    rooted!(in(raw_cx) let google_timers = setup_google_timers(cx)?);
-    define_prop_sealed(cx, google.get(), "timers", ObjectValue(google_timers.get()))?;
+    let (google_timers, _) = get_or_create_object_property(cx, google.get(), "timers", true)?;
+    setup_google_timers(cx, google_timers)?;
 
     // ------------------------------------------------------------------
     // google.stvsc — navigation-start / scroll checkpoint (also sealed)
     // ------------------------------------------------------------------
-    rooted!(in(raw_cx) let google_stvsc = new_plain_object(cx, "stvsc")?);
+    let (google_stvsc, _) = get_or_create_object_property(cx, google.get(), "stvsc", true)?;
     let ns = NAV_START_MS.with(|v| *v.borrow());
-    define_prop(cx, google_stvsc.get(), "ns", DoubleValue(ns))?;
-    define_prop_sealed(cx, google.get(), "stvsc", ObjectValue(google_stvsc.get()))?;
+    rooted!(in(raw_cx) let ns_val = DoubleValue(ns));
+    rooted!(in(raw_cx) let google_stvsc_root = google_stvsc);
+    let ns_name = CString::new("ns").unwrap();
+    if !JS_SetProperty(
+        cx,
+        google_stvsc_root.handle().into(),
+        ns_name.as_ptr(),
+        ns_val.handle().into(),
+    ) {
+        return Err("Failed to update google.stvsc.ns".to_string());
+    }
 
     // ------------------------------------------------------------------
     // google.xsrf — XSRF token map (populated later by server responses)
     // ------------------------------------------------------------------
-    rooted!(in(raw_cx) let google_xsrf = new_plain_object(cx, "xsrf")?);
-    define_prop(cx, google.get(), "xsrf", ObjectValue(google_xsrf.get()))?;
+    let _ = get_or_create_object_property(cx, google.get(), "xsrf", false)?;
 
     Ok(())
 }
@@ -272,57 +374,54 @@ unsafe fn invoke_callback_with_global_this(cx: &mut SafeJSContext, callback_val:
     JS_ClearPendingException(&cx);
 }
 
-unsafe fn setup_google_c(cx: &mut SafeJSContext) -> Result<*mut JSObject, String> {
+unsafe fn setup_google_c(cx: &mut SafeJSContext, c: *mut JSObject) -> Result<(), String> {
     let raw_cx = cx.raw_cx();
-    let c = new_plain_object(cx, "google.c")?;
 
     // Timing recorders
-    define_function(cx, c, "e", Some(google_c_e), 3)?;
-    define_function(cx, c, "r", Some(google_c_r), 2)?;
-    define_function(cx, c, "b", Some(google_c_b), 2)?;
+    ensure_function(cx, c, "e", Some(google_c_e), 3)?;
+    ensure_function(cx, c, "r", Some(google_c_r), 2)?;
+    ensure_function(cx, c, "b", Some(google_c_b), 2)?;
 
     // Mark Above-Fold Time — called as google.c.maft(timestamp, label)
-    define_function(cx, c, "maft", Some(google_c_maft), 2)?;
+    ensure_function(cx, c, "maft", Some(google_c_maft), 2)?;
 
     // Mark Initial Markup Loaded — called as google.c.miml(timestamp)
-    define_function(cx, c, "miml", Some(google_c_miml), 1)?;
+    ensure_function(cx, c, "miml", Some(google_c_miml), 1)?;
 
     // Update timing mark — called as google.c.u(key)
-    define_function(cx, c, "u", Some(google_c_u), 1)?;
+    ensure_function(cx, c, "u", Some(google_c_u), 1)?;
 
     // Queue callback for a timing mark — called as google.c.q(key, callback)
-    define_function(cx, c, "q", Some(google_c_q), 2)?;
+    ensure_function(cx, c, "q", Some(google_c_q), 2)?;
 
     // Boolean flags read by inline Google scripts.
     // ubf  — "update before first": if true, google.c.u("frt") is called before maft
-    set_bool_property(cx, c, "ubf", false)?;
+    ensure_bool_prop(cx, c, "ubf", false)?;
     // cae  — "content already evaluated": if true, maft is skipped
-    set_bool_property(cx, c, "cae", false)?;
+    ensure_bool_prop(cx, c, "cae", false)?;
     // wpr  — "wait for page ready": if true, ATF is gated through google.c.q
-    set_bool_property(cx, c, "wpr", false)?;
+    ensure_bool_prop(cx, c, "wpr", false)?;
     // uchfv — flag used to select the wh threshold in the polling loop
-    set_bool_property(cx, c, "uchfv", false)?;
+    ensure_bool_prop(cx, c, "uchfv", false)?;
     // wh   — wait-hint frame count used by the polling loop when wpr is true
-    set_int_property(cx, c, "wh", 0)?;
+    ensure_int_prop(cx, c, "wh", 0)?;
 
     // iim  — "immediately-invoke metrics" map, populated by other inline scripts
-    rooted!(in(raw_cx) let iim = new_plain_object(cx, "google.c.iim")?);
-    define_prop(cx, c, "iim", ObjectValue(iim.get()))?;
+    if get_existing_object_property(cx, c, "iim").is_none() {
+        rooted!(in(raw_cx) let iim = new_plain_object(cx, "google.c.iim")?);
+        define_prop(cx, c, "iim", ObjectValue(iim.get()))?;
+    }
 
-    Ok(c)
+    Ok(())
 }
 
-unsafe fn setup_google_timers(cx: &mut SafeJSContext) -> Result<*mut JSObject, String> {
+unsafe fn setup_google_timers(cx: &mut SafeJSContext, timers: *mut JSObject) -> Result<(), String> {
     // google.timers = { load: { e: {}, t: {}, tick: fn } }
-    let timers = new_plain_object(cx, "google.timers")?;
-    let load = new_plain_object(cx, "google.timers.load")?;
-    let e_obj = new_plain_object(cx, "google.timers.load.e")?;
-    let t_obj = new_plain_object(cx, "google.timers.load.t")?;
-    define_prop(cx, load, "e", ObjectValue(e_obj))?;
-    define_prop(cx, load, "t", ObjectValue(t_obj))?;
-    define_function(cx, load, "tick", Some(google_timers_load_tick), 2)?;
-    define_prop(cx, timers, "load", ObjectValue(load))?;
-    Ok(timers)
+    let (load, _) = get_or_create_object_property(cx, timers, "load", false)?;
+    let _ = get_or_create_object_property(cx, load, "e", false)?;
+    let _ = get_or_create_object_property(cx, load, "t", false)?;
+    ensure_function(cx, load, "tick", Some(google_timers_load_tick), 2)?;
+    Ok(())
 }
 
 // ============================================================================

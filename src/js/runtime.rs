@@ -29,6 +29,8 @@ use std::time::Duration;
 use mozjs::realm::AutoRealm;
 use url::Url;
 use crate::js::bindings::initialize_bindings;
+use crate::js::bindings::event_listeners::clear_all_listeners;
+use crate::js::jsapi::promise::clear_pending_jobs_for_navigation;
 use crate::js::helpers::ToSafeCx;
 
 lazy_static! {
@@ -141,6 +143,23 @@ impl JsRuntime {
 
             initialize_bindings(self, dom, user_agent, timer_manager)?;
         }
+        Ok(())
+    }
+
+    /// Reset document-scoped JS state and rebind globals for a new navigation.
+    pub fn reset_for_navigation(&mut self, dom: *mut Dom, user_agent: String) -> JsResult<()> {
+        self.dom = dom;
+        self.user_agent = user_agent.clone();
+
+        // Keep the same runtime/realm but clear state that must not leak across documents.
+        self.timer_manager.clear_all();
+        clear_all_listeners();
+        clear_pending_jobs_for_navigation();
+
+        self.enter_realm_and_initialize(dom, user_agent, self.timer_manager.clone())?;
+
+        // Refresh thread-local runtime pointer after navigation reset.
+        RUNTIME.with(|cell| *cell.borrow_mut() = Some(self as *mut JsRuntime));
         Ok(())
     }
 

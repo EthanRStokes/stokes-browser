@@ -82,6 +82,11 @@ impl TimerManager {
         self.timers.borrow_mut().remove(&id);
     }
 
+    /// Drop all timers for a full-document navigation reset.
+    pub fn clear_all(&self) {
+        self.timers.borrow_mut().clear();
+    }
+
     /// Process all timers and execute callbacks that are ready
     /// Returns true if any timers were executed
     pub fn process_timers(&self, runtime: &mut JsRuntime) -> bool {

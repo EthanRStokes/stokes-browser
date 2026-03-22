@@ -148,6 +148,15 @@ pub fn clear_listeners_for_node(node_id: usize) {
     JS_EVENT_LISTENERS.with(|m| { m.borrow_mut().remove(&node_id); });
 }
 
+/// Drop all JS event listeners (used when a new document replaces the old one).
+pub fn clear_all_listeners() {
+    JS_EVENT_LISTENERS.with(|m| m.borrow_mut().clear());
+    NEXT_LISTENER_ID.with(|n| n.set(1));
+    EVENT_DEFAULT_PREVENTED.with(|f| f.set(false));
+    EVENT_PROPAGATION_STOPPED.with(|f| f.set(false));
+    EVENT_IMMEDIATE_STOPPED.with(|f| f.set(false));
+}
+
 // ── JS event object construction ───────────────────────────────────────────────
 
 /// Native implementation of `event.stopPropagation()`.

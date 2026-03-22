@@ -86,9 +86,8 @@ pub unsafe fn create_js_element_by_id(
 }
 
 /// Internal element wrapper builder.
-/// When `with_parent` is true, looks up the parent in the DOM and creates a full element
-/// wrapper for it (with `with_parent = false` so the parent itself doesn't recurse).
-/// When `with_parent` is false, `parentNode` and `parentElement` are set to null.
+/// `with_parent` controls whether lazy parent lookup is enabled for this wrapper.
+/// When false, `parentNode`/`parentElement` resolve to null.
 unsafe fn create_js_element_impl(
     cx: &mut SafeJSContext,
     node_id: usize,
@@ -202,6 +201,16 @@ unsafe fn create_js_element_impl(
         0,
     );
 
+    rooted!(in(raw_cx) let allow_parent_lookup = BooleanValue(with_parent));
+    let allow_parent_name = std::ffi::CString::new("__allowParentLookup").unwrap();
+    JS_DefineProperty(
+        cx,
+        element_rooted.handle().into(),
+        allow_parent_name.as_ptr(),
+        allow_parent_lookup.handle().into(),
+        0,
+    );
+
     // Point element.constructor at the best available global constructor object.
     rooted!(in(raw_cx) let global = CurrentGlobalOrNull(cx));
     if !global.get().is_null() {
@@ -289,6 +298,8 @@ unsafe fn create_js_element_impl(
     define_function(cx, element.get(), "__getNextSibling", Some(element_get_next_sibling), 0)?;
     define_function(cx, element.get(), "__getChildren", Some(element_get_children), 0)?;
     define_function(cx, element.get(), "__getChildNodes", Some(element_get_child_nodes), 0)?;
+    define_function(cx, element.get(), "__getParentNode", Some(element_get_parent_node), 0)?;
+    define_function(cx, element.get(), "__getParentElement", Some(element_get_parent_element), 0)?;
 
     // Define property accessors
     define_property_accessor(cx, element.get(), "textContent", "__getTextContent", "__setTextContent")?;
@@ -301,6 +312,8 @@ unsafe fn create_js_element_impl(
     define_property_accessor(cx, element.get(), "nextSibling", "__getNextSibling", "__setShadowRoot")?;
     define_property_accessor(cx, element.get(), "children", "__getChildren", "__setShadowRoot")?;
     define_property_accessor(cx, element.get(), "childNodes", "__getChildNodes", "__setShadowRoot")?;
+    define_property_accessor(cx, element.get(), "parentNode", "__getParentNode", "__setShadowRoot")?;
+    define_property_accessor(cx, element.get(), "parentElement", "__getParentElement", "__setShadowRoot")?;
 
     // IDL-reflected attribute accessors (src, type, async)
     define_function(cx, element.get(), "__getSrc", Some(element_get_src), 0)?;
@@ -401,74 +414,6 @@ unsafe fn create_js_element_impl(
             dataset_val.handle().into(),
             JSPROP_ENUMERATE as u32,
         );
-    }
-
-    // Look up the parent from the DOM and expose it as parentNode/parentElement.
-    // When `with_parent` is true we build a full element wrapper for the parent (using
-    // `with_parent = false` so the parent's own parent is *not* traversed, avoiding infinite
-    // recursion).  When `with_parent` is false we short-circuit to null immediately.
-    let parent_info: Option<(usize, String, AttributeMap)> = if with_parent && node_id != 0 {
-        DOM_REF.with(|dom_ref| {
-            if let Some(ref dom) = *dom_ref.borrow() {
-                let dom = &**dom;
-                if let Some(node) = dom.get_node(node_id) {
-                    if let Some(parent_id) = node.parent {
-                        if let Some(parent_node) = dom.get_node(parent_id) {
-                            if let NodeData::Element(ref elem_data) = parent_node.data {
-                                return Some((parent_id, elem_data.name.local.to_string(), elem_data.attributes.clone()));
-                            }
-                        }
-                    }
-                }
-            }
-            None
-        })
-    } else {
-        None
-    };
-
-    if let Some((parent_id, parent_tag, parent_attrs)) = parent_info {
-        // Build a *full* element wrapper for the parent so that JS code can call any element
-        // method (e.g. hasAttribute, getAttribute, matches, …) on it without hitting a
-        // "not a function" error.  We pass `with_parent = false` to prevent the parent from
-        // also building its own parent and so on (no infinite recursion).
-        if let Ok(parent_val) = create_js_element_impl(cx, parent_id, &parent_tag, &parent_attrs, false, false) {
-            for name in &["parentNode", "parentElement"] {
-                let cname = std::ffi::CString::new(*name).unwrap();
-                rooted!(in(raw_cx) let pv = parent_val);
-                JS_DefineProperty(
-                    cx,
-                    element_rooted.handle().into(),
-                    cname.as_ptr(),
-                    pv.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
-            }
-        } else {
-            rooted!(in(raw_cx) let null_val = NullValue());
-            for name in &["parentNode", "parentElement"] {
-                let cname = std::ffi::CString::new(*name).unwrap();
-                JS_DefineProperty(
-                    cx,
-                    element_rooted.handle().into(),
-                    cname.as_ptr(),
-                    null_val.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
-            }
-        }
-    } else {
-        rooted!(in(raw_cx) let null_val = NullValue());
-        for name in &["parentNode", "parentElement"] {
-            let cname = std::ffi::CString::new(*name).unwrap();
-            JS_DefineProperty(
-                cx,
-                element_rooted.handle().into(),
-                cname.as_ptr(),
-                null_val.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
     }
 
     // Set dimension properties
@@ -815,6 +760,71 @@ unsafe extern "C" fn element_set_shadow_root_noop(raw_cx: *mut JSContext, argc: 
     let args = CallArgs::from_vp(vp, argc);
     args.rval().set(UndefinedValue());
     true
+}
+
+unsafe fn should_lookup_parent(cx: &mut SafeJSContext, args: &CallArgs) -> bool {
+    let raw_cx = cx.raw_cx();
+    let this_val = args.thisv();
+    if !this_val.get().is_object() || this_val.get().is_null() {
+        return false;
+    }
+
+    rooted!(in(raw_cx) let this_obj = this_val.get().to_object());
+    rooted!(in(raw_cx) let mut allow_parent = UndefinedValue());
+    let allow_name = std::ffi::CString::new("__allowParentLookup").unwrap();
+    if !JS_GetProperty(
+        cx,
+        this_obj.handle().into(),
+        allow_name.as_ptr(),
+        allow_parent.handle_mut().into(),
+    ) {
+        return false;
+    }
+
+    allow_parent.get().is_boolean() && allow_parent.get().to_boolean()
+}
+
+unsafe fn build_parent_wrapper(cx: &mut SafeJSContext, node_id: usize) -> Option<JSVal> {
+    let parent_info: Option<(usize, String, AttributeMap)> = DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = *dom_ref.borrow() {
+            let dom = &*dom_ptr;
+            if let Some(node) = dom.get_node(node_id) {
+                if let Some(parent_id) = node.parent {
+                    if let Some(parent_node) = dom.get_node(parent_id) {
+                        if let NodeData::Element(ref elem_data) = parent_node.data {
+                            return Some((
+                                parent_id,
+                                elem_data.name.local.to_string(),
+                                elem_data.attributes.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    });
+
+    let (parent_id, parent_tag, parent_attrs) = parent_info?;
+    create_js_element_impl(cx, parent_id, &parent_tag, &parent_attrs, false, false).ok()
+}
+
+unsafe extern "C" fn element_get_parent_node(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    if !should_lookup_parent(safe_cx, &args) {
+        args.rval().set(NullValue());
+        return true;
+    }
+
+    let parent_val = get_node_id_from_this(safe_cx, &args).and_then(|node_id| build_parent_wrapper(safe_cx, node_id));
+    args.rval().set(parent_val.unwrap_or(NullValue()));
+    true
+}
+
+unsafe extern "C" fn element_get_parent_element(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    element_get_parent_node(raw_cx, argc, vp)
 }
 
 unsafe extern "C" fn element_get_first_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
