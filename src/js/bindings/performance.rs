@@ -11,10 +11,10 @@ use std::ptr::NonNull;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use mozjs::conversions::jsstr_to_string;
 use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty, JS_NewPlainObject};
+use tracing::error;
 use crate::js::helpers::create_empty_array;
 use crate::js::helpers::set_string_property;
 use crate::js::helpers::ToSafeCx;
-use crate::js::bindings::warnings::{warn_stubbed_binding, warn_unexpected_nullish_return};
 
 /// Performance mark entry
 #[derive(Debug, Clone)]
@@ -97,7 +97,12 @@ impl PerformanceManager {
     }
 
     /// Create a performance measure between two marks
-    pub fn measure(&self, name: String, start_mark: Option<String>, end_mark: Option<String>) -> Result<f64, String> {
+    pub fn measure(
+        &self,
+        name: String,
+        start_mark: Option<String>,
+        end_mark: Option<String>,
+    ) -> Result<(f64, f64), String> {
         let start_time = if let Some(ref start_name) = start_mark {
             let entries = self.entries.borrow();
             match entries.get(start_name) {
@@ -125,7 +130,7 @@ impl PerformanceManager {
             duration,
         };
         self.entries.borrow_mut().insert(name, PerformanceEntry::Measure(measure));
-        Ok(duration)
+        Ok((start_time, duration))
     }
 
     /// Clear marks by name (or all if name is None)
@@ -549,22 +554,31 @@ unsafe extern "C" fn performance_mark(raw_cx: *mut JSContext, argc: c_uint, vp: 
         }
     };
 
-    PERFORMANCE_MANAGER.with(|pm| {
+    let start_time = PERFORMANCE_MANAGER.with(|pm| {
         if let Some(ref manager) = *pm.borrow() {
-            manager.mark(name);
+            manager.mark(name.clone())
+        } else {
+            0.0
         }
     });
 
-    // FIXME: Should return a PerformanceMark object (with name, startTime, entryType, duration
-    // properties) per the Web Performance API spec, not undefined.
-    warn_stubbed_binding("performance.mark", "returns undefined instead of PerformanceMark");
-    warn_unexpected_nullish_return(
-        "performance.mark",
-        "undefined",
-        "PerformanceMark object",
-        "this partial implementation only records the entry internally",
-    );
-    args.rval().set(UndefinedValue());
+    let safe_cx = &mut raw_cx.to_safe_cx();
+    rooted!(in(raw_cx) let mark_obj = JS_NewPlainObject(safe_cx));
+    if mark_obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    if set_string_property(safe_cx, mark_obj.get(), "name", &name).is_err()
+        || set_string_property(safe_cx, mark_obj.get(), "entryType", "mark").is_err()
+        || define_number_property(safe_cx, mark_obj.get(), "startTime", start_time).is_err()
+        || define_number_property(safe_cx, mark_obj.get(), "duration", 0.0).is_err()
+    {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    args.rval().set(ObjectValue(mark_obj.get()));
     true
 }
 
@@ -598,24 +612,40 @@ unsafe extern "C" fn performance_measure(raw_cx: *mut JSContext, argc: c_uint, v
         None
     };
 
-    PERFORMANCE_MANAGER.with(|pm| {
+    let measure_result = PERFORMANCE_MANAGER.with(|pm| {
         if let Some(ref manager) = *pm.borrow() {
-            if let Err(e) = manager.measure(name, start_mark, end_mark) {
-                eprintln!("Performance measure error: {}", e);
-            }
+            manager.measure(name.clone(), start_mark, end_mark)
+        } else {
+            Ok((0.0, 0.0))
         }
     });
 
-    // FIXME: Should return a PerformanceMeasure object (with name, startTime, duration,
-    // entryType properties) per the Web Performance API spec, not undefined.
-    warn_stubbed_binding("performance.measure", "returns undefined instead of PerformanceMeasure");
-    warn_unexpected_nullish_return(
-        "performance.measure",
-        "undefined",
-        "PerformanceMeasure object",
-        "this partial implementation only records the entry internally",
-    );
-    args.rval().set(UndefinedValue());
+    let (start_time, duration) = match measure_result {
+        Ok(values) => values,
+        Err(e) => {
+            error!("Performance measure error: {}", e);
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    };
+
+    let safe_cx = &mut raw_cx.to_safe_cx();
+    rooted!(in(raw_cx) let measure_obj = JS_NewPlainObject(safe_cx));
+    if measure_obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    if set_string_property(safe_cx, measure_obj.get(), "name", &name).is_err()
+        || set_string_property(safe_cx, measure_obj.get(), "entryType", "measure").is_err()
+        || define_number_property(safe_cx, measure_obj.get(), "startTime", start_time).is_err()
+        || define_number_property(safe_cx, measure_obj.get(), "duration", duration).is_err()
+    {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    args.rval().set(ObjectValue(measure_obj.get()));
     true
 }
 
@@ -851,6 +881,24 @@ mod tests {
         let (now, response_start) = manager.navigation_entry_relative_fields();
         assert!(now >= 0.0);
         assert!(response_start >= 0.0);
+    }
+
+    #[test]
+    fn measure_returns_start_and_duration() {
+        let manager = PerformanceManager::new();
+        let start_mark_time = manager.mark("start".to_string());
+        let end_mark_time = manager.mark("end".to_string());
+
+        let (start_time, duration) = manager
+            .measure(
+                "between".to_string(),
+                Some("start".to_string()),
+                Some("end".to_string()),
+            )
+            .expect("measure should resolve between two existing marks");
+
+        assert_eq!(start_time, start_mark_time);
+        assert_eq!(duration, end_mark_time - start_mark_time);
     }
 }
 
