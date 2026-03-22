@@ -2979,6 +2979,50 @@ unsafe extern "C" fn window_scroll_by(raw_cx: *mut JSContext, argc: c_uint, vp: 
     true
 }
 
+fn normalize_atob_input(input: &str) -> Option<String> {
+    let mut normalized: String = input
+        .chars()
+        .filter(|c| !matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'))
+        .collect();
+
+    if normalized.len() % 4 == 0 {
+        if normalized.ends_with("==") {
+            normalized.truncate(normalized.len() - 2);
+        } else if normalized.ends_with('=') {
+            normalized.truncate(normalized.len() - 1);
+        }
+    }
+
+    if normalized.len() % 4 == 1 {
+        return None;
+    }
+
+    if normalized
+        .chars()
+        .any(|c| !(c.is_ascii_alphanumeric() || c == '+' || c == '/'))
+    {
+        return None;
+    }
+
+    match normalized.len() % 4 {
+        0 => {}
+        2 => normalized.push_str("=="),
+        3 => normalized.push('='),
+        _ => return None,
+    }
+
+    Some(normalized)
+}
+
+fn decode_atob_binary_string(input: &str) -> Result<String, ()> {
+    let normalized = normalize_atob_input(input).ok_or(())?;
+    use base64::Engine;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(normalized.as_bytes())
+        .map_err(|_| ())?;
+    Ok(decoded.into_iter().map(char::from).collect())
+}
+
 /// window.atob implementation (base64 decode)
 unsafe extern "C" fn window_atob(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -2990,26 +3034,17 @@ unsafe extern "C" fn window_atob(raw_cx: *mut JSContext, argc: c_uint, vp: *mut 
         String::new()
     };
 
-    use base64::Engine;
-    match base64::engine::general_purpose::STANDARD.decode(encoded.as_bytes()) {
+    match decode_atob_binary_string(&encoded) {
         Ok(decoded) => {
-            if let Ok(s) = String::from_utf8(decoded) {
-                args.rval().set(create_js_string(safe_cx, &s));
-            } else {
-                // FIXME: Non-UTF-8 decoded bytes should be returned as a Latin-1 string (each byte
-                // as a code point), not silently replaced with an empty string.
-                warn!("[JS] atob() called on partial binding (non-UTF-8 output path returns empty string)");
-                args.rval().set(create_js_string(safe_cx, ""));
-            }
+            args.rval().set(create_js_string(safe_cx, &decoded));
+            true
         }
-        Err(_) => {
-            // FIXME: Should throw a DOMException with name "InvalidCharacterError" instead of
-            // returning an empty string when the input is not valid base64.
-            warn!("[JS] atob() called with invalid base64 on partial binding (returns empty string)");
-            args.rval().set(create_js_string(safe_cx, ""));
+        Err(()) => {
+            warn!("[JS] atob() received invalid base64 input");
+            args.rval().set(UndefinedValue());
+            false
         }
     }
-    true
 }
 
 /// window.btoa implementation (base64 encode)
@@ -3881,7 +3916,7 @@ pub fn setup_image_constructor_deferred(runtime: &mut JsRuntime) -> Result<(), S
 
 #[cfg(test)]
 mod tests {
-    use super::evaluate_media_query;
+    use super::{decode_atob_binary_string, evaluate_media_query, normalize_atob_input};
 
     #[test]
     fn width_queries_match_expected_ranges() {
@@ -3902,5 +3937,27 @@ mod tests {
         assert!(evaluate_media_query("(min-resolution: 96dpi)", 800.0, 600.0, 1.0));
         assert!(evaluate_media_query("(resolution: 1dppx)", 800.0, 600.0, 1.0));
         assert!(!evaluate_media_query("(min-resolution: 2dppx)", 800.0, 600.0, 1.0));
+    }
+
+    #[test]
+    fn atob_accepts_whitespace_and_missing_padding() {
+        assert_eq!(decode_atob_binary_string(" SGVs\nbG8= ").unwrap(), "Hello");
+        assert_eq!(normalize_atob_input("YQ").unwrap(), "YQ==");
+        assert_eq!(normalize_atob_input("YWI").unwrap(), "YWI=");
+    }
+
+    #[test]
+    fn atob_returns_binary_string_for_non_utf8_bytes() {
+        let decoded = decode_atob_binary_string("/wA=").unwrap();
+        let code_points: Vec<u32> = decoded.chars().map(|ch| ch as u32).collect();
+        assert_eq!(code_points, vec![255, 0]);
+    }
+
+    #[test]
+    fn atob_rejects_invalid_base64_inputs() {
+        assert!(decode_atob_binary_string("A").is_err());
+        assert!(decode_atob_binary_string("YW=J").is_err());
+        assert!(decode_atob_binary_string("YWJj====").is_err());
+        assert!(decode_atob_binary_string("YWJj*").is_err());
     }
 }

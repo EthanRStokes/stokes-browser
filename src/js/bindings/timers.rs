@@ -1,9 +1,15 @@
 use crate::js::JsRuntime;
+use crate::js::helpers::ToSafeCx;
+use crate::js::jsapi::promise::PersistentRooted;
 // Timer implementation for setTimeout and setInterval using mozjs
 use mozjs::context::RawJSContext;
 use mozjs::conversions::jsstr_to_string;
-use mozjs::jsval::{Int32Value, JSVal, UndefinedValue};
+use mozjs::jsapi::{HandleValueArray, JSObject};
+use mozjs::jsval::{Int32Value, JSVal, ObjectValue, UndefinedValue};
+use mozjs::realm::AutoRealm;
 use mozjs::rooted;
+use mozjs::rust::ValueArray;
+use mozjs::rust::wrappers2::{CurrentGlobalOrNull, JS_CallFunctionValue, JS_ClearPendingException};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ptr::NonNull;
@@ -12,13 +18,22 @@ use std::time::{Duration, Instant};
 use tracing::warn;
 
 /// A pending timer that will execute a callback after a delay
-#[derive(Debug)]
 struct Timer {
     id: u32,
     start_time: Instant,
     duration: Duration,
-    callback_code: String, // Store the code/function as string for now
+    callback: TimerCallback,
     repeating: bool,
+}
+
+enum TimerCallback {
+    Script(String),
+    Function(PersistentRooted),
+}
+
+enum ReadyTimerCallback {
+    Script(String),
+    Function(*mut JSObject),
 }
 
 /// Timer manager that tracks all active timers
@@ -37,7 +52,7 @@ impl TimerManager {
     }
 
     /// Register a new timeout
-    pub fn set_timeout(&self, callback_code: String, delay: u32) -> u32 {
+    fn set_timeout(&self, callback: TimerCallback, delay: u32) -> u32 {
         let id = {
             let mut next_id = self.next_id.borrow_mut();
             let id = *next_id;
@@ -49,7 +64,7 @@ impl TimerManager {
             id,
             start_time: Instant::now(),
             duration: Duration::from_millis(delay as u64),
-            callback_code,
+            callback,
             repeating: false,
         };
 
@@ -58,7 +73,7 @@ impl TimerManager {
     }
 
     /// Register a new interval
-    pub fn set_interval(&self, callback_code: String, delay: u32) -> u32 {
+    fn set_interval(&self, callback: TimerCallback, delay: u32) -> u32 {
         let id = {
             let mut next_id = self.next_id.borrow_mut();
             let id = *next_id;
@@ -70,7 +85,7 @@ impl TimerManager {
             id,
             start_time: Instant::now(),
             duration: Duration::from_millis(delay as u64),
-            callback_code,
+            callback,
             repeating: true,
         };
 
@@ -92,7 +107,7 @@ impl TimerManager {
     /// Returns true if any timers were executed
     pub fn process_timers(&self, runtime: &mut JsRuntime) -> bool {
         let now = Instant::now();
-        let mut ready_timers: Vec<(u32, String, bool)> = Vec::new();
+        let mut ready_timers: Vec<(u32, ReadyTimerCallback, bool)> = Vec::new();
         let mut timers_to_reschedule = Vec::new();
 
         // Find all timers that are ready to execute
@@ -100,7 +115,11 @@ impl TimerManager {
             let timers = self.timers.borrow();
             for (id, timer) in timers.iter() {
                 if now.duration_since(timer.start_time) >= timer.duration {
-                    ready_timers.push((*id, timer.callback_code.clone(), timer.repeating));
+                    let callback = match &timer.callback {
+                        TimerCallback::Script(code) => ReadyTimerCallback::Script(code.clone()),
+                        TimerCallback::Function(func) => ReadyTimerCallback::Function(func.get()),
+                    };
+                    ready_timers.push((*id, callback, timer.repeating));
                 }
             }
         }
@@ -108,10 +127,16 @@ impl TimerManager {
         let had_timers = !ready_timers.is_empty();
 
         // Execute callbacks for ready timers
-        for (id, callback_code, repeating) in ready_timers {
-            // Execute the callback code
-            if let Err(e) = runtime.execute(&callback_code, false) {
-                eprintln!("Timer callback error: {}", e);
+        for (id, callback, repeating) in ready_timers {
+            match callback {
+                ReadyTimerCallback::Script(callback_code) => {
+                    if let Err(e) = runtime.execute(&callback_code, false) {
+                        eprintln!("Timer callback error: {}", e);
+                    }
+                }
+                ReadyTimerCallback::Function(callback_obj) => unsafe {
+                    invoke_function_timer_callback(runtime, callback_obj);
+                },
             }
 
             // Remove the timer if it's not repeating
@@ -156,6 +181,41 @@ impl TimerManager {
     }
 }
 
+unsafe fn invoke_function_timer_callback(runtime: &mut JsRuntime, callback_obj: *mut JSObject) {
+    if callback_obj.is_null() {
+        return;
+    }
+
+    let cx = runtime.cx();
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let callback_obj_r = callback_obj);
+
+    // Enter the callback realm to avoid cross-realm invocation hazards.
+    let mut cx = AutoRealm::new_from_handle(cx, callback_obj_r.handle());
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let this = CurrentGlobalOrNull(&cx));
+    if this.get().is_null() {
+        return;
+    }
+
+    rooted!(in(raw_cx) let callable = ObjectValue(callback_obj_r.get()));
+    rooted!(in(raw_cx) let zero_args = ValueArray::<0usize>::new([]));
+    rooted!(in(raw_cx) let mut rval = UndefinedValue());
+
+    if !JS_CallFunctionValue(
+        &mut cx,
+        this.handle().into(),
+        callable.handle().into(),
+        &HandleValueArray::from(&zero_args),
+        rval.handle_mut().into(),
+    ) {
+        warn!("[JS] timer function callback threw during invocation");
+    }
+
+    // Timer callbacks are fire-and-forget, so clear pending exceptions.
+    JS_ClearPendingException(&cx);
+}
+
 // Thread-local storage for the timer manager pointer
 thread_local! {
     static TIMER_MANAGER: RefCell<Option<Rc<TimerManager>>> = RefCell::new(None);
@@ -173,20 +233,20 @@ pub fn setup_timers(runtime: &mut JsRuntime, timer_manager: Rc<TimerManager>) ->
         unsafe {
             let argc = args.argc_;
             // Get callback (first argument)
-            // FIXME: Only string callbacks are supported. When a function object is passed (the
-            // common case), it is converted to the literal string "[function]" which will throw a
-            // SyntaxError when executed. Function objects should be rooted and stored separately,
-            // then invoked via JS_CallFunctionValue when the timer fires.
-            let callback_code = if argc > 0 {
+            let callback = if argc > 0 {
                 let callback_val = *args.get(0);
                 if callback_val.is_string() {
-                    js_value_to_string(cx, callback_val)
+                    TimerCallback::Script(js_value_to_string(cx, callback_val))
+                } else if callback_val.is_object() && !callback_val.is_null() {
+                    let callback_obj = callback_val.to_object();
+                    let mut safe_cx = cx.to_safe_cx();
+                    TimerCallback::Function(PersistentRooted::new_from_obj(&mut safe_cx, callback_obj))
                 } else {
-                    warn!("[JS] setTimeout() called with non-string callback on partial binding (function callbacks are not supported)");
-                    "".to_string()
+                    warn!("[JS] setTimeout() called with non-callable callback on partial binding");
+                    TimerCallback::Script(String::new())
                 }
             } else {
-                "".to_string()
+                TimerCallback::Script(String::new())
             };
 
             // Get delay (second argument)
@@ -205,7 +265,7 @@ pub fn setup_timers(runtime: &mut JsRuntime, timer_manager: Rc<TimerManager>) ->
 
             let id = TIMER_MANAGER.with(|tm| {
                 if let Some(ref manager) = *tm.borrow() {
-                    manager.set_timeout(callback_code, delay)
+                    manager.set_timeout(callback, delay)
                 } else {
                     0
                 }
@@ -245,20 +305,20 @@ pub fn setup_timers(runtime: &mut JsRuntime, timer_manager: Rc<TimerManager>) ->
         unsafe {
             let argc = args.argc_;
             // Get callback (first argument)
-            // FIXME: Only string callbacks are supported. When a function object is passed (the
-            // common case), it is converted to the literal string "[function]" which will throw a
-            // SyntaxError when executed. Function objects should be rooted and stored separately,
-            // then invoked via JS_CallFunctionValue each time the interval fires.
-            let callback_code = if argc > 0 {
+            let callback = if argc > 0 {
                 let callback_val = *args.get(0);
                 if callback_val.is_string() {
-                    js_value_to_string(cx, callback_val)
+                    TimerCallback::Script(js_value_to_string(cx, callback_val))
+                } else if callback_val.is_object() && !callback_val.is_null() {
+                    let callback_obj = callback_val.to_object();
+                    let mut safe_cx = cx.to_safe_cx();
+                    TimerCallback::Function(PersistentRooted::new_from_obj(&mut safe_cx, callback_obj))
                 } else {
-                    warn!("[JS] setInterval() called with non-string callback on partial binding (function callbacks are not supported)");
-                    "".to_string()
+                    warn!("[JS] setInterval() called with non-callable callback on partial binding");
+                    TimerCallback::Script(String::new())
                 }
             } else {
-                "".to_string()
+                TimerCallback::Script(String::new())
             };
 
             // Get delay (second argument)
@@ -277,7 +337,7 @@ pub fn setup_timers(runtime: &mut JsRuntime, timer_manager: Rc<TimerManager>) ->
 
             let id = TIMER_MANAGER.with(|tm| {
                 if let Some(ref manager) = *tm.borrow() {
-                    manager.set_interval(callback_code, delay)
+                    manager.set_interval(callback, delay)
                 } else {
                     0
                 }
@@ -325,9 +385,7 @@ unsafe fn js_value_to_string(cx: *mut RawJSContext, val: JSVal) -> String {
 
         jsstr_to_string(cx, NonNull::new(str_val.get()).unwrap())
     } else if val.is_object() && !val.is_null() {
-        // FIXME: Function objects are replaced with the inert string "[function]". This string
-        // cannot be eval'd, so setTimeout(fn, 0) will silently fail to execute the callback.
-        // Should store the JS function value (properly rooted) and call it directly.
+        // Legacy fallback for generic JS-to-string conversion call sites.
         warn!("[JS] timer callback object coerced to inert placeholder on partial binding");
         "[function]".to_string()
     } else {
