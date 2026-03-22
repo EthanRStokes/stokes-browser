@@ -7,6 +7,7 @@ use crate::ipc::{connect, IpcChannel, ParentToTabMessage, TabToParentMessage};
 use crate::shell_provider::{ShellProviderMessage, StokesShellProvider};
 use crate::{js, networking};
 use crate::renderer::painter::{ScenePainter, SkiaCache};
+use blitz_traits::net::Request;
 use blitz_traits::shell::{ShellProvider, Viewport};
 use gl::types::GLint;
 use glutin::config::{Config, ConfigSurfaceTypes, ConfigTemplateBuilder, GlConfig};
@@ -31,6 +32,7 @@ use std::time::Instant;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tracing::trace;
 use tracing::metadata::LevelFilter;
+use url::Url;
 
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
@@ -554,8 +556,10 @@ impl TabProcess {
                             let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(true));
                             let url = options.url.as_str().to_string();
                             let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
+                            let request = options.into_request();
+                            let history_request = request.clone();
                             self.dom().unwrap().net_provider.fetch_with_callback(
-                                options.into_request(),
+                                request,
                                 Box::new(move |result| {
                                     let (url, bytes) = match result {
                                         Ok(res) => res,
@@ -568,6 +572,7 @@ impl TabProcess {
                                         navigation_id,
                                         url,
                                         contents,
+                                        request: history_request,
                                         is_md: false,
                                         retain_scroll_position: false,
                                     });
@@ -578,6 +583,7 @@ impl TabProcess {
                             navigation_id,
                             url,
                             contents,
+                            request,
                             retain_scroll_position: _,
                             is_md: _,
                         } => {
@@ -585,7 +591,7 @@ impl TabProcess {
                                 continue;
                             }
                             self.engine.set_loading_state(true);
-                            match self.engine.navigate(&url, contents, true, true).await {
+                            match self.engine.navigate(&url, contents, true, true, Some(request)).await {
                                 Ok(_) => {
                                     let title = self.engine.page_title().to_string();
                                     let _ = self.channel.send(&TabToParentMessage::NavigationCompleted {
@@ -614,8 +620,10 @@ impl TabProcess {
                             let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(true));
                             let url = options.url.as_str().to_string();
                             let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
+                            let request = options.into_request();
+                            let history_request = request.clone();
                             self.dom().unwrap().net_provider.fetch_with_callback(
-                                options.into_request(),
+                                request,
                                 Box::new(move |result| {
                                     let (url, bytes) = match result {
                                         Ok(res) => res,
@@ -628,6 +636,7 @@ impl TabProcess {
                                         navigation_id,
                                         url,
                                         contents,
+                                        request: history_request,
                                     });
                                 })
                             );
@@ -636,15 +645,16 @@ impl TabProcess {
                             navigation_id,
                             url,
                             contents,
+                            request,
                         } => {
                             if navigation_id != self.navigation_id {
                                 continue;
                             }
                             self.engine.set_loading_state(true);
                             // Navigate without adding to history, then replace the current entry.
-                            match self.engine.navigate(&url, contents, true, false).await {
+                            match self.engine.navigate(&url, contents, true, false, None).await {
                                 Ok(_) => {
-                                    self.engine.replace_current_history_entry(url.clone());
+                                    self.engine.replace_current_history_entry(request);
                                     let title = self.engine.page_title().to_string();
                                     let _ = self.channel.send(&TabToParentMessage::NavigationCompleted {
                                         url: url.clone(),
@@ -723,7 +733,8 @@ impl TabProcess {
                     eprintln!("[navigate] networking::fetch failed for {url}: {e}");
                     include_str!("../assets/404.html").to_string()
                 });
-                match self.engine.navigate(&url, contents, true, true).await {
+                let history_request = Url::parse(&url).ok().map(Request::get);
+                match self.engine.navigate(&url, contents, true, true, history_request).await {
                     Ok(_) => {
                         let title = self.engine.page_title().to_string();
                         let _ = self.channel.send(&TabToParentMessage::NavigationCompleted {
@@ -750,7 +761,8 @@ impl TabProcess {
                         eprintln!("[reload] networking::fetch failed for {url}: {e}");
                         include_str!("../assets/404.html").to_string()
                     });
-                    match self.engine.navigate(&url, contents, true, true).await {
+                    let history_request = Url::parse(&url).ok().map(Request::get);
+                    match self.engine.navigate(&url, contents, true, true, history_request).await {
                         Ok(_) => {
                             let title = self.engine.page_title().to_string();
                             let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });

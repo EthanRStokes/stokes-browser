@@ -54,7 +54,7 @@ pub struct Engine {
     // JavaScript runtime
     js_runtime: Option<JsRuntime>,
     // Navigation history
-    history: Vec<String>,
+    history: Vec<Request>,
     history_index: Option<usize>,
     shell_provider: Arc<StokesShellProvider>,
     pub(crate) navigation_provider: Arc<StokesNavigationProvider>,
@@ -98,7 +98,7 @@ impl Engine {
     }
 
     /// Navigate to a new URL
-    pub async fn navigate(&mut self, url: &str, contents: String, invalidate_js: bool, history: bool) -> Result<(), NetworkError> {
+    pub async fn navigate(&mut self, url: &str, contents: String, invalidate_js: bool, history: bool, history_request: Option<Request>) -> Result<(), NetworkError> {
         println!("Navigating to: {}", url);
         self.is_loading = true;
         self.current_url = url.to_string();
@@ -168,7 +168,13 @@ impl Engine {
 
         // Add to history if navigation was successful
         if history && result.is_ok() {
-            self.add_to_history(url.to_string());
+            if let Some(request) = history_request {
+                self.add_to_history(request);
+            } else if let Ok(parsed_url) = url::Url::parse(url) {
+                self.add_to_history(Request::get(parsed_url));
+            } else {
+                eprintln!("Skipping history entry for unparsable URL: {url}");
+            }
         }
 
         result
@@ -791,27 +797,57 @@ impl Engine {
     }
 
     /// Add a URL to the navigation history
-    fn add_to_history(&mut self, url: String) {
+    fn add_to_history(&mut self, request: Request) {
         // If we're not at the end of history, truncate everything after current position
         if let Some(index) = self.history_index {
             self.history.truncate(index + 1);
         }
         
-        // Add the new URL
-        self.history.push(url);
+        // Add the new request
+        self.history.push(request);
         self.history_index = Some(self.history.len() - 1);
     }
 
     /// Replace the current history entry with `url` without pushing a new entry.
     /// This is used by `location.replace()`.
-    pub fn replace_current_history_entry(&mut self, url: String) {
+    pub fn replace_current_history_entry(&mut self, request: Request) {
         if let Some(index) = self.history_index {
-            self.history[index] = url;
+            self.history[index] = request;
         } else {
             // No existing history; establish an initial entry.
-            self.history.push(url);
+            self.history.push(request);
             self.history_index = Some(0);
         }
+    }
+
+    async fn fetch_request_for_history(&self, request: Request) -> Result<(String, String), NetworkError> {
+        let net_provider = self
+            .new_http_client
+            .as_ref()
+            .map(|client| client.net_provider.clone())
+            .or_else(|| self.dom.as_ref().map(|dom| dom.net_provider.clone()))
+            .ok_or_else(|| NetworkError::Engine("Network provider unavailable".to_string()))?;
+
+        let fallback_url = request.url.to_string();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, String)>();
+
+        net_provider.fetch_with_callback(
+            request,
+            Box::new(move |result| {
+                let payload = match result {
+                    Ok((url, bytes)) => {
+                        let contents = std::str::from_utf8(&bytes)
+                            .map(str::to_string)
+                            .unwrap_or_else(|_| include_str!("../../assets/404.html").to_string());
+                        (url, contents)
+                    }
+                    Err(_) => (fallback_url, include_str!("../../assets/404.html").to_string()),
+                };
+                let _ = tx.send(payload);
+            }),
+        );
+
+        rx.recv().await.ok_or_else(|| NetworkError::Engine("Request callback dropped before delivering navigation payload".to_string()))
     }
 
     /// Check if we can navigate back
@@ -842,11 +878,9 @@ impl Engine {
 
         if let Some(index) = self.history_index {
             self.history_index = Some(index - 1);
-            let url = self.history[index - 1].clone();
-            let contents = networking::fetch(&url, &self.config.user_agent, self.config.block_ads).unwrap_or_else(|err| {
-                include_str!("../../assets/404.html").to_string()
-            });
-            self.navigate(&url, contents, true, false).await
+            let request = self.history[index - 1].clone();
+            let (url, contents) = self.fetch_request_for_history(request).await?;
+            self.navigate(&url, contents, true, false, None).await
         } else {
             Err(NetworkError::Curl("Invalid history state".to_string()))
         }
@@ -860,11 +894,9 @@ impl Engine {
 
         if let Some(index) = self.history_index {
             self.history_index = Some(index + 1);
-            let url = self.history[index + 1].clone();
-            let contents = networking::fetch(&url, &self.config.user_agent, self.config.block_ads).unwrap_or_else(|err| {
-                include_str!("../../assets/404.html").to_string()
-            });
-            self.navigate(&url, contents, true, false).await
+            let request = self.history[index + 1].clone();
+            let (url, contents) = self.fetch_request_for_history(request).await?;
+            self.navigate(&url, contents, true, false, None).await
         } else {
             Err(NetworkError::Curl("Invalid history state".to_string()))
         }

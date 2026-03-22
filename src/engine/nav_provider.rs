@@ -1,4 +1,5 @@
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
+use blitz_traits::net::Request;
 use tokio::sync::mpsc::UnboundedSender;
 use crate::shell_provider::ShellProviderMessage;
 
@@ -9,6 +10,7 @@ pub enum NavigationProviderMessage {
         navigation_id: u64,
         url: String,
         contents: String,
+        request: Request,
         retain_scroll_position: bool,
         is_md: bool,
     },
@@ -19,6 +21,7 @@ pub enum NavigationProviderMessage {
         navigation_id: u64,
         url: String,
         contents: String,
+        request: Request,
     },
 }
 
