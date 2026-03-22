@@ -739,6 +739,23 @@ unsafe fn setup_window(
         return Err("Failed to create Window constructor".to_string());
     }
 
+    // Compatibility for scripts that monkey-patch Window.prototype.
+    rooted!(in(raw_cx) let window_prototype = JS_NewPlainObject(raw_cx));
+    if window_prototype.get().is_null() {
+        return Err("Failed to create Window prototype".to_string());
+    }
+    define_function(cx, window_prototype.get(), "addEventListener", Some(window_add_event_listener), 3)?;
+    define_function(cx, window_prototype.get(), "removeEventListener", Some(window_remove_event_listener), 3)?;
+    rooted!(in(raw_cx) let window_proto_val = ObjectValue(window_prototype.get()));
+    let window_proto_name = std::ffi::CString::new("prototype").unwrap();
+    JS_DefineProperty(
+        raw_cx,
+        window_constructor.handle().into(),
+        window_proto_name.as_ptr(),
+        window_proto_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+
     rooted!(in(raw_cx) let window_constructor_val = ObjectValue(window_constructor.get()));
     let name = std::ffi::CString::new("Window").unwrap();
     JS_DefineProperty(
