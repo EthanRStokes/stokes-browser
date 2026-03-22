@@ -71,6 +71,7 @@ pub struct JsRuntime {
     timer_manager: Rc<TimerManager>,
     user_agent: String,
     global: Box<Heap<*mut JSObject>>,
+    module_cache: HashMap<String, Heap<*mut JSObject>>,
     event_loop: EventLoop,
     runtime: Runtime,
 }
@@ -113,6 +114,7 @@ impl JsRuntime {
             timer_manager: timer_manager.clone(),
             user_agent,
             global,
+            module_cache: HashMap::new(),
             event_loop: EventLoop::new(),
             runtime,
         };
@@ -155,6 +157,7 @@ impl JsRuntime {
         self.timer_manager.clear_all();
         clear_all_listeners();
         clear_pending_jobs_for_navigation();
+        self.module_cache.clear();
 
         self.enter_realm_and_initialize(dom, user_agent, self.timer_manager.clone())?;
 
@@ -319,6 +322,21 @@ impl JsRuntime {
             .unwrap_or_else(|| unsafe { (&*self.dom).url.to_string() })
     }
 
+    fn module_cache_key(&self, source_url: Option<&str>, code: &str) -> Option<String> {
+        let module_url = source_url?;
+        let doc_url = unsafe { (&*self.dom).url.to_string() };
+        // Inline modules commonly inherit the document URL; only cache URL-addressable external modules.
+        if module_url == doc_url {
+            return None;
+        }
+
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        code.hash(&mut hasher);
+        Some(format!("{}#{}", module_url, hasher.finish()))
+    }
+
     fn compile_module_script(
         context: &mut JSContext,
         text: &str,
@@ -357,6 +375,7 @@ impl JsRuntime {
     /// Execute JavaScript that originated from `<script type=\"module\">`.
     pub fn execute_module_script(&mut self, code: &str, source_url: Option<&str>, print_eval_error: bool) -> JsResult<()> {
         let source_name = self.effective_module_source_url(source_url);
+        let cache_key = self.module_cache_key(source_url, code);
         let cx = self.runtime.cx();
         let raw_cx = unsafe { cx.raw_cx() };
         let global_ptr = self.global.get();
@@ -371,18 +390,41 @@ impl JsRuntime {
             let raw_cx = cx.raw_cx();
 
             rooted!(in(raw_cx) let mut module = ptr::null_mut::<JSObject>());
-            module.set(Self::compile_module_script(cx, code, &source_name, 1));
+            if let Some(cache_key) = cache_key.as_ref() {
+                if let Some(cached) = self.module_cache.get(cache_key) {
+                    module.set(cached.get());
+                }
+            }
+
+            if module.get().is_null() {
+                module.set(Self::compile_module_script(cx, code, &source_name, 1));
+            }
+
             if module.get().is_null() {
                 let msg = Self::extract_js_exception(cx, raw_cx, "JavaScript MODULE COMPILE error", code, print_eval_error);
                 eprintln!("Module script execution error: {}", msg);
                 return Err(msg);
             }
 
-            let source_url_utf16: Vec<u16> = source_name.encode_utf16().collect();
-            rooted!(in(raw_cx) let source_url_js = JS_NewUCStringCopyN(cx, source_url_utf16.as_ptr(), source_url_utf16.len()));
-            rooted!(in(raw_cx) let module_private = StringValue(&*source_url_js.get()));
-            let module_private_value = module_private.get();
-            SetModulePrivate(module.get(), &module_private_value);
+            if let Some(cache_key) = cache_key.as_ref() {
+                if !self.module_cache.contains_key(cache_key) {
+                    let source_url_utf16: Vec<u16> = source_name.encode_utf16().collect();
+                    rooted!(in(raw_cx) let source_url_js = JS_NewUCStringCopyN(cx, source_url_utf16.as_ptr(), source_url_utf16.len()));
+                    rooted!(in(raw_cx) let module_private = StringValue(&*source_url_js.get()));
+                    let module_private_value = module_private.get();
+                    SetModulePrivate(module.get(), &module_private_value);
+
+                    let mut rooted_module = Heap::default();
+                    rooted_module.set(module.get());
+                    self.module_cache.insert(cache_key.clone(), rooted_module);
+                }
+            } else {
+                let source_url_utf16: Vec<u16> = source_name.encode_utf16().collect();
+                rooted!(in(raw_cx) let source_url_js = JS_NewUCStringCopyN(cx, source_url_utf16.as_ptr(), source_url_utf16.len()));
+                rooted!(in(raw_cx) let module_private = StringValue(&*source_url_js.get()));
+                let module_private_value = module_private.get();
+                SetModulePrivate(module.get(), &module_private_value);
+            }
 
             if !ModuleLink(cx, module.handle().into()) {
                 let msg = Self::extract_js_exception(cx, raw_cx, "JavaScript MODULE INSTANTIATE error", code, print_eval_error);
