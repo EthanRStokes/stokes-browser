@@ -91,27 +91,43 @@ unsafe fn set_object_prototype(
         return Err("No global object for prototype setup".to_string());
     }
 
-    rooted!(in(raw_cx) let mut object_ctor_val = UndefinedValue());
-    let object_name = std::ffi::CString::new("Object").unwrap();
+    let set_prototype_cache_name = std::ffi::CString::new("__stokesSetPrototypeOfFn").unwrap();
+    rooted!(in(raw_cx) let mut set_prototype_fn = UndefinedValue());
     if !JS_GetProperty(
         cx,
         global.handle().into(),
-        object_name.as_ptr(),
-        object_ctor_val.handle_mut().into(),
-    ) || !object_ctor_val.get().is_object() {
-        return Err("Failed to resolve global Object constructor".to_string());
-    }
-    rooted!(in(raw_cx) let object_ctor_obj = object_ctor_val.get().to_object());
-
-    rooted!(in(raw_cx) let mut set_prototype_fn = UndefinedValue());
-    let set_prototype_name = std::ffi::CString::new("setPrototypeOf").unwrap();
-    if !JS_GetProperty(
-        cx,
-        object_ctor_obj.handle().into(),
-        set_prototype_name.as_ptr(),
+        set_prototype_cache_name.as_ptr(),
         set_prototype_fn.handle_mut().into(),
     ) || !set_prototype_fn.get().is_object() {
-        return Err("Failed to resolve Object.setPrototypeOf".to_string());
+        rooted!(in(raw_cx) let mut object_ctor_val = UndefinedValue());
+        let object_name = std::ffi::CString::new("Object").unwrap();
+        if !JS_GetProperty(
+            cx,
+            global.handle().into(),
+            object_name.as_ptr(),
+            object_ctor_val.handle_mut().into(),
+        ) || !object_ctor_val.get().is_object() {
+            return Err("Failed to resolve global Object constructor".to_string());
+        }
+        rooted!(in(raw_cx) let object_ctor_obj = object_ctor_val.get().to_object());
+
+        let set_prototype_name = std::ffi::CString::new("setPrototypeOf").unwrap();
+        if !JS_GetProperty(
+            cx,
+            object_ctor_obj.handle().into(),
+            set_prototype_name.as_ptr(),
+            set_prototype_fn.handle_mut().into(),
+        ) || !set_prototype_fn.get().is_object() {
+            return Err("Failed to resolve Object.setPrototypeOf".to_string());
+        }
+
+        JS_DefineProperty(
+            cx,
+            global.handle().into(),
+            set_prototype_cache_name.as_ptr(),
+            set_prototype_fn.handle().into(),
+            0,
+        );
     }
 
     rooted!(in(raw_cx) let set_proto_args = ValueArray::<2usize>::new([
@@ -121,7 +137,7 @@ unsafe fn set_object_prototype(
     rooted!(in(raw_cx) let mut rval = UndefinedValue());
     if !JS_CallFunctionValue(
         cx,
-        object_ctor_obj.handle().into(),
+        global.handle().into(),
         set_prototype_fn.handle().into(),
         &HandleValueArray::from(&set_proto_args),
         rval.handle_mut().into(),
@@ -250,6 +266,18 @@ unsafe fn ensure_element_shared_prototype(cx: &mut SafeJSContext) -> Result<*mut
     define_property_accessor(cx, proto.get(), "type", "__getType", "__setType")?;
     define_property_accessor(cx, proto.get(), "async", "__getAsync", "__setAsync")?;
 
+    // Layout/scroll values are currently fixed stubs, so define them once on the prototype.
+    set_int_property(cx, proto.get(), "offsetWidth", 0)?;
+    set_int_property(cx, proto.get(), "offsetHeight", 0)?;
+    set_int_property(cx, proto.get(), "offsetLeft", 0)?;
+    set_int_property(cx, proto.get(), "offsetTop", 0)?;
+    set_int_property(cx, proto.get(), "clientWidth", 0)?;
+    set_int_property(cx, proto.get(), "clientHeight", 0)?;
+    set_int_property(cx, proto.get(), "scrollWidth", 0)?;
+    set_int_property(cx, proto.get(), "scrollHeight", 0)?;
+    set_int_property(cx, proto.get(), "scrollLeft", 0)?;
+    set_int_property(cx, proto.get(), "scrollTop", 0)?;
+
     rooted!(in(raw_cx) let proto_val = ObjectValue(proto.get()));
     JS_DefineProperty(
         cx,
@@ -267,23 +295,13 @@ fn constructor_name_for_element(is_svg: bool, local_name: &str) -> &'static str 
         return "HTMLElement";
     }
 
-    match local_name.to_ascii_lowercase().as_str() {
-        "svg" => "SVGSVGElement",
-        "rect" => "SVGRectElement",
-        _ => "SVGElement",
+    if local_name.eq_ignore_ascii_case("svg") {
+        "SVGSVGElement"
+    } else if local_name.eq_ignore_ascii_case("rect") {
+        "SVGRectElement"
+    } else {
+        "SVGElement"
     }
-}
-
-fn dom_node_id_or(node_id: usize) -> usize {
-    DOM_REF.with(|dom_ref| {
-        if let Some(dom_ptr) = *dom_ref.borrow() {
-            let dom = unsafe { &*dom_ptr };
-            if let Some(node) = dom.get_node(node_id) {
-                return node.id;
-            }
-        }
-        node_id
-    })
 }
 
 /// Create a JS element wrapper for a DOM node with its real tag name and attributes
@@ -376,9 +394,8 @@ unsafe fn create_js_element_impl(
     set_string_property(cx, element.get(), "outerHTML", &format!("<{0}></{0}>", resolved_local_name))?;
     // Note: textContent will be defined as a property accessor below
 
-    // Store the DomNode.id for reference to the actual DOM node.
-    let dom_node_id = dom_node_id_or(node_id);
-    rooted!(in(raw_cx) let ptr_val = mozjs::jsval::DoubleValue(dom_node_id as f64));
+    // Store the backing DOM node id.
+    rooted!(in(raw_cx) let ptr_val = mozjs::jsval::DoubleValue(node_id as f64));
     rooted!(in(raw_cx) let element_rooted = element.get());
     let cname = std::ffi::CString::new("__nodeId").unwrap();
     JS_DefineProperty(
@@ -459,21 +476,6 @@ unsafe fn create_js_element_impl(
 
     // style/classList/dataset are lazily created by accessors to reduce wrapper setup cost.
 
-    // Set dimension properties
-    // FIXME: All element dimension/scroll properties are hardcoded to 0. They should reflect the
-    // element's actual layout geometry from the renderer (offsetWidth, offsetHeight, clientWidth,
-    // clientHeight) and its scroll position (scrollLeft, scrollTop, scrollWidth, scrollHeight).
-    set_int_property(cx, element.get(), "offsetWidth", 0)?;
-    set_int_property(cx, element.get(), "offsetHeight", 0)?;
-    set_int_property(cx, element.get(), "offsetLeft", 0)?;
-    set_int_property(cx, element.get(), "offsetTop", 0)?;
-    set_int_property(cx, element.get(), "clientWidth", 0)?;
-    set_int_property(cx, element.get(), "clientHeight", 0)?;
-    set_int_property(cx, element.get(), "scrollWidth", 0)?;
-    set_int_property(cx, element.get(), "scrollHeight", 0)?;
-    set_int_property(cx, element.get(), "scrollLeft", 0)?;
-    set_int_property(cx, element.get(), "scrollTop", 0)?;
-
     maybe_patch_mutation_observer_node(cx, element.get());
 
     Ok(ObjectValue(element.get()))
@@ -502,8 +504,7 @@ unsafe fn create_js_text_node_by_id(
     set_string_property(cx, text_node.get(), "textContent", text)?;
     define_function(cx, text_node.get(), "hasChildNodes", Some(element_has_child_nodes), 0)?;
 
-    let dom_node_id = dom_node_id_or(node_id);
-    rooted!(in(raw_cx) let ptr_val = mozjs::jsval::DoubleValue(dom_node_id as f64));
+    rooted!(in(raw_cx) let ptr_val = mozjs::jsval::DoubleValue(node_id as f64));
     rooted!(in(raw_cx) let text_rooted = text_node.get());
     let cname = std::ffi::CString::new("__nodeId").unwrap();
     JS_DefineProperty(
@@ -555,8 +556,7 @@ unsafe fn create_js_comment_node_by_id(cx: &mut SafeJSContext, node_id: usize) -
     set_string_property(cx, comment_node.get(), "textContent", "")?;
     define_function(cx, comment_node.get(), "hasChildNodes", Some(element_has_child_nodes), 0)?;
 
-    let dom_node_id = dom_node_id_or(node_id);
-    rooted!(in(raw_cx) let ptr_val = mozjs::jsval::DoubleValue(dom_node_id as f64));
+    rooted!(in(raw_cx) let ptr_val = mozjs::jsval::DoubleValue(node_id as f64));
     rooted!(in(raw_cx) let comment_rooted = comment_node.get());
     let cname = std::ffi::CString::new("__nodeId").unwrap();
     JS_DefineProperty(

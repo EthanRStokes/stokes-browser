@@ -269,6 +269,113 @@ pub unsafe fn build_event_object(cx: &mut SafeJSContext, event: &DomEvent) -> *m
     build_event_object_with_type(cx, event.name(), event.bubbles, event.cancelable, &event.data)
 }
 
+unsafe fn set_object_prototype_cached(
+    cx: &mut SafeJSContext,
+    obj: *mut JSObject,
+    proto: *mut JSObject,
+) -> bool {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let global = mozjs::rust::wrappers2::CurrentGlobalOrNull(cx));
+    if global.get().is_null() {
+        return false;
+    }
+
+    let set_proto_cache_name = CString::new("__stokesSetPrototypeOfFn").unwrap();
+    rooted!(in(raw_cx) let mut set_proto_fn = UndefinedValue());
+    if !JS_GetProperty(
+        cx,
+        global.handle().into(),
+        set_proto_cache_name.as_ptr(),
+        set_proto_fn.handle_mut().into(),
+    ) || !set_proto_fn.get().is_object() {
+        rooted!(in(raw_cx) let mut object_ctor_val = UndefinedValue());
+        let object_name = CString::new("Object").unwrap();
+        if !JS_GetProperty(
+            cx,
+            global.handle().into(),
+            object_name.as_ptr(),
+            object_ctor_val.handle_mut().into(),
+        ) || !object_ctor_val.get().is_object() {
+            return false;
+        }
+        rooted!(in(raw_cx) let object_ctor_obj = object_ctor_val.get().to_object());
+        let set_proto_name = CString::new("setPrototypeOf").unwrap();
+        if !JS_GetProperty(
+            cx,
+            object_ctor_obj.handle().into(),
+            set_proto_name.as_ptr(),
+            set_proto_fn.handle_mut().into(),
+        ) || !set_proto_fn.get().is_object() {
+            return false;
+        }
+
+        JS_DefineProperty(
+            cx,
+            global.handle().into(),
+            set_proto_cache_name.as_ptr(),
+            set_proto_fn.handle().into(),
+            0,
+        );
+    }
+
+    rooted!(in(raw_cx) let args = mozjs::rust::ValueArray::<2usize>::new([
+        ObjectValue(obj),
+        ObjectValue(proto),
+    ]));
+    rooted!(in(raw_cx) let mut rval = UndefinedValue());
+    JS_CallFunctionValue(
+        cx,
+        global.handle().into(),
+        set_proto_fn.handle().into(),
+        &HandleValueArray::from(&args),
+        rval.handle_mut().into(),
+    )
+}
+
+unsafe fn ensure_event_shared_prototype(cx: &mut SafeJSContext) -> *mut JSObject {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let global = mozjs::rust::wrappers2::CurrentGlobalOrNull(cx));
+    if global.get().is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let key = CString::new("__stokesEventPrototype").unwrap();
+    rooted!(in(raw_cx) let mut existing = UndefinedValue());
+    if JS_GetProperty(
+        cx,
+        global.handle().into(),
+        key.as_ptr(),
+        existing.handle_mut().into(),
+    ) && existing.get().is_object() {
+        return existing.get().to_object();
+    }
+
+    rooted!(in(raw_cx) let proto = JS_NewPlainObject(cx));
+    if proto.get().is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let _ = define_function(cx, proto.get(), "stopPropagation", Some(js_stop_propagation), 0);
+    let _ = define_function(cx, proto.get(), "stopImmediatePropagation", Some(js_stop_immediate_propagation), 0);
+    let _ = define_function(cx, proto.get(), "preventDefault", Some(js_prevent_default), 0);
+    let _ = define_function(cx, proto.get(), "initEvent", Some(noop_init_event), 3);
+    let _ = set_int_property(cx, proto.get(), "NONE", 0);
+    let _ = set_int_property(cx, proto.get(), "CAPTURING_PHASE", 1);
+    let _ = set_int_property(cx, proto.get(), "AT_TARGET", 2);
+    let _ = set_int_property(cx, proto.get(), "BUBBLING_PHASE", 3);
+
+    rooted!(in(raw_cx) let proto_val = ObjectValue(proto.get()));
+    JS_DefineProperty(
+        cx,
+        global.handle().into(),
+        key.as_ptr(),
+        proto_val.handle().into(),
+        0,
+    );
+
+    proto.get()
+}
+
 /// Build a JS Event-like object with fully specified parameters.
 pub unsafe fn build_event_object_with_type(
     cx: &mut SafeJSContext,
@@ -280,6 +387,11 @@ pub unsafe fn build_event_object_with_type(
     let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let obj = JS_NewPlainObject(cx));
     if obj.get().is_null() { return std::ptr::null_mut(); }
+
+    let event_proto = ensure_event_shared_prototype(cx);
+    if !event_proto.is_null() {
+        let _ = set_object_prototype_cached(cx, obj.get(), event_proto);
+    }
 
     let _ = set_string_property(cx, obj.get(), "type",            event_type);
     let _ = set_bool_property(cx, obj.get(),   "bubbles",         bubbles);
@@ -297,21 +409,8 @@ pub unsafe fn build_event_object_with_type(
             null_v.handle().into(), JSPROP_ENUMERATE as u32);
     }
 
-    // Event phase constants
-    let _ = set_int_property(cx, obj.get(), "NONE",            0);
-    let _ = set_int_property(cx, obj.get(), "CAPTURING_PHASE", 1);
-    let _ = set_int_property(cx, obj.get(), "AT_TARGET",       2);
-    let _ = set_int_property(cx, obj.get(), "BUBBLING_PHASE",  3);
     let _ = set_int_property(cx, obj.get(), "eventPhase",      2); // updated during dispatch
 
-    let _ = define_function(cx, obj.get(), "stopPropagation",
-                            Some(js_stop_propagation), 0);
-    let _ = define_function(cx, obj.get(), "stopImmediatePropagation",
-                            Some(js_stop_immediate_propagation), 0);
-    let _ = define_function(cx, obj.get(), "preventDefault",
-                            Some(js_prevent_default), 0);
-    // `initEvent` stub – some old libraries call it after construction
-    let _ = define_function(cx, obj.get(), "initEvent", Some(noop_init_event), 3);
 
     // Add event-specific properties based on DomEventData.
     match data {
