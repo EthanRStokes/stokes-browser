@@ -16,7 +16,7 @@ use mozjs::jsval::{BooleanValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::ValueArray;
 use std::os::raw::c_uint;
-use tracing::trace;
+use tracing::{trace, warn};
 
 fn simple_id_selector(selector: &str) -> Option<&str> {
     let trimmed = selector.trim();
@@ -1484,7 +1484,7 @@ pub(crate) unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, arg
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
-    println!("[JS] element.appendChild() called");
+    trace!("[JS] element.appendChild() called");
 
     // Extract the child node id from the first argument using helper
     let child_id = if argc > 0 {
@@ -2141,7 +2141,7 @@ pub(crate) unsafe extern "C" fn element_dispatch_event(raw_cx: *mut JSContext, a
 unsafe extern "C" fn element_focus(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     // FIXME: Does not update the browser focus state or fire focus / focusin events on the element.
-    println!("[JS] element.focus() called");
+    warn!("[JS] element.focus() called on partial binding (no focus state/event updates)");
     args.rval().set(UndefinedValue());
     true
 }
@@ -2150,7 +2150,7 @@ unsafe extern "C" fn element_focus(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
 unsafe extern "C" fn element_blur(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     // FIXME: Does not update the browser focus state or fire blur / focusout events on the element.
-    println!("[JS] element.blur() called");
+    warn!("[JS] element.blur() called on partial binding (no focus state/event updates)");
     args.rval().set(UndefinedValue());
     true
 }
@@ -2160,7 +2160,7 @@ unsafe extern "C" fn  element_click(raw_cx: *mut JSContext, argc: c_uint, vp: *m
     let args = CallArgs::from_vp(vp, argc);
     // FIXME: Does not synthesize a click event, invoke registered click listeners, or simulate
     // the default activation behaviour (e.g. following links, submitting forms).
-    println!("[JS] element.click() called");
+    warn!("[JS] element.click() called on partial binding (no synthetic click/default action)");
     args.rval().set(UndefinedValue());
     true
 }
@@ -2169,7 +2169,7 @@ unsafe extern "C" fn  element_click(raw_cx: *mut JSContext, argc: c_uint, vp: *m
 unsafe extern "C" fn element_get_bounding_client_rect(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
-    println!("[JS] element.getBoundingClientRect() called");
+    warn!("[JS] element.getBoundingClientRect() called on partial binding (returns zero rect)");
 
     // FIXME: All DOMRect values are hardcoded to 0. Should query the renderer for the element's
     // actual bounding box in viewport coordinates and populate x, y, width, height, top, right,
@@ -2195,7 +2195,7 @@ unsafe extern "C" fn element_get_bounding_client_rect(raw_cx: *mut JSContext, ar
 unsafe extern "C" fn element_get_client_rects(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
-    println!("[JS] element.getClientRects() called");
+    warn!("[JS] element.getClientRects() called on partial binding (returns empty list)");
 
     // FIXME: Always returns an empty DOMRectList instead of the element's per-line-box rects.
     rooted!(in(raw_cx) let array = create_empty_array(safe_cx));
@@ -2676,7 +2676,7 @@ unsafe extern "C" fn element_insert_adjacent_html(raw_cx: *mut JSContext, argc: 
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     let position = if argc > 0 { js_value_to_string(safe_cx, *args.get(0)) } else { String::new() };
-    println!("[JS] element.insertAdjacentHTML('{}', ...) called (FIXME: html not parsed)", position);
+    warn!("[JS] element.insertAdjacentHTML('{}', ...) called on partial binding (HTML is not parsed)", position);
     args.rval().set(UndefinedValue());
     true
 }
@@ -2805,7 +2805,7 @@ unsafe extern "C" fn element_scroll_into_view(raw_cx: *mut JSContext, argc: c_ui
     let args = CallArgs::from_vp(vp, argc);
     // FIXME: Should scroll the nearest scrollable ancestor (or the viewport) so that this element
     // is visible, respecting the scrollIntoViewOptions (behavior, block, inline).
-    println!("[JS] element.scrollIntoView() called (stub)");
+    warn!("[JS] element.scrollIntoView() called on partial binding (no scroll performed)");
     args.rval().set(UndefinedValue());
     true
 }
@@ -2815,6 +2815,7 @@ unsafe extern "C" fn element_scroll_to(raw_cx: *mut JSContext, argc: c_uint, vp:
     let args = CallArgs::from_vp(vp, argc);
     // FIXME: Should update the element's scroll position to the given (x, y) coordinates and fire
     // a scroll event.
+    warn!("[JS] element.scrollTo()/scroll() called on partial binding (no scroll performed)");
     args.rval().set(UndefinedValue());
     true
 }
@@ -2824,6 +2825,7 @@ unsafe extern "C" fn element_scroll_by(raw_cx: *mut JSContext, argc: c_uint, vp:
     let args = CallArgs::from_vp(vp, argc);
     // FIXME: Should offset the element's current scroll position by the given (dx, dy) delta and
     // fire a scroll event.
+    warn!("[JS] element.scrollBy() called on partial binding (no scroll performed)");
     args.rval().set(UndefinedValue());
     true
 }
@@ -2845,7 +2847,7 @@ unsafe extern "C" fn animation_noop(raw_cx: *mut JSContext, argc: c_uint, vp: *m
 unsafe extern "C" fn element_animate(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
-    println!("[JS] element.animate() called (stub)");
+    warn!("[JS] element.animate() called on partial binding (returns stub Animation)");
 
     rooted!(in(raw_cx) let anim = JS_NewPlainObject(safe_cx));
     if anim.get().is_null() {
@@ -3953,6 +3955,7 @@ unsafe extern "C" fn form_reset(raw_cx: *mut JSContext, argc: c_uint, vp: *mut J
 unsafe extern "C" fn form_check_validity(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     // FIXME: Always returns true without running constraint validation on the form's controls.
+    warn!("[JS] HTMLFormElement.checkValidity() called on partial binding (always returns true)");
     args.rval().set(BooleanValue(true));
     true
 }
@@ -3961,6 +3964,7 @@ unsafe extern "C" fn form_report_validity(_raw_cx: *mut JSContext, argc: c_uint,
     let args = CallArgs::from_vp(vp, argc);
     // FIXME: Always returns true without running constraint validation or highlighting invalid
     // fields to the user via browser UI.
+    warn!("[JS] HTMLFormElement.reportValidity() called on partial binding (always returns true)");
     args.rval().set(BooleanValue(true));
     true
 }

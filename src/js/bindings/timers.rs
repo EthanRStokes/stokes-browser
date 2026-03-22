@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
+use tracing::warn;
 
 /// A pending timer that will execute a callback after a delay
 #[derive(Debug)]
@@ -181,6 +182,7 @@ pub fn setup_timers(runtime: &mut JsRuntime, timer_manager: Rc<TimerManager>) ->
                 if callback_val.is_string() {
                     js_value_to_string(cx, callback_val)
                 } else {
+                    warn!("[JS] setTimeout() called with non-string callback on partial binding (function callbacks are not supported)");
                     "".to_string()
                 }
             } else {
@@ -252,6 +254,7 @@ pub fn setup_timers(runtime: &mut JsRuntime, timer_manager: Rc<TimerManager>) ->
                 if callback_val.is_string() {
                     js_value_to_string(cx, callback_val)
                 } else {
+                    warn!("[JS] setInterval() called with non-string callback on partial binding (function callbacks are not supported)");
                     "".to_string()
                 }
             } else {
@@ -325,6 +328,7 @@ unsafe fn js_value_to_string(cx: *mut RawJSContext, val: JSVal) -> String {
         // FIXME: Function objects are replaced with the inert string "[function]". This string
         // cannot be eval'd, so setTimeout(fn, 0) will silently fail to execute the callback.
         // Should store the JS function value (properly rooted) and call it directly.
+        warn!("[JS] timer callback object coerced to inert placeholder on partial binding");
         "[function]".to_string()
     } else {
         String::new()

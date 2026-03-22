@@ -14,6 +14,7 @@ use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty, JS_NewPlainOb
 use crate::js::helpers::create_empty_array;
 use crate::js::helpers::set_string_property;
 use crate::js::helpers::ToSafeCx;
+use tracing::warn;
 
 /// Performance mark entry
 #[derive(Debug, Clone)]
@@ -556,6 +557,7 @@ unsafe extern "C" fn performance_mark(raw_cx: *mut JSContext, argc: c_uint, vp: 
 
     // FIXME: Should return a PerformanceMark object (with name, startTime, entryType, duration
     // properties) per the Web Performance API spec, not undefined.
+    warn!("[JS] performance.mark() called on partial binding (returns undefined instead of PerformanceMark)");
     args.rval().set(UndefinedValue());
     true
 }
@@ -600,6 +602,7 @@ unsafe extern "C" fn performance_measure(raw_cx: *mut JSContext, argc: c_uint, v
 
     // FIXME: Should return a PerformanceMeasure object (with name, startTime, duration,
     // entryType properties) per the Web Performance API spec, not undefined.
+    warn!("[JS] performance.measure() called on partial binding (returns undefined instead of PerformanceMeasure)");
     args.rval().set(UndefinedValue());
     true
 }

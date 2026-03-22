@@ -3,6 +3,7 @@ use blitz_traits::net::{NetProvider, Request};
 use markup5ever::local_name;
 use peniko::Blob;
 use style::stylesheets::OriginSet;
+use tracing::trace;
 use crate::dom::damage::ALL_DAMAGE;
 use crate::dom::{Dom, ImageData};
 use crate::dom::node::{CanvasData, RasterImageData, SpecialElementData, Status};
@@ -86,7 +87,7 @@ impl Dom {
         let (Some(rels), Some(href)) = (rel_attr, href_attr) else {
             return;
         };
-        println!("Loading linked stylesheet for element <{}> link <{}>", target_id, href);
+        trace!("Loading linked stylesheet for element <{}> link <{}>", target_id, href);
         if !rels.split_ascii_whitespace().any(|rel| rel == "stylesheet") {
             return;
         }

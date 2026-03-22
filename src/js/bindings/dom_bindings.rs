@@ -2392,7 +2392,7 @@ unsafe extern "C" fn document_create_element(raw_cx: *mut JSContext, argc: c_uin
             let node_id = dom.create_element(QualName::new(None, ns!(html), local), AttributeMap::empty());
             if let Ok(js_elem) = element_bindings::create_js_element_by_dom_id(safe_cx, node_id) {
                 args.rval().set(js_elem);
-                println!("Successfully created element '{}'", tag_name);
+                trace!("Successfully created element '{}'", tag_name);
                 return;
             }
         }
@@ -2621,6 +2621,7 @@ unsafe extern "C" fn document_create_document_fragment(raw_cx: *mut JSContext, a
     // via appendChild are not recorded in the DOM, and inserting the fragment itself into a
     // parent element has no effect.  Should create a DocumentFragment node in the DOM,
     // assign __nodeId, and transfer children when the fragment is inserted.
+    warn!("[JS] document.createDocumentFragment() called on partial binding (fragment has no DOM backing)");
     rooted!(in(raw_cx) let fragment = JS_NewPlainObject(raw_cx));
     if !fragment.get().is_null() {
         let _ = define_function(safe_cx, fragment.get(), "hasChildNodes", Some(document_fragment_has_child_nodes), 0);
@@ -2668,7 +2669,7 @@ unsafe extern "C" fn window_confirm(raw_cx: *mut JSContext, argc: c_uint, vp: *m
         String::new()
     };
 
-    trace!("[JS] window.confirm('{}') called - returning false", message);
+    warn!("[JS] window.confirm('{}') called on partial binding (always returns false)", message);
     // FIXME: window.confirm() always returns false instead of displaying a dialog to the user
     // and returning their choice. Should dispatch a confirmation dialog via the browser UI.
     args.rval().set(BooleanValue(false));
@@ -2686,7 +2687,7 @@ unsafe extern "C" fn window_prompt(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
         String::new()
     };
 
-    trace!("[JS] window.prompt('{}') called - returning null", message);
+    warn!("[JS] window.prompt('{}') called on partial binding (always returns null)", message);
     // FIXME: window.prompt() always returns null (as if the user dismissed the dialog) instead of
     // displaying a text-input dialog and returning the entered string, or null on cancel.
     args.rval().set(mozjs::jsval::NullValue());
@@ -2696,7 +2697,7 @@ unsafe extern "C" fn window_prompt(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
 /// window.requestAnimationFrame implementation
 unsafe extern "C" fn window_request_animation_frame(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    trace!("[JS] requestAnimationFrame called");
+    warn!("[JS] requestAnimationFrame() called on partial binding (callback is not scheduled)");
     // FIXME: The callback (args.get(0)) is never stored or invoked. requestAnimationFrame should
     // schedule the callback to be called before the next paint, passing the current DOMHighResTimeStamp.
     // The returned handle ID should also be unique so cancelAnimationFrame can identify it.
@@ -2943,7 +2944,7 @@ unsafe extern "C" fn document_dispatch_event(raw_cx: *mut JSContext, argc: c_uin
 /// window.scrollTo implementation
 unsafe extern "C" fn window_scroll_to(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    trace!("[JS] window.scrollTo called");
+    warn!("[JS] window.scrollTo() called on partial binding (scroll state is not updated)");
     // FIXME: Does not update the DOM viewport scroll position or trigger scroll events.
     // Should update DOM_REF viewport_scroll to the given (x, y) coordinates.
     args.rval().set(UndefinedValue());
@@ -2953,7 +2954,7 @@ unsafe extern "C" fn window_scroll_to(raw_cx: *mut JSContext, argc: c_uint, vp: 
 /// window.scrollBy implementation
 unsafe extern "C" fn window_scroll_by(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    trace!("[JS] window.scrollBy called");
+    warn!("[JS] window.scrollBy() called on partial binding (scroll state is not updated)");
     // FIXME: Does not update the DOM viewport scroll position or trigger scroll events.
     // Should offset DOM_REF viewport_scroll by the given (dx, dy) values.
     args.rval().set(UndefinedValue());
@@ -2979,12 +2980,14 @@ unsafe extern "C" fn window_atob(raw_cx: *mut JSContext, argc: c_uint, vp: *mut 
             } else {
                 // FIXME: Non-UTF-8 decoded bytes should be returned as a Latin-1 string (each byte
                 // as a code point), not silently replaced with an empty string.
+                warn!("[JS] atob() called on partial binding (non-UTF-8 output path returns empty string)");
                 args.rval().set(create_js_string(safe_cx, ""));
             }
         }
         Err(_) => {
             // FIXME: Should throw a DOMException with name "InvalidCharacterError" instead of
             // returning an empty string when the input is not valid base64.
+            warn!("[JS] atob() called with invalid base64 on partial binding (returns empty string)");
             args.rval().set(create_js_string(safe_cx, ""));
         }
     }

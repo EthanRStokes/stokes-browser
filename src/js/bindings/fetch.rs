@@ -23,6 +23,7 @@ use std::ffi::CString;
 use std::os::raw::c_uint;
 use std::ptr::NonNull;
 use std::time::Duration;
+use tracing::warn;
 use url::Url;
 
 /// Thread-local storage for the pending response data
@@ -122,6 +123,7 @@ unsafe extern "C" fn js_fetch(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSV
                 // FIXME: Request headers object is parsed here but never applied to the curl request.
                 // Should iterate over the object's own enumerable properties and add each as an
                 // HTTP header via curl's header_list.
+                warn!("[JS] fetch(options.headers) provided, but request headers are currently ignored");
             }
         }
 
@@ -545,6 +547,7 @@ unsafe extern "C" fn response_json(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
 unsafe extern "C" fn response_blob(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
+    warn!("[JS] Response.blob() called on partial binding (shared global body store)");
 
     let response = PENDING_RESPONSE.with(|pr| {
         pr.borrow_mut().take().unwrap_or_default()
@@ -601,11 +604,12 @@ unsafe extern "C" fn response_blob(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
 }
 
 /// Response.arrayBuffer() - Returns a Promise that resolves to an ArrayBuffer
-/// Note: This is a simplified implementation that creates an empty ArrayBuffer
+/// FIXME: This is a simplified implementation that creates an empty ArrayBuffer
 /// A full implementation would need to properly copy the response body data
 unsafe extern "C" fn response_array_buffer(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
+    warn!("[JS] Response.arrayBuffer() called on partial binding (buffer bytes are not populated)");
 
     // Get the stored response body
     let body = PENDING_RESPONSE.with(|pr| {

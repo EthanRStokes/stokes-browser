@@ -19,6 +19,7 @@ use mozjs::jsapi::{CallArgs, HandleValueArray, Heap, JSContext, JSObject, JSPROP
 use mozjs::jsval::{DoubleValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::Runtime;
+use tracing::warn;
 use crate::dom::events::EventHandler;
 use crate::dom::{Dom, NodeData};
 use crate::events::{
@@ -521,6 +522,9 @@ unsafe extern "C" fn noop_init_event(
     _cx: *mut JSContext, argc: u32, vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    // FIXME: event.initEvent() should mutate this Event instance's type/bubbles/cancelable
+    // fields for legacy callers. It is currently a no-op.
+    warn!("[JS] Event.initEvent() called on partial binding (no-op)");
     args.rval().set(UndefinedValue());
     true
 }

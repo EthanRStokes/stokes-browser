@@ -22,6 +22,7 @@ use style::properties::{PropertyDeclaration, PropertyId, SourcePropertyDeclarati
 use style::servo_arc::Arc as ServoArc;
 use style::stylesheets::{CssRuleType, Origin, UrlExtraData};
 use style_traits::ParsingMode;
+use tracing::warn;
 use url::Url;
 
 // ---------------------------------------------------------------------------
@@ -598,6 +599,7 @@ unsafe extern "C" fn css_register_property(
     // Custom properties registered this way will not type-check, will not have an initial value,
     // and will not inherit correctly.  A real implementation requires a Houdini-style property
     // registry in the style engine.
+    warn!("[JS] CSS.registerProperty() called on partial binding (descriptor is ignored)");
     // Silently succeed
     let _ = argc;
     true
