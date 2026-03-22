@@ -4,7 +4,7 @@ use adblock::request::Request;
 use std::cell::RefCell;
 
 const DEFAULT_FILTER_LIST: &str = r#"
-! Small default list; users can expand this later with EasyList import support.
+! Small default list; will make this system better in the future lol
 ||doubleclick.net^
 ||googlesyndication.com^
 ||googletagmanager.com^
