@@ -5,7 +5,7 @@ use crate::engine::js_provider::ScriptKind;
 use crate::engine::script_type::executable_script_kind;
 use crate::js::bindings::dom_bindings::DOM_REF;
 use crate::js::helpers::{create_empty_array, create_js_string, define_function, define_property_accessor, get_node_id_from_this, get_node_id_from_value, js_value_to_string, set_int_property, set_string_property, to_css_property_name, ToSafeCx};
-use crate::js::selectors::{matches_parsed_selector, parse_selector};
+use crate::js::selectors::{matches_parsed_selector, parse_selector, selector_seed, SelectorSeed};
 use html5ever::ns;
 use html5ever::local_name;
 use markup5ever::QualName;
@@ -33,6 +33,17 @@ fn simple_id_selector(selector: &str) -> Option<&str> {
     }
 
     Some(id)
+}
+
+fn is_descendant_of(dom: &crate::dom::Dom, root_id: usize, candidate_id: usize) -> bool {
+    let mut current = Some(candidate_id);
+    while let Some(cur_id) = current {
+        if cur_id == root_id {
+            return true;
+        }
+        current = dom.get_node(cur_id).and_then(|node| node.parent);
+    }
+    false
 }
 
 unsafe fn maybe_patch_mutation_observer_node(cx: &mut SafeJSContext, node_obj: *mut JSObject) {
@@ -1758,6 +1769,36 @@ unsafe extern "C" fn element_query_selector(raw_cx: *mut JSContext, argc: c_uint
         let matching_node_id = DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &*dom_ptr;
+
+                let seed = selector_seed(&parsed_selector);
+                if !matches!(seed, SelectorSeed::None | SelectorSeed::Universal) {
+                    let candidate_ids: Vec<usize> = match seed {
+                        SelectorSeed::Id(id) => dom
+                            .nodes_to_id
+                            .get(id)
+                            .copied()
+                            .into_iter()
+                            .collect(),
+                        SelectorSeed::Class(class_name) => dom.candidate_nodes_for_class(class_name),
+                        SelectorSeed::Tag(tag) => dom.candidate_nodes_for_tag(tag),
+                        SelectorSeed::Universal | SelectorSeed::None => Vec::new(),
+                    };
+
+                    for candidate_id in candidate_ids {
+                        if !is_descendant_of(dom, node_id, candidate_id) || candidate_id == node_id {
+                            continue;
+                        }
+                        if let Some(node) = dom.get_node(candidate_id) {
+                            if let crate::dom::NodeData::Element(ref elem_data) = node.data {
+                                if matches_parsed_selector(&parsed_selector, elem_data.name.local.as_ref(), &elem_data.attributes) {
+                                    return Some(candidate_id);
+                                }
+                            }
+                        }
+                    }
+                    return None;
+                }
+
                 // Traverse the subtree looking for a match
                 fn find_in_subtree(
                     dom: &crate::dom::Dom,
@@ -1852,6 +1893,37 @@ unsafe extern "C" fn element_query_selector_all(raw_cx: *mut JSContext, argc: c_
                 let mut results = Vec::new();
                 if let Some(dom_ptr) = *dom_ref.borrow() {
                     let dom = &*dom_ptr;
+
+                    let seed = selector_seed(&parsed_selector);
+                    if !matches!(seed, SelectorSeed::None | SelectorSeed::Universal) {
+                        let candidate_ids: Vec<usize> = match seed {
+                            SelectorSeed::Id(id) => dom
+                                .nodes_to_id
+                                .get(id)
+                                .copied()
+                                .into_iter()
+                                .collect(),
+                            SelectorSeed::Class(class_name) => dom.candidate_nodes_for_class(class_name),
+                            SelectorSeed::Tag(tag) => dom.candidate_nodes_for_tag(tag),
+                            SelectorSeed::Universal | SelectorSeed::None => Vec::new(),
+                        };
+
+                        for candidate_id in candidate_ids {
+                            if candidate_id == node_id || !is_descendant_of(dom, node_id, candidate_id) {
+                                continue;
+                            }
+                            if let Some(node) = dom.get_node(candidate_id) {
+                                if let crate::dom::NodeData::Element(ref elem_data) = node.data {
+                                    if matches_parsed_selector(&parsed_selector, elem_data.name.local.as_ref(), &elem_data.attributes) {
+                                        results.push(candidate_id);
+                                    }
+                                }
+                            }
+                        }
+
+                        return results;
+                    }
+
                     // Collect all matching descendants
                     fn collect_in_subtree(
                         dom: &crate::dom::Dom,

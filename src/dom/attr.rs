@@ -56,7 +56,9 @@ impl Dom {
         self.nodes[node_id].mark_ancestors_dirty();
 
         let mut old_id = None;
+        let mut old_class = None;
         let mut tag_local = None;
+        let node_in_doc = self.nodes[node_id].flags.is_in_document();
 
         let node = &mut self.nodes[node_id];
 
@@ -66,6 +68,10 @@ impl Dom {
 
         if name.local == local_name!("id") {
             old_id = element.attr(local_name!("id")).map(ToOwned::to_owned);
+        }
+
+        if name.local == local_name!("class") {
+            old_class = element.attr(local_name!("class")).map(ToOwned::to_owned);
         }
 
         element.attributes.set(name.clone(), value);
@@ -82,6 +88,35 @@ impl Dom {
                 }
             }
             self.nodes_to_id.insert(value.to_string(), node_id);
+        }
+
+        if *attr == local_name!("class") && node_in_doc {
+            if let Some(old_class) = old_class.as_deref() {
+                let mut empty_keys = Vec::new();
+                for class_name in old_class.split_whitespace() {
+                    if class_name.is_empty() {
+                        continue;
+                    }
+                    if let Some(nodes) = self.nodes_by_class.get_mut(class_name) {
+                        nodes.retain(|id| *id != node_id);
+                        if nodes.is_empty() {
+                            empty_keys.push(class_name.to_string());
+                        }
+                    }
+                }
+                for key in empty_keys {
+                    self.nodes_by_class.remove(&key);
+                }
+            }
+            for class_name in value.split_whitespace() {
+                if class_name.is_empty() {
+                    continue;
+                }
+                let nodes = self.nodes_by_class.entry(class_name.to_string()).or_default();
+                if !nodes.contains(&node_id) {
+                    nodes.push(node_id);
+                }
+            }
         }
 
         if *attr == local_name!("value") {
@@ -143,6 +178,8 @@ impl Dom {
         let mut should_unload_stylesheet = false;
         let mut should_reset_form_owner = false;
         let mut should_reset_all_form_owners = false;
+        let mut removed_class_value: Option<String> = None;
+        let node_in_doc = self.nodes[node_id].flags.is_in_document();
 
         {
             let node = &mut self.nodes[node_id];
@@ -173,6 +210,10 @@ impl Dom {
                 if let Some(id_attr) = removed_attr.as_ref() {
                     self.nodes_to_id.remove(id_attr.value.as_str());
                 }
+            }
+
+            if name.local == local_name!("class") {
+                removed_class_value = removed_attr.as_ref().map(|attr| attr.value.clone());
             }
 
             // Update text input value
@@ -221,6 +262,26 @@ impl Dom {
         }
         if should_reset_all_form_owners {
             self.reset_all_form_owners();
+        }
+
+        if node_in_doc {
+            if let Some(removed_classes) = removed_class_value.as_deref() {
+                let mut empty_keys = Vec::new();
+                for class_name in removed_classes.split_whitespace() {
+                    if class_name.is_empty() {
+                        continue;
+                    }
+                    if let Some(nodes) = self.nodes_by_class.get_mut(class_name) {
+                        nodes.retain(|id| *id != node_id);
+                        if nodes.is_empty() {
+                            empty_keys.push(class_name.to_string());
+                        }
+                    }
+                }
+                for key in empty_keys {
+                    self.nodes_by_class.remove(&key);
+                }
+            }
         }
     }
 

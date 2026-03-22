@@ -14,6 +14,14 @@ pub struct ParsedSelector<'a> {
     parts: Vec<SimpleSelector<'a>>,
 }
 
+pub enum SelectorSeed<'a> {
+    Universal,
+    Id(&'a str),
+    Class(&'a str),
+    Tag(&'a str),
+    None,
+}
+
 pub fn parse_selector(selector: &str) -> ParsedSelector<'_> {
     let mut parts = Vec::new();
     for part in selector.split(',') {
@@ -32,6 +40,25 @@ pub fn matches_parsed_selector(parsed: &ParsedSelector<'_>, tag_name: &str, attr
         .iter()
         .copied()
         .any(|selector| matches_simple_selector(selector, tag_name, attributes))
+}
+
+pub fn selector_seed<'a>(parsed: &'a ParsedSelector<'a>) -> SelectorSeed<'a> {
+    if parsed.parts.len() != 1 {
+        return SelectorSeed::None;
+    }
+
+    match parsed.parts[0] {
+        SimpleSelector::Universal => SelectorSeed::Universal,
+        SimpleSelector::Id { id, class, attr } if class.is_none() && attr.is_none() => SelectorSeed::Id(id),
+        SimpleSelector::Class { classes, attr } if attr.is_none() && !classes.is_empty() && !classes.contains('.') => {
+            SelectorSeed::Class(classes)
+        }
+        SimpleSelector::Tag { tag, class_list, id, attr }
+            if class_list.is_none() && id.is_none() && attr.is_none() && !tag.is_empty() => {
+            SelectorSeed::Tag(tag)
+        }
+        _ => SelectorSeed::None,
+    }
 }
 
 fn parse_simple_selector(selector: &str) -> SimpleSelector<'_> {

@@ -260,6 +260,8 @@ pub struct Dom {
     pub(crate) subdom_is_animating: bool,
 
     pub(crate) nodes_to_id: HashMap<String, usize>,
+    pub(crate) nodes_by_tag: HashMap<String, Vec<usize>>,
+    pub(crate) nodes_by_class: HashMap<String, Vec<usize>>,
     pub(crate) nodes_to_stylesheet: BTreeMap<usize, DocumentStyleSheet>,
     pub(crate) stylesheets: HashMap<String, DocumentStyleSheet>,
     pub(crate) controls_to_form: HashMap<usize, usize>,
@@ -474,6 +476,8 @@ impl Dom {
             has_canvas: false,
             subdom_is_animating: false,
             nodes_to_id: Default::default(),
+            nodes_by_tag: Default::default(),
+            nodes_by_class: Default::default(),
             nodes_to_stylesheet: Default::default(),
             stylesheets: Default::default(),
             controls_to_form: HashMap::new(),
@@ -2002,6 +2006,30 @@ impl Dom {
                 dom.nodes_to_id.insert(id_attr.to_string(), node_id);
             }
 
+            if let Some(element) = node.element_data() {
+                let tag_key = element.name.local.as_ref().to_ascii_lowercase();
+                let by_tag = dom.nodes_by_tag.entry(tag_key).or_default();
+                if !by_tag.contains(&node_id) {
+                    by_tag.push(node_id);
+                }
+
+                if let Some(class_attr) = element
+                    .attributes
+                    .iter()
+                    .find(|attr| attr.name.local == local_name!("class"))
+                {
+                    for class_name in class_attr.value.split_whitespace() {
+                        if class_name.is_empty() {
+                            continue;
+                        }
+                        let by_class = dom.nodes_by_class.entry(class_name.to_string()).or_default();
+                        if !by_class.contains(&node_id) {
+                            by_class.push(node_id);
+                        }
+                    }
+                }
+            }
+
             let NodeData::Element(ref mut element) = node.data else {
                 return;
             };
@@ -2118,6 +2146,38 @@ impl Dom {
             // If the node has an "id" attribute remove it from the ID map.
             if let Some(id_attr) = node.attr(local_name!("id")) {
                 doc.nodes_to_id.remove(id_attr);
+            }
+
+            if let Some(element) = node.element_data() {
+                let tag_key = element.name.local.as_ref().to_ascii_lowercase();
+                if let Some(tag_nodes) = doc.nodes_by_tag.get_mut(&tag_key) {
+                    tag_nodes.retain(|id| *id != node_id);
+                    if tag_nodes.is_empty() {
+                        doc.nodes_by_tag.remove(&tag_key);
+                    }
+                }
+
+                let mut empty_class_keys = Vec::new();
+                if let Some(class_attr) = element
+                    .attributes
+                    .iter()
+                    .find(|attr| attr.name.local == local_name!("class"))
+                {
+                    for class_name in class_attr.value.split_whitespace() {
+                        if class_name.is_empty() {
+                            continue;
+                        }
+                        if let Some(class_nodes) = doc.nodes_by_class.get_mut(class_name) {
+                            class_nodes.retain(|id| *id != node_id);
+                            if class_nodes.is_empty() {
+                                empty_class_keys.push(class_name.to_string());
+                            }
+                        }
+                    }
+                }
+                for key in empty_class_keys {
+                    doc.nodes_by_class.remove(&key);
+                }
             }
 
             let NodeData::Element(ref mut element) = node.data else {
@@ -2253,6 +2313,20 @@ impl Dom {
             .unwrap()
             .as_element()
             .unwrap()
+    }
+
+    pub fn candidate_nodes_for_tag(&self, tag: &str) -> Vec<usize> {
+        self.nodes_by_tag
+            .get(&tag.to_ascii_lowercase())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn candidate_nodes_for_class(&self, class_name: &str) -> Vec<usize> {
+        self.nodes_by_class
+            .get(class_name)
+            .cloned()
+            .unwrap_or_default()
     }
 }
 

@@ -11,7 +11,7 @@ use crate::js::bindings::element_bindings::{
     element_clone_node, element_contains, element_get_root_node,
     element_add_event_listener, element_remove_event_listener, element_dispatch_event,
 };
-use crate::js::selectors::{matches_parsed_selector, parse_selector};
+use crate::js::selectors::{matches_parsed_selector, parse_selector, selector_seed, SelectorSeed};
 use crate::js::JsRuntime;
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use html5ever::ns;
@@ -1942,20 +1942,20 @@ unsafe extern "C" fn document_get_elements_by_tag_name(raw_cx: *mut JSContext, a
     trace!("[JS] document.getElementsByTagName('{}') called", tag_name);
 
     let matching_node_ids: Vec<usize> = DOM_REF.with(|dom_ref| {
-        let mut results = Vec::new();
         if let Some(ref dom) = *dom_ref.borrow() {
             let dom = &**dom;
-            let match_any = tag_name == "*";
-
-            for (node_id, node) in dom.nodes.iter() {
-                if let crate::dom::NodeData::Element(ref elem_data) = node.data {
-                    if match_any || elem_data.name.local.as_ref().eq_ignore_ascii_case(&tag_name) {
-                        results.push(node_id);
-                    }
-                }
+            if tag_name == "*" {
+                return dom
+                    .nodes
+                    .iter()
+                    .filter_map(|(node_id, node)| {
+                        matches!(node.data, crate::dom::NodeData::Element(_)).then_some(node_id)
+                    })
+                    .collect();
             }
+            return dom.candidate_nodes_for_tag(&tag_name);
         }
-        results
+        Vec::new()
     });
 
     rooted!(in(raw_cx) let array = create_empty_array(safe_cx));
@@ -1988,24 +1988,30 @@ unsafe extern "C" fn document_get_elements_by_class_name(raw_cx: *mut JSContext,
     let search_classes: Vec<&str> = class_name.split_whitespace().collect();
 
     let matching_node_ids: Vec<usize> = DOM_REF.with(|dom_ref| {
-        let mut results = Vec::new();
         if let Some(ref dom) = *dom_ref.borrow() {
             let dom = &**dom;
+            let Some(first_class) = search_classes.first().copied() else {
+                return Vec::new();
+            };
 
-            for (node_id, node) in dom.nodes.iter() {
-                if let crate::dom::NodeData::Element(ref elem_data) = node.data {
-                    if let Some(class_attr) = elem_data.attributes.iter().find(|attr| attr.name.local.as_ref() == "class") {
-                        if search_classes
-                            .iter()
-                            .all(|sc| class_attr.value.split_whitespace().any(|c| c == *sc))
-                        {
-                            results.push(node_id);
+            let mut results = Vec::new();
+            for node_id in dom.candidate_nodes_for_class(first_class) {
+                if let Some(node) = dom.get_node(node_id) {
+                    if let crate::dom::NodeData::Element(ref elem_data) = node.data {
+                        if let Some(class_attr) = elem_data.attributes.iter().find(|attr| attr.name.local.as_ref() == "class") {
+                            if search_classes
+                                .iter()
+                                .all(|sc| class_attr.value.split_whitespace().any(|c| c == *sc))
+                            {
+                                results.push(node_id);
+                            }
                         }
                     }
                 }
             }
+            return results;
         }
-        results
+        Vec::new()
     });
 
     rooted!(in(raw_cx) let array = create_empty_array(safe_cx));
@@ -2060,10 +2066,30 @@ unsafe extern "C" fn document_query_selector(raw_cx: *mut JSContext, argc: c_uin
     let node_id = DOM_REF.with(|dom_ref| {
         if let Some(ref dom) = *dom_ref.borrow() {
             let dom = &**dom;
-            for (node_id, node) in dom.nodes.iter() {
-                if let crate::dom::NodeData::Element(ref elem_data) = node.data {
-                    if matches_parsed_selector(&parsed_selector, elem_data.name.local.as_ref(), &elem_data.attributes) {
-                        return Some(node_id);
+            let candidate_ids: Vec<usize> = match selector_seed(&parsed_selector) {
+                SelectorSeed::Id(id) => dom
+                    .nodes_to_id
+                    .get(id)
+                    .copied()
+                    .into_iter()
+                    .collect(),
+                SelectorSeed::Class(class_name) => dom.candidate_nodes_for_class(class_name),
+                SelectorSeed::Tag(tag) => dom.candidate_nodes_for_tag(tag),
+                SelectorSeed::Universal | SelectorSeed::None => dom
+                    .nodes
+                    .iter()
+                    .filter_map(|(node_id, node)| {
+                        matches!(node.data, crate::dom::NodeData::Element(_)).then_some(node_id)
+                    })
+                    .collect(),
+            };
+
+            for node_id in candidate_ids {
+                if let Some(node) = dom.get_node(node_id) {
+                    if let crate::dom::NodeData::Element(ref elem_data) = node.data {
+                        if matches_parsed_selector(&parsed_selector, elem_data.name.local.as_ref(), &elem_data.attributes) {
+                            return Some(node_id);
+                        }
                     }
                 }
             }
@@ -2125,10 +2151,30 @@ unsafe extern "C" fn document_query_selector_all(raw_cx: *mut JSContext, argc: c
         let mut results = Vec::new();
         if let Some(ref dom) = *dom_ref.borrow() {
             let dom = &**dom;
-            for (node_id, node) in dom.nodes.iter() {
-                if let crate::dom::NodeData::Element(ref elem_data) = node.data {
-                    if matches_parsed_selector(&parsed_selector, elem_data.name.local.as_ref(), &elem_data.attributes) {
-                        results.push(node_id);
+            let candidate_ids: Vec<usize> = match selector_seed(&parsed_selector) {
+                SelectorSeed::Id(id) => dom
+                    .nodes_to_id
+                    .get(id)
+                    .copied()
+                    .into_iter()
+                    .collect(),
+                SelectorSeed::Class(class_name) => dom.candidate_nodes_for_class(class_name),
+                SelectorSeed::Tag(tag) => dom.candidate_nodes_for_tag(tag),
+                SelectorSeed::Universal | SelectorSeed::None => dom
+                    .nodes
+                    .iter()
+                    .filter_map(|(node_id, node)| {
+                        matches!(node.data, crate::dom::NodeData::Element(_)).then_some(node_id)
+                    })
+                    .collect(),
+            };
+
+            for node_id in candidate_ids {
+                if let Some(node) = dom.get_node(node_id) {
+                    if let crate::dom::NodeData::Element(ref elem_data) = node.data {
+                        if matches_parsed_selector(&parsed_selector, elem_data.name.local.as_ref(), &elem_data.attributes) {
+                            results.push(node_id);
+                        }
                     }
                 }
             }
