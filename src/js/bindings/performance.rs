@@ -12,6 +12,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use mozjs::conversions::jsstr_to_string;
 use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty, JS_NewPlainObject};
 use crate::js::helpers::create_empty_array;
+use crate::js::helpers::set_string_property;
 use crate::js::helpers::ToSafeCx;
 
 /// Performance mark entry
@@ -27,6 +28,25 @@ struct PerformanceMeasure {
     name: String,
     start_time: f64,
     duration: f64,
+}
+
+#[derive(Debug, Clone)]
+struct NavigationTiming {
+    navigation_start: f64,
+    domain_lookup_start: f64,
+    domain_lookup_end: f64,
+    connect_start: f64,
+    connect_end: f64,
+    request_start: f64,
+    response_start: f64,
+    response_end: f64,
+    dom_loading: f64,
+    dom_interactive: f64,
+    dom_content_loaded_event_start: f64,
+    dom_content_loaded_event_end: f64,
+    dom_complete: f64,
+    load_event_start: f64,
+    load_event_end: f64,
 }
 
 /// Performance entry types
@@ -181,6 +201,35 @@ impl PerformanceManager {
 
         result
     }
+
+    fn navigation_timing(&self) -> NavigationTiming {
+        // Use a coherent timing snapshot so every field exists for legacy beacons.
+        let navigation_start = self.start_time;
+        let now = self.start_time + self.now();
+
+        NavigationTiming {
+            navigation_start,
+            domain_lookup_start: navigation_start,
+            domain_lookup_end: navigation_start,
+            connect_start: navigation_start,
+            connect_end: navigation_start,
+            request_start: navigation_start,
+            response_start: now,
+            response_end: now,
+            dom_loading: now,
+            dom_interactive: now,
+            dom_content_loaded_event_start: now,
+            dom_content_loaded_event_end: now,
+            dom_complete: now,
+            load_event_start: now,
+            load_event_end: now,
+        }
+    }
+
+    fn navigation_entry_relative_fields(&self) -> (f64, f64) {
+        let now = self.now();
+        (now, now)
+    }
 }
 
 // Thread-local storage for the performance manager pointer
@@ -241,6 +290,42 @@ pub fn setup_performance(runtime: &mut JsRuntime) -> Result<(), String> {
                     (JSPROP_ENUMERATE | JSPROP_READONLY) as u32,
                 ) {
                     return Err("Failed to define timeOrigin property".to_string());
+                }
+
+                // Expose legacy performance.timing for third-party scripts that still read it.
+                rooted!(in(raw_cx) let timing = JS_NewPlainObject(cx));
+                if timing.get().is_null() {
+                    return Err("Failed to create performance.timing object".to_string());
+                }
+                define_timing_object(cx, timing.get(), &manager.navigation_timing())?;
+
+                rooted!(in(raw_cx) let timing_val = ObjectValue(timing.get()));
+                let timing_name = std::ffi::CString::new("timing").unwrap();
+                if !JS_DefineProperty(
+                    cx,
+                    performance.handle().into(),
+                    timing_name.as_ptr(),
+                    timing_val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                ) {
+                    return Err("Failed to define performance.timing property".to_string());
+                }
+
+                // Provide an object for code that iterates performance.memory fields.
+                rooted!(in(raw_cx) let memory = JS_NewPlainObject(cx));
+                if memory.get().is_null() {
+                    return Err("Failed to create performance.memory object".to_string());
+                }
+                rooted!(in(raw_cx) let memory_val = ObjectValue(memory.get()));
+                let memory_name = std::ffi::CString::new("memory").unwrap();
+                if !JS_DefineProperty(
+                    cx,
+                    performance.handle().into(),
+                    memory_name.as_ptr(),
+                    memory_val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                ) {
+                    return Err("Failed to define performance.memory property".to_string());
                 }
             }
             Ok(())
@@ -305,6 +390,129 @@ unsafe fn set_empty_array_result(raw_cx: *mut JSContext, args: &CallArgs) {
     } else {
         args.rval().set(ObjectValue(array.get()));
     }
+}
+
+unsafe fn define_number_property(
+    cx: &mut SafeJSContext,
+    obj: *mut JSObject,
+    name: &str,
+    value: f64,
+) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let obj_rooted = obj);
+    rooted!(in(raw_cx) let val = DoubleValue(value));
+    let cname = std::ffi::CString::new(name).unwrap();
+    if !JS_DefineProperty(
+        cx,
+        obj_rooted.handle().into(),
+        cname.as_ptr(),
+        val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    ) {
+        Err(format!("Failed to set property {}", name))
+    } else {
+        Ok(())
+    }
+}
+
+unsafe fn define_timing_object(
+    cx: &mut SafeJSContext,
+    timing_obj: *mut JSObject,
+    timing: &NavigationTiming,
+) -> Result<(), String> {
+    define_number_property(cx, timing_obj, "navigationStart", timing.navigation_start)?;
+    define_number_property(cx, timing_obj, "domainLookupStart", timing.domain_lookup_start)?;
+    define_number_property(cx, timing_obj, "domainLookupEnd", timing.domain_lookup_end)?;
+    define_number_property(cx, timing_obj, "connectStart", timing.connect_start)?;
+    define_number_property(cx, timing_obj, "connectEnd", timing.connect_end)?;
+    define_number_property(cx, timing_obj, "requestStart", timing.request_start)?;
+    define_number_property(cx, timing_obj, "responseStart", timing.response_start)?;
+    define_number_property(cx, timing_obj, "responseEnd", timing.response_end)?;
+    define_number_property(cx, timing_obj, "domLoading", timing.dom_loading)?;
+    define_number_property(cx, timing_obj, "domInteractive", timing.dom_interactive)?;
+    define_number_property(
+        cx,
+        timing_obj,
+        "domContentLoadedEventStart",
+        timing.dom_content_loaded_event_start,
+    )?;
+    define_number_property(
+        cx,
+        timing_obj,
+        "domContentLoadedEventEnd",
+        timing.dom_content_loaded_event_end,
+    )?;
+    define_number_property(cx, timing_obj, "domComplete", timing.dom_complete)?;
+    define_number_property(cx, timing_obj, "loadEventStart", timing.load_event_start)?;
+    define_number_property(cx, timing_obj, "loadEventEnd", timing.load_event_end)?;
+    Ok(())
+}
+
+unsafe fn define_navigation_entry(
+    cx: &mut SafeJSContext,
+    nav_obj: *mut JSObject,
+    now: f64,
+    response_start: f64,
+) -> Result<(), String> {
+    define_number_property(cx, nav_obj, "startTime", 0.0)?;
+    define_number_property(cx, nav_obj, "duration", now)?;
+    define_number_property(cx, nav_obj, "activationStart", 0.0)?;
+    define_number_property(cx, nav_obj, "domainLookupStart", 0.0)?;
+    define_number_property(cx, nav_obj, "domainLookupEnd", 0.0)?;
+    define_number_property(cx, nav_obj, "connectStart", 0.0)?;
+    define_number_property(cx, nav_obj, "connectEnd", 0.0)?;
+    define_number_property(cx, nav_obj, "requestStart", 0.0)?;
+    define_number_property(cx, nav_obj, "responseStart", response_start)?;
+    define_number_property(cx, nav_obj, "responseEnd", now)?;
+    define_number_property(cx, nav_obj, "domInteractive", now)?;
+    define_number_property(cx, nav_obj, "domContentLoadedEventStart", now)?;
+    define_number_property(cx, nav_obj, "domComplete", now)?;
+    define_number_property(cx, nav_obj, "loadEventStart", now)?;
+    define_number_property(cx, nav_obj, "loadEventEnd", now)?;
+    define_number_property(cx, nav_obj, "transferSize", 0.0)?;
+    define_number_property(cx, nav_obj, "decodedBodySize", 0.0)?;
+    set_string_property(cx, nav_obj, "entryType", "navigation")?;
+    set_string_property(cx, nav_obj, "name", "document")?;
+    set_string_property(cx, nav_obj, "type", "navigate")?;
+    set_string_property(cx, nav_obj, "deliveryType", "")?;
+    set_string_property(cx, nav_obj, "nextHopProtocol", "")?;
+    Ok(())
+}
+
+unsafe fn add_entry_object_to_array(
+    raw_cx: *mut JSContext,
+    array_obj: *mut JSObject,
+    index: u32,
+    name: &str,
+    entry_type: &str,
+    start_time: f64,
+    duration: f64,
+) {
+    let safe_cx = &mut raw_cx.to_safe_cx();
+    rooted!(in(raw_cx) let entry_obj = JS_NewPlainObject(safe_cx));
+    if entry_obj.get().is_null() {
+        return;
+    }
+    if set_string_property(safe_cx, entry_obj.get(), "name", name).is_err() {
+        return;
+    }
+    if set_string_property(safe_cx, entry_obj.get(), "entryType", entry_type).is_err() {
+        return;
+    }
+    if define_number_property(safe_cx, entry_obj.get(), "startTime", start_time).is_err() {
+        return;
+    }
+    if define_number_property(safe_cx, entry_obj.get(), "duration", duration).is_err() {
+        return;
+    }
+    rooted!(in(raw_cx) let entry_val = ObjectValue(entry_obj.get()));
+    rooted!(in(raw_cx) let array_rooted = array_obj);
+    mozjs::rust::wrappers::JS_SetElement(
+        raw_cx,
+        array_rooted.handle().into(),
+        index,
+        entry_val.handle().into(),
+    );
 }
 
 /// performance.now() implementation
@@ -453,7 +661,7 @@ unsafe extern "C" fn performance_get_entries_by_type(raw_cx: *mut JSContext, arg
         }
     };
 
-    let _entries = PERFORMANCE_MANAGER.with(|pm| {
+    let entries = PERFORMANCE_MANAGER.with(|pm| {
         if let Some(ref manager) = *pm.borrow() {
             manager.get_entries_by_type(&entry_type)
         } else {
@@ -461,11 +669,64 @@ unsafe extern "C" fn performance_get_entries_by_type(raw_cx: *mut JSContext, arg
         }
     });
 
-    // Create an array to return
-    // FIXME: `_entries` is fetched above but never written into `array`. Each entry should be
-    // serialized as a PerformanceEntry-like object {name, entryType, startTime, duration} and
-    // pushed into the array before returning.
-    set_empty_array_result(raw_cx, &args);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+    rooted!(in(raw_cx) let array = create_empty_array(safe_cx));
+    if array.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let mut index = 0_u32;
+    if entry_type == "navigation" {
+        PERFORMANCE_MANAGER.with(|pm| {
+            if let Some(ref manager) = *pm.borrow() {
+                let (now, response_start) = manager.navigation_entry_relative_fields();
+                add_entry_object_to_array(
+                    raw_cx,
+                    array.get(),
+                    index,
+                    "document",
+                    "navigation",
+                    0.0,
+                    now,
+                );
+
+                // Add navigation-specific properties on the created object.
+                let raw_cx_inner = raw_cx;
+                let safe_cx_inner = &mut raw_cx_inner.to_safe_cx();
+                rooted!(in(raw_cx_inner) let nav_obj = JS_NewPlainObject(safe_cx_inner));
+                if !nav_obj.get().is_null()
+                    && define_navigation_entry(safe_cx_inner, nav_obj.get(), now, response_start).is_ok()
+                {
+                    rooted!(in(raw_cx_inner) let nav_val = ObjectValue(nav_obj.get()));
+                    rooted!(in(raw_cx_inner) let array_rooted = array.get());
+                    mozjs::rust::wrappers::JS_SetElement(
+                        raw_cx_inner,
+                        array_rooted.handle().into(),
+                        index,
+                        nav_val.handle().into(),
+                    );
+                }
+                index += 1;
+            }
+        });
+    } else {
+        for (name, start_time, duration) in entries {
+            let entry_duration = duration.unwrap_or(0.0);
+            add_entry_object_to_array(
+                raw_cx,
+                array.get(),
+                index,
+                &name,
+                &entry_type,
+                start_time,
+                entry_duration,
+            );
+            index += 1;
+        }
+    }
+
+    args.rval().set(ObjectValue(array.get()));
     true
 }
 
@@ -486,7 +747,7 @@ unsafe extern "C" fn performance_get_entries_by_name(raw_cx: *mut JSContext, arg
         }
     };
 
-    let _entries = PERFORMANCE_MANAGER.with(|pm| {
+    let entries = PERFORMANCE_MANAGER.with(|pm| {
         if let Some(ref manager) = *pm.borrow() {
             manager.get_entries_by_name(&name)
         } else {
@@ -494,11 +755,27 @@ unsafe extern "C" fn performance_get_entries_by_name(raw_cx: *mut JSContext, arg
         }
     });
 
-    // Create an array to return
-    // FIXME: `_entries` is fetched above but never written into `array`. Each entry should be
-    // serialized as a PerformanceEntry-like object {name, entryType, startTime, duration} and
-    // pushed into the array before returning.
-    set_empty_array_result(raw_cx, &args);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+    rooted!(in(raw_cx) let array = create_empty_array(safe_cx));
+    if array.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    for (index, (entry_name, start_time, duration)) in entries.into_iter().enumerate() {
+        let entry_type = if duration.is_some() { "measure" } else { "mark" };
+        add_entry_object_to_array(
+            raw_cx,
+            array.get(),
+            index as u32,
+            &entry_name,
+            entry_type,
+            start_time,
+            duration.unwrap_or(0.0),
+        );
+    }
+
+    args.rval().set(ObjectValue(array.get()));
     true
 }
 
@@ -506,11 +783,59 @@ unsafe extern "C" fn performance_get_entries_by_name(raw_cx: *mut JSContext, arg
 unsafe extern "C" fn performance_get_entries(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
-    // Create an array to return (returns empty array for now)
-    set_empty_array_result(raw_cx, &args);
+    let all_entries = PERFORMANCE_MANAGER.with(|pm| {
+        if let Some(ref manager) = *pm.borrow() {
+            let mut marks = manager.get_entries_by_type("mark");
+            let mut measures = manager.get_entries_by_type("measure");
+            marks.append(&mut measures);
+            marks
+        } else {
+            Vec::new()
+        }
+    });
 
-    // FIXME: Should return all recorded marks and measures as an array of PerformanceEntry-like
-    // objects instead of always returning an empty array.
+    let safe_cx = &mut raw_cx.to_safe_cx();
+    rooted!(in(raw_cx) let array = create_empty_array(safe_cx));
+    if array.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    for (index, (name, start_time, duration)) in all_entries.into_iter().enumerate() {
+        let entry_type = if duration.is_some() { "measure" } else { "mark" };
+        add_entry_object_to_array(
+            raw_cx,
+            array.get(),
+            index as u32,
+            &name,
+            entry_type,
+            start_time,
+            duration.unwrap_or(0.0),
+        );
+    }
+
+    args.rval().set(ObjectValue(array.get()));
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PerformanceManager;
+
+    #[test]
+    fn navigation_timing_contains_navigation_start() {
+        let manager = PerformanceManager::new();
+        let timing = manager.navigation_timing();
+        assert!(timing.navigation_start > 0.0);
+        assert!(timing.response_start >= timing.navigation_start);
+    }
+
+    #[test]
+    fn navigation_entry_relative_times_are_non_negative() {
+        let manager = PerformanceManager::new();
+        let (now, response_start) = manager.navigation_entry_relative_fields();
+        assert!(now >= 0.0);
+        assert!(response_start >= 0.0);
+    }
 }
 
