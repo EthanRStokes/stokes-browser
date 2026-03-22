@@ -41,8 +41,8 @@ impl Dom {
                 handle_pointerdown(
                     self,
                     target_node_id,
-                    event.page_x(),
-                    event.page_y(),
+                    event.client_x(),
+                    event.client_y(),
                     event.mods,
                     &mut dispatch_event,
                 );
@@ -749,7 +749,7 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
         let doc = &mut self.doc;
 
         let prev_hover_node_id = doc.hover_node_id;
-        let changed = doc.set_hover(event.page_x(), event.page_y());
+        let changed = doc.set_hover_client(event.client_x(), event.client_y());
         let hover_node_id = doc.hover_node_id;
 
         if !changed {

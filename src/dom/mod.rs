@@ -71,7 +71,7 @@ use skia_safe::wrapper::NativeTransmutableWrapper;
 use style::animation::{AnimationState, DocumentAnimationSet};
 use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters, SharedStyleContext};
 use style::data::ElementStyles;
-use style::dom::{TDocument, TNode};
+use style::dom::{TDocument, TElement, TNode};
 use style::font_metrics::FontMetrics;
 use style::global_style_data::{GLOBAL_STYLE_DATA, STYLE_THREAD_POOL};
 use style::invalidation::element::restyle_hints::RestyleHint;
@@ -1169,7 +1169,7 @@ impl Dom {
     }
 
     pub fn set_hover(&mut self, x: f32, y: f32) -> bool {
-        let hit = self.hit(x, y);
+        let hit = self.hit_page(x, y);
         let hover_node_id = hit.map(|hit| hit.node_id);
         let new_is_text = hit.map(|hit| hit.is_text).unwrap_or(false);
 
@@ -1438,16 +1438,35 @@ impl Dom {
         }
     }
 
-    pub fn hit(&self, x: f32, y: f32) -> Option<HitResult> {
+    #[inline]
+    fn client_to_page_coords(&self, x: f32, y: f32) -> (f32, f32) {
+        (
+            x + self.viewport_scroll.x as f32,
+            y + self.viewport_scroll.y as f32,
+        )
+    }
+
+    /// Hit-test using page-space CSS coordinates.
+    pub fn hit_page(&self, x: f32, y: f32) -> Option<HitResult> {
         if TDocument::as_node(&&self.nodes[0])
             .first_element_child()
             .is_none()
         {
-            println!("Hit - NO DOM");
             return None;
         }
 
         self.root_element().hit(x, y)
+    }
+
+    /// Hit-test using client/viewport-space CSS coordinates.
+    pub fn hit_client(&self, x: f32, y: f32) -> Option<HitResult> {
+        let (page_x, page_y) = self.client_to_page_coords(x, y);
+        self.hit_page(page_x, page_y)
+    }
+
+    /// Backward-compatible hit-test entry point (client/viewport-space CSS coordinates).
+    pub fn hit(&self, x: f32, y: f32) -> Option<HitResult> {
+        self.hit_client(x, y)
     }
 
     pub fn try_root_element(&self) -> Option<&DomNode> {
@@ -1592,11 +1611,30 @@ impl Dom {
     }
 
     pub fn find_text_position(&self, x: f32, y: f32) -> Option<(usize, usize)> {
-        let hit = self.hit(x, y)?;
+        let hit = self.hit_page(x, y)?;
         let hit_node = self.get_node(hit.node_id)?;
         let inline_root = hit_node.inline_root_ancestor()?;
-        let byte_offset = inline_root.text_offset_at_point(hit.x, hit.y)?;
+
+        // HitResult coordinates are border-box local; convert to inline content-box space.
+        let content_box_offset = taffy::Point {
+            x: inline_root.final_layout.padding.left + inline_root.final_layout.border.left,
+            y: inline_root.final_layout.padding.top + inline_root.final_layout.border.top,
+        };
+        let text_x = hit.x + inline_root.scroll_offset.x as f32 - content_box_offset.x;
+        let text_y = hit.y + inline_root.scroll_offset.y as f32 - content_box_offset.y;
+
+        let byte_offset = inline_root.text_offset_at_point(text_x, text_y)?;
         Some((inline_root.id, byte_offset))
+    }
+
+    pub fn find_text_position_client(&self, x: f32, y: f32) -> Option<(usize, usize)> {
+        let (page_x, page_y) = self.client_to_page_coords(x, y);
+        self.find_text_position(page_x, page_y)
+    }
+
+    pub fn set_hover_client(&mut self, x: f32, y: f32) -> bool {
+        let (page_x, page_y) = self.client_to_page_coords(x, y);
+        self.set_hover(page_x, page_y)
     }
 
     pub fn set_text_selection(
@@ -1682,6 +1720,20 @@ impl Dom {
         }
 
         if let Some((node, offset)) = self.find_text_position(x, y) {
+            self.update_selection_focus(node, offset);
+            self.shell_provider.request_redraw();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn extend_text_selection_to_point_client(&mut self, x: f32, y: f32) -> bool {
+        if !self.text_selection.anchor.is_some() {
+            return false;
+        }
+
+        if let Some((node, offset)) = self.find_text_position_client(x, y) {
             self.update_selection_focus(node, offset);
             self.shell_provider.request_redraw();
             true

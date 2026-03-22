@@ -141,11 +141,11 @@ pub(crate) fn handle_pointermove<F: FnMut(DomEvent)>(
     event: &BlitzPointerEvent,
     mut dispatch_event: F,
 ) -> bool {
-    let x = event.page_x();
-    let y = event.page_y();
+    let x = event.client_x();
+    let y = event.client_y();
     let buttons = event.buttons;
 
-    let mut changed = doc.set_hover(x, y);
+    let mut changed = doc.set_hover_client(x, y);
 
     // Check if we've moved enough to be considered a selection drag (2px threshold)
     if buttons != MouseEventButtons::None && doc.drag_mode == DragMode::None {
@@ -181,7 +181,7 @@ pub(crate) fn handle_pointermove<F: FnMut(DomEvent)>(
         return has_changed;
     }
 
-    let Some(hit) = doc.hit(x, y) else {
+    let Some(hit) = doc.hit_client(x, y) else {
         return changed;
     };
 
@@ -199,7 +199,7 @@ pub(crate) fn handle_pointermove<F: FnMut(DomEvent)>(
     let node = &mut doc.nodes[target];
     let Some(el) = node.data.element_mut() else {
         // Handle text selection extension for non-element nodes
-        if buttons != MouseEventButtons::None && doc.extend_text_selection_to_point(x, y) {
+        if buttons != MouseEventButtons::None && doc.extend_text_selection_to_point_client(x, y) {
             changed = true;
         }
         return changed;
@@ -239,7 +239,7 @@ pub(crate) fn handle_pointermove<F: FnMut(DomEvent)>(
         changed = true;
     } else if event.is_mouse()
         && buttons != MouseEventButtons::None
-        && doc.extend_text_selection_to_point(x, y)
+        && doc.extend_text_selection_to_point_client(x, y)
     {
         changed = true;
     }
@@ -276,7 +276,7 @@ pub(crate) fn handle_pointerdown(
     doc.drag_mode = DragMode::None;
     doc.scroll_animation = ScrollAnimationState::None;
 
-    let Some(hit) = doc.hit(x, y) else {
+    let Some(hit) = doc.hit_client(x, y) else {
         // Clear text selection when clicking outside any element
         doc.clear_text_selection();
         return;
@@ -326,7 +326,7 @@ pub(crate) fn handle_pointerdown(
         ClickTarget::Disabled => (),
         ClickTarget::SelectableText => {
             // Handle text selection for non-input elements
-            if let Some((inline_root_id, byte_offset)) = doc.find_text_position(x, y) {
+            if let Some((inline_root_id, byte_offset)) = doc.find_text_position_client(x, y) {
                 doc.set_text_selection(inline_root_id, byte_offset, inline_root_id, byte_offset);
                 doc.shell_provider.request_redraw();
             } else {

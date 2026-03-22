@@ -1179,6 +1179,84 @@ impl DomNode {
         }
     }
 
+    fn ignores_pointer_events(&self) -> bool {
+        // Prefer computed style so stylesheet rules are respected on framework-heavy pages.
+        if let Some(style) = self.primary_styles() {
+            use style::computed_values::pointer_events::T as PointerEvents;
+            if matches!(style.clone_pointer_events(), PointerEvents::None) {
+                return true;
+            }
+        }
+
+        let Some(element) = self.element_data() else {
+            return false;
+        };
+
+        if element
+            .classes()
+            .into_iter()
+            .any(|class_name| class_name == "pointer-events-none")
+        {
+            return true;
+        }
+
+        // Handle common inline style declarations like `pointer-events: none`.
+        if let Some(style_attr) = element.attr(local_name!("style")) {
+            let compact: String = style_attr
+                .chars()
+                .filter(|c| !c.is_ascii_whitespace())
+                .collect::<String>()
+                .to_ascii_lowercase();
+            if compact.contains("pointer-events:none") {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Returns hit-test candidates in topmost-first order.
+    ///
+    /// Prefer paint order first, but also include layout/DOM/shadow children as
+    /// fallbacks when lists are stale or incomplete so descendants still get a
+    /// chance before ancestor wrappers.
+    fn hit_children_topmost_first(&self) -> Vec<usize> {
+        let mut ordered = Vec::new();
+
+        if let Some(paint_children) = self.paint_children.borrow().as_ref() {
+            for &child_id in paint_children.iter().rev() {
+                if !ordered.contains(&child_id) {
+                    ordered.push(child_id);
+                }
+            }
+        }
+
+        if let Some(layout_children) = self.layout_children.borrow().as_ref() {
+            for &child_id in layout_children.iter().rev() {
+                if !ordered.contains(&child_id) {
+                    ordered.push(child_id);
+                }
+            }
+        }
+
+        for &child_id in self.children.iter().rev() {
+            if !ordered.contains(&child_id) {
+                ordered.push(child_id);
+            }
+        }
+
+        if let Some(shadow_root_id) = self.shadow_root {
+            let shadow_root = self.get_node(shadow_root_id);
+            for &child_id in shadow_root.children.iter().rev() {
+                if !ordered.contains(&child_id) {
+                    ordered.push(child_id);
+                }
+            }
+        }
+
+        ordered
+    }
+
     /// Find the inline root ancestor of this node (or self if this is an inline root).
     /// Returns None if no inline root ancestor exists.
     pub fn inline_root_ancestor(&self) -> Option<&DomNode> {
@@ -1652,7 +1730,28 @@ impl DomNode {
         result
     }
 
-    pub fn hit(&self, x: f32, y: f32) -> Option<HitResult> {
+    /// Returns this node's border-box origin in page-space CSS coordinates.
+    ///
+    /// Unlike `absolute_position`, this keeps the node's own scroll offset out
+    /// of the border-box position and only applies ancestor scroll offsets.
+    fn page_border_origin(&self) -> Point<f32> {
+        match self.layout_parent.get() {
+            Some(parent_id) => {
+                let parent = self.get_node(parent_id);
+                let parent_origin = parent.page_border_origin();
+                Point {
+                    x: parent_origin.x + self.final_layout.location.x - parent.scroll_offset.x as f32,
+                    y: parent_origin.y + self.final_layout.location.y - parent.scroll_offset.y as f32,
+                }
+            }
+            None => Point {
+                x: self.final_layout.location.x,
+                y: self.final_layout.location.y,
+            },
+        }
+    }
+
+    fn hit_page_space(&self, page_x: f32, page_y: f32) -> Option<HitResult> {
         use style::computed_values::visibility::T as Visibility;
 
         // Don't hit on visbility:hidden elements
@@ -1665,61 +1764,126 @@ impl DomNode {
             }
         }
 
-        let mut x = x - self.final_layout.location.x + self.scroll_offset.x as f32;
-        let mut y = y - self.final_layout.location.y + self.scroll_offset.y as f32;
+        let origin = self.page_border_origin();
+
+        // Keep both coordinate spaces: border-box local for return values/self checks,
+        // and scrolled local for descendant/content hit testing.
+        let local_x = page_x - origin.x;
+        let local_y = page_y - origin.y;
+        let scrolled_x = local_x + self.scroll_offset.x as f32;
+        let scrolled_y = local_y + self.scroll_offset.y as f32;
 
         let size = self.final_layout.size;
-        let matches_self = !(x < 0.0
-            || x > size.width + self.scroll_offset.x as f32
-            || y < 0.0
-            || y > size.height + self.scroll_offset.y as f32);
+        let matches_self =
+            !(local_x < 0.0 || local_x > size.width || local_y < 0.0 || local_y > size.height);
 
         let content_size = self.final_layout.content_size;
-        let matches_content = !(x < 0.0
-            || x > content_size.width + self.scroll_offset.x as f32
-            || y < 0.0
-            || y > content_size.height + self.scroll_offset.y as f32);
+        let matches_content = !(scrolled_x < 0.0
+            || scrolled_x > content_size.width
+            || scrolled_y < 0.0
+            || scrolled_y > content_size.height);
+        let ignores_pointer_events = self.ignores_pointer_events();
 
         let matches_hoisted_content = match &self.stacking_context {
             Some(sc) => {
                 let content_area = sc.content_area;
-                x >= content_area.left + self.scroll_offset.x as f32
-                && x <= content_area.right + self.scroll_offset.x as f32
-                && y >= content_area.top + self.scroll_offset.y as f32
-                && y <= content_area.bottom + self.scroll_offset.y as f32
-            },
+                scrolled_x >= content_area.left
+                    && scrolled_x <= content_area.right
+                    && scrolled_y >= content_area.top
+                    && scrolled_y <= content_area.bottom
+            }
             None => false,
         };
 
-        if !matches_self && !matches_content && !matches_hoisted_content {
+        // Only preserve off-bounds descendant traversal for known wrapper cases.
+        let ordered_children = self.hit_children_topmost_first();
+        let has_descendant_candidates = !ordered_children.is_empty();
+        let allows_descendant_fallback = has_descendant_candidates
+            && (matches!(self.data, NodeData::Document | NodeData::ShadowRoot(_))
+                || size.width == 0.0
+                || size.height == 0.0
+                || self
+                    .display_style()
+                    .is_some_and(|display| display.outside() == DisplayOutside::None));
+
+        if !matches_self
+            && !matches_content
+            && !matches_hoisted_content
+            && !allows_descendant_fallback
+        {
             return None;
         }
 
-        if self.flags.is_inline_root() {
+        let (inline_x, inline_y) = if self.flags.is_inline_root() {
             let content_box_offset = taffy::Point {
                 x: self.final_layout.padding.left + self.final_layout.border.left,
                 y: self.final_layout.padding.top + self.final_layout.border.top,
             };
-            x -= content_box_offset.x;
-            y -= content_box_offset.y;
-        }
+            (scrolled_x - content_box_offset.x, scrolled_y - content_box_offset.y)
+        } else {
+            (scrolled_x, scrolled_y)
+        };
 
         // Positive z_index hoisted children
         if matches_hoisted_content {
             if let Some(hoisted) = &self.stacking_context {
                 for child in hoisted.pos_z_hoisted_children().rev() {
-                    let x = x - child.position.x;
-                    let y = y - child.position.y;
-                    if let Some(hit) = self.get_node(child.node_id).hit(x, y) {
+                    if let Some(hit) = self.get_node(child.node_id).hit_page_space(page_x, page_y) {
                         return Some(hit);
                     }
                 }
             }
         }
 
-        // Call `.hit()` on each child in turn. If any return `Some` then return that value. Else return `Some(self.id).
-        for child_id in self.paint_children.borrow().iter().flatten().rev() {
-            if let Some(hit) = self.get_node(*child_id).hit(x, y) {
+        // Descendants must win over ancestor wrappers, but skip obviously unrelated branches.
+        for child_id in ordered_children {
+            let child = self.get_node(child_id);
+
+            let child_origin = child.page_border_origin();
+            let child_local_x = page_x - child_origin.x;
+            let child_local_y = page_y - child_origin.y;
+            let child_scrolled_x = child_local_x + child.scroll_offset.x as f32;
+            let child_scrolled_y = child_local_y + child.scroll_offset.y as f32;
+
+            let child_size = child.final_layout.size;
+            let child_matches_self = !(child_local_x < 0.0
+                || child_local_x > child_size.width
+                || child_local_y < 0.0
+                || child_local_y > child_size.height);
+
+            let child_content_size = child.final_layout.content_size;
+            let child_matches_content = !(child_scrolled_x < 0.0
+                || child_scrolled_x > child_content_size.width
+                || child_scrolled_y < 0.0
+                || child_scrolled_y > child_content_size.height);
+
+            let child_matches_hoisted = match &child.stacking_context {
+                Some(sc) => {
+                    let area = sc.content_area;
+                    child_scrolled_x >= area.left
+                        && child_scrolled_x <= area.right
+                        && child_scrolled_y >= area.top
+                        && child_scrolled_y <= area.bottom
+                }
+                None => false,
+            };
+
+            let child_allows_descendant_fallback = child_size.width == 0.0
+                || child_size.height == 0.0
+                || matches!(child.data, NodeData::Document | NodeData::ShadowRoot(_))
+                || child
+                    .display_style()
+                    .is_some_and(|display| display.outside() == DisplayOutside::None);
+
+            if !child_matches_self
+                && !child_matches_content
+                && !child_matches_hoisted
+                && !child_allows_descendant_fallback
+            {
+                continue;
+            }
+
+            if let Some(hit) = child.hit_page_space(page_x, page_y) {
                 return Some(hit);
             }
         }
@@ -1728,9 +1892,7 @@ impl DomNode {
         if matches_hoisted_content {
             if let Some(hoisted) = &self.stacking_context {
                 for child in hoisted.neg_z_hoisted_children().rev() {
-                    let x = x - child.position.x;
-                    let y = y - child.position.y;
-                    if let Some(hit) = self.get_node(child.node_id).hit(x, y) {
+                    if let Some(hit) = self.get_node(child.node_id).hit_page_space(page_x, page_y) {
                         return Some(hit);
                     }
                 }
@@ -1745,14 +1907,14 @@ impl DomNode {
                 let scale = layout.scale();
 
                 if let Some((cluster, _side)) =
-                    Cluster::from_point_exact(layout, x * scale, y * scale)
+                    Cluster::from_point_exact(layout, inline_x * scale, inline_y * scale)
                 {
                     let style_index = cluster.glyphs().next()?.style_index();
                     let node_id = layout.styles()[style_index].brush.id;
                     return Some(HitResult {
                         node_id,
-                        x,
-                        y,
+                        x: local_x,
+                        y: local_y,
                         is_text: true,
                     });
                 }
@@ -1760,16 +1922,20 @@ impl DomNode {
         }
 
         // Self (this node)
-        if matches_self {
+        if matches_self && !ignores_pointer_events {
             return Some(HitResult {
                 node_id: self.id,
-                x,
-                y,
+                x: local_x,
+                y: local_y,
                 is_text: false,
             });
         }
 
         None
+    }
+
+    pub fn hit(&self, x: f32, y: f32) -> Option<HitResult> {
+        self.hit_page_space(x, y)
     }
 
     pub fn outer_html(&self) -> String {
