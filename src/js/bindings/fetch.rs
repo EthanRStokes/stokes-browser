@@ -197,10 +197,6 @@ fn resolve_fetch_url(input: &str) -> Result<String, String> {
 
 unsafe fn extract_fetch_input_url(cx: &mut SafeJSContext, request_info: JSVal) -> Option<String> {
     let raw_cx = cx.raw_cx();
-    if request_info.is_undefined() || request_info.is_null() {
-        return None;
-    }
-
     if request_info.is_string() {
         let js_str = request_info.to_string();
         if js_str.is_null() {
@@ -220,6 +216,8 @@ unsafe fn extract_fetch_input_url(cx: &mut SafeJSContext, request_info: JSVal) -
         }
     }
 
+    // Match browser behavior by coercing non-Request values (including null/undefined)
+    // through JS string conversion instead of rejecting them as invalid request input.
     Some(js_value_to_string(cx, request_info))
 }
 
