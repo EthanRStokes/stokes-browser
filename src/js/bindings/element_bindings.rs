@@ -69,6 +69,188 @@ unsafe fn maybe_patch_mutation_observer_node(cx: &mut SafeJSContext, node_obj: *
     );
 }
 
+unsafe fn set_object_prototype(
+    cx: &mut SafeJSContext,
+    obj: *mut JSObject,
+    proto: *mut JSObject,
+) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let global = CurrentGlobalOrNull(cx));
+    if global.get().is_null() {
+        return Err("No global object for prototype setup".to_string());
+    }
+
+    rooted!(in(raw_cx) let mut object_ctor_val = UndefinedValue());
+    let object_name = std::ffi::CString::new("Object").unwrap();
+    if !JS_GetProperty(
+        cx,
+        global.handle().into(),
+        object_name.as_ptr(),
+        object_ctor_val.handle_mut().into(),
+    ) || !object_ctor_val.get().is_object() {
+        return Err("Failed to resolve global Object constructor".to_string());
+    }
+    rooted!(in(raw_cx) let object_ctor_obj = object_ctor_val.get().to_object());
+
+    rooted!(in(raw_cx) let mut set_prototype_fn = UndefinedValue());
+    let set_prototype_name = std::ffi::CString::new("setPrototypeOf").unwrap();
+    if !JS_GetProperty(
+        cx,
+        object_ctor_obj.handle().into(),
+        set_prototype_name.as_ptr(),
+        set_prototype_fn.handle_mut().into(),
+    ) || !set_prototype_fn.get().is_object() {
+        return Err("Failed to resolve Object.setPrototypeOf".to_string());
+    }
+
+    rooted!(in(raw_cx) let set_proto_args = ValueArray::<2usize>::new([
+        ObjectValue(obj),
+        ObjectValue(proto),
+    ]));
+    rooted!(in(raw_cx) let mut rval = UndefinedValue());
+    if !JS_CallFunctionValue(
+        cx,
+        object_ctor_obj.handle().into(),
+        set_prototype_fn.handle().into(),
+        &HandleValueArray::from(&set_proto_args),
+        rval.handle_mut().into(),
+    ) {
+        return Err("Object.setPrototypeOf call failed".to_string());
+    }
+
+    Ok(())
+}
+
+unsafe fn ensure_element_shared_prototype(cx: &mut SafeJSContext) -> Result<*mut JSObject, String> {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let global = CurrentGlobalOrNull(cx));
+    if global.get().is_null() {
+        return Err("No global object".to_string());
+    }
+
+    let key = std::ffi::CString::new("__stokesElementPrototype").unwrap();
+    rooted!(in(raw_cx) let mut existing = UndefinedValue());
+    if JS_GetProperty(
+        cx,
+        global.handle().into(),
+        key.as_ptr(),
+        existing.handle_mut().into(),
+    ) && existing.get().is_object() {
+        return Ok(existing.get().to_object());
+    }
+
+    rooted!(in(raw_cx) let proto = JS_NewPlainObject(cx));
+    if proto.get().is_null() {
+        return Err("Failed to create element prototype object".to_string());
+    }
+
+    // Shared element methods
+    define_function(cx, proto.get(), "getAttribute", Some(element_get_attribute), 1)?;
+    define_function(cx, proto.get(), "setAttribute", Some(element_set_attribute), 2)?;
+    define_function(cx, proto.get(), "removeAttribute", Some(element_remove_attribute), 1)?;
+    define_function(cx, proto.get(), "hasAttribute", Some(element_has_attribute), 1)?;
+    define_function(cx, proto.get(), "append", Some(element_append), 0)?;
+    define_function(cx, proto.get(), "appendChild", Some(element_append_child), 1)?;
+    define_function(cx, proto.get(), "removeChild", Some(element_remove_child), 1)?;
+    define_function(cx, proto.get(), "insertBefore", Some(element_insert_before), 2)?;
+    define_function(cx, proto.get(), "replaceChild", Some(element_replace_child), 2)?;
+    define_function(cx, proto.get(), "cloneNode", Some(element_clone_node), 1)?;
+    define_function(cx, proto.get(), "querySelector", Some(element_query_selector), 1)?;
+    define_function(cx, proto.get(), "querySelectorAll", Some(element_query_selector_all), 1)?;
+    define_function(cx, proto.get(), "addEventListener", Some(element_add_event_listener), 3)?;
+    define_function(cx, proto.get(), "removeEventListener", Some(element_remove_event_listener), 3)?;
+    define_function(cx, proto.get(), "dispatchEvent", Some(element_dispatch_event), 1)?;
+    define_function(cx, proto.get(), "focus", Some(element_focus), 0)?;
+    define_function(cx, proto.get(), "blur", Some(element_blur), 0)?;
+    define_function(cx, proto.get(), "click", Some(element_click), 0)?;
+    define_function(cx, proto.get(), "getBoundingClientRect", Some(element_get_bounding_client_rect), 0)?;
+    define_function(cx, proto.get(), "getClientRects", Some(element_get_client_rects), 0)?;
+    define_function(cx, proto.get(), "closest", Some(element_closest), 1)?;
+    define_function(cx, proto.get(), "matches", Some(element_matches), 1)?;
+    define_function(cx, proto.get(), "contains", Some(element_contains), 1)?;
+    define_function(cx, proto.get(), "hasChildNodes", Some(element_has_child_nodes), 0)?;
+    define_function(cx, proto.get(), "getRootNode", Some(element_get_root_node), 1)?;
+    define_function(cx, proto.get(), "attachShadow", Some(element_attach_shadow), 1)?;
+
+    define_function(cx, proto.get(), "remove", Some(element_remove), 0)?;
+    define_function(cx, proto.get(), "prepend", Some(element_prepend), 0)?;
+    define_function(cx, proto.get(), "before", Some(element_before), 0)?;
+    define_function(cx, proto.get(), "after", Some(element_after), 0)?;
+    define_function(cx, proto.get(), "replaceWith", Some(element_replace_with), 0)?;
+
+    define_function(cx, proto.get(), "insertAdjacentHTML", Some(element_insert_adjacent_html), 2)?;
+    define_function(cx, proto.get(), "insertAdjacentElement", Some(element_insert_adjacent_element), 2)?;
+    define_function(cx, proto.get(), "insertAdjacentText", Some(element_insert_adjacent_text), 2)?;
+
+    define_function(cx, proto.get(), "getAttributeNames", Some(element_get_attribute_names), 0)?;
+    define_function(cx, proto.get(), "hasAttributes", Some(element_has_attributes), 0)?;
+
+    define_function(cx, proto.get(), "scrollIntoView", Some(element_scroll_into_view), 0)?;
+    define_function(cx, proto.get(), "scrollTo", Some(element_scroll_to), 0)?;
+    define_function(cx, proto.get(), "scroll", Some(element_scroll_to), 0)?;
+    define_function(cx, proto.get(), "scrollBy", Some(element_scroll_by), 0)?;
+    define_function(cx, proto.get(), "animate", Some(element_animate), 2)?;
+
+    // Internal getter/setter functions backing reflected properties
+    define_function(cx, proto.get(), "__getTextContent", Some(element_get_text_content), 0)?;
+    define_function(cx, proto.get(), "__setTextContent", Some(element_set_text_content), 1)?;
+    define_function(cx, proto.get(), "__getId", Some(element_get_id), 0)?;
+    define_function(cx, proto.get(), "__setId", Some(element_set_id), 1)?;
+    define_function(cx, proto.get(), "__getClassName", Some(element_get_class_name), 0)?;
+    define_function(cx, proto.get(), "__setClassName", Some(element_set_class_name), 1)?;
+    define_function(cx, proto.get(), "__getShadowRoot", Some(element_get_shadow_root), 0)?;
+    define_function(cx, proto.get(), "__setShadowRoot", Some(element_set_shadow_root_noop), 1)?;
+    define_function(cx, proto.get(), "__getFirstChild", Some(element_get_first_child), 0)?;
+    define_function(cx, proto.get(), "__getLastChild", Some(element_get_last_child), 0)?;
+    define_function(cx, proto.get(), "__getPreviousSibling", Some(element_get_previous_sibling), 0)?;
+    define_function(cx, proto.get(), "__getNextSibling", Some(element_get_next_sibling), 0)?;
+    define_function(cx, proto.get(), "__getChildren", Some(element_get_children), 0)?;
+    define_function(cx, proto.get(), "__getChildNodes", Some(element_get_child_nodes), 0)?;
+    define_function(cx, proto.get(), "__getParentNode", Some(element_get_parent_node), 0)?;
+    define_function(cx, proto.get(), "__getParentElement", Some(element_get_parent_element), 0)?;
+    define_function(cx, proto.get(), "__getStyleObject", Some(element_get_style_object), 0)?;
+    define_function(cx, proto.get(), "__getClassListObject", Some(element_get_class_list_object), 0)?;
+    define_function(cx, proto.get(), "__getDatasetObject", Some(element_get_dataset_object), 0)?;
+    define_function(cx, proto.get(), "__setObjectPropertyNoop", Some(element_set_object_property_noop), 1)?;
+
+    define_property_accessor(cx, proto.get(), "textContent", "__getTextContent", "__setTextContent")?;
+    define_property_accessor(cx, proto.get(), "id", "__getId", "__setId")?;
+    define_property_accessor(cx, proto.get(), "className", "__getClassName", "__setClassName")?;
+    define_property_accessor(cx, proto.get(), "shadowRoot", "__getShadowRoot", "__setShadowRoot")?;
+    define_property_accessor(cx, proto.get(), "firstChild", "__getFirstChild", "__setShadowRoot")?;
+    define_property_accessor(cx, proto.get(), "lastChild", "__getLastChild", "__setShadowRoot")?;
+    define_property_accessor(cx, proto.get(), "previousSibling", "__getPreviousSibling", "__setShadowRoot")?;
+    define_property_accessor(cx, proto.get(), "nextSibling", "__getNextSibling", "__setShadowRoot")?;
+    define_property_accessor(cx, proto.get(), "children", "__getChildren", "__setShadowRoot")?;
+    define_property_accessor(cx, proto.get(), "childNodes", "__getChildNodes", "__setShadowRoot")?;
+    define_property_accessor(cx, proto.get(), "parentNode", "__getParentNode", "__setShadowRoot")?;
+    define_property_accessor(cx, proto.get(), "parentElement", "__getParentElement", "__setShadowRoot")?;
+    define_property_accessor(cx, proto.get(), "style", "__getStyleObject", "__setObjectPropertyNoop")?;
+    define_property_accessor(cx, proto.get(), "classList", "__getClassListObject", "__setObjectPropertyNoop")?;
+    define_property_accessor(cx, proto.get(), "dataset", "__getDatasetObject", "__setObjectPropertyNoop")?;
+
+    define_function(cx, proto.get(), "__getSrc", Some(element_get_src), 0)?;
+    define_function(cx, proto.get(), "__setSrc", Some(element_set_src), 1)?;
+    define_function(cx, proto.get(), "__getType", Some(element_get_type_attr), 0)?;
+    define_function(cx, proto.get(), "__setType", Some(element_set_type_attr), 1)?;
+    define_function(cx, proto.get(), "__getAsync", Some(element_get_async_attr), 0)?;
+    define_function(cx, proto.get(), "__setAsync", Some(element_set_async_attr), 1)?;
+    define_property_accessor(cx, proto.get(), "src", "__getSrc", "__setSrc")?;
+    define_property_accessor(cx, proto.get(), "type", "__getType", "__setType")?;
+    define_property_accessor(cx, proto.get(), "async", "__getAsync", "__setAsync")?;
+
+    rooted!(in(raw_cx) let proto_val = ObjectValue(proto.get()));
+    JS_DefineProperty(
+        cx,
+        global.handle().into(),
+        key.as_ptr(),
+        proto_val.handle().into(),
+        0,
+    );
+
+    Ok(proto.get())
+}
+
 fn constructor_name_for_element(is_svg: bool, local_name: &str) -> &'static str {
     if !is_svg {
         return "HTMLElement";
@@ -257,108 +439,8 @@ unsafe fn create_js_element_impl(
         }
     }
 
-    // Define element methods
-    define_function(cx, element.get(), "getAttribute", Some(element_get_attribute), 1)?;
-    define_function(cx, element.get(), "setAttribute", Some(element_set_attribute), 2)?;
-    define_function(cx, element.get(), "removeAttribute", Some(element_remove_attribute), 1)?;
-    define_function(cx, element.get(), "hasAttribute", Some(element_has_attribute), 1)?;
-    define_function(cx, element.get(), "append", Some(element_append), 0)?;
-    define_function(cx, element.get(), "appendChild", Some(element_append_child), 1)?;
-    define_function(cx, element.get(), "removeChild", Some(element_remove_child), 1)?;
-    define_function(cx, element.get(), "insertBefore", Some(element_insert_before), 2)?;
-    define_function(cx, element.get(), "replaceChild", Some(element_replace_child), 2)?;
-    define_function(cx, element.get(), "cloneNode", Some(element_clone_node), 1)?;
-    define_function(cx, element.get(), "querySelector", Some(element_query_selector), 1)?;
-    define_function(cx, element.get(), "querySelectorAll", Some(element_query_selector_all), 1)?;
-    define_function(cx, element.get(), "addEventListener", Some(element_add_event_listener), 3)?;
-    define_function(cx, element.get(), "removeEventListener", Some(element_remove_event_listener), 3)?;
-    define_function(cx, element.get(), "dispatchEvent", Some(element_dispatch_event), 1)?;
-    define_function(cx, element.get(), "focus", Some(element_focus), 0)?;
-    define_function(cx, element.get(), "blur", Some(element_blur), 0)?;
-    define_function(cx, element.get(), "click", Some(element_click), 0)?;
-    define_function(cx, element.get(), "getBoundingClientRect", Some(element_get_bounding_client_rect), 0)?;
-    define_function(cx, element.get(), "getClientRects", Some(element_get_client_rects), 0)?;
-    define_function(cx, element.get(), "closest", Some(element_closest), 1)?;
-    define_function(cx, element.get(), "matches", Some(element_matches), 1)?;
-    define_function(cx, element.get(), "contains", Some(element_contains), 1)?;
-    define_function(cx, element.get(), "hasChildNodes", Some(element_has_child_nodes), 0)?;
-    define_function(cx, element.get(), "getRootNode", Some(element_get_root_node), 1)?;
-    define_function(cx, element.get(), "attachShadow", Some(element_attach_shadow), 1)?;
-
-    // ChildNode / ParentNode mixin methods
-    define_function(cx, element.get(), "remove", Some(element_remove), 0)?;
-    define_function(cx, element.get(), "prepend", Some(element_prepend), 0)?;
-    define_function(cx, element.get(), "before", Some(element_before), 0)?;
-    define_function(cx, element.get(), "after", Some(element_after), 0)?;
-    define_function(cx, element.get(), "replaceWith", Some(element_replace_with), 0)?;
-
-    // Adjacent-insertion methods
-    define_function(cx, element.get(), "insertAdjacentHTML", Some(element_insert_adjacent_html), 2)?;
-    define_function(cx, element.get(), "insertAdjacentElement", Some(element_insert_adjacent_element), 2)?;
-    define_function(cx, element.get(), "insertAdjacentText", Some(element_insert_adjacent_text), 2)?;
-
-    // Attribute introspection
-    define_function(cx, element.get(), "getAttributeNames", Some(element_get_attribute_names), 0)?;
-    define_function(cx, element.get(), "hasAttributes", Some(element_has_attributes), 0)?;
-
-    // Scroll stubs
-    define_function(cx, element.get(), "scrollIntoView", Some(element_scroll_into_view), 0)?;
-    define_function(cx, element.get(), "scrollTo", Some(element_scroll_to), 0)?;
-    define_function(cx, element.get(), "scroll", Some(element_scroll_to), 0)?;
-    define_function(cx, element.get(), "scrollBy", Some(element_scroll_by), 0)?;
-
-    // Web Animations API stub
-    define_function(cx, element.get(), "animate", Some(element_animate), 2)?;
-
-    // Define internal getter/setter functions for reflected and dynamic properties
-    define_function(cx, element.get(), "__getTextContent", Some(element_get_text_content), 0)?;
-    define_function(cx, element.get(), "__setTextContent", Some(element_set_text_content), 1)?;
-    define_function(cx, element.get(), "__getId", Some(element_get_id), 0)?;
-    define_function(cx, element.get(), "__setId", Some(element_set_id), 1)?;
-    define_function(cx, element.get(), "__getClassName", Some(element_get_class_name), 0)?;
-    define_function(cx, element.get(), "__setClassName", Some(element_set_class_name), 1)?;
-    define_function(cx, element.get(), "__getShadowRoot", Some(element_get_shadow_root), 0)?;
-    define_function(cx, element.get(), "__setShadowRoot", Some(element_set_shadow_root_noop), 1)?;
-    define_function(cx, element.get(), "__getFirstChild", Some(element_get_first_child), 0)?;
-    define_function(cx, element.get(), "__getLastChild", Some(element_get_last_child), 0)?;
-    define_function(cx, element.get(), "__getPreviousSibling", Some(element_get_previous_sibling), 0)?;
-    define_function(cx, element.get(), "__getNextSibling", Some(element_get_next_sibling), 0)?;
-    define_function(cx, element.get(), "__getChildren", Some(element_get_children), 0)?;
-    define_function(cx, element.get(), "__getChildNodes", Some(element_get_child_nodes), 0)?;
-    define_function(cx, element.get(), "__getParentNode", Some(element_get_parent_node), 0)?;
-    define_function(cx, element.get(), "__getParentElement", Some(element_get_parent_element), 0)?;
-    define_function(cx, element.get(), "__getStyleObject", Some(element_get_style_object), 0)?;
-    define_function(cx, element.get(), "__getClassListObject", Some(element_get_class_list_object), 0)?;
-    define_function(cx, element.get(), "__getDatasetObject", Some(element_get_dataset_object), 0)?;
-    define_function(cx, element.get(), "__setObjectPropertyNoop", Some(element_set_object_property_noop), 1)?;
-
-    // Define property accessors
-    define_property_accessor(cx, element.get(), "textContent", "__getTextContent", "__setTextContent")?;
-    define_property_accessor(cx, element.get(), "id", "__getId", "__setId")?;
-    define_property_accessor(cx, element.get(), "className", "__getClassName", "__setClassName")?;
-    define_property_accessor(cx, element.get(), "shadowRoot", "__getShadowRoot", "__setShadowRoot")?;
-    define_property_accessor(cx, element.get(), "firstChild", "__getFirstChild", "__setShadowRoot")?;
-    define_property_accessor(cx, element.get(), "lastChild", "__getLastChild", "__setShadowRoot")?;
-    define_property_accessor(cx, element.get(), "previousSibling", "__getPreviousSibling", "__setShadowRoot")?;
-    define_property_accessor(cx, element.get(), "nextSibling", "__getNextSibling", "__setShadowRoot")?;
-    define_property_accessor(cx, element.get(), "children", "__getChildren", "__setShadowRoot")?;
-    define_property_accessor(cx, element.get(), "childNodes", "__getChildNodes", "__setShadowRoot")?;
-    define_property_accessor(cx, element.get(), "parentNode", "__getParentNode", "__setShadowRoot")?;
-    define_property_accessor(cx, element.get(), "parentElement", "__getParentElement", "__setShadowRoot")?;
-    define_property_accessor(cx, element.get(), "style", "__getStyleObject", "__setObjectPropertyNoop")?;
-    define_property_accessor(cx, element.get(), "classList", "__getClassListObject", "__setObjectPropertyNoop")?;
-    define_property_accessor(cx, element.get(), "dataset", "__getDatasetObject", "__setObjectPropertyNoop")?;
-
-    // IDL-reflected attribute accessors (src, type, async)
-    define_function(cx, element.get(), "__getSrc", Some(element_get_src), 0)?;
-    define_function(cx, element.get(), "__setSrc", Some(element_set_src), 1)?;
-    define_function(cx, element.get(), "__getType", Some(element_get_type_attr), 0)?;
-    define_function(cx, element.get(), "__setType", Some(element_set_type_attr), 1)?;
-    define_function(cx, element.get(), "__getAsync", Some(element_get_async_attr), 0)?;
-    define_function(cx, element.get(), "__setAsync", Some(element_set_async_attr), 1)?;
-    define_property_accessor(cx, element.get(), "src", "__getSrc", "__setSrc")?;
-    define_property_accessor(cx, element.get(), "type", "__getType", "__setType")?;
-    define_property_accessor(cx, element.get(), "async", "__getAsync", "__setAsync")?;
+    let shared_proto = ensure_element_shared_prototype(cx)?;
+    set_object_prototype(cx, element.get(), shared_proto)?;
 
     if resolved_local_name.eq_ignore_ascii_case("form") {
         setup_form_element_bindings(cx, element.get())?;
