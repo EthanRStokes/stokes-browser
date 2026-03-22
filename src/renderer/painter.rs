@@ -12,6 +12,7 @@ use skia_safe::font_arguments::variation_position::Coordinate;
 use skia_safe::font_arguments::VariationPosition;
 use skia_safe::{BlurStyle, Canvas, Color, ColorSpace, Font, FontArguments, FontHinting, FontMgr, GlyphId, MaskFilter, Paint, PaintCap, PaintJoin, PaintStyle, RRect, Rect, Shader, Typeface};
 use style::color::AbsoluteColor;
+use tracing::error;
 
 pub(crate) struct SkiaCache {
     paint: Paint,
@@ -397,8 +398,8 @@ impl ScenePainter<'_> {
             .new_from_data(font.data.data(), font.index as usize)
         else {
             let tf = Typeface::make_deserialize(font.data.data(), None);
-            eprintln!(
-                "WARNING: failed to load font {} {} {} {}",
+            error!(
+                "Failed to load font {} {} {} {}",
                 cache_key.0,
                 cache_key.1,
                 tf.is_some(),

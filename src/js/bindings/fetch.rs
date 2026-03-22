@@ -10,13 +10,14 @@ use mozjs::context::JSContext as SafeJSContext;
 use mozjs::conversions::jsstr_to_string;
 use mozjs::gc::Handle;
 use mozjs::jsapi::{
-    CallArgs, JSContext, JSObject,
+    CallArgs, HandleValueArray, JSContext, JSObject,
     JSPROP_ENUMERATE,
 };
 use mozjs::jsval::{Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
-use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JS_ParseJSON, NewArrayBuffer, NewPromiseObject, RejectPromise, ResolvePromise};
+use mozjs::rust::wrappers2::{CurrentGlobalOrNull, JS_CallFunctionValue, JS_DefineFunction, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_NewUCStringCopyN, JS_ParseJSON, NewArrayBuffer, NewPromiseObject, RejectPromise, ResolvePromise};
 use mozjs::rust::MutableHandleValue;
+use mozjs::rust::ValueArray;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -105,7 +106,7 @@ unsafe extern "C" fn js_fetch(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSV
 
     // Parse request options (method, headers, body)
     let mut method = String::from("GET");
-    let request_headers: HashMap<String, String> = HashMap::new();
+    let mut request_headers: HashMap<String, String> = HashMap::new();
     let mut request_body: Option<String> = None;
 
     if argc > 1 && args.get(1).is_object() {
@@ -120,10 +121,9 @@ unsafe extern "C" fn js_fetch(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSV
         // Get headers
         if let Some(headers_val) = get_property_value(safe_cx, options.handle(), "headers") {
             if headers_val.is_object() {
-                // FIXME: Request headers object is parsed here but never applied to the curl request.
-                // Should iterate over the object's own enumerable properties and add each as an
-                // HTTP header via curl's header_list.
-                warn!("[JS] fetch(options.headers) provided, but request headers are currently ignored");
+                collect_request_headers(safe_cx, headers_val, &mut request_headers);
+            } else {
+                warn!("[JS] fetch(options.headers) ignored: expected object-like headers");
             }
         }
 
@@ -221,6 +221,200 @@ unsafe fn extract_fetch_input_url(cx: &mut SafeJSContext, request_info: JSVal) -
     // Match browser behavior by coercing non-Request values (including null/undefined)
     // through JS string conversion instead of rejecting them as invalid request input.
     Some(js_value_to_string(cx, request_info))
+}
+
+unsafe fn collect_request_headers(
+    cx: &mut SafeJSContext,
+    headers_val: JSVal,
+    out: &mut HashMap<String, String>,
+) {
+    if !headers_val.is_object() {
+        return;
+    }
+
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let headers_obj = headers_val.to_object());
+
+    if parse_header_sequence(cx, headers_obj.handle().into(), out) {
+        return;
+    }
+
+    if !parse_header_object_entries(cx, headers_obj.handle().into(), out) {
+        warn!("[JS] fetch(options.headers) ignored: unsupported headers shape");
+    }
+}
+
+unsafe fn parse_header_sequence(
+    cx: &mut SafeJSContext,
+    headers_obj: Handle<*mut JSObject>,
+    out: &mut HashMap<String, String>,
+) -> bool {
+    let Some(length_val) = get_property_value(cx, headers_obj, "length") else {
+        return false;
+    };
+    let Some(length) = js_value_to_usize(length_val) else {
+        return false;
+    };
+
+    for i in 0..length {
+        let index = i.to_string();
+        let Some(entry_val) = get_property_value(cx, headers_obj, &index) else {
+            continue;
+        };
+        if !entry_val.is_object() {
+            warn!("[JS] fetch(options.headers) sequence entry {i} ignored: expected [name, value]");
+            continue;
+        }
+
+        let raw_cx = cx.raw_cx();
+        rooted!(in(raw_cx) let entry_obj = entry_val.to_object());
+
+        let Some(name_val) = get_property_value(cx, entry_obj.handle().into(), "0") else {
+            warn!("[JS] fetch(options.headers) sequence entry {i} ignored: missing name");
+            continue;
+        };
+        let Some(value_val) = get_property_value(cx, entry_obj.handle().into(), "1") else {
+            warn!("[JS] fetch(options.headers) sequence entry {i} ignored: missing value");
+            continue;
+        };
+
+        let name = js_value_to_string(cx, name_val);
+        let value = js_value_to_string(cx, value_val);
+        insert_request_header(out, name, value);
+    }
+
+    true
+}
+
+unsafe fn parse_header_object_entries(
+    cx: &mut SafeJSContext,
+    headers_obj: Handle<*mut JSObject>,
+    out: &mut HashMap<String, String>,
+) -> bool {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let global = CurrentGlobalOrNull(cx));
+    if global.get().is_null() {
+        return false;
+    }
+
+    rooted!(in(raw_cx) let mut object_ctor_val = UndefinedValue());
+    let object_name = CString::new("Object").unwrap();
+    if !JS_GetProperty(
+        cx,
+        global.handle().into(),
+        object_name.as_ptr(),
+        object_ctor_val.handle_mut().into(),
+    ) || !object_ctor_val.is_object() {
+        return false;
+    }
+    rooted!(in(raw_cx) let object_ctor_obj = object_ctor_val.to_object());
+
+    rooted!(in(raw_cx) let mut entries_fn_val = UndefinedValue());
+    let entries_name = CString::new("entries").unwrap();
+    if !JS_GetProperty(
+        cx,
+        object_ctor_obj.handle().into(),
+        entries_name.as_ptr(),
+        entries_fn_val.handle_mut().into(),
+    ) || !entries_fn_val.is_object() {
+        return false;
+    }
+
+    rooted!(in(raw_cx) let entries_args = ValueArray::<1usize>::new([ObjectValue(headers_obj.get())]));
+    rooted!(in(raw_cx) let mut entries_result = UndefinedValue());
+
+    if !JS_CallFunctionValue(
+        cx,
+        object_ctor_obj.handle().into(),
+        entries_fn_val.handle().into(),
+        &HandleValueArray::from(&entries_args),
+        entries_result.handle_mut().into(),
+    ) || !entries_result.is_object() {
+        return false;
+    }
+
+    rooted!(in(raw_cx) let entries_obj = entries_result.to_object());
+    let Some(length_val) = get_property_value(cx, entries_obj.handle().into(), "length") else {
+        return false;
+    };
+    let Some(length) = js_value_to_usize(length_val) else {
+        return false;
+    };
+
+    for i in 0..length {
+        let index = i.to_string();
+        let Some(entry_val) = get_property_value(cx, entries_obj.handle().into(), &index) else {
+            continue;
+        };
+        if !entry_val.is_object() {
+            continue;
+        }
+
+        rooted!(in(raw_cx) let entry_obj = entry_val.to_object());
+
+        let Some(name_val) = get_property_value(cx, entry_obj.handle().into(), "0") else {
+            continue;
+        };
+        let Some(value_val) = get_property_value(cx, entry_obj.handle().into(), "1") else {
+            continue;
+        };
+
+        let name = js_value_to_string(cx, name_val);
+        let value = js_value_to_string(cx, value_val);
+        insert_request_header(out, name, value);
+    }
+
+    true
+}
+
+fn insert_request_header(out: &mut HashMap<String, String>, name: String, value: String) {
+    let normalized_name = name.trim().to_ascii_lowercase();
+    let normalized_value = value.trim().to_string();
+
+    if !is_valid_header_name(&normalized_name) {
+        warn!("[JS] fetch(options.headers) ignored invalid header name: {name:?}");
+        return;
+    }
+
+    if !is_valid_header_value(&normalized_value) {
+        warn!("[JS] fetch(options.headers) ignored invalid header value for {normalized_name:?}");
+        return;
+    }
+
+    out.insert(normalized_name, normalized_value);
+}
+
+fn js_value_to_usize(value: JSVal) -> Option<usize> {
+    if value.is_int32() {
+        let n = value.to_int32();
+        return (n >= 0).then_some(n as usize);
+    }
+    if value.is_double() {
+        let n = value.to_double();
+        return (n >= 0.0).then_some(n as usize);
+    }
+    None
+}
+
+fn is_valid_header_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+
+    name.bytes().all(|b| {
+        b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+'
+                    | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~'
+            )
+    })
+}
+
+fn is_valid_header_value(value: &str) -> bool {
+    !value
+        .bytes()
+        .any(|b| b == b'\r' || b == b'\n' || b == 0 || (b < 0x20 && b != b'\t') || b == 0x7f)
 }
 
 /// Perform the actual HTTP fetch operation

@@ -14,6 +14,7 @@ use dbus::blocking::Connection as DbusConnection;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
 use rand::Rng;
+use tracing::error;
 
 const STORAGE_VERSION: u32 = 3;
 const SQLITE_SCHEMA_VERSION: u32 = 1;
@@ -48,8 +49,8 @@ fn get_cookies_config_dir() -> PathBuf {
                 .join("stokes-browser");
 
             if let Err(err) = std::fs::create_dir_all(&config_dir) {
-                eprintln!(
-                    "[Cookies] Warning: failed to create config directory {}: {}",
+                error!(
+                    "[Cookies] failed to create config directory {}: {}",
                     config_dir.display(),
                     err
                 );
