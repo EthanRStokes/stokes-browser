@@ -428,6 +428,10 @@ fn perform_fetch(
     // Parse URL
     let parsed_url = Url::parse(url).map_err(|e| format!("Invalid URL: {}", e))?;
 
+    if matches!(parsed_url.scheme(), "http" | "https") && is_fetch_blocked(url) {
+        return Err(format!("Blocked by adblock filter: {url}"));
+    }
+
     // Handle file:// URLs
     if parsed_url.scheme() == "file" {
         let path = parsed_url.to_file_path()
@@ -535,6 +539,27 @@ fn perform_fetch(
         body,
         url: url.to_string(),
         ok: status >= 200 && status < 300,
+    })
+}
+
+fn is_fetch_blocked(url: &str) -> bool {
+    DOM_REF.with(|dom_ref| {
+        let dom_borrow = dom_ref.borrow();
+        let Some(dom_ptr) = dom_borrow.as_ref() else {
+            return false;
+        };
+        if dom_ptr.is_null() {
+            return false;
+        }
+
+        let dom = unsafe { &*(*dom_ptr) };
+        if !dom.net_provider.is_adblock_enabled() {
+            return false;
+        }
+
+        let source_url = dom.url.to_string();
+        dom.net_provider
+            .should_block_url(url, Some(&source_url), "xmlhttprequest")
     })
 }
 

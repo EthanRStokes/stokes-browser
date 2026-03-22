@@ -69,6 +69,7 @@ cssparser = "0.36.0"
 ipc-channel = { version = "0.21.0", features = ["async"] }
 raw-window-handle = "0.6.2"
 smallvec = "1.15.1"
+adblock = "0.12.1"
 
 # Stylo
 stylo = "0.12.0"

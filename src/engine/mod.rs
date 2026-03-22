@@ -1,5 +1,6 @@
 // The core browser engine that coordinates between components
 mod config;
+pub(crate) mod adblock;
 pub mod net_provider;
 pub mod nav_provider;
 pub mod resolve;
@@ -112,6 +113,7 @@ impl Engine {
                 &contents,
                 self.config.user_agent.clone(),
                 self.config.debug_net,
+                self.config.block_ads,
                 self.viewport.clone(),
                 self.shell_provider.clone(),
                 self.navigation_provider.clone(),
@@ -841,7 +843,7 @@ impl Engine {
         if let Some(index) = self.history_index {
             self.history_index = Some(index - 1);
             let url = self.history[index - 1].clone();
-            let contents = networking::fetch(&url, &self.config.user_agent).unwrap_or_else(|err| {
+            let contents = networking::fetch(&url, &self.config.user_agent, self.config.block_ads).unwrap_or_else(|err| {
                 include_str!("../../assets/404.html").to_string()
             });
             self.navigate(&url, contents, true, false).await
@@ -859,7 +861,7 @@ impl Engine {
         if let Some(index) = self.history_index {
             self.history_index = Some(index + 1);
             let url = self.history[index + 1].clone();
-            let contents = networking::fetch(&url, &self.config.user_agent).unwrap_or_else(|err| {
+            let contents = networking::fetch(&url, &self.config.user_agent, self.config.block_ads).unwrap_or_else(|err| {
                 include_str!("../../assets/404.html").to_string()
             });
             self.navigate(&url, contents, true, false).await

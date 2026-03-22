@@ -1,4 +1,5 @@
 use crate::dom::DomEvent;
+use crate::engine::adblock;
 use blitz_traits::net::{NetHandler, NetProvider, Request};
 use blitz_traits::shell::ShellProvider;
 use bytes::Bytes;
@@ -30,6 +31,7 @@ pub enum NetworkError {
     Utf8(String),
     Engine(String),
     Http(u32),
+    Blocked(String),
     Empty,
     FileNotFound(String),
     FileRead(String),
@@ -42,6 +44,7 @@ impl std::fmt::Display for NetworkError {
             NetworkError::Utf8(msg) => write!(f, "UTF-8 error: {}", msg),
             NetworkError::Engine(msg) => write!(f, "Engine error: {}", msg),
             NetworkError::Http(code) => write!(f, "HTTP error: {}", code),
+            NetworkError::Blocked(url) => write!(f, "Blocked by adblock: {}", url),
             NetworkError::Empty => write!(f, "Empty response body"),
             NetworkError::FileNotFound(path) => write!(f, "File not found: {}", path),
             NetworkError::FileRead(msg) => write!(f, "File read error: {}", msg),
@@ -568,7 +571,7 @@ fn read_local_file(path: &str) -> Result<String, NetworkError> {
 }
 
 /// Fetch HTML content from a URL or local file
-pub fn fetch(url: &str, user_agent: &str) -> Result<String, NetworkError> {
+pub fn fetch(url: &str, user_agent: &str, block_ads: bool) -> Result<String, NetworkError> {
     println!("Fetching: {}", url);
 
     // Parse only for scheme detection. We intentionally pass the *original* URL
@@ -581,6 +584,13 @@ pub fn fetch(url: &str, user_agent: &str) -> Result<String, NetworkError> {
             return Err(NetworkError::Curl(err.to_string()))
         }
     };
+
+    if block_ads
+        && matches!(parsed_url.scheme(), "http" | "https")
+        && adblock::should_block(url, None, "document")
+    {
+        return Err(NetworkError::Blocked(url.to_string()));
+    }
 
     // Check if it's a local file
     if parsed_url.scheme() == "file" {

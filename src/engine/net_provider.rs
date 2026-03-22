@@ -2,6 +2,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
+use crate::engine::adblock;
 use blitz_traits::net::{AbortSignal, Body, Entry, NetHandler, NetProvider, Request};
 use bytes::Bytes;
 use curl::easy::{Easy2, Handler, List, WriteError};
@@ -13,6 +14,7 @@ use tokio::runtime::Handle;
 #[derive(Debug)]
 pub enum ProviderError {
     Abort,
+    Blocked,
     Io(std::io::Error),
     DataUrl(data_url::DataUrlError),
     DataUrlBase64(data_url::forgiving_base64::InvalidBase64),
@@ -50,15 +52,29 @@ pub struct StokesNetProvider {
     rt: Handle,
     user_agent: String,
     debug_net: bool,
+    block_ads: bool,
 }
 
 impl StokesNetProvider {
-    pub fn new(user_agent: String, debug_net: bool,) -> Self {
+    pub fn new(user_agent: String, debug_net: bool, block_ads: bool) -> Self {
         Self {
             rt: Handle::current(),
             user_agent,
             debug_net,
+            block_ads,
         }
+    }
+
+    pub fn is_adblock_enabled(&self) -> bool {
+        self.block_ads
+    }
+
+    pub fn should_block_url(&self, request_url: &str, source_url: Option<&str>, request_type: &str) -> bool {
+        if !self.block_ads {
+            return false;
+        }
+
+        adblock::should_block(request_url, source_url, request_type)
     }
 }
 
@@ -75,6 +91,16 @@ impl NetProvider for StokesNetProvider {
                 }
             }
         } else {
+            let request_url = request.url.to_string();
+            if self.should_block_url(&request_url, None, "other") {
+                if self.debug_net {
+                    println!("[adblock] Blocked resource: {request_url}");
+                }
+                // Notify handler with empty bytes so pending resource state can settle.
+                handler.bytes(request_url, Bytes::new());
+                return;
+            }
+
             let user_agent = self.user_agent.clone();
             let debug_net = self.debug_net;
             self.rt.spawn(async move {
@@ -221,6 +247,15 @@ impl StokesNetProvider {
         request: Request,
         callback: Box<dyn FnOnce(Result<(String, Bytes), ProviderError>) + Send + Sync + 'static>,
     ) {
+        let request_url = request.url.to_string();
+        if self.should_block_url(&request_url, None, "script") {
+            if self.debug_net {
+                println!("[adblock] Blocked callback fetch: {request_url}");
+            }
+            callback(Err(ProviderError::Blocked));
+            return;
+        }
+
         let user_agent = self.user_agent.clone();
 
         self.rt.spawn(async move {
