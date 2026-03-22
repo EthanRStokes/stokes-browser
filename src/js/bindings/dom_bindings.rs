@@ -594,6 +594,211 @@ pub fn setup_match_media_deferred(runtime: &mut JsRuntime) -> Result<(), String>
     Ok(())
 }
 
+/// Install a minimal jQuery-compatible `$` helper when jQuery is missing.
+/// This only provides common APIs used by legacy page snippets.
+pub fn setup_jquery_compat_deferred(runtime: &mut JsRuntime) -> Result<(), String> {
+    let script = r#"
+        (function() {
+            const root = typeof globalThis !== 'undefined'
+                ? globalThis
+                : (typeof window !== 'undefined' ? window : null);
+            if (!root || typeof root.$ === 'function') {
+                return;
+            }
+
+            function splitClasses(value) {
+                return String(value || '')
+                    .trim()
+                    .split(/\s+/)
+                    .filter(Boolean);
+            }
+
+            function dedupe(nodes) {
+                const out = [];
+                for (const node of nodes) {
+                    if (out.indexOf(node) === -1) {
+                        out.push(node);
+                    }
+                }
+                return out;
+            }
+
+            class MiniQuery {
+                constructor(nodes) {
+                    this.nodes = Array.isArray(nodes) ? nodes.filter(Boolean) : [];
+                }
+
+                get length() {
+                    return this.nodes.length;
+                }
+
+                each(callback) {
+                    if (typeof callback !== 'function') {
+                        return this;
+                    }
+                    this.nodes.forEach(function(node, index) {
+                        callback.call(node, index, node);
+                    });
+                    return this;
+                }
+
+                on(eventName, handler) {
+                    if (typeof handler !== 'function') {
+                        return this;
+                    }
+                    return this.each(function() {
+                        if (!this || typeof this.addEventListener !== 'function') {
+                            return;
+                        }
+                        this.addEventListener(eventName, function(evt) {
+                            const previous = root.event;
+                            root.event = evt;
+                            try {
+                                return handler.call(this, evt);
+                            } finally {
+                                root.event = previous;
+                            }
+                        });
+                    });
+                }
+
+                click(handler) {
+                    if (typeof handler === 'function') {
+                        return this.on('click', handler);
+                    }
+                    return this.each(function() {
+                        if (this && typeof this.click === 'function') {
+                            this.click();
+                        }
+                    });
+                }
+
+                scroll(handler) {
+                    return this.on('scroll', handler);
+                }
+
+                addClass(className) {
+                    const classes = splitClasses(className);
+                    if (classes.length === 0) {
+                        return this;
+                    }
+                    return this.each(function() {
+                        if (!this || !this.classList) {
+                            return;
+                        }
+                        for (const cls of classes) {
+                            this.classList.add(cls);
+                        }
+                    });
+                }
+
+                removeClass(className) {
+                    const classes = splitClasses(className);
+                    if (classes.length === 0) {
+                        return this;
+                    }
+                    return this.each(function() {
+                        if (!this || !this.classList) {
+                            return;
+                        }
+                        for (const cls of classes) {
+                            this.classList.remove(cls);
+                        }
+                    });
+                }
+
+                toggleClass(className) {
+                    const classes = splitClasses(className);
+                    if (classes.length === 0) {
+                        return this;
+                    }
+                    return this.each(function() {
+                        if (!this || !this.classList) {
+                            return;
+                        }
+                        for (const cls of classes) {
+                            this.classList.toggle(cls);
+                        }
+                    });
+                }
+
+                parents(selector) {
+                    const matches = [];
+                    this.each(function() {
+                        let current = this && this.parentElement;
+                        while (current) {
+                            if (!selector || (typeof current.matches === 'function' && current.matches(selector))) {
+                                matches.push(current);
+                            }
+                            current = current.parentElement;
+                        }
+                    });
+                    return new MiniQuery(dedupe(matches));
+                }
+            }
+
+            function toNodeArray(input) {
+                if (!input) {
+                    return [];
+                }
+                if (Array.isArray(input)) {
+                    return input;
+                }
+                if (typeof input.length === 'number' && typeof input !== 'string') {
+                    return Array.prototype.slice.call(input);
+                }
+                return [input];
+            }
+
+            function $(input) {
+                if (typeof input === 'function') {
+                    if (root.document && root.document.readyState === 'loading') {
+                        root.document.addEventListener('DOMContentLoaded', function() {
+                            input.call(root.document);
+                        });
+                    } else {
+                        input.call(root.document || root);
+                    }
+                    return new MiniQuery(root.document ? [root.document] : []);
+                }
+
+                if (input instanceof MiniQuery) {
+                    return input;
+                }
+
+                if (typeof input === 'string') {
+                    const selector = input.trim();
+                    if (!selector || !root.document || typeof root.document.querySelectorAll !== 'function') {
+                        return new MiniQuery([]);
+                    }
+                    try {
+                        return new MiniQuery(Array.prototype.slice.call(root.document.querySelectorAll(selector)));
+                    } catch (_e) {
+                        return new MiniQuery([]);
+                    }
+                }
+
+                if (input === root || input === root.window || input === root.document) {
+                    return new MiniQuery([input]);
+                }
+
+                return new MiniQuery(toNodeArray(input));
+            }
+
+            $.fn = MiniQuery.prototype;
+            root.$ = $;
+            root.jQuery = $;
+        })();
+    "#;
+
+    runtime.execute(script, false).map_err(|e| {
+        warn!("[JS] Failed to set up jQuery compatibility shim: {}", e);
+        e
+    })?;
+
+    Ok(())
+}
+
 // ============================================================================
 // Setup functions
 // ============================================================================
