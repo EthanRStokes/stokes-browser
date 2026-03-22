@@ -17,6 +17,7 @@ pub(crate) mod timers;
 pub(crate) mod alert_callback;
 pub mod console;
 pub mod css;
+pub mod crypto;
 pub mod event_listeners;
 pub mod fetch;
 pub mod google;
@@ -50,6 +51,9 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
 
     // Set up CSS namespace object (CSS.supports, CSS.escape, CSS Typed OM, etc.)
     css::setup_css(runtime)?;
+
+    // Set up Web Crypto API (crypto.getRandomValues/randomUUID/subtle.digest)
+    crypto::setup_crypto(runtime)?;
 
     // Set up TextEncoder (UTF-8 encoding support)
     text_encoding::setup_text_encoder(runtime)?;

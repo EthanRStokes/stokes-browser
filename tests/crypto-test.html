@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Crypto API Test</title>
+    <style>
+        body { font-family: sans-serif; margin: 24px; }
+        .ok { color: #157347; }
+        .fail { color: #b02a37; }
+        pre { background: #f6f8fa; padding: 12px; border-radius: 6px; }
+    </style>
+</head>
+<body>
+<h1>Crypto API Test</h1>
+<div id="results"></div>
+<pre id="log"></pre>
+<script>
+    const results = document.getElementById('results');
+    const log = document.getElementById('log');
+
+    function write(msg) {
+        log.textContent += msg + '\n';
+        console.log(msg);
+    }
+
+    function addResult(name, ok, detail) {
+        const item = document.createElement('div');
+        item.className = ok ? 'ok' : 'fail';
+        item.textContent = (ok ? 'PASS: ' : 'FAIL: ') + name + (detail ? ' -> ' + detail : '');
+        results.appendChild(item);
+    }
+
+    async function test(name, fn) {
+        try {
+            await fn();
+            addResult(name, true);
+        } catch (err) {
+            addResult(name, false, String(err));
+        }
+    }
+
+    function hex(bytes) {
+        let out = '';
+        for (let i = 0; i < bytes.length; i += 1) {
+            out += (bytes[i] + 256).toString(16).slice(1);
+        }
+        return out;
+    }
+
+    async function run() {
+        await test('crypto object exists', async () => {
+            if (!window.crypto) {
+                throw new Error('window.crypto is missing');
+            }
+            if (typeof window.crypto.getRandomValues !== 'function') {
+                throw new Error('crypto.getRandomValues is missing');
+            }
+            if (typeof window.crypto.randomUUID !== 'function') {
+                throw new Error('crypto.randomUUID is missing');
+            }
+            if (!window.crypto.subtle || typeof window.crypto.subtle.digest !== 'function') {
+                throw new Error('crypto.subtle.digest is missing');
+            }
+        });
+
+        await test('getRandomValues mutates integer typed arrays', async () => {
+            const a = new Uint8Array(32);
+            window.crypto.getRandomValues(a);
+            const anyNonZero = a.some((v) => v !== 0);
+            if (!anyNonZero) {
+                throw new Error('all bytes are zero');
+            }
+        });
+
+        await test('getRandomValues rejects float typed arrays', async () => {
+            let threw = false;
+            try {
+                window.crypto.getRandomValues(new Float32Array(4));
+            } catch (_err) {
+                threw = true;
+            }
+            if (!threw) {
+                throw new Error('expected TypeError for Float32Array');
+            }
+        });
+
+        await test('randomUUID returns RFC4122 v4 format', async () => {
+            const uuid = window.crypto.randomUUID();
+            const re = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+            if (!re.test(uuid)) {
+                throw new Error('invalid uuid: ' + uuid);
+            }
+        });
+
+        await test('subtle.digest SHA-256 returns known value for abc', async () => {
+            const bytes = new TextEncoder().encode('abc');
+            const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+            const digestHex = hex(new Uint8Array(digest));
+            const expected = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
+            if (digestHex !== expected) {
+                throw new Error('unexpected digest: ' + digestHex);
+            }
+        });
+
+        await test('subtle.digest rejects unsupported algorithms', async () => {
+            const bytes = new Uint8Array([1, 2, 3]);
+            let threw = false;
+            try {
+                await window.crypto.subtle.digest('MD5', bytes);
+            } catch (_err) {
+                threw = true;
+            }
+            if (!threw) {
+                throw new Error('expected rejection for MD5');
+            }
+        });
+
+        write('Finished Crypto checks.');
+    }
+
+    run();
+</script>
+</body>
+</html>
+
