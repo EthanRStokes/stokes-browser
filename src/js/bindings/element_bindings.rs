@@ -119,7 +119,7 @@ unsafe fn create_js_element_impl(
     cx: &mut SafeJSContext,
     node_id: usize,
     tag_name: &str,
-    attributes: &AttributeMap,
+    _attributes: &AttributeMap,
     with_parent: bool,
     _with_tree_relations: bool,
 ) -> Result<JSVal, String> {
@@ -327,6 +327,10 @@ unsafe fn create_js_element_impl(
     define_function(cx, element.get(), "__getChildNodes", Some(element_get_child_nodes), 0)?;
     define_function(cx, element.get(), "__getParentNode", Some(element_get_parent_node), 0)?;
     define_function(cx, element.get(), "__getParentElement", Some(element_get_parent_element), 0)?;
+    define_function(cx, element.get(), "__getStyleObject", Some(element_get_style_object), 0)?;
+    define_function(cx, element.get(), "__getClassListObject", Some(element_get_class_list_object), 0)?;
+    define_function(cx, element.get(), "__getDatasetObject", Some(element_get_dataset_object), 0)?;
+    define_function(cx, element.get(), "__setObjectPropertyNoop", Some(element_set_object_property_noop), 1)?;
 
     // Define property accessors
     define_property_accessor(cx, element.get(), "textContent", "__getTextContent", "__setTextContent")?;
@@ -341,6 +345,9 @@ unsafe fn create_js_element_impl(
     define_property_accessor(cx, element.get(), "childNodes", "__getChildNodes", "__setShadowRoot")?;
     define_property_accessor(cx, element.get(), "parentNode", "__getParentNode", "__setShadowRoot")?;
     define_property_accessor(cx, element.get(), "parentElement", "__getParentElement", "__setShadowRoot")?;
+    define_property_accessor(cx, element.get(), "style", "__getStyleObject", "__setObjectPropertyNoop")?;
+    define_property_accessor(cx, element.get(), "classList", "__getClassListObject", "__setObjectPropertyNoop")?;
+    define_property_accessor(cx, element.get(), "dataset", "__getDatasetObject", "__setObjectPropertyNoop")?;
 
     // IDL-reflected attribute accessors (src, type, async)
     define_function(cx, element.get(), "__getSrc", Some(element_get_src), 0)?;
@@ -357,111 +364,7 @@ unsafe fn create_js_element_impl(
         setup_form_element_bindings(cx, element.get())?;
     }
 
-    // Create style object
-    rooted!(in(raw_cx) let style = JS_NewPlainObject(cx));
-    if !style.get().is_null() {
-        // Store the node_id so style methods can access the parent element
-        rooted!(in(raw_cx) let style_ptr_val = mozjs::jsval::DoubleValue(node_id as f64));
-        rooted!(in(raw_cx) let style_rooted = style.get());
-        let style_id_name = std::ffi::CString::new("__nodeId").unwrap();
-        JS_DefineProperty(
-            cx,
-            style_rooted.handle().into(),
-            style_id_name.as_ptr(),
-            style_ptr_val.handle().into(),
-            0,
-        );
-
-        define_function(cx, style.get(), "getPropertyValue", Some(style_get_property_value), 1)?;
-        define_function(cx, style.get(), "setProperty", Some(style_set_property), 3)?;
-        define_function(cx, style.get(), "removeProperty", Some(style_remove_property), 1)?;
-
-        rooted!(in(raw_cx) let style_val = ObjectValue(style.get()));
-        let cname = std::ffi::CString::new("style").unwrap();
-        JS_DefineProperty(
-            cx,
-            element_rooted.handle().into(),
-            cname.as_ptr(),
-            style_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-    }
-
-    // Create classList object
-    rooted!(in(raw_cx) let class_list = JS_NewPlainObject(cx));
-    if !class_list.get().is_null() {
-        // Store the node_id so classList methods can access the parent element
-        rooted!(in(raw_cx) let cl_ptr_val = mozjs::jsval::DoubleValue(node_id as f64));
-        rooted!(in(raw_cx) let class_list_rooted = class_list.get());
-        let cl_id_name = std::ffi::CString::new("__nodeId").unwrap();
-        JS_DefineProperty(
-            cx,
-            class_list_rooted.handle().into(),
-            cl_id_name.as_ptr(),
-            cl_ptr_val.handle().into(),
-            0,
-        );
-
-        define_function(cx, class_list.get(), "add", Some(class_list_add), 1)?;
-        define_function(cx, class_list.get(), "remove", Some(class_list_remove), 1)?;
-        define_function(cx, class_list.get(), "toggle", Some(class_list_toggle), 2)?;
-        define_function(cx, class_list.get(), "contains", Some(class_list_contains), 1)?;
-        define_function(cx, class_list.get(), "replace", Some(class_list_replace), 2)?;
-        // FIXME: classList.length is hardcoded to 0 - should reflect actual number of classes and update dynamically
-        // when add/remove/toggle/replace mutate the class list.
-        set_int_property(cx, class_list.get(), "length", 0)?;
-
-        rooted!(in(raw_cx) let class_list_val = ObjectValue(class_list.get()));
-        let cname = std::ffi::CString::new("classList").unwrap();
-        JS_DefineProperty(
-            cx,
-            element_rooted.handle().into(),
-            cname.as_ptr(),
-            class_list_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-    }
-
-    // Create dataset object populated with data-* attributes
-    rooted!(in(raw_cx) let dataset = JS_NewPlainObject(cx));
-    if !dataset.get().is_null() {
-        let mut populate_dataset = |attrs: &AttributeMap| {
-            for attr in attrs.iter() {
-                let attr_name = attr.name.local.as_ref();
-                if let Some(data_key) = attr_name.strip_prefix("data-") {
-                    let camel_key = hyphen_to_camel_case(data_key);
-                    let _ = set_string_property(cx, dataset.get(), &camel_key, attr.value.as_ref());
-                }
-            }
-        };
-
-        let populated_from_dom = DOM_REF.with(|dom_ref| {
-            if let Some(dom_ptr) = *dom_ref.borrow() {
-                let dom = &*dom_ptr;
-                if let Some(node) = dom.get_node(node_id) {
-                    if let NodeData::Element(ref elem_data) = node.data {
-                        populate_dataset(&elem_data.attributes);
-                        return true;
-                    }
-                }
-            }
-            false
-        });
-
-        if !populated_from_dom {
-            populate_dataset(attributes);
-        }
-
-        rooted!(in(raw_cx) let dataset_val = ObjectValue(dataset.get()));
-        let cname = std::ffi::CString::new("dataset").unwrap();
-        JS_DefineProperty(
-            cx,
-            element_rooted.handle().into(),
-            cname.as_ptr(),
-            dataset_val.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
-    }
+    // style/classList/dataset are lazily created by accessors to reduce wrapper setup cost.
 
     // Set dimension properties
     // FIXME: All element dimension/scroll properties are hardcoded to 0. They should reflect the
@@ -653,6 +556,86 @@ fn hyphen_to_camel_case(s: &str) -> String {
     result
 }
 
+unsafe fn create_style_object_for_node(cx: &mut SafeJSContext, node_id: usize) -> Result<JSVal, String> {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let style = JS_NewPlainObject(cx));
+    if style.get().is_null() {
+        return Err("Failed to create style object".to_string());
+    }
+
+    rooted!(in(raw_cx) let style_ptr_val = mozjs::jsval::DoubleValue(node_id as f64));
+    rooted!(in(raw_cx) let style_rooted = style.get());
+    let style_id_name = std::ffi::CString::new("__nodeId").unwrap();
+    JS_DefineProperty(
+        cx,
+        style_rooted.handle().into(),
+        style_id_name.as_ptr(),
+        style_ptr_val.handle().into(),
+        0,
+    );
+
+    define_function(cx, style.get(), "getPropertyValue", Some(style_get_property_value), 1)?;
+    define_function(cx, style.get(), "setProperty", Some(style_set_property), 3)?;
+    define_function(cx, style.get(), "removeProperty", Some(style_remove_property), 1)?;
+
+    Ok(ObjectValue(style.get()))
+}
+
+unsafe fn create_class_list_object_for_node(cx: &mut SafeJSContext, node_id: usize) -> Result<JSVal, String> {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let class_list = JS_NewPlainObject(cx));
+    if class_list.get().is_null() {
+        return Err("Failed to create classList object".to_string());
+    }
+
+    rooted!(in(raw_cx) let cl_ptr_val = mozjs::jsval::DoubleValue(node_id as f64));
+    rooted!(in(raw_cx) let class_list_rooted = class_list.get());
+    let cl_id_name = std::ffi::CString::new("__nodeId").unwrap();
+    JS_DefineProperty(
+        cx,
+        class_list_rooted.handle().into(),
+        cl_id_name.as_ptr(),
+        cl_ptr_val.handle().into(),
+        0,
+    );
+
+    define_function(cx, class_list.get(), "add", Some(class_list_add), 1)?;
+    define_function(cx, class_list.get(), "remove", Some(class_list_remove), 1)?;
+    define_function(cx, class_list.get(), "toggle", Some(class_list_toggle), 2)?;
+    define_function(cx, class_list.get(), "contains", Some(class_list_contains), 1)?;
+    define_function(cx, class_list.get(), "replace", Some(class_list_replace), 2)?;
+    set_int_property(cx, class_list.get(), "length", 0)?;
+
+    Ok(ObjectValue(class_list.get()))
+}
+
+unsafe fn create_dataset_object_for_node(cx: &mut SafeJSContext, node_id: usize) -> Result<JSVal, String> {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let dataset = JS_NewPlainObject(cx));
+    if dataset.get().is_null() {
+        return Err("Failed to create dataset object".to_string());
+    }
+
+    DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = *dom_ref.borrow() {
+            let dom = &*dom_ptr;
+            if let Some(node) = dom.get_node(node_id) {
+                if let NodeData::Element(ref elem_data) = node.data {
+                    for attr in elem_data.attributes.iter() {
+                        let attr_name = attr.name.local.as_ref();
+                        if let Some(data_key) = attr_name.strip_prefix("data-") {
+                            let camel_key = hyphen_to_camel_case(data_key);
+                            let _ = set_string_property(cx, dataset.get(), &camel_key, attr.value.as_ref());
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    Ok(ObjectValue(dataset.get()))
+}
+
 /// Get the node ID from classList's parent element
 unsafe fn get_classlist_parent_node_id(cx: &mut SafeJSContext, args: &CallArgs) -> Option<usize> {
     // First try to get __nodeId directly from this (for when classList is on the element directly)
@@ -799,6 +782,132 @@ unsafe extern "C" fn element_get_shadow_root(raw_cx: *mut JSContext, argc: c_uin
 }
 
 unsafe extern "C" fn element_set_shadow_root_noop(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    args.rval().set(UndefinedValue());
+    true
+}
+
+unsafe extern "C" fn element_get_style_object(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    if !args.thisv().is_object() || args.thisv().is_null() {
+        args.rval().set(NullValue());
+        return true;
+    }
+
+    rooted!(in(raw_cx) let this_obj = args.thisv().to_object());
+    rooted!(in(raw_cx) let mut cache_val = UndefinedValue());
+    let cache_name = std::ffi::CString::new("__styleCache").unwrap();
+    if JS_GetProperty(
+        safe_cx,
+        this_obj.handle().into(),
+        cache_name.as_ptr(),
+        cache_val.handle_mut().into(),
+    ) && cache_val.get().is_object() {
+        args.rval().set(cache_val.get());
+        return true;
+    }
+
+    if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
+        if let Ok(style_obj) = create_style_object_for_node(safe_cx, node_id) {
+            rooted!(in(raw_cx) let style_val = style_obj);
+            JS_SetProperty(
+                safe_cx,
+                this_obj.handle(),
+                cache_name.as_ptr(),
+                style_val.handle(),
+            );
+            args.rval().set(style_val.get());
+            return true;
+        }
+    }
+
+    args.rval().set(NullValue());
+    true
+}
+
+unsafe extern "C" fn element_get_class_list_object(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    if !args.thisv().is_object() || args.thisv().is_null() {
+        args.rval().set(NullValue());
+        return true;
+    }
+
+    rooted!(in(raw_cx) let this_obj = args.thisv().to_object());
+    rooted!(in(raw_cx) let mut cache_val = UndefinedValue());
+    let cache_name = std::ffi::CString::new("__classListCache").unwrap();
+    if JS_GetProperty(
+        safe_cx,
+        this_obj.handle().into(),
+        cache_name.as_ptr(),
+        cache_val.handle_mut().into(),
+    ) && cache_val.get().is_object() {
+        args.rval().set(cache_val.get());
+        return true;
+    }
+
+    if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
+        if let Ok(class_list_obj) = create_class_list_object_for_node(safe_cx, node_id) {
+            rooted!(in(raw_cx) let class_list_val = class_list_obj);
+            JS_SetProperty(
+                safe_cx,
+                this_obj.handle(),
+                cache_name.as_ptr(),
+                class_list_val.handle(),
+            );
+            args.rval().set(class_list_val.get());
+            return true;
+        }
+    }
+
+    args.rval().set(NullValue());
+    true
+}
+
+unsafe extern "C" fn element_get_dataset_object(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    if !args.thisv().is_object() || args.thisv().is_null() {
+        args.rval().set(NullValue());
+        return true;
+    }
+
+    rooted!(in(raw_cx) let this_obj = args.thisv().to_object());
+    rooted!(in(raw_cx) let mut cache_val = UndefinedValue());
+    let cache_name = std::ffi::CString::new("__datasetCache").unwrap();
+    if JS_GetProperty(
+        safe_cx,
+        this_obj.handle().into(),
+        cache_name.as_ptr(),
+        cache_val.handle_mut().into(),
+    ) && cache_val.get().is_object() {
+        args.rval().set(cache_val.get());
+        return true;
+    }
+
+    if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
+        if let Ok(dataset_obj) = create_dataset_object_for_node(safe_cx, node_id) {
+            rooted!(in(raw_cx) let dataset_val = dataset_obj);
+            JS_SetProperty(
+                safe_cx,
+                this_obj.handle(),
+                cache_name.as_ptr(),
+                dataset_val.handle(),
+            );
+            args.rval().set(dataset_val.get());
+            return true;
+        }
+    }
+
+    args.rval().set(NullValue());
+    true
+}
+
+unsafe extern "C" fn element_set_object_property_noop(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     args.rval().set(UndefinedValue());
     true
