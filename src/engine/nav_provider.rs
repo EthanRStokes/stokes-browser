@@ -6,6 +6,7 @@ use crate::shell_provider::ShellProviderMessage;
 #[derive(Debug, Clone)]
 pub enum NavigationProviderMessage {
     NavigateTo(NavigationOptions),
+    NavigateToInNewTab(NavigationOptions),
     Navigate {
         navigation_id: u64,
         url: String,
@@ -37,6 +38,10 @@ impl StokesNavigationProvider {
     /// Navigate to `options.url`, replacing the current history entry rather than pushing a new one.
     pub fn navigate_replace(&self, options: NavigationOptions) {
         let _ = self.sender.send(NavigationProviderMessage::NavigateReplace(options));
+    }
+
+    pub fn navigate_to_in_new_tab(&self, options: NavigationOptions) {
+        let _ = self.sender.send(NavigationProviderMessage::NavigateToInNewTab(options));
     }
 }
 

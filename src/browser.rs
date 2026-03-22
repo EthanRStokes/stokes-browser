@@ -837,7 +837,7 @@ impl ApplicationHandler for BrowserApp {
                 let Some(tab_id) = self.active_tab_id().cloned() else {
                     return;
                 };
-                let id = button_source_to_blitz(&ButtonSource::Mouse(MouseButton::Left));
+                let id = button_source_to_blitz(&ButtonSource::Mouse(MouseButton::Middle));
                 let coords = self.pointer_coords(position);
                 self.pointer_position = <(f64, f64)>::from(position);
                 let button = MouseEventButton::Auxiliary;
@@ -869,6 +869,45 @@ impl ApplicationHandler for BrowserApp {
                 };
 
                 let event = UiEvent::PointerDown(event);
+
+                let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
+                self.request_redraw();
+            }
+            WindowEvent::PointerButton { state: ElementState::Released, button: ButtonSource::Mouse(MouseButton::Middle), primary, position, .. } => {
+                let Some(tab_id) = self.active_tab_id().cloned() else {
+                    return;
+                };
+                let id = button_source_to_blitz(&ButtonSource::Mouse(MouseButton::Middle));
+                let coords = self.pointer_coords(position);
+                self.pointer_position = <(f64, f64)>::from(position);
+                let button = MouseEventButton::Auxiliary;
+
+                self.buttons -= button.into();
+
+                if id != BlitzPointerId::Mouse {
+                    let event = UiEvent::PointerMove(BlitzPointerEvent {
+                        id,
+                        is_primary: primary,
+                        coords,
+                        button: Default::default(),
+                        buttons: self.buttons,
+                        mods: winit_modifiers_to_kbt_modifiers(self.modifiers.state()),
+                        details: PointerDetails::default()
+                    });
+                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
+                }
+
+                let event = BlitzPointerEvent {
+                    id,
+                    is_primary: primary,
+                    coords,
+                    button,
+                    buttons: self.buttons,
+                    mods: winit_modifiers_to_kbt_modifiers(self.modifiers.state()),
+                    details: PointerDetails::default(),
+                };
+
+                let event = UiEvent::PointerUp(event);
 
                 let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
                 self.request_redraw();

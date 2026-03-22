@@ -543,6 +543,10 @@ impl TabProcess {
             match self.nav_receiver.try_recv() {
                 Ok(msg) => {
                     match msg {
+                        NavigationProviderMessage::NavigateToInNewTab(options) => {
+                            let url = options.url.as_str().to_string();
+                            let _ = self.channel.send(&TabToParentMessage::NavigateRequestInNewTab(url));
+                        }
                         NavigationProviderMessage::NavigateTo(options) => {
                             if self.engine.dom.is_none() {
                                 continue;

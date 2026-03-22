@@ -403,7 +403,7 @@ pub(crate) fn handle_pointerup<F: FnMut(DomEvent)>(
     }
 
     // Dispatch a click event
-    if do_click && event.button == MouseEventButton::Main {
+    if do_click && matches!(event.button, MouseEventButton::Main | MouseEventButton::Auxiliary) {
         dispatch_event(DomEvent::new(target, DomEventData::Click(event.clone())));
     }
 
@@ -499,11 +499,19 @@ pub(crate) fn handle_click(
                 local_name!("a") => {
                     if let Some(href) = el.attr(local_name!("href")) {
                         if let Some(url) = doc.url.resolve_relative(href) {
-                            doc.nav_provider.navigate_to(NavigationOptions::new(
+                            let options = NavigationOptions::new(
                                 url,
                                 String::from("text/plain"),
                                 doc.id(),
-                            ));
+                            );
+
+                            if event.button == MouseEventButton::Auxiliary
+                                || event.mods.contains(Modifiers::CONTROL)
+                            {
+                                doc.nav_provider.navigate_to_in_new_tab(options);
+                            } else {
+                                doc.nav_provider.navigate_to(options);
+                            }
                         } else {
                         }
                         break 'matched true;
