@@ -26,6 +26,7 @@ use crate::events::{
     BlitzPointerId, BlitzWheelDelta, DomEvent, DomEventData, EventState,
 };
 use crate::js::bindings::dom_bindings::DOM_REF;
+use crate::js::bindings::element_bindings::create_js_element_by_dom_id;
 use crate::js::helpers::{define_function, set_bool_property, set_int_property, set_string_property, ToSafeCx};
 use crate::js::runtime::RUNTIME;
 
@@ -535,6 +536,14 @@ unsafe extern "C" fn noop_init_event(
 unsafe fn make_target_proxy(cx: &mut SafeJSContext, node_id: usize) -> *mut JSObject {
     let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let t = JS_NewPlainObject(cx));
+    if node_id != WINDOW_NODE_ID && node_id != DOCUMENT_NODE_ID {
+        if let Ok(js_elem) = create_js_element_by_dom_id(cx, node_id) {
+            if js_elem.is_object() {
+                return js_elem.to_object();
+            }
+        }
+    }
+
     if t.get().is_null() { return std::ptr::null_mut(); }
     rooted!(in(raw_cx) let id_val = DoubleValue(node_id as f64));
     let cname = CString::new("__nodeId").unwrap();

@@ -15,6 +15,7 @@ pub(crate) mod mutation_observer;
 pub(crate) mod registry;
 pub(crate) mod timers;
 pub(crate) mod alert_callback;
+pub(crate) mod warnings;
 pub mod console;
 pub mod css;
 pub mod crypto;

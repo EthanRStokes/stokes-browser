@@ -3,7 +3,7 @@ use crate::dom::Dom;
 use crate::js::bindings::timers::TimerManager;
 use crate::js::jsapi::define_native_function::define_native_function;
 use crate::js::jsapi::objects::get_obj_prop_val_as_string;
-use crate::js::jsapi::promise::enqueue_promise_job;
+use crate::js::jsapi::promise::{clear_pending_jobs_for_navigation, enqueue_promise_job};
 use hirofa_utils::eventloop::EventLoop;
 use lazy_static::lazy_static;
 use log::trace;
@@ -30,7 +30,7 @@ use mozjs::realm::AutoRealm;
 use url::Url;
 use crate::js::bindings::initialize_bindings;
 use crate::js::bindings::event_listeners::clear_all_listeners;
-use crate::js::jsapi::promise::clear_pending_jobs_for_navigation;
+use crate::js::bindings::element_bindings::clear_element_wrapper_cache;
 use crate::js::helpers::ToSafeCx;
 
 lazy_static! {
@@ -157,6 +157,7 @@ impl JsRuntime {
         self.timer_manager.clear_all();
         clear_all_listeners();
         clear_pending_jobs_for_navigation();
+        clear_element_wrapper_cache();
         self.module_cache.clear();
 
         self.enter_realm_and_initialize(dom, user_agent, self.timer_manager.clone())?;

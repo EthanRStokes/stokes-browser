@@ -4,6 +4,7 @@ use super::super::helpers::{
 };
 use super::cookies::{ensure_cookie_jar_initialized, set_document_url, COOKIE_JAR, DOCUMENT_URL};
 use super::element_bindings;
+use super::warnings::{warn_stubbed_binding, warn_unexpected_nullish_return};
 // DOM bindings for JavaScript using mozjs
 use crate::dom::{AttributeMap, Dom};
 use crate::js::bindings::element_bindings::{
@@ -3644,6 +3645,16 @@ unsafe extern "C" fn html_iframe_element_get_content_window(raw_cx: *mut JSConte
     let args = CallArgs::from_vp(vp, argc);
 
     trace!("[JS] HTMLIFrameElement.contentWindow getter called");
+    warn_stubbed_binding(
+        "HTMLIFrameElement.contentWindow getter",
+        "iframe browsing contexts are not implemented yet",
+    );
+    warn_unexpected_nullish_return(
+        "HTMLIFrameElement.contentWindow getter",
+        "null",
+        "Window object",
+        "no child browsing-context wiring exists yet",
+    );
 
     // For now, return null as iframe content window is not implemented
     // In a full implementation, this would return the Window object of the iframe's document
@@ -3658,6 +3669,10 @@ unsafe extern "C" fn html_iframe_element_set_content_window(raw_cx: *mut JSConte
     let args = CallArgs::from_vp(vp, argc);
 
     trace!("[JS] HTMLIFrameElement.contentWindow setter called");
+    warn_stubbed_binding(
+        "HTMLIFrameElement.contentWindow setter",
+        "property is effectively ignored in this implementation",
+    );
 
     // contentWindow is read-only in the spec, but we provide a setter to avoid errors
     args.rval().set(UndefinedValue());
@@ -3670,6 +3685,16 @@ unsafe extern "C" fn html_iframe_element_get_content_document(raw_cx: *mut JSCon
     let args = CallArgs::from_vp(vp, argc);
 
     trace!("[JS] HTMLIFrameElement.contentDocument getter called");
+    warn_stubbed_binding(
+        "HTMLIFrameElement.contentDocument getter",
+        "iframe browsing contexts are not implemented yet",
+    );
+    warn_unexpected_nullish_return(
+        "HTMLIFrameElement.contentDocument getter",
+        "null",
+        "Document object",
+        "no child browsing-context wiring exists yet",
+    );
 
     // For now, return null as iframe content document is not implemented
     // In a full implementation, this would return the Document object of the iframe
@@ -3683,6 +3708,10 @@ unsafe extern "C" fn html_iframe_element_set_content_document(raw_cx: *mut JSCon
     let args = CallArgs::from_vp(vp, argc);
 
     trace!("[JS] HTMLIFrameElement.contentDocument setter called");
+    warn_stubbed_binding(
+        "HTMLIFrameElement.contentDocument setter",
+        "property is effectively ignored in this implementation",
+    );
 
     // contentDocument is read-only in the spec, but we provide a setter to avoid errors
     args.rval().set(UndefinedValue());

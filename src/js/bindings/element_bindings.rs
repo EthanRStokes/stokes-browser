@@ -1,8 +1,10 @@
 // Element bindings for JavaScript using mozjs
 use blitz_traits::net::Request;
 use crate::dom::{AttributeMap, NodeData, ShadowRootMode};
+use crate::dom::events::focus::generate_focus_events;
 use crate::engine::js_provider::ScriptKind;
 use crate::engine::script_type::executable_script_kind;
+use crate::events::DomEvent;
 use crate::js::bindings::dom_bindings::DOM_REF;
 use crate::js::helpers::{create_empty_array, create_js_string, define_function, define_property_accessor, get_node_id_from_this, get_node_id_from_value, js_value_to_string, set_int_property, set_string_property, to_css_property_name, ToSafeCx};
 use crate::js::selectors::{matches_parsed_selector, parse_selector, selector_seed, SelectorSeed};
@@ -10,13 +12,88 @@ use html5ever::ns;
 use html5ever::local_name;
 use markup5ever::QualName;
 use mozjs::jsapi::{CallArgs, HandleValueArray, JSContext, JSObject, JSPROP_ENUMERATE};
-use mozjs::rust::wrappers2::{CurrentGlobalOrNull, JS_CallFunctionValue, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_SetElement, JS_SetProperty};
+use mozjs::rust::wrappers2::{AddRawValueRoot, CurrentGlobalOrNull, JS_CallFunctionValue, JS_DefineProperty, JS_GetProperty, JS_NewPlainObject, JS_SetElement, JS_SetProperty, RemoveRawValueRoot};
 use mozjs::context::JSContext as SafeJSContext;
+use mozjs::jsapi::Heap;
 use mozjs::jsval::{BooleanValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::rooted;
+use mozjs::rust::Runtime;
 use mozjs::rust::ValueArray;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::os::raw::c_uint;
+use blitz_traits::shell::ShellProvider;
 use tracing::{trace, warn};
+use crate::js::bindings::event_listeners;
+use crate::js::bindings::warnings::warn_stubbed_binding;
+
+struct PinnedElementWrapper {
+    rooted_value: Box<Heap<JSVal>>,
+}
+
+impl PinnedElementWrapper {
+    unsafe fn new(cx: &mut SafeJSContext, obj: *mut JSObject) -> Self {
+        let rooted_value: Box<Heap<JSVal>> = Box::new(Heap::default());
+        rooted_value.set(ObjectValue(obj));
+        let name = std::ffi::CString::new("PinnedElementWrapper").unwrap();
+        AddRawValueRoot(cx, rooted_value.get_unsafe(), name.as_ptr());
+        Self { rooted_value }
+    }
+
+    #[inline]
+    fn get_object(&self) -> Option<*mut JSObject> {
+        let val = self.rooted_value.get();
+        if val.is_object() {
+            Some(val.to_object())
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for PinnedElementWrapper {
+    fn drop(&mut self) {
+        unsafe {
+            if let Some(cx) = Runtime::get() {
+                RemoveRawValueRoot(&cx.to_safe_cx(), self.rooted_value.get_unsafe());
+            }
+        }
+    }
+}
+
+thread_local! {
+    static ELEMENT_WRAPPER_CACHE: RefCell<HashMap<usize, PinnedElementWrapper>> = RefCell::new(HashMap::new());
+}
+
+pub fn clear_element_wrapper_cache() {
+    ELEMENT_WRAPPER_CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
+unsafe fn get_cached_element_wrapper(node_id: usize) -> Option<*mut JSObject> {
+    ELEMENT_WRAPPER_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .get(&node_id)
+            .and_then(PinnedElementWrapper::get_object)
+    })
+}
+
+unsafe fn cache_element_wrapper(cx: &mut SafeJSContext, node_id: usize, obj: *mut JSObject) {
+    ELEMENT_WRAPPER_CACHE.with(|cache| {
+        cache
+            .borrow_mut()
+            .insert(node_id, PinnedElementWrapper::new(cx, obj));
+    });
+}
+
+fn has_backing_dom_node(node_id: usize) -> bool {
+    DOM_REF.with(|dom_ref| {
+        dom_ref
+            .borrow()
+            .as_ref()
+            .is_some_and(|dom_ptr| unsafe { (&**dom_ptr).get_node(node_id).is_some() })
+    })
+}
 
 fn simple_id_selector(selector: &str) -> Option<&str> {
     let trimmed = selector.trim();
@@ -262,9 +339,15 @@ unsafe fn ensure_element_shared_prototype(cx: &mut SafeJSContext) -> Result<*mut
     define_function(cx, proto.get(), "__setType", Some(element_set_type_attr), 1)?;
     define_function(cx, proto.get(), "__getAsync", Some(element_get_async_attr), 0)?;
     define_function(cx, proto.get(), "__setAsync", Some(element_set_async_attr), 1)?;
+    define_function(cx, proto.get(), "__getValue", Some(element_get_value_attr), 0)?;
+    define_function(cx, proto.get(), "__setValue", Some(element_set_value_attr), 1)?;
+    define_function(cx, proto.get(), "__getChecked", Some(element_get_checked_attr), 0)?;
+    define_function(cx, proto.get(), "__setChecked", Some(element_set_checked_attr), 1)?;
     define_property_accessor(cx, proto.get(), "src", "__getSrc", "__setSrc")?;
     define_property_accessor(cx, proto.get(), "type", "__getType", "__setType")?;
     define_property_accessor(cx, proto.get(), "async", "__getAsync", "__setAsync")?;
+    define_property_accessor(cx, proto.get(), "value", "__getValue", "__setValue")?;
+    define_property_accessor(cx, proto.get(), "checked", "__getChecked", "__setChecked")?;
 
     // Layout/scroll values are currently fixed stubs, so define them once on the prototype.
     set_int_property(cx, proto.get(), "offsetWidth", 0)?;
@@ -335,6 +418,14 @@ unsafe fn create_js_element_impl(
     _with_tree_relations: bool,
 ) -> Result<JSVal, String> {
     let raw_cx = cx.raw_cx();
+
+    let cacheable_node = has_backing_dom_node(node_id);
+    if cacheable_node {
+        if let Some(cached_obj) = get_cached_element_wrapper(node_id) {
+            return Ok(ObjectValue(cached_obj));
+        }
+    }
+
     rooted!(in(raw_cx) let element = JS_NewPlainObject(cx));
     if element.get().is_null() {
         return Err("Failed to create element object".to_string());
@@ -469,6 +560,12 @@ unsafe fn create_js_element_impl(
 
     let shared_proto = ensure_element_shared_prototype(cx)?;
     set_object_prototype(cx, element.get(), shared_proto)?;
+
+    // Keep one stable JS wrapper per DOM node so framework internals attached
+    // to element objects survive across lookups and event dispatch.
+    if cacheable_node {
+        cache_element_wrapper(cx, node_id, element.get());
+    }
 
     if resolved_local_name.eq_ignore_ascii_case("form") {
         setup_form_element_bindings(cx, element.get())?;
@@ -1002,6 +1099,10 @@ unsafe extern "C" fn element_get_dataset_object(raw_cx: *mut JSContext, argc: c_
 
 unsafe extern "C" fn element_set_object_property_noop(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    warn_stubbed_binding(
+        "Element.__setObjectPropertyNoop",
+        "setter is a compatibility no-op",
+    );
     args.rval().set(UndefinedValue());
     true
 }
@@ -1246,7 +1347,7 @@ unsafe extern "C" fn element_get_attribute(raw_cx: *mut JSContext, argc: c_uint,
         String::new()
     };
 
-    println!("[JS] element.getAttribute('{}') called", attr_name);
+    trace!("[JS] element.getAttribute('{}') called", attr_name);
 
     if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
         let value = DOM_REF.with(|dom_ref| {
@@ -1264,7 +1365,7 @@ unsafe extern "C" fn element_get_attribute(raw_cx: *mut JSContext, argc: c_uint,
         });
 
         if let Some(val) = value {
-            println!("[JS] getAttribute('{}') = '{}'", attr_name, val);
+            trace!("[JS] getAttribute('{}') = '{}'", attr_name, val);
             args.rval().set(create_js_string(safe_cx, &val));
         } else {
             args.rval().set(NullValue());
@@ -1291,7 +1392,7 @@ unsafe extern "C" fn element_set_attribute(raw_cx: *mut JSContext, argc: c_uint,
         String::new()
     };
 
-    println!("[JS] element.setAttribute('{}', '{}') called", attr_name, attr_value);
+    trace!("[JS] element.setAttribute('{}', '{}') called", attr_name, attr_value);
 
     if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
         DOM_REF.with(|dom_ref| {
@@ -1323,7 +1424,7 @@ unsafe extern "C" fn element_remove_attribute(raw_cx: *mut JSContext, argc: c_ui
         String::new()
     };
 
-    println!("[JS] element.removeAttribute('{}') called", attr_name);
+    trace!("[JS] element.removeAttribute('{}') called", attr_name);
 
     if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
         DOM_REF.with(|dom_ref| {
@@ -1354,7 +1455,7 @@ unsafe extern "C" fn element_has_attribute(raw_cx: *mut JSContext, argc: c_uint,
         String::new()
     };
 
-    println!("[JS] element.hasAttribute('{}') called", attr_name);
+    trace!("[JS] element.hasAttribute('{}') called", attr_name);
 
     let has_attr = if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
         DOM_REF.with(|dom_ref| {
@@ -1441,7 +1542,7 @@ pub(crate) unsafe extern "C" fn element_append(raw_cx: *mut JSContext, argc: c_u
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
-    println!("[JS] element.append() called with {} args", argc);
+    trace!("[JS] element.append() called with {} args", argc);
 
     let parent_id = match get_node_id_from_this(safe_cx, &args) {
         Some(id) => id,
@@ -1527,7 +1628,7 @@ pub(crate) unsafe extern "C" fn element_remove_child(raw_cx: *mut JSContext, arg
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
-    println!("[JS] element.removeChild() called");
+    trace!("[JS] element.removeChild() called");
 
     // Extract the child node id from the first argument using helper
     let child_id = if argc > 0 {
@@ -1566,7 +1667,7 @@ pub(crate) unsafe extern "C" fn element_insert_before(raw_cx: *mut JSContext, ar
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
-    println!("[JS] element.insertBefore() called");
+    trace!("[JS] element.insertBefore() called");
 
     // insertBefore(newNode, referenceNode)
     // First argument is required: the new node to insert.
@@ -1621,7 +1722,7 @@ pub(crate) unsafe extern "C" fn element_replace_child(raw_cx: *mut JSContext, ar
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
-    println!("[JS] element.replaceChild() called");
+    trace!("[JS] element.replaceChild() called");
 
     if argc >= 2 {
         let parent_id = get_node_id_from_this(safe_cx, &args);
@@ -1660,7 +1761,7 @@ pub(crate) unsafe extern "C" fn element_clone_node(raw_cx: *mut JSContext, argc:
         false
     };
 
-    println!("[JS] element.cloneNode({}) called", deep);
+    trace!("[JS] element.cloneNode({}) called", deep);
 
     // Get the tag name and attributes from the current element
     if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
@@ -2140,8 +2241,57 @@ pub(crate) unsafe extern "C" fn element_dispatch_event(raw_cx: *mut JSContext, a
 /// element.focus implementation
 unsafe extern "C" fn element_focus(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    // FIXME: Does not update the browser focus state or fire focus / focusin events on the element.
-    warn!("[JS] element.focus() called on partial binding (no focus state/event updates)");
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    let Some(node_id) = get_node_id_from_this(safe_cx, &args) else {
+        args.rval().set(UndefinedValue());
+        return true;
+    };
+
+    let mut generated: Vec<DomEvent> = Vec::new();
+    DOM_REF.with(|dom_ref| {
+        let Some(dom_ptr) = *dom_ref.borrow() else {
+            return;
+        };
+
+        let dom = &mut *dom_ptr;
+        let can_focus = dom
+            .get_node(node_id)
+            .is_some_and(|node| node.is_focusable() && node.flags.is_in_document());
+        if !can_focus {
+            return;
+        }
+
+        generate_focus_events(
+            dom,
+            &mut |doc| {
+                doc.set_focus_to(node_id);
+            },
+            &mut |event| generated.push(event),
+        );
+
+        if !generated.is_empty() {
+            dom.shell_provider.request_redraw();
+        }
+    });
+
+    rooted!(in(raw_cx) let global = CurrentGlobalOrNull(safe_cx));
+    if !global.get().is_null() {
+        for event in generated {
+            let chain = DOM_REF.with(|dom_ref| {
+                dom_ref
+                    .borrow()
+                    .as_ref()
+                    .and_then(|dom_ptr| {
+                        let dom = &**dom_ptr;
+                        dom.get_node(event.target).map(|_| dom.node_chain(event.target))
+                    })
+                    .unwrap_or_else(|| vec![event.target])
+            });
+            event_listeners::fire_js_event_on_chain(safe_cx, global.get(), &chain, &event);
+        }
+    }
+
     args.rval().set(UndefinedValue());
     true
 }
@@ -2149,8 +2299,52 @@ unsafe extern "C" fn element_focus(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
 /// element.blur implementation
 unsafe extern "C" fn element_blur(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    // FIXME: Does not update the browser focus state or fire blur / focusout events on the element.
-    warn!("[JS] element.blur() called on partial binding (no focus state/event updates)");
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    let Some(node_id) = get_node_id_from_this(safe_cx, &args) else {
+        args.rval().set(UndefinedValue());
+        return true;
+    };
+
+    let mut generated: Vec<DomEvent> = Vec::new();
+    DOM_REF.with(|dom_ref| {
+        let Some(dom_ptr) = *dom_ref.borrow() else {
+            return;
+        };
+
+        let dom = &mut *dom_ptr;
+        if dom.focus_node_id != Some(node_id) {
+            return;
+        }
+
+        generate_focus_events(
+            dom,
+            &mut |doc| doc.clear_focus(),
+            &mut |event| generated.push(event),
+        );
+
+        if !generated.is_empty() {
+            dom.shell_provider.request_redraw();
+        }
+    });
+
+    rooted!(in(raw_cx) let global = CurrentGlobalOrNull(safe_cx));
+    if !global.get().is_null() {
+        for event in generated {
+            let chain = DOM_REF.with(|dom_ref| {
+                dom_ref
+                    .borrow()
+                    .as_ref()
+                    .and_then(|dom_ptr| {
+                        let dom = &**dom_ptr;
+                        dom.get_node(event.target).map(|_| dom.node_chain(event.target))
+                    })
+                    .unwrap_or_else(|| vec![event.target])
+            });
+            event_listeners::fire_js_event_on_chain(safe_cx, global.get(), &chain, &event);
+        }
+    }
+
     args.rval().set(UndefinedValue());
     true
 }
@@ -2301,7 +2495,7 @@ unsafe extern "C" fn element_matches(raw_cx: *mut JSContext, argc: c_uint, vp: *
 pub(crate) unsafe extern "C" fn element_contains(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
-    println!("[JS] element.contains() called");
+    trace!("[JS] element.contains() called");
 
     // Get the node ID of this element
     let this_node_id = get_node_id_from_this(safe_cx, &args);
@@ -2313,14 +2507,11 @@ pub(crate) unsafe extern "C" fn element_contains(raw_cx: *mut JSContext, argc: c
             rooted!(in(raw_cx) let other_obj = other_val.to_object());
             rooted!(in(raw_cx) let mut ptr_val = UndefinedValue());
             let cname = std::ffi::CString::new("__nodeId").unwrap();
-            if JS_GetProperty(safe_cx, other_obj.handle().into(), cname.as_ptr(), ptr_val.handle_mut().into()) {
-                if ptr_val.get().is_double() {
-                    Some(ptr_val.get().to_double() as usize)
-                } else if ptr_val.get().is_int32() {
-                    Some(ptr_val.get().to_int32() as usize)
-                } else {
-                    None
-                }
+            JS_GetProperty(safe_cx, other_obj.handle().into(), cname.as_ptr(), ptr_val.handle_mut().into());
+            if ptr_val.get().is_double() {
+                Some(ptr_val.get().to_double() as usize)
+            } else if ptr_val.get().is_int32() {
+                Some(ptr_val.get().to_int32() as usize)
             } else {
                 None
             }
@@ -2369,7 +2560,7 @@ pub(crate) unsafe extern "C" fn element_contains(raw_cx: *mut JSContext, argc: c
 pub(crate) unsafe extern "C" fn element_get_root_node(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
-    println!("[JS] element.getRootNode() called");
+    trace!("[JS] element.getRootNode() called");
 
     // Parse options - check for {composed: true}
     let composed = if argc > 0 {
@@ -2378,16 +2569,12 @@ pub(crate) unsafe extern "C" fn element_get_root_node(raw_cx: *mut JSContext, ar
             rooted!(in(raw_cx) let options_obj = options.to_object());
             rooted!(in(raw_cx) let mut composed_val = UndefinedValue());
             let composed_name = std::ffi::CString::new("composed").unwrap();
-            if JS_GetProperty(
+            JS_GetProperty(
                 safe_cx,
                 options_obj.handle().into(),
                 composed_name.as_ptr(),
                 composed_val.handle_mut().into(),
-            ) && composed_val.get().is_boolean() {
-                composed_val.get().to_boolean()
-            } else {
-                false
-            }
+            ) && composed_val.get().is_boolean()
         } else {
             false
         }
@@ -2508,7 +2695,7 @@ pub(crate) unsafe extern "C" fn element_get_root_node(raw_cx: *mut JSContext, ar
 unsafe extern "C" fn element_remove(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
-    println!("[JS] element.remove() called");
+    trace!("[JS] element.remove() called");
     if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
         DOM_REF.with(|dom| {
             if let Some(dom_ptr) = *dom.borrow() {
@@ -2545,7 +2732,7 @@ unsafe fn collect_nodes_from_varargs(cx: &mut SafeJSContext, args: &CallArgs, ar
 unsafe extern "C" fn element_prepend(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
-    println!("[JS] element.prepend() called with {} args", argc);
+    trace!("[JS] element.prepend() called with {} args", argc);
     if let Some(parent_id) = get_node_id_from_this(safe_cx, &args) {
         let new_ids = collect_nodes_from_varargs(safe_cx, &args, argc);
         if !new_ids.is_empty() {
@@ -2569,7 +2756,7 @@ unsafe extern "C" fn element_prepend(raw_cx: *mut JSContext, argc: c_uint, vp: *
 unsafe extern "C" fn element_before(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
-    println!("[JS] element.before() called");
+    trace!("[JS] element.before() called");
     if let Some(self_id) = get_node_id_from_this(safe_cx, &args) {
         let new_ids = collect_nodes_from_varargs(safe_cx, &args, argc);
         if !new_ids.is_empty() {
@@ -2591,7 +2778,7 @@ unsafe extern "C" fn element_before(raw_cx: *mut JSContext, argc: c_uint, vp: *m
 unsafe extern "C" fn element_after(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
-    println!("[JS] element.after() called");
+    trace!("[JS] element.after() called");
     if let Some(self_id) = get_node_id_from_this(safe_cx, &args) {
         let new_ids = collect_nodes_from_varargs(safe_cx, &args, argc);
         if !new_ids.is_empty() {
@@ -2613,7 +2800,7 @@ unsafe extern "C" fn element_after(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
 unsafe extern "C" fn element_replace_with(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
-    println!("[JS] element.replaceWith() called");
+    trace!("[JS] element.replaceWith() called");
     if let Some(self_id) = get_node_id_from_this(safe_cx, &args) {
         let new_ids = collect_nodes_from_varargs(safe_cx, &args, argc);
         DOM_REF.with(|dom| {
@@ -2686,7 +2873,7 @@ unsafe extern "C" fn element_insert_adjacent_element(raw_cx: *mut JSContext, arg
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     let position = if argc > 0 { js_value_to_string(safe_cx, *args.get(0)) } else { String::new() };
-    println!("[JS] element.insertAdjacentElement('{}', ...) called", position);
+    trace!("[JS] element.insertAdjacentElement('{}', ...) called", position);
 
     let self_id = match get_node_id_from_this(safe_cx, &args) {
         Some(id) => id,
@@ -2711,7 +2898,7 @@ unsafe extern "C" fn element_insert_adjacent_text(raw_cx: *mut JSContext, argc: 
     let safe_cx = &mut raw_cx.to_safe_cx();
     let position = if argc > 0 { js_value_to_string(safe_cx, *args.get(0)) } else { String::new() };
     let text = if argc > 1 { js_value_to_string(safe_cx, *args.get(1)) } else { String::new() };
-    println!("[JS] element.insertAdjacentText('{}', ...) called", position);
+    trace!("[JS] element.insertAdjacentText('{}', ...) called", position);
 
     if let Some(self_id) = get_node_id_from_this(safe_cx, &args) {
         let text_id = DOM_REF.with(|dom| {
@@ -2739,7 +2926,7 @@ unsafe extern "C" fn element_insert_adjacent_text(raw_cx: *mut JSContext, argc: 
 unsafe extern "C" fn element_get_attribute_names(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
-    println!("[JS] element.getAttributeNames() called");
+    trace!("[JS] element.getAttributeNames() called");
 
     rooted!(in(raw_cx) let array = create_empty_array(safe_cx));
 
@@ -2837,7 +3024,10 @@ unsafe extern "C" fn element_scroll_by(raw_cx: *mut JSContext, argc: c_uint, vp:
 /// Shared no-op callback for stub Animation methods.
 unsafe extern "C" fn animation_noop(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    tracing::warn!("animation_noop() called");
+    warn_stubbed_binding(
+        "Animation.* method",
+        "stub Animation object does not implement playback behavior",
+    );
     args.rval().set(UndefinedValue());
     true
 }
@@ -2895,7 +3085,7 @@ unsafe extern "C" fn style_get_property_value(raw_cx: *mut JSContext, argc: c_ui
         String::new()
     };
 
-    println!("[JS] style.getPropertyValue('{}') called", property);
+    trace!("[JS] style.getPropertyValue('{}') called", property);
 
     let css_property = to_css_property_name(&property);
     let mut result = String::new();
@@ -2947,7 +3137,7 @@ unsafe extern "C" fn style_set_property(raw_cx: *mut JSContext, argc: c_uint, vp
         String::new()
     };
 
-    println!("[JS] style.setProperty('{}', '{}') called", property, value);
+    trace!("[JS] style.setProperty('{}', '{}') called", property, value);
 
     // Get the node ID from the style object's __nodeId property
     if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
@@ -3019,7 +3209,7 @@ unsafe extern "C" fn style_remove_property(raw_cx: *mut JSContext, argc: c_uint,
         String::new()
     };
 
-    println!("[JS] style.removeProperty('{}') called", property);
+    trace!("[JS] style.removeProperty('{}') called", property);
 
     let css_property = to_css_property_name(&property);
     let mut old_value = String::new();
@@ -3090,7 +3280,7 @@ unsafe extern "C" fn class_list_add(raw_cx: *mut JSContext, argc: c_uint, vp: *m
         }
     }
 
-    println!("[JS] classList.add({:?}) called", classes_to_add);
+    trace!("[JS] classList.add({:?}) called", classes_to_add);
 
     // Get the parent element's node ID from classList's parent
     if let Some(node_id) = get_classlist_parent_node_id(safe_cx, &args) {
@@ -3149,7 +3339,7 @@ unsafe extern "C" fn class_list_remove(raw_cx: *mut JSContext, argc: c_uint, vp:
         }
     }
 
-    println!("[JS] classList.remove({:?}) called", classes_to_remove);
+    trace!("[JS] classList.remove({:?}) called", classes_to_remove);
 
     if let Some(node_id) = get_classlist_parent_node_id(safe_cx, &args) {
         DOM_REF.with(|dom_ref| {
@@ -3208,7 +3398,7 @@ unsafe extern "C" fn class_list_toggle(raw_cx: *mut JSContext, argc: c_uint, vp:
         None
     };
 
-    println!("[JS] classList.toggle('{}', {:?}) called", class_name, force);
+    trace!("[JS] classList.toggle('{}', {:?}) called", class_name, force);
 
     let mut result = false;
 
@@ -3277,7 +3467,7 @@ unsafe extern "C" fn class_list_contains(raw_cx: *mut JSContext, argc: c_uint, v
         String::new()
     };
 
-    println!("[JS] classList.contains('{}') called", class_name);
+    trace!("[JS] classList.contains('{}') called", class_name);
 
     let mut result = false;
 
@@ -3323,7 +3513,7 @@ unsafe extern "C" fn class_list_replace(raw_cx: *mut JSContext, argc: c_uint, vp
         String::new()
     };
 
-    println!("[JS] classList.replace('{}', '{}') called", old_class, new_class);
+    trace!("[JS] classList.replace('{}', '{}') called", old_class, new_class);
 
     let mut result = false;
 
@@ -3341,6 +3531,7 @@ unsafe extern "C" fn class_list_replace(raw_cx: *mut JSContext, argc: c_uint, vp
 
                             let class_list: Vec<String> = current_classes
                                 .split_whitespace()
+                                .filter(|c| c != &old_class)
                                 .map(|s| s.to_string())
                                 .collect();
 
@@ -3375,7 +3566,7 @@ unsafe extern "C" fn element_get_text_content(raw_cx: *mut JSContext, argc: c_ui
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
-    println!("[JS] element.__getTextContent() called");
+    trace!("[JS] element.__getTextContent() called");
 
     if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
         DOM_REF.with(|dom_ref| {
@@ -3435,7 +3626,7 @@ unsafe extern "C" fn element_set_text_content(raw_cx: *mut JSContext, argc: c_ui
         String::new()
     };
 
-    println!("[JS] element.__setTextContent('{}') called", text);
+    trace!("[JS] element.__setTextContent('{}') called", text);
 
     // Keep a wrapper-local mirror for robustness during immediate read/modify/write loops.
     if args.thisv().is_object() && !args.thisv().is_null() {
@@ -3649,6 +3840,104 @@ unsafe extern "C" fn element_set_async_attr(raw_cx: *mut JSContext, argc: c_uint
             clear_attribute_for_node(node_id, "async");
         }
     }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// element.__getValue implementation (getter for value IDL-reflected attribute)
+unsafe extern "C" fn element_get_value_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    let value = get_node_id_from_this(safe_cx, &args)
+        .and_then(|node_id| {
+            DOM_REF.with(|dom_ref| {
+                let dom_ptr = (*dom_ref.borrow())?;
+                let dom = &*dom_ptr;
+                let node = dom.get_node(node_id)?;
+                let element = node.element_data()?;
+
+                if let Some(input_data) = element.text_input_data() {
+                    Some(input_data.editor.raw_text().to_string())
+                } else {
+                    element
+                        .attributes
+                        .iter()
+                        .find(|a| a.name.local.as_ref() == "value")
+                        .map(|a| a.value.to_string())
+                }
+            })
+        })
+        .unwrap_or_default();
+
+    args.rval().set(create_js_string(safe_cx, &value));
+    true
+}
+
+/// element.__setValue implementation (setter for value IDL-reflected attribute)
+unsafe extern "C" fn element_set_value_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+    if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
+        let value = if argc > 0 { js_value_to_string(safe_cx, *args.get(0)) } else { String::new() };
+        set_attribute_for_node(node_id, "value", &value);
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// element.__getChecked implementation (getter for checked IDL-reflected attribute)
+unsafe extern "C" fn element_get_checked_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    let checked = get_node_id_from_this(safe_cx, &args)
+        .and_then(|node_id| {
+            DOM_REF.with(|dom_ref| {
+                let dom_ptr = (*dom_ref.borrow())?;
+                let dom = &*dom_ptr;
+                let node = dom.get_node(node_id)?;
+                let element = node.element_data()?;
+                element.checkbox_input_checked().or_else(|| {
+                    Some(
+                        element
+                            .attributes
+                            .iter()
+                            .any(|a| a.name.local.as_ref() == "checked"),
+                    )
+                })
+            })
+        })
+        .unwrap_or(false);
+
+    args.rval().set(BooleanValue(checked));
+    true
+}
+
+/// element.__setChecked implementation (setter for checked IDL-reflected attribute)
+unsafe extern "C" fn element_set_checked_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
+        let enabled = argc > 0 && {
+            let v = *args.get(0);
+            if v.is_boolean() {
+                v.to_boolean()
+            } else if v.is_undefined() || v.is_null() {
+                false
+            } else {
+                true
+            }
+        };
+
+        if enabled {
+            set_attribute_for_node(node_id, "checked", "");
+        } else {
+            clear_attribute_for_node(node_id, "checked");
+        }
+    }
+
     args.rval().set(UndefinedValue());
     true
 }

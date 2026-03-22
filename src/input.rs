@@ -198,11 +198,17 @@ pub fn handle_keyboard_input(
     active_tab_index: usize,
     num_tabs: usize,
 ) -> InputAction {
+    let has_focused_text_field = ui.is_text_field_focused();
+
+    // Forward key releases to page content so sites that rely on `keyup`
+    // (including search boxes with debounced handlers) keep working.
     if event.state != ElementState::Pressed {
+        if !has_focused_text_field {
+            return InputAction::ForwardToTab(KeyboardInput::Named("KeyUp".to_string()));
+        }
         return InputAction::None;
     }
 
-    let has_focused_text_field = ui.is_text_field_focused();
 
     // Handle keyboard shortcuts with modifiers (browser-level)
     if modifiers.state().control_key() {
