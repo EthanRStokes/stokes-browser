@@ -9,6 +9,7 @@ use crate::{js, networking};
 use crate::renderer::painter::{ScenePainter, SkiaCache};
 use blitz_traits::net::Request;
 use blitz_traits::shell::{ShellProvider, Viewport};
+use curl::easy::{Easy, List};
 use gl::types::GLint;
 use glutin::config::{Config, ConfigSurfaceTypes, ConfigTemplateBuilder, GlConfig};
 use glutin::context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext};
@@ -431,6 +432,71 @@ fn sync_readback(fboid: u32, dst: &mut [u8], width: u32, height: u32) -> io::Res
     Ok(())
 }
 
+fn fetch_binary(url: &str, user_agent: &str) -> io::Result<Vec<u8>> {
+    let mut easy = Easy::new();
+    let mut data = Vec::new();
+
+    easy.url(url).map_err(io_other)?;
+    easy.useragent(user_agent).map_err(io_other)?;
+    easy.timeout(std::time::Duration::from_secs(10)).map_err(io_other)?;
+    easy.follow_location(true).map_err(io_other)?;
+    easy.max_redirections(6).map_err(io_other)?;
+    easy.accept_encoding("").map_err(io_other)?;
+
+    let mut req_headers = List::new();
+    req_headers
+        .append("Accept: image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+        .map_err(io_other)?;
+    easy.http_headers(req_headers).map_err(io_other)?;
+
+    {
+        let mut transfer = easy.transfer();
+        transfer
+            .write_function(|new_data| {
+                data.extend_from_slice(new_data);
+                Ok(new_data.len())
+            })
+            .map_err(io_other)?;
+        transfer.perform().map_err(io_other)?;
+    }
+
+    let response_code = easy.response_code().map_err(io_other)?;
+    if response_code >= 400 || data.is_empty() {
+        return Err(io::Error::other(format!(
+            "favicon fetch failed with status {}",
+            response_code
+        )));
+    }
+
+    Ok(data)
+}
+
+fn fetch_favicon_for_page(page_url: &str, user_agent: &str) -> Option<Vec<u8>> {
+    let parsed = Url::parse(page_url).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+
+    let mut candidates = Vec::with_capacity(3);
+    if let Ok(url) = parsed.join("/favicon.ico") {
+        candidates.push(url.to_string());
+    }
+    if let Ok(url) = parsed.join("/favicon.png") {
+        candidates.push(url.to_string());
+    }
+    if let Ok(url) = parsed.join("/apple-touch-icon.png") {
+        candidates.push(url.to_string());
+    }
+
+    for candidate in candidates {
+        if let Ok(bytes) = fetch_binary(&candidate, user_agent) {
+            return Some(bytes);
+        }
+    }
+
+    None
+}
+
 impl TabProcess {
     /// Create a new tab process and connect to the parent
     pub fn new(tab_id: String, server_name: String) -> io::Result<Self> {
@@ -565,6 +631,7 @@ impl TabProcess {
                             let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(true));
                             let url = options.url.as_str().to_string();
                             let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
+                            let _ = self.channel.send(&TabToParentMessage::FaviconUpdated(None));
                             let request = options.into_request();
                             let history_request = request.clone();
                             self.dom().unwrap().net_provider.fetch_with_callback(
@@ -608,6 +675,7 @@ impl TabProcess {
                                         title: title.clone(),
                                     });
                                     let _ = self.channel.send(&TabToParentMessage::TitleChanged(title));
+                                    self.send_current_favicon();
                                     let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                                     self.render_frame()?;
                                 }
@@ -629,6 +697,7 @@ impl TabProcess {
                             let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(true));
                             let url = options.url.as_str().to_string();
                             let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
+                            let _ = self.channel.send(&TabToParentMessage::FaviconUpdated(None));
                             let request = options.into_request();
                             let history_request = request.clone();
                             self.dom().unwrap().net_provider.fetch_with_callback(
@@ -670,6 +739,7 @@ impl TabProcess {
                                         title: title.clone(),
                                     });
                                     let _ = self.channel.send(&TabToParentMessage::TitleChanged(title));
+                                    self.send_current_favicon();
                                     let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                                     self.render_frame()?;
                                 }
@@ -735,6 +805,7 @@ impl TabProcess {
         }
 
         let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url));
+        let _ = self.channel.send(&TabToParentMessage::FaviconUpdated(None));
         self.engine.set_loading_state(true);
 
         match self.engine.reload_current_entry().await {
@@ -742,6 +813,7 @@ impl TabProcess {
                 let title = self.engine.page_title().to_string();
                 let url = self.engine.current_url().to_string();
                 let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
+                self.send_current_favicon();
                 let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                 Ok(true)
             }
@@ -753,6 +825,12 @@ impl TabProcess {
         }
     }
 
+    fn send_current_favicon(&self) {
+        let url = self.engine.current_url().to_string();
+        let favicon = fetch_favicon_for_page(&url, &self.engine.config.user_agent);
+        let _ = self.channel.send(&TabToParentMessage::FaviconUpdated(favicon));
+    }
+
     /// Handle a message from the parent process
     async fn handle_message(&mut self, message: ParentToTabMessage) -> io::Result<(bool, bool)> {
         let mut should_render: bool = false;
@@ -761,6 +839,7 @@ impl TabProcess {
                 // Invalidate any in-flight async navigation callback.
                 self.navigation_id = self.navigation_id.wrapping_add(1);
                 let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
+                let _ = self.channel.send(&TabToParentMessage::FaviconUpdated(None));
                 self.engine.set_loading_state(true);
 
                 let contents = networking::fetch(&url, &self.engine.config.user_agent, self.engine.config.block_ads).unwrap_or_else(|e| {
@@ -776,6 +855,7 @@ impl TabProcess {
                             title: title.clone(),
                         });
                         let _ = self.channel.send(&TabToParentMessage::TitleChanged(title));
+                        self.send_current_favicon();
                         let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                         should_render = true;
                     }
@@ -796,12 +876,14 @@ impl TabProcess {
                 if self.engine.can_go_back() {
                     let url = self.engine.current_url().to_string();
                     let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
+                    let _ = self.channel.send(&TabToParentMessage::FaviconUpdated(None));
                     self.engine.set_loading_state(true);
                     match self.engine.go_back().await {
                         Ok(_) => {
                             let title = self.engine.page_title().to_string();
                             let url = self.engine.current_url().to_string();
                             let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
+                            self.send_current_favicon();
                             let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                             should_render = true;
                         }
@@ -817,12 +899,14 @@ impl TabProcess {
                 if self.engine.can_go_forward() {
                     let url = self.engine.current_url().to_string();
                     let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
+                    let _ = self.channel.send(&TabToParentMessage::FaviconUpdated(None));
                     self.engine.set_loading_state(true);
                     match self.engine.go_forward().await {
                         Ok(_) => {
                             let title = self.engine.page_title().to_string();
                             let url = self.engine.current_url().to_string();
                             let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
+                            self.send_current_favicon();
                             let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
                             should_render = true;
                         }

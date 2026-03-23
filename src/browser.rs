@@ -356,6 +356,11 @@ impl BrowserApp {
 
             // Update UI based on messages
             match message {
+                TabToParentMessage::NavigationStarted(_) => {
+                    self.ui.as_mut().unwrap().update_tab_loading(&tab_id, true);
+                    self.ui.as_mut().unwrap().update_tab_favicon(&tab_id, None);
+                    env.window.request_redraw();
+                }
                 TabToParentMessage::TitleChanged(title) => {
                     self.ui.as_mut().unwrap().update_tab_title(&tab_id, &title);
                     if Some(&tab_id) == self.active_tab_id() {
@@ -364,12 +369,16 @@ impl BrowserApp {
                 }
                 TabToParentMessage::NavigationCompleted { url, title } => {
                     self.ui.as_mut().unwrap().update_tab_title(&tab_id, &title);
+                    self.ui.as_mut().unwrap().update_tab_loading(&tab_id, false);
                     if Some(&tab_id) == self.active_tab_id() {
                         self.ui.as_mut().unwrap().update_address_bar(&url);
                         env.window.set_title(&format!("{} - Stokes Browser", title));
                     }
                 }
                 TabToParentMessage::LoadingStateChanged(_is_loading) => {
+                    if let Some(tab) = self.tab_manager.get_tab(&tab_id) {
+                        self.ui.as_mut().unwrap().update_tab_loading(&tab_id, tab.is_loading);
+                    }
                     // Update loading indicator
                     env.window.request_redraw();
                 }
@@ -435,6 +444,10 @@ impl BrowserApp {
                 TabToParentMessage::UpdateButtons(buttons) => {
                     self.buttons = buttons;
                 }
+                TabToParentMessage::FaviconUpdated(favicon) => {
+                    self.ui.as_mut().unwrap().update_tab_favicon(&tab_id, favicon.as_deref());
+                    env.window.request_redraw();
+                }
                 _ => {}
             }
         }
@@ -486,13 +499,15 @@ impl BrowserApp {
             self.env.as_ref().unwrap().window.request_redraw();
         }
 
-        // Check if active tab is loading
-        let is_loading = active_tab_id.as_ref()
-            .and_then(|id| self.tab_manager.get_tab(id))
-            .map(|t| t.is_loading)
-            .unwrap_or(false);
+        // Animate spinner as long as any tab is loading so all tab indicators stay in motion.
+        let is_any_tab_loading = self.tab_order.iter().any(|id| {
+            self.tab_manager
+                .get_tab(id)
+                .map(|tab| tab.is_loading)
+                .unwrap_or(false)
+        });
 
-        if is_loading {
+        if is_any_tab_loading {
             let now = Instant::now();
             let elapsed = now.duration_since(self.last_spinner_update).as_secs_f32();
             self.loading_spinner_angle += elapsed * 4.0 * std::f32::consts::PI;
@@ -532,8 +547,7 @@ impl BrowserApp {
         }
 
         // Render UI on top
-        ui.render(canvas, &mut self.font_ctx, &mut self.layout_ctx, &mut painter);
-        ui.render_loading_indicator(&mut painter, is_loading, self.loading_spinner_angle);
+        ui.render(canvas, &mut self.font_ctx, &mut self.layout_ctx, &mut painter, self.loading_spinner_angle);
 
         self.env.as_mut().unwrap().gr_context.flush_and_submit();
         {

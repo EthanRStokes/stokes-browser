@@ -5,7 +5,7 @@ use color::{AlphaColor, Srgb};
 use kurbo::Affine;
 use parley::{Alignment, AlignmentOptions, FontContext, GenericFamily, LayoutContext, LineHeight, PositionedLayoutItem, StyleProperty};
 use peniko::Fill;
-use skia_safe::{Canvas, Color, Font, FontStyle, Paint, Rect, TextBlob};
+use skia_safe::{Canvas, Color, Data, Font, FontStyle, Image, Paint, Rect, TextBlob};
 use std::f32::consts::PI;
 use std::time::{Duration, Instant};
 use usvg::Tree;
@@ -89,6 +89,8 @@ pub enum UiComponent {
         tooltip: Tooltip,
         close_button_hover: bool,
         close_button_tooltip: Tooltip,
+        favicon: Option<Image>,
+        is_loading: bool,
     }
 }
 
@@ -163,6 +165,8 @@ impl UiComponent {
             tooltip: Tooltip::new(&format_tab_tooltip_text(title)),
             close_button_hover: false,
             close_button_tooltip: Tooltip::new("Close tab"),
+            favicon: None,
+            is_loading: false,
         }
     }
 
@@ -638,6 +642,29 @@ impl BrowserUI {
                 if id == tab_id {
                     *tab_title = title.to_string();
                     tooltip.text = format_tab_tooltip_text(title);
+                }
+            }
+        }
+    }
+
+    pub fn update_tab_loading(&mut self, tab_id: &str, is_loading: bool) {
+        for comp in &mut self.components {
+            if let UiComponent::TabButton { id, is_loading: tab_loading, .. } = comp {
+                if id == tab_id {
+                    *tab_loading = is_loading;
+                    break;
+                }
+            }
+        }
+    }
+
+    pub fn update_tab_favicon(&mut self, tab_id: &str, favicon: Option<&[u8]>) {
+        for comp in &mut self.components {
+            if let UiComponent::TabButton { id, favicon: tab_favicon, .. } = comp {
+                if id == tab_id {
+                    *tab_favicon = favicon
+                        .and_then(|bytes| Image::from_encoded(Data::new_copy(bytes)));
+                    break;
                 }
             }
         }
@@ -1257,7 +1284,7 @@ impl BrowserUI {
     }
 
     /// Render the UI
-    pub fn render(&self, canvas: &Canvas, font_ctx: &mut FontContext, layout_ctx: &mut LayoutContext<TextBrush>, painter: &mut ScenePainter) {
+    pub fn render(&self, canvas: &Canvas, font_ctx: &mut FontContext, layout_ctx: &mut LayoutContext<TextBrush>, painter: &mut ScenePainter, loading_spinner_angle: f32) {
         let canvas_width = canvas.image_info().width() as f32;
         let canvas_height = canvas.image_info().height() as f32;
         let chrome_height = self.chrome_height();
@@ -1512,7 +1539,7 @@ impl BrowserUI {
                         paint.set_stroke(false);
                     }
                 }
-                UiComponent::TabButton { title, x, y, width, height, color, hover_color, is_active, is_hover, tooltip, close_button_hover, close_button_tooltip, .. } => {
+                UiComponent::TabButton { title, x, y, width, height, color, hover_color, is_active, is_hover, tooltip, close_button_hover, close_button_tooltip, favicon, is_loading, .. } => {
                     let rect = Rect::from_xywh(*x, *y, *width, *height);
 
                     // Draw tab shadow
@@ -1547,11 +1574,35 @@ impl BrowserUI {
                     canvas.draw_round_rect(rect, 4.0, 4.0, &paint);
                     paint.set_stroke(false);
 
+                    let favicon_size = 16.0 * self.viewport.hidpi_scale;
+                    let favicon_padding_left = 8.0 * self.viewport.hidpi_scale;
+                    let favicon_rect = Rect::from_xywh(
+                        rect.left() + favicon_padding_left,
+                        rect.center_y() - (favicon_size / 2.0),
+                        favicon_size,
+                        favicon_size,
+                    );
+
+                    Self::draw_tab_favicon(canvas, &mut paint, favicon_rect, favicon.as_ref());
+
+                    if *is_loading {
+                        let spinner_radius = (favicon_size * 0.75).max(8.0 * self.viewport.hidpi_scale);
+                        Self::draw_spinner(
+                            painter,
+                            favicon_rect.center_x(),
+                            favicon_rect.center_y(),
+                            spinner_radius,
+                            loading_spinner_angle,
+                            self.viewport.hidpi_scale,
+                        );
+                    }
+
                     // Calculate space needed for close button if active
                     let close_button_space = if *is_active { 20.0 * self.viewport.hidpi_scale } else { 0.0 };
 
-                    // Truncate tab text to fit within the tab width (leaving space for close button)
-                    let max_text_width = *width - (text_padding * 2.0) - close_button_space;
+                    // Truncate tab text to fit within the tab width (leaving space for favicon + close button)
+                    let text_start_x = favicon_rect.right() + (6.0 * self.viewport.hidpi_scale);
+                    let max_text_width = (rect.right() - close_button_space) - text_start_x - text_padding;
                     let display_text = Self::truncate_text_to_width(title, max_text_width, &font);
 
                     // Draw tab text with scaled padding, centered vertically
@@ -1560,7 +1611,7 @@ impl BrowserUI {
                         let text_bounds = blob.bounds();
                         // Center the text vertically in the tab
                         let text_y = rect.top() + (rect.height() / 2.0) - (text_bounds.top + text_bounds.height() / 2.0);
-                        canvas.draw_text_blob(&blob, (rect.left() + text_padding, text_y), &paint);
+                        canvas.draw_text_blob(&blob, (text_start_x, text_y), &paint);
                     }
 
                     // Draw close button for active tab
@@ -1918,6 +1969,44 @@ impl BrowserUI {
         }
 
         kurbo_path
+    }
+
+    fn draw_tab_favicon(canvas: &Canvas, paint: &mut Paint, rect: Rect, favicon: Option<&Image>) {
+        if let Some(image) = favicon {
+            let image_w = image.width() as f32;
+            let image_h = image.height() as f32;
+            if image_w > 0.0 && image_h > 0.0 {
+                canvas.save();
+                canvas.translate((rect.left(), rect.top()));
+                canvas.scale((rect.width() / image_w, rect.height() / image_h));
+                canvas.draw_image(image, (0.0, 0.0), None);
+                canvas.restore();
+            } else {
+                Self::draw_default_favicon(canvas, paint, rect);
+            }
+        } else {
+            Self::draw_default_favicon(canvas, paint, rect);
+        }
+    }
+
+    fn draw_default_favicon(canvas: &Canvas, paint: &mut Paint, rect: Rect) {
+        paint.set_color(Color::from_rgb(220, 226, 236));
+        canvas.draw_round_rect(rect, 3.0, 3.0, paint);
+
+        paint.set_stroke(true);
+        paint.set_stroke_width(1.0);
+        paint.set_color(Color::from_rgb(110, 125, 150));
+        canvas.draw_round_rect(rect, 3.0, 3.0, paint);
+
+        paint.set_stroke_width(0.9);
+        let cx = rect.center_x();
+        let cy = rect.center_y();
+        let rx = rect.width() * 0.28;
+        let ry = rect.height() * 0.28;
+        canvas.draw_line((cx - rx, cy), (cx + rx, cy), paint);
+        canvas.draw_line((cx, cy - ry), (cx, cy + ry), paint);
+
+        paint.set_stroke(false);
     }
 
 

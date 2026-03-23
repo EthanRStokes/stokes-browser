@@ -70,6 +70,7 @@ pub enum TabToParentMessage {
     Alert(String),
     ShellProvider(crate::shell_provider::ShellProviderMessage),
     UpdateButtons(MouseEventButtons),
+    FaviconUpdated(Option<Vec<u8>>),
 }
 
 /// Keyboard modifier key state

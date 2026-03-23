@@ -15,6 +15,7 @@ pub struct ManagedTab {
     pub title: String,
     pub url: String,
     pub is_loading: bool,
+    pub favicon: Option<Vec<u8>>,
     pub zoom: f32,
     pub viewport_scroll: Point<f64>,
     process: Child,
@@ -77,6 +78,7 @@ impl TabManager {
             title: "New Tab".to_string(),
             url: String::new(),
             is_loading: false,
+            favicon: None,
             zoom: 1.0,
             viewport_scroll: Point { x: 0.0, y: 0.0 },
             process: child,
@@ -129,6 +131,7 @@ impl TabManager {
                 TabToParentMessage::NavigationStarted(url) => {
                     tab.is_loading = true;
                     tab.url = url;
+                    tab.favicon = None;
                 }
                 TabToParentMessage::NavigationCompleted { url, title } => {
                     tab.is_loading = false;
@@ -147,6 +150,9 @@ impl TabManager {
                 }
                 TabToParentMessage::LoadingStateChanged(is_loading) => {
                     tab.is_loading = is_loading;
+                }
+                TabToParentMessage::FaviconUpdated(favicon) => {
+                    tab.favicon = favicon;
                 }
                 TabToParentMessage::FrameRendered { shmem_name, width, height } => {
                     // Load the frame from shared memory
