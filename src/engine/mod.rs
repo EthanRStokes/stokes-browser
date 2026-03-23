@@ -820,6 +820,27 @@ impl Engine {
         }
     }
 
+    /// Return the request at the current history position, if one exists.
+    pub fn current_history_request(&self) -> Option<Request> {
+        self.history_index
+            .and_then(|index| self.history.get(index).cloned())
+    }
+
+    /// Reload the active document without pushing a new history entry.
+    /// When possible, this reuses the existing history request (method/headers/body).
+    pub async fn reload_current_entry(&mut self) -> Result<(), NetworkError> {
+        let request = if let Some(request) = self.current_history_request() {
+            request
+        } else if let Ok(parsed_url) = url::Url::parse(&self.current_url) {
+            Request::get(parsed_url)
+        } else {
+            return Err(NetworkError::Curl("Cannot reload: no current URL".to_string()));
+        };
+
+        let (url, contents) = self.fetch_request_for_history(request).await?;
+        self.navigate(&url, contents, true, false, None).await
+    }
+
     async fn fetch_request_for_history(&self, request: Request) -> Result<(String, String), NetworkError> {
         let net_provider = self
             .new_http_client

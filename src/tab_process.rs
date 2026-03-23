@@ -543,6 +543,11 @@ impl TabProcess {
             match self.nav_receiver.try_recv() {
                 Ok(msg) => {
                     match msg {
+                        NavigationProviderMessage::Reload => {
+                            if self.reload_current_page().await? {
+                                self.render_frame()?;
+                            }
+                        }
                         NavigationProviderMessage::NavigateToInNewTab(options) => {
                             let url = options.url.as_str().to_string();
                             let _ = self.channel.send(&TabToParentMessage::NavigateRequestInNewTab(url));
@@ -723,6 +728,31 @@ impl TabProcess {
         self.engine.dom.as_mut()
     }
 
+    async fn reload_current_page(&mut self) -> io::Result<bool> {
+        let url = self.engine.current_url().to_string();
+        if url.is_empty() {
+            return Ok(false);
+        }
+
+        let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url));
+        self.engine.set_loading_state(true);
+
+        match self.engine.reload_current_entry().await {
+            Ok(_) => {
+                let title = self.engine.page_title().to_string();
+                let url = self.engine.current_url().to_string();
+                let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
+                let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                Ok(true)
+            }
+            Err(e) => {
+                let _ = self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()));
+                let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
+                Ok(false)
+            }
+        }
+    }
+
     /// Handle a message from the parent process
     async fn handle_message(&mut self, message: ParentToTabMessage) -> io::Result<(bool, bool)> {
         let mut should_render: bool = false;
@@ -757,27 +787,8 @@ impl TabProcess {
             }
             ParentToTabMessage::Reload => {
                 self.navigation_id = self.navigation_id.wrapping_add(1);
-                let url = self.engine.current_url().to_string();
-                if !url.is_empty() {
-                    let _ = self.channel.send(&TabToParentMessage::NavigationStarted(url.clone()));
-                    self.engine.set_loading_state(true);
-                    let contents = networking::fetch(&url, &self.engine.config.user_agent, self.engine.config.block_ads).unwrap_or_else(|e| {
-                        eprintln!("[reload] networking::fetch failed for {url}: {e}");
-                        include_str!("../assets/404.html").to_string()
-                    });
-                    let history_request = Url::parse(&url).ok().map(Request::get);
-                    match self.engine.navigate(&url, contents, true, true, history_request).await {
-                        Ok(_) => {
-                            let title = self.engine.page_title().to_string();
-                            let _ = self.channel.send(&TabToParentMessage::NavigationCompleted { url, title });
-                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
-                            should_render = true;
-                        }
-                        Err(e) => {
-                            let _ = self.channel.send(&TabToParentMessage::NavigationFailed(e.to_string()));
-                            let _ = self.channel.send(&TabToParentMessage::LoadingStateChanged(false));
-                        }
-                    }
+                if self.reload_current_page().await? {
+                    should_render = true;
                 }
             }
             ParentToTabMessage::GoBack => {

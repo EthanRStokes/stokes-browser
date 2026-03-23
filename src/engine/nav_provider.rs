@@ -1,12 +1,12 @@
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use blitz_traits::net::Request;
 use tokio::sync::mpsc::UnboundedSender;
-use crate::shell_provider::ShellProviderMessage;
 
 #[derive(Debug, Clone)]
 pub enum NavigationProviderMessage {
     NavigateTo(NavigationOptions),
     NavigateToInNewTab(NavigationOptions),
+    Reload,
     Navigate {
         navigation_id: u64,
         url: String,
@@ -42,6 +42,10 @@ impl StokesNavigationProvider {
 
     pub fn navigate_to_in_new_tab(&self, options: NavigationOptions) {
         let _ = self.sender.send(NavigationProviderMessage::NavigateToInNewTab(options));
+    }
+
+    pub fn reload(&self) {
+        let _ = self.sender.send(NavigationProviderMessage::Reload);
     }
 }
 

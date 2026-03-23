@@ -3512,7 +3512,6 @@ fn approx_eq(a: f32, b: f32) -> bool {
 // ============================================================================
 
 /// location.reload implementation
-// FIXME fix the crash on second time with the test file
 unsafe extern "C" fn location_reload(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     trace!("[JS] location.reload() called");
@@ -3520,12 +3519,7 @@ unsafe extern "C" fn location_reload(raw_cx: *mut JSContext, argc: c_uint, vp: *
     DOM_REF.with(|dom_ref| {
         if let Some(dom_ptr) = dom_ref.borrow().as_ref() {
             let dom = unsafe { &**dom_ptr };
-            let current_url: Url = (&dom.url).into();
-            dom.nav_provider.navigate_replace(NavigationOptions::new(
-                current_url,
-                String::from("text/plain"),
-                dom.id(),
-            ));
+            dom.nav_provider.reload();
         }
     });
 

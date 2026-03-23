@@ -77,6 +77,30 @@ pub struct JsRuntime {
 }
 
 impl JsRuntime {
+    fn create_global(runtime: &mut Runtime) -> JsResult<Box<Heap<*mut JSObject>>> {
+        let global = Box::new(Heap::default());
+        let cx = runtime.cx();
+        let options = RealmOptions::default();
+
+        unsafe {
+            rooted!(&in(cx) let global_root = JS_NewGlobalObject(
+                cx,
+                &SIMPLE_GLOBAL_CLASS,
+                ptr::null_mut(),
+                OnNewGlobalHookOption::FireOnNewGlobalHook,
+                &*options,
+            ));
+
+            if global_root.get().is_null() {
+                return Err("Failed to create global object".to_string());
+            }
+
+            global.set(global_root.get());
+        }
+
+        Ok(global)
+    }
+
     /// Create a new JavaScript runtime
     pub fn new(dom: *mut Dom, user_agent: String) -> JsResult<Self> {
         let mut runtime = Runtime::new(
@@ -87,27 +111,7 @@ impl JsRuntime {
         let timer_manager = Rc::new(TimerManager::new());
 
         // Create a global object
-        let global = Box::new(Heap::default());
-        {
-            let cx = runtime.cx();
-            let options = RealmOptions::default();
-
-            unsafe {
-                rooted!(&in(cx) let global_root = JS_NewGlobalObject(
-                    cx,
-                    &SIMPLE_GLOBAL_CLASS,
-                    ptr::null_mut(),
-                    OnNewGlobalHookOption::FireOnNewGlobalHook,
-                    &*options,
-                ));
-
-                if global_root.get().is_null() {
-                    return Err("Failed to create global object".to_string());
-                }
-
-                global.set(global_root.get());
-            }
-        }
+        let global = Self::create_global(&mut runtime)?;
 
         let mut js_runtime = Self {
             dom,
@@ -159,6 +163,10 @@ impl JsRuntime {
         clear_pending_jobs_for_navigation();
         clear_element_wrapper_cache();
         self.module_cache.clear();
+
+        // Create a new global so top-level lexical bindings from the previous
+        // document (e.g. `const`/`let`) do not survive into the next load.
+        self.global = Self::create_global(&mut self.runtime)?;
 
         self.enter_realm_and_initialize(dom, user_agent, self.timer_manager.clone())?;
 
