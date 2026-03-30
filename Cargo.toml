@@ -13,7 +13,7 @@ image = "0.25.6"
 tokio = { version = "1.49.0", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"
 curl = "0.4"
-html5ever = "0.38.0"
+html5ever = "0.39.0"
 usvg = "0.46.0"
 resvg = "0.46.0"
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
@@ -25,11 +25,11 @@ shared_memory = "0.12.4"
 serde = { version = "1.0", features = ["derive"] }
 rfd = "0.17.2"
 url = "2"
-taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "f9514f6852b0a1a3869a98b688156b584728be4a", features = ["strict_provenance"] }
+taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "4b6687da0ca1e9d71da4e48b4c659f5c45060707", features = ["strict_provenance"] }
 slab = "0.4.12"
-markup5ever = "0.38.0"
-xml5ever = "0.38.0"
-parley = { git = "https://github.com/linebender/parley", rev = "6d0d9c90a7875ceb34f0bb1c2bfbfbe5b5d74856" }
+markup5ever = "0.39.0"
+xml5ever = "0.39.0"
+parley = { git = "https://github.com/linebender/parley", rev = "07980878fc9ea4b16ddc197ac789d01fb8ada7a3" }
 euclid = "0.22.13"
 bitflags = { version = "2.11.0", features = ["serde"] }
 atomic_refcell = "0.1.13"
@@ -37,11 +37,11 @@ skrifa = "0.40.0"
 kurbo = "0.13.0"
 bytes = "1.11.1"
 tracing = "0.1.44"
-tracing-subscriber = "0.3.22"
+tracing-subscriber = "0.3.23"
 hashbrown = "0.16.1"
 peniko = "0.6.0"
-anyrender = "0.7.0"
-anyrender_svg = "0.8.0"
+anyrender = "0.8.0"
+anyrender_svg = "0.9.1"
 color = "0.3.2"
 html-escape = "0.2.13"
 lazy_static = "1.5.0"
@@ -57,8 +57,8 @@ rusqlite = { version = "0.39.0", features = ["bundled", "fallible_uint"] }
 keyring = "3.6.3"
 aes-gcm = "0.10.3"
 rand = "0.10.0"
-sha1 = "0.10.6"
-sha2 = "0.10.9"
+sha1 = "0.11.0"
+sha2 = "0.11.0"
 keyboard-types = { version = "0.7", features = ["serde"] }
 smol_str = { version = "0.3.5",features = ["serde"] }
 rustc-hash = "2.1.1"
@@ -71,18 +71,18 @@ smallvec = "1.15.1"
 adblock = "0.12.1"
 
 # Stylo
-stylo = "0.12.0"
-stylo_traits = "0.12.0"
-stylo_atoms = "0.12.0"
-stylo_config = "0.12.0"
-stylo_dom = "0.12.0"
-selectors = "0.35.0"
+stylo = "0.14.0"
+stylo_traits = "0.14.0"
+stylo_atoms = "0.14.0"
+stylo_static_prefs = "0.14.0"
+stylo_dom = "0.14.0"
+selectors = "0.36.1"
 
 # Blitz
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "1625af9" }
-blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "1625af9" }
-stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "1625af9", features = ["floats"] }
-dioxus-asset-resolver = { version = "0.7.3", features = ["native"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "781ae63f" }
+blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "781ae63f" }
+stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "781ae63f", features = ["floats"] }
+dioxus-asset-resolver = { version = "0.7.4", features = ["native"] }
 
 [dependencies.glutin-winit]
 git = "https://github.com/EthanRStokes/glutin.git"
@@ -99,7 +99,7 @@ glutin = { git = "https://github.com/EthanRStokes/glutin.git" }
 glutin-winit = { git = "https://github.com/EthanRStokes/glutin.git" }
 
 [target.'cfg(windows)'.dependencies]
-winreg = "0.55.0"
+winreg = "0.56.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 dbus = "0.9.10"

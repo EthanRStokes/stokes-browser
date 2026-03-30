@@ -5,6 +5,7 @@ use markup5ever::local_name;
 use crate::dom::{stylo_to_parley, Dom};
 use crate::dom::node::{ListItemLayout, ListItemLayoutPosition, Marker};
 use parley::FontFamily;
+use style::counter_style::CounterStyle;
 use style::properties::generated::longhands::list_style_position::computed_value::T as ListStylePosition;
 use style::properties::generated::longhands::list_style_type::computed_value::T as ListStyleType;
 
@@ -108,42 +109,42 @@ fn node_list_item_child(
 
 // Determine the marker to render for a given list style type
 fn marker_for_style(list_style_type: ListStyleType, index: usize) -> Option<Marker> {
-    if list_style_type == ListStyleType::None {
-        return None;
-    }
-
-    Some(match list_style_type {
-        ListStyleType::LowerAlpha => {
-            let mut marker = String::new();
-            build_alpha_marker(index, &mut marker);
-            Marker::String(format!("{marker}. "))
+    Some(match list_style_type.0 {
+        CounterStyle::None => return None,
+        CounterStyle::Name(name) => match &*name.0 {
+            "lower-alpha" => {
+                let mut marker = String::new();
+                build_alpha_marker(index, &mut marker);
+                Marker::String(format!("{marker}. "))
+            }
+            "upper-alpha" => {
+                let mut marker = String::new();
+                build_alpha_marker(index, &mut marker);
+                Marker::String(format!("{}. ", marker.to_ascii_uppercase()))
+            }
+            "decimal" => Marker::String(format!("{}. ", index + 1)),
+            "disc" => Marker::Char('•'),
+            "circle" => Marker::Char('◦'),
+            "square" => Marker::Char('▪'),
+            "disclosure-open" => Marker::Char('▾'),
+            "disclosure-closed" => Marker::Char('▸'),
+            _ => Marker::Char('□'),
+        },
+        CounterStyle::String(atom_string) => Marker::String(atom_string.as_ref().to_string()),
+        CounterStyle::Symbols { .. } => {
+            // TODO: support custom symbol lists. For now fallback to •
+            // https://drafts.csswg.org/css-counter-styles/#symbols-function
+            Marker::Char('•')
         }
-        ListStyleType::UpperAlpha => {
-            let mut marker = String::new();
-            build_alpha_marker(index, &mut marker);
-            Marker::String(format!("{}. ", marker.to_ascii_uppercase()))
-        }
-        ListStyleType::Decimal => Marker::String(format!("{}. ", index + 1)),
-        ListStyleType::Disc => Marker::Char('•'),
-        ListStyleType::Circle => Marker::Char('◦'),
-        ListStyleType::Square => Marker::Char('▪'),
-        ListStyleType::DisclosureOpen => Marker::Char('▾'),
-        ListStyleType::DisclosureClosed => Marker::Char('▸'),
-        _ => Marker::Char('□'),
     })
 }
 
 // Override the font to our specific bullet font when rendering bullets
 fn font_for_bullet_style(list_style_type: ListStyleType) -> Option<FontFamily<'static>> {
-    let bullet_font = Some("Bullet, monospace, sans-serif".into());
-    match list_style_type {
-        ListStyleType::Disc
-        | ListStyleType::Circle
-        | ListStyleType::Square
-        | ListStyleType::DisclosureOpen
-        | ListStyleType::DisclosureClosed => bullet_font,
-        _ => None,
+    if list_style_type.0.is_bullet() {
+        return Some("Bullet, monospace, sans-serif".into());
     }
+    None
 }
 
 const ALPHABET: [char; 26] = [

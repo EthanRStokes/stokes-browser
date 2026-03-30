@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
-use tracing::trace;
+use tracing::{trace, warn};
 use tracing::metadata::LevelFilter;
 use url::Url;
 
@@ -547,17 +547,17 @@ fn create_headless_renderer(width: u32, height: u32) -> io::Result<HeadlessRende
     // Try GPU rendering first
     match HeadlessGlRenderer::new(width, height) {
         Ok(gpu_renderer) => {
-            eprintln!("[renderer] Using GPU-accelerated rendering ({}x{})", width, height);
+            trace!("[renderer] Using GPU-accelerated rendering ({}x{})", width, height);
             Ok(HeadlessRenderer::Gpu(gpu_renderer))
         }
         Err(gpu_error) => {
-            eprintln!("[renderer] GPU rendering failed: {}", gpu_error);
-            eprintln!("[renderer] Falling back to software rendering");
+            warn!("[renderer] GPU rendering failed: {}", gpu_error);
+            warn!("[renderer] Falling back to software rendering");
 
             // Fallback to software rendering
             match SoftwareRenderer::new(width, height) {
                 Ok(sw_renderer) => {
-                    eprintln!("[renderer] Using software rendering ({}x{})", width, height);
+                    trace!("[renderer] Using software rendering ({}x{})", width, height);
                     Ok(HeadlessRenderer::Software(sw_renderer))
                 }
                 Err(sw_error) => {

@@ -21,6 +21,7 @@ use style::values::computed::{Content, ContentItem, Display, Float, Image, Posit
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use style_traits::ToCss;
 use taffy::{compute_root_layout, round_layout, AvailableSpace, NodeId};
+use crate::dom::traverse::{iter_children, iter_children_and_pseudos};
 use crate::layout::list::collect_list_item_children;
 
 thread_local! {
@@ -45,9 +46,15 @@ fn push_children_and_pseudos(layout_children: &mut Vec<usize>, node: &DomNode) {
     if let Some(before) = node.before {
         layout_children.push(before);
     }
-    layout_children.extend_from_slice(&node.children);
+    layout_children.extend(node.children.iter().copied().filter(|child_id| {
+        let child_node = node.get_node(*child_id);
+        child_node.data.kind() != NodeKind::Comment
+    }));
     if let Some(shadow_root_id) = node.shadow_root {
-        layout_children.extend_from_slice(&node.get_node(shadow_root_id).children);
+        layout_children.extend(node.get_node(shadow_root_id).children.iter().copied().filter(|child_id| {
+            let child_node = node.get_node(*child_id);
+            child_node.data.kind() != NodeKind::Comment
+        }));
     }
     if let Some(after) = node.after {
         layout_children.push(after);
@@ -378,7 +385,7 @@ fn flush_pseudo_elements(dom: &mut Dom, node_id: usize) {
         let after_node_id = node.after;
 
         // Note: yes these are kinda backwards
-        let style_data = node.stylo_data.borrow();
+        let style_data = node.stylo_data.get();
         let before_style = style_data
             .as_ref()
             .and_then(|d| d.styles.pseudos.as_array()[1].clone());
@@ -434,7 +441,7 @@ fn flush_pseudo_elements(dom: &mut Dom, node_id: usize) {
             element_data.styles.primary = Some(pe_style.clone());
             element_data.set_restyled();
             element_data.damage = ALL_DAMAGE;
-            *dom.nodes[new_node_id].stylo_data.borrow_mut() = Some(element_data);
+            *dom.nodes[new_node_id].stylo_data.ensure_init_mut() = element_data;
 
             let node = &mut dom.nodes[node_id];
             node.set_pe_by_index(idx, Some(new_node_id));
@@ -445,7 +452,7 @@ fn flush_pseudo_elements(dom: &mut Dom, node_id: usize) {
         if let (Some(pe_node_id), Some(pe_style)) = (pe_node_id, pe_style) {
             // TODO: Update content
 
-            let mut node_styles = dom.nodes[pe_node_id].stylo_data.borrow_mut();
+            let mut node_styles = dom.nodes[pe_node_id].stylo_data.get_mut();
             let node_styles = &mut node_styles.as_mut().unwrap();
             node_styles.damage.insert(RestyleDamage::all());
             let primary_styles = &mut node_styles.styles.primary;
@@ -537,7 +544,7 @@ fn collect_complex_layout_children(
 
                 stylo_element_data.styles.primary = Some(style);
                 stylo_element_data.set_restyled();
-                *doc.nodes[node_id].stylo_data.borrow_mut() = Some(stylo_element_data);
+                *doc.nodes[node_id].stylo_data.ensure_init_mut() = stylo_element_data;
                 if doc.nodes[container_node_id]
                     .flags
                     .contains(DomNodeFlags::IS_IN_DOCUMENT)
@@ -635,36 +642,20 @@ pub(crate) fn find_inline_layout_embedded_boxes(
 ) {
     flush_inline_pseudos_recursive(doc, inline_context_root_node_id);
 
-    let root_node = &doc.nodes[inline_context_root_node_id];
-    if let Some(before_id) = root_node.before {
+    iter_children_and_pseudos!(doc.nodes[inline_context_root_node_id], |child_id| {
         find_inline_layout_embedded_boxes_recursive(
-            &doc.nodes,
-            inline_context_root_node_id,
-            before_id,
-            layout_children,
-        );
-    }
-    for child_id in root_node.children.iter().copied() {
-        find_inline_layout_embedded_boxes_recursive(
-            &doc.nodes,
+            &mut doc.nodes,
             inline_context_root_node_id,
             child_id,
             layout_children,
-        );
-    }
-    if let Some(shadow_root_id) = root_node.shadow_root {
+        )
+    });
+
+    if let Some(shadow_root_id) = doc.nodes[inline_context_root_node_id].shadow_root {
         find_inline_layout_embedded_boxes_recursive(
-            &doc.nodes,
+            &mut doc.nodes,
             inline_context_root_node_id,
             shadow_root_id,
-            layout_children,
-        );
-    }
-    if let Some(after_id) = root_node.after {
-        find_inline_layout_embedded_boxes_recursive(
-            &doc.nodes,
-            inline_context_root_node_id,
-            after_id,
             layout_children,
         );
     }
@@ -687,12 +678,12 @@ pub(crate) fn find_inline_layout_embedded_boxes(
     }
 
     fn find_inline_layout_embedded_boxes_recursive(
-        nodes: &Slab<DomNode>,
+        nodes: &mut Slab<DomNode>,
         parent_id: usize,
         node_id: usize,
         layout_children: &mut Vec<usize>,
     ) {
-        let node = &nodes[node_id];
+        let node = &mut nodes[node_id];
 
         // Set layout_parent for node.
         node.layout_parent.set(Some(parent_id));
@@ -713,15 +704,16 @@ pub(crate) fn find_inline_layout_embedded_boxes(
                         node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
                     }
                     (DisplayOutside::None, DisplayInside::Contents) => {
-                        for child_id in node.children.iter().copied() {
-                            node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+                        node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+                        iter_children!(nodes[node_id], |child_id| {
                             find_inline_layout_embedded_boxes_recursive(
                                 nodes,
                                 parent_id,
                                 child_id,
                                 layout_children,
                             );
-                        }
+                        });
+                        let node = &mut nodes[node_id];
                         if let Some(shadow_root_id) = node.shadow_root {
                             node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
                             find_inline_layout_embedded_boxes_recursive(
@@ -747,30 +739,14 @@ pub(crate) fn find_inline_layout_embedded_boxes(
                         } else {
                             node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
 
-                            if let Some(before_id) = node.before {
-                                find_inline_layout_embedded_boxes_recursive(
-                                    nodes,
-                                    node_id,
-                                    before_id,
-                                    layout_children,
-                                );
-                            }
-                            for child_id in node.children.iter().copied() {
+                            iter_children_and_pseudos!(nodes[node_id], |child_id| {
                                 find_inline_layout_embedded_boxes_recursive(
                                     nodes,
                                     node_id,
                                     child_id,
                                     layout_children,
                                 );
-                            }
-                            if let Some(after_id) = node.after {
-                                find_inline_layout_embedded_boxes_recursive(
-                                    nodes,
-                                    node_id,
-                                    after_id,
-                                    layout_children,
-                                );
-                            }
+                            });
                         }
                     }
                     // Inline box
@@ -780,14 +756,14 @@ pub(crate) fn find_inline_layout_embedded_boxes(
                 };
             }
             NodeData::ShadowRoot(_) => {
-                for child_id in node.children.iter().copied() {
+                iter_children!(nodes[node_id], |child_id| {
                     find_inline_layout_embedded_boxes_recursive(
                         nodes,
                         parent_id,
                         child_id,
                         layout_children,
                     );
-                }
+                });
             }
             NodeData::Comment | NodeData::Text { .. } => {
                 node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
@@ -1103,7 +1079,7 @@ pub(crate) fn build_inline_layout(
                 // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
                 // dbg!(&data.content);
 
-                // TODO optimize capitalize 
+                // TODO optimize capitalize
                 match parent_text_transform {
                     TextTransform::UPPERCASE => {
                         builder.push_text(&text.content.to_uppercase());
@@ -1168,7 +1144,7 @@ impl Dom {
         let display = {
             let node = self.nodes.get_mut(node_id).unwrap();
             let _damage = node.damage().unwrap_or(ALL_DAMAGE);
-            let stylo_element_data = node.stylo_data.borrow();
+            let stylo_element_data = node.stylo_data.get();
             let primary_styles = stylo_element_data
                 .as_ref()
                 .and_then(|data| data.styles.get_primary());

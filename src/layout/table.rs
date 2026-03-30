@@ -153,7 +153,7 @@ pub(crate) fn collect_table_cells(
     columns: &mut Vec<Dimension>,
     first_cell_border: &mut Option<ServoArc<Border>>,
 ) {
-    let node = &dom.nodes[node_id];
+    let node = &mut dom.nodes[node_id];
 
     if !node.is_element() {
         return;

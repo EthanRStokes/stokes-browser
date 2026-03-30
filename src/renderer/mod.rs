@@ -36,6 +36,7 @@ use style::values::computed::{BorderCornerRadius, BorderStyle, CSSPixelLength, O
 use style::values::generics::color::{GenericColor, GenericColorOrAuto};
 use taffy::Layout;
 use painter::ScenePainter;
+use crate::dom::stylo_to_kurbo::resolve_2d_transform;
 use crate::renderer::background::{to_image_quality, to_peniko_image};
 use crate::renderer::sizing::compute_object_fit;
 
@@ -490,7 +491,7 @@ impl HtmlRenderer<'_> {
         layout: Layout,
         position: Point,
     ) -> Element<'a> {
-        let style = node.stylo_data.borrow().as_ref().map(|elem_data| elem_data.styles.primary().clone())
+        let style = node.stylo_data.primary_styles().as_ref().map(|styles| (*styles).clone())
             .unwrap_or(
                 ComputedValues::initial_values_with_font_override(Font::initial_values())
             );
@@ -505,8 +506,8 @@ impl HtmlRenderer<'_> {
         let reference_box = euclid::Rect::new(
             euclid::Point2D::new(CSSPixelLength::new(0.0), CSSPixelLength::new(0.0)),
             euclid::Size2D::new(
-                CSSPixelLength::new((frame.border_box.width() / scale) as f32),
-                CSSPixelLength::new((frame.border_box.height() / scale) as f32),
+                CSSPixelLength::new(frame.border_box.width() as f32),
+                CSSPixelLength::new(frame.border_box.height() as f32),
             ),
         );
 
@@ -514,46 +515,8 @@ impl HtmlRenderer<'_> {
         //
         // TODO: Handle hit testing correctly for transformed nodes
         // TODO: Implement nested transforms
-        let (t, has_3d) = &style
-            .get_box()
-            .transform
-            .to_transform_3d_matrix(Some(&reference_box))
-            .unwrap_or((Transform3D::default(), false));
-        if !has_3d {
-            // See: https://drafts.csswg.org/css-transforms-2/#two-dimensional-subset
-            // And https://docs.rs/kurbo/latest/kurbo/struct.Affine.html#method.new
-            let kurbo_transform = Affine::new(
-                [
-                    t.m11,
-                    t.m12,
-                    t.m21,
-                    t.m22,
-                    // Scale the translation but not the scale or skew
-                    t.m41 * scale as f32,
-                    t.m42 * scale as f32,
-                ]
-                    .map(|v| v as f64),
-            );
-
-            // Apply the transform origin by:
-            //   - Translating by the origin offset
-            //   - Applying our transform
-            //   - Translating by the inverse of the origin offset
-            let transform_origin = &style.get_box().transform_origin;
-            let origin_translation = Affine::translate(Vec2 {
-                x: transform_origin
-                    .horizontal
-                    .resolve(CSSPixelLength::new(frame.border_box.width() as f32))
-                    .px() as f64,
-                y: transform_origin
-                    .vertical
-                    .resolve(CSSPixelLength::new(frame.border_box.height() as f32))
-                    .px() as f64,
-            });
-            let kurbo_transform =
-                origin_translation * kurbo_transform * origin_translation.inverse();
-
-            transform *= kurbo_transform;
+        if let Some(style_transform) = resolve_2d_transform(style.get_box(), reference_box, scale) {
+            transform *= style_transform;
         }
 
         let element = node.element_data().unwrap();

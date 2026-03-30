@@ -22,7 +22,7 @@ use style::applicable_declarations::ApplicableDeclarationBlock;
 use style::bloom::each_relevant_element_hash;
 use style::color::AbsoluteColor;
 use style::context::{QuirksMode, SharedStyleContext, StyleContext};
-use style::data::ElementData;
+use style::data::{ElementData, ElementDataMut, ElementDataRef};
 use style::dom::{AttributeProvider, LayoutIterator, NodeInfo, OpaqueNode, TDocument, TElement, TNode, TShadowRoot};
 use style::properties::{ComputedValues, Importance, PropertyDeclaration, PropertyDeclarationBlock};
 use style::rule_tree::CascadeLevel;
@@ -168,7 +168,8 @@ impl<'a> TNode for Node<'a> {
 }
 
 impl AttributeProvider for Node<'_> {
-    fn get_attr(&self, attr: &style::LocalName) -> Option<String> {
+    fn get_attr(&self, attr: &style::LocalName, _ns: &style::Namespace) -> Option<String> {
+        // TODO filter by namespace
         self.attr(LocalName::from(attr.0.to_string())).map(|attr| attr.to_string())
     }
 }
@@ -567,41 +568,24 @@ impl<'a> TElement for Node<'a> {
         unimplemented!()
     }
 
-    unsafe fn ensure_data(&self) -> AtomicRefMut<'_, ElementData> {
-        let mut stylo_data = self.stylo_data.borrow_mut();
-        if stylo_data.is_none() {
-            *stylo_data = Some(ElementData {
-                damage: damage::ALL_DAMAGE,
-                ..Default::default()
-            });
-        }
-        AtomicRefMut::map(stylo_data, |sd| sd.as_mut().unwrap())
+    unsafe fn ensure_data(&self) -> ElementDataMut<'_> {
+        unsafe { self.stylo_data.ensure_init() }
     }
 
     unsafe fn clear_data(&self) {
-        *self.stylo_data.borrow_mut() = None;
+        unsafe { self.stylo_data.clear() }
     }
 
     fn has_data(&self) -> bool {
-        self.stylo_data.borrow().is_some()
+        self.stylo_data.has_data()
     }
 
-    fn borrow_data(&self) -> Option<AtomicRef<'_, ElementData>> {
-        let stylo_data = self.stylo_data.borrow();
-        if stylo_data.is_some() {
-            Some(AtomicRef::map(stylo_data, |sd| sd.as_ref().unwrap()))
-        } else {
-            None
-        }
+    fn borrow_data(&self) -> Option<ElementDataRef<'_>> {
+        self.stylo_data.get()
     }
 
-    fn mutate_data(&self) -> Option<AtomicRefMut<'_, ElementData>> {
-        let stylo_data = self.stylo_data.borrow_mut();
-        if stylo_data.is_some() {
-            Some(AtomicRefMut::map(stylo_data, |sd| sd.as_mut().unwrap()))
-        } else {
-            None
-        }
+    fn mutate_data(&self) -> Option<ElementDataMut<'_>> {
+        unsafe { self.stylo_data.unsafe_stylo_only_mut() }
     }
 
     fn skip_item_display_fixup(&self) -> bool {

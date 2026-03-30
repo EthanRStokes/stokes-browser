@@ -39,7 +39,7 @@ impl Dom {
         self.snapshot(node_id);
 
         let node = &mut self.nodes[node_id];
-        if let Some(data) = &mut *node.stylo_data.borrow_mut() {
+        if let Some(mut data) = node.stylo_data.get_mut() {
             data.hint |= RestyleHint::restyle_subtree();
             data.damage.insert(ALL_DAMAGE);
         }
@@ -48,7 +48,7 @@ impl Dom {
         let parent = node.parent;
         if let Some(parent_id) = parent {
             let parent = &mut self.nodes[parent_id];
-            if let Some(data) = &mut *parent.stylo_data.borrow_mut() {
+            if let Some(mut data) = parent.stylo_data.get_mut() {
                 data.hint |= RestyleHint::restyle_subtree();
             }
         }
@@ -184,12 +184,10 @@ impl Dom {
         {
             let node = &mut self.nodes[node_id];
 
-            let mut stylo_element_data = node.stylo_data.borrow_mut();
-            if let Some(data) = &mut *stylo_element_data {
+            if let Some(mut data) = node.stylo_data.get_mut() {
                 data.hint |= RestyleHint::restyle_subtree();
                 data.damage.insert(ALL_DAMAGE);
             }
-            drop(stylo_element_data);
 
             // Mark ancestors dirty so the style traversal visits this subtree.
             // Without this, the traversal may skip nodes with pending RestyleHint/damage.

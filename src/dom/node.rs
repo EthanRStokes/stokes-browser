@@ -13,7 +13,6 @@ use markup5ever::local_name;
 use parley::{BreakReason, Cluster, ClusterSide, ContentWidths, FontContext, LayoutContext};
 use peniko::Blob;
 use selectors::matching::{ElementSelectorFlags, QuirksMode};
-use skia_safe::wrapper::PointerWrapper;
 use slab::Slab;
 use std::cell::{Cell, RefCell};
 use std::ops::{Deref, DerefMut};
@@ -25,13 +24,14 @@ use std::{fmt, ptr};
 use blitz_traits::shell::ShellProvider;
 use cssparser::ParserInput;
 use keyboard_types::Modifiers;
+use kurbo::Affine;
 use style::data::ElementData as StyleElementData;
 use style::data::ElementData as StyloElementData;
 use style::invalidation::element::restyle_hints::RestyleHint;
 use style::parser::ParserContext;
 use style::properties::generated::ComputedValues as StyloComputedValues;
 use style::properties::style_structs::Font;
-use style::properties::{parse_style_attribute, Importance, PropertyDeclaration, PropertyDeclarationBlock, PropertyId, SourcePropertyDeclaration};
+use style::properties::{parse_style_attribute, ComputedValues, Importance, PropertyDeclaration, PropertyDeclarationBlock, PropertyId, SourcePropertyDeclaration};
 use style::selector_parser::{PseudoElement, RestyleDamage};
 use style::servo_arc::{Arc as ServoArc, Arc};
 use style::shared_lock::{Locked, SharedRwLock};
@@ -45,6 +45,7 @@ use stylo_atoms::Atom;
 use stylo_dom::ElementState;
 use taffy::{Cache, Layout, Point, Style};
 use url::Url;
+use crate::dom::stylo_data::StyloData;
 use crate::events::{BlitzPointerEvent, BlitzPointerId, DomEventData, PointerCoords};
 
 /// Callback type for layout invalidation
@@ -822,7 +823,7 @@ pub struct DomNode {
     /// The type of node
     pub data: NodeData,
 
-    pub stylo_data: AtomicRefCell<Option<StyleElementData>>,
+    pub stylo_data: StyloData,
     pub selector_flags: Cell<ElementSelectorFlags>,
     pub lock: SharedRwLock,
     pub element_state: ElementState,
@@ -838,6 +839,7 @@ pub struct DomNode {
     pub final_layout: Layout,
     // todo proper node scroll impl
     pub scroll_offset: Point<f64>,
+    pub transform: Option<Affine>,
 
     pub has_snapshot: bool,
     pub snapshot_handled: AtomicBool,
@@ -895,6 +897,7 @@ impl DomNode {
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),
             scroll_offset: ZERO,
+            transform: None,
             has_snapshot: false,
             snapshot_handled: AtomicBool::new(false),
             dirty_descendants: AtomicBool::new(true),
@@ -1002,26 +1005,8 @@ impl DomNode {
         }
     }
 
-    /// Add a child node
-    pub fn add_child(&mut self, child: usize) -> &DomNode {
-        println!("Adding child {child} to {}", self.id);
-        self.children.push(child);
-
-        self.insert_damage(ALL_DAMAGE);
-        if let Some(data) = &mut *self.stylo_data.borrow_mut() {
-            data.hint |= RestyleHint::restyle_subtree()
-        }
-
-        // Invalidate layout since tree structure changed
-        self.invalidate_layout();
-
-        let child = self.get_node_mut(child);
-
-        child
-    }
-
-    pub fn set_restyle_hint(&self, hint: RestyleHint) {
-        if let Some(element) = self.stylo_data.borrow_mut().as_mut() {
+    pub fn set_restyle_hint(&mut self, hint: RestyleHint) {
+        if let Some(mut element) = self.stylo_data.get_mut() {
             element.hint.insert(hint);
         }
         self.mark_ancestors_dirty();
@@ -1040,10 +1025,10 @@ impl DomNode {
     }
 
     pub(crate) fn mark_style_attr_updated(&mut self) {
-        if let Some(data) = &mut self.stylo_data.get_mut() {
+        if let Some(mut data) = self.stylo_data.get_mut() {
             data.hint |= RestyleHint::RESTYLE_STYLE_ATTRIBUTE;
-            self.set_dirty_descendants();
         }
+        self.set_dirty_descendants();
     }
 
     pub fn mark_ancestors_dirty(&self) {
@@ -1057,41 +1042,30 @@ impl DomNode {
         }
     }
 
-    pub fn damage_mut(&self) -> Option<AtomicRefMut<'_, RestyleDamage>> {
-        let element = self.stylo_data.borrow_mut();
-        match *element {
-            Some(_) => Some(AtomicRefMut::map(
-                element,
-                |data: &mut Option<StyloElementData>| &mut data.as_mut().unwrap().damage,
-            )),
-            None => None,
-        }
-    }
-
     pub fn damage(&mut self) -> Option<RestyleDamage> {
-        self.stylo_data.get_mut().as_ref().map(|data| data.damage)
+        self.stylo_data.get().map(|data| data.damage)
     }
 
-    pub fn set_damage(&self, damage: RestyleDamage) {
-        if let Some(element) = self.stylo_data.borrow_mut().as_mut() {
+    pub fn set_damage(&mut self, damage: RestyleDamage) {
+        if let Some(mut element) = self.stylo_data.get_mut() {
             element.damage = damage;
         }
     }
 
     pub fn insert_damage(&mut self, damage: RestyleDamage) {
-        if let Some(element) = self.stylo_data.borrow_mut().as_mut() {
+        if let Some(mut element) = self.stylo_data.get_mut() {
             element.damage |= damage;
         }
     }
 
-    pub fn remove_damage(&self, damage: RestyleDamage) {
-        if let Some(element) = self.stylo_data.borrow_mut().as_mut() {
+    pub fn remove_damage(&mut self, damage: RestyleDamage) {
+        if let Some(mut element) = self.stylo_data.get_mut() {
             element.damage -= damage;
         }
     }
 
     pub fn clear_damage_mut(&mut self) {
-        if let Some(element) = self.stylo_data.borrow_mut().as_mut() {
+        if let Some(mut element) = self.stylo_data.get_mut() {
             element.damage = RestyleDamage::empty();
         }
     }
@@ -1461,26 +1435,8 @@ impl DomNode {
         self.set_restyle_hint(RestyleHint::restyle_subtree());
     }
 
-    pub fn primary_styles(&self) -> Option<AtomicRef<'_, StyloComputedValues>> {
-        let stylo_data = self.stylo_data.borrow();
-        if stylo_data.as_ref().and_then(|data| data.styles.get_primary()).is_some() {
-            Some(AtomicRef::map(
-                stylo_data,
-                |data: &Option<StyloElementData>| -> &StyloComputedValues {
-                    data.as_ref().unwrap().styles.get_primary().unwrap()
-                },
-            ))
-        } else {
-            None
-        }
-    }
-
-    pub fn style_arc(&self) -> Arc<StyloComputedValues> {
-        self.stylo_data
-            .borrow()
-            .as_ref()
-            .map(|element_data| element_data.styles.primary().clone())
-            .unwrap_or(StyloComputedValues::initial_values_with_font_override(Font::initial_values())).to_arc()
+    pub fn primary_styles(&self) -> Option<impl Deref<Target = ServoArc<ComputedValues>>> {
+        self.stylo_data.primary_styles()
     }
 
     /// Get text content of this node and its descendants

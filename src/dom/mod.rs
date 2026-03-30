@@ -17,6 +17,8 @@ mod state;
 mod selection;
 pub(crate) mod form;
 mod sub_dom;
+pub mod stylo_to_kurbo;
+mod stylo_data;
 
 use html5ever::ns;
 pub use events::{EventDispatcher, EventType};
@@ -42,8 +44,8 @@ use crate::events::UiEvent;
 use crate::networking::{ImageType, ResourceLoadResponse, StylesheetLoader};
 use crate::ui::TextBrush;
 use blitz_traits::events::HitResult;
-use blitz_traits::net::{DummyNetProvider, NetProvider};
-use blitz_traits::shell::{DummyShellProvider, ShellProvider, Viewport};
+use blitz_traits::net::NetProvider;
+use blitz_traits::shell::{ShellProvider, Viewport};
 use euclid::Size2D;
 use markup5ever::{local_name, QualName};
 use parley::fontique::{Attributes, Blob, Query, QueryFont, QueryStatus};
@@ -71,16 +73,17 @@ use skia_safe::wrapper::NativeTransmutableWrapper;
 use style::animation::{AnimationState, DocumentAnimationSet};
 use style::context::{RegisteredSpeculativePainter, RegisteredSpeculativePainters, SharedStyleContext};
 use style::data::ElementStyles;
+use style::device::Device;
+use style::device::servo::FontMetricsProvider;
 use style::dom::{TDocument, TElement, TNode};
 use style::font_metrics::FontMetrics;
 use style::global_style_data::{GLOBAL_STYLE_DATA, STYLE_THREAD_POOL};
 use style::invalidation::element::restyle_hints::RestyleHint;
-use style::media_queries::{Device, MediaList, MediaType};
+use style::media_queries::{MediaList, MediaType};
 use style::properties::style_structs::Font;
 use style::properties::ComputedValues;
 use style::queries::values::PrefersColorScheme;
 use style::selector_parser::SnapshotMap;
-use style::servo::media_queries::FontMetricsProvider;
 use style::shared_lock::{SharedRwLock, StylesheetGuards};
 use style::stylesheets::{AllowImportRules, DocumentStyleSheet, Origin, Stylesheet};
 use style::stylist::Stylist;
@@ -94,13 +97,13 @@ use taffy::Point;
 use crate::dom::events::pointer::{DragMode, ScrollAnimationState};
 use crate::dom::selection::TextSelection;
 use crate::dom::stylo_to_cursor::stylo_to_cursor_icon;
-use crate::dom::traverse::{AncestorTraverser, TreeTraverser};
+use crate::dom::traverse::TreeTraverser;
 use crate::engine::nav_provider::StokesNavigationProvider;
 use crate::engine::net_provider::StokesNetProvider;
 use crate::events::{BlitzScrollEvent, DomEventData};
 use crate::qual_name;
 use crate::shell_provider::{ShellProviderMessage, StokesShellProvider};
-use crate::dom::events::{EventDriver, NoopEventHandler};
+use crate::dom::events::EventDriver;
 use crate::js::bindings::event_listeners::JsEventHandler;
 use crate::dom::parser::HtmlProvider;
 use crate::engine::js_provider::StokesJsProvider;
@@ -419,15 +422,13 @@ impl Dom {
 
         let id = ID_GENERATOR.fetch_add(1, Ordering::SeqCst);
 
-        stylo_config::set_bool("layout.flexbox.enabled", true);
-        stylo_config::set_bool("layout.grid.enabled", true);
-        stylo_config::set_bool("layout.legacy_layout", true);
-        stylo_config::set_bool("layout.unimplemented", true);
-        stylo_config::set_bool("layout.columns.enabled", true);
-        stylo_config::set_bool("layout.css.attr.enabled", true);
-        stylo_config::set_bool("layout.writing-mode.enabled", true);
-        stylo_config::set_bool("layout.variable_fonts.enabled", true);
-        stylo_config::set_bool("layout.container-queries.enabled", true);
+        stylo_static_prefs::set_pref!("layout.grid.enabled", true);
+        stylo_static_prefs::set_pref!("layout.unimplemented", true);
+        stylo_static_prefs::set_pref!("layout.columns.enabled", true);
+        stylo_static_prefs::set_pref!("layout.css.attr.enabled", true);
+        stylo_static_prefs::set_pref!("layout.writing-mode.enabled", true);
+        stylo_static_prefs::set_pref!("layout.variable_fonts.enabled", true);
+        stylo_static_prefs::set_pref!("layout.container-queries.enabled", true);
 
         let viewport = config.viewport.unwrap_or_default();
         let font_ctx = config.font_ctx.unwrap_or_else(|| {
@@ -513,7 +514,8 @@ impl Dom {
             },
             ..Default::default()
         };
-        *dom.root_node().stylo_data.borrow_mut() = Some(stylo_element_data);
+        let stylo_data = &mut dom.root_node_mut().stylo_data;
+        *stylo_data.ensure_init_mut() = stylo_element_data;
 
         dom
     }
@@ -537,12 +539,12 @@ impl Dom {
         data.flush_style_attribute(&self.lock, &self.url.url_extra_data());
 
         let id = self.create_node(NodeData::Element(data));
-        let node = self.get_node(id).unwrap();
+        let node = self.get_node_mut(id).unwrap();
 
-        *node.stylo_data.borrow_mut() = Some(style::data::ElementData {
+        *node.stylo_data.ensure_init_mut() = style::data::ElementData {
             damage: ALL_DAMAGE,
             ..Default::default()
-        });
+        };
 
         id
     }
@@ -583,7 +585,7 @@ impl Dom {
             host.shadow_root = Some(shadow_root_id);
             host.insert_damage(ALL_DAMAGE);
             host.mark_ancestors_dirty();
-            if let Some(data) = &mut *host.stylo_data.borrow_mut() {
+            if let Some(data) = &mut host.stylo_data.get_mut() {
                 data.hint |= RestyleHint::restyle_subtree();
             }
         }
@@ -882,7 +884,7 @@ impl Dom {
                 for child_id in layout_children.iter().copied() {
                     get_layout_children_recursive(dom, child_id);
                     dom.nodes[child_id].layout_parent.set(Some(node_id));
-                    if let Some(data) = dom.nodes[child_id].stylo_data.get_mut() {
+                    if let Some(mut data) = dom.nodes[child_id].stylo_data.get_mut() {
                         data.damage
                             .remove(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
                     }
@@ -912,7 +914,7 @@ impl Dom {
         {
             // set layout style
             let node = self.nodes.get_mut(node_id).unwrap();
-            let stylo_data = node.stylo_data.borrow();
+            let stylo_data = node.stylo_data.get();
             let primary_styles = stylo_data.as_ref().and_then(|data| data.styles.get_primary());
 
             let Some(style) = primary_styles else {
@@ -1946,7 +1948,7 @@ impl Dom {
 
         // TODO: make this fine grained / conditional based on ElementSelectorFlags
         if new_parent_is_in_doc {
-            if let Some(data) = &mut *new_parent.stylo_data.borrow_mut() {
+            if let Some(mut data) = new_parent.stylo_data.get_mut() {
                 data.hint |= RestyleHint::restyle_subtree();
             }
             // Mark ancestors dirty so the style traversal visits this subtree.
@@ -1970,7 +1972,7 @@ impl Dom {
 
                 // TODO: make this fine grained / conditional based on ElementSelectorFlags
                 if child_was_in_doc {
-                    if let Some(data) = &mut *old_parent.stylo_data.borrow_mut() {
+                    if let Some(mut data) = old_parent.stylo_data.get_mut() {
                         data.hint |= RestyleHint::restyle_subtree();
                     }
                     // Mark ancestors dirty so the style traversal visits this subtree.
@@ -2144,7 +2146,7 @@ impl Dom {
 
         // TODO: make this fine grained / conditional based on ElementSelectorFlags
         if parent_is_in_doc {
-            if let Some(data) = &mut *parent.stylo_data.borrow_mut() {
+            if let Some(mut data) = parent.stylo_data.get_mut() {
                 data.hint |= RestyleHint::restyle_subtree();
             }
             // Mark ancestors dirty so the style traversal visits this subtree.
