@@ -59,7 +59,6 @@ aes-gcm = "0.10.3"
 rand = "0.10.0"
 sha1 = "0.10.6"
 sha2 = "0.10.9"
-dbus = "0.9.9"
 keyboard-types = { version = "0.7", features = ["serde"] }
 smol_str = { version = "0.3.5",features = ["serde"] }
 rustc-hash = "2.1.1"
@@ -101,3 +100,6 @@ glutin-winit = { git = "https://github.com/EthanRStokes/glutin.git" }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus = "0.9.10"

@@ -21,7 +21,7 @@ use skia_safe::gpu::gl::{Format, FramebufferInfo, Interface};
 use skia_safe::gpu::surfaces::wrap_backend_render_target;
 use skia_safe::gpu::{backend_render_targets, DirectContext};
 use skia_safe::gpu::{self};
-use skia_safe::{ColorType, Surface};
+use skia_safe::{Canvas, ColorType, Surface};
 use std::cmp::Ordering as CmpOrdering;
 use std::ffi::CString;
 use std::io;
@@ -54,9 +54,15 @@ pub struct TabProcess {
 struct SharedSurface {
     shmem: Shmem,
     shmem_name: String,
-    renderer: HeadlessGlRenderer,
+    renderer: HeadlessRenderer,
     width: u32,
     height: u32,
+}
+
+/// Abstraction over rendering backends (GPU or software)
+enum HeadlessRenderer {
+    Gpu(HeadlessGlRenderer),
+    Software(SoftwareRenderer),
 }
 
 struct HeadlessGlRenderer {
@@ -69,9 +75,113 @@ struct HeadlessGlRenderer {
     readback_stats: ReadbackStats,
 }
 
+struct SoftwareRenderer {
+    surface: Surface,
+}
+
+impl HeadlessRenderer {
+    /// Get a mutable reference to the Skia surface's canvas
+    fn get_canvas(&mut self) -> &Canvas {
+        match self {
+            HeadlessRenderer::Gpu(gpu) => gpu.surface.canvas(),
+            HeadlessRenderer::Software(sw) => sw.surface.canvas(),
+        }
+    }
+
+    /// Get a reference to the surface
+    fn surface(&self) -> &Surface {
+        match self {
+            HeadlessRenderer::Gpu(gpu) => &gpu.surface,
+            HeadlessRenderer::Software(sw) => &sw.surface,
+        }
+    }
+
+    /// Get a mutable reference to the surface
+    fn surface_mut(&mut self) -> &mut Surface {
+        match self {
+            HeadlessRenderer::Gpu(gpu) => &mut gpu.surface,
+            HeadlessRenderer::Software(sw) => &mut sw.surface,
+        }
+    }
+
+    /// Flush any pending operations and copy pixels to shared memory
+    fn readback_into_shmem(&mut self, dst: &mut [u8], width: u32, height: u32) -> io::Result<()> {
+        match self {
+            HeadlessRenderer::Gpu(gpu) => {
+                gpu.gr_context.flush_and_submit();
+                gpu.readback_into_shmem(dst, width, height)
+            }
+            HeadlessRenderer::Software(_) => {
+                // For software rendering, directly copy pixels
+                if let Some(pixmap) = self.surface_mut().peek_pixels() {
+                    if let Some(src) = pixmap.bytes() {
+                        let bytes_per_row = (width * 4) as usize;
+                        let total_bytes = bytes_per_row * height as usize;
+
+                        if dst.len() < total_bytes {
+                            return Err(io::Error::new(
+                                io::ErrorKind::Other,
+                                "Shared-memory destination too small",
+                            ));
+                        }
+
+                        // Flip the image vertically by copying rows in reverse order
+                        // Software rendering (raster) has top-left origin, but we need bottom-left
+                        for y in 0..height as usize {
+                            let src_row_start = y * bytes_per_row;
+                            let src_row_end = src_row_start + bytes_per_row;
+
+                            // Destination row is reversed
+                            let dst_y = (height as usize - 1) - y;
+                            let dst_row_start = dst_y * bytes_per_row;
+                            let dst_row_end = dst_row_start + bytes_per_row;
+
+                            dst[dst_row_start..dst_row_end]
+                                .copy_from_slice(&src[src_row_start..src_row_end]);
+                        }
+                    } else {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            "Failed to get pixel bytes",
+                        ));
+                    }
+                } else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "Failed to peek pixels",
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 enum ReadbackPipeline {
     Sync,
     Async(AsyncReadback),
+}
+
+impl SoftwareRenderer {
+    fn new(width: u32, height: u32) -> io::Result<Self> {
+        let width = width.max(1);
+        let height = height.max(1);
+
+        let image_info = skia_safe::ImageInfo::new(
+            (width as i32, height as i32),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Opaque,
+            None,
+        );
+
+        let mut surface = skia_safe::surfaces::raster(&image_info, None, None)
+            .ok_or_else(|| io::Error::other("Failed to create software raster surface"))?;
+
+        // Clear the surface to white
+        surface.canvas().clear(skia_safe::Color::WHITE);
+
+        Ok(Self { surface })
+    }
 }
 
 struct AsyncReadback {
@@ -432,6 +542,35 @@ fn sync_readback(fboid: u32, dst: &mut [u8], width: u32, height: u32) -> io::Res
     Ok(())
 }
 
+/// Create a headless renderer, attempting GPU rendering first and falling back to software if needed
+fn create_headless_renderer(width: u32, height: u32) -> io::Result<HeadlessRenderer> {
+    // Try GPU rendering first
+    match HeadlessGlRenderer::new(width, height) {
+        Ok(gpu_renderer) => {
+            eprintln!("[renderer] Using GPU-accelerated rendering ({}x{})", width, height);
+            Ok(HeadlessRenderer::Gpu(gpu_renderer))
+        }
+        Err(gpu_error) => {
+            eprintln!("[renderer] GPU rendering failed: {}", gpu_error);
+            eprintln!("[renderer] Falling back to software rendering");
+
+            // Fallback to software rendering
+            match SoftwareRenderer::new(width, height) {
+                Ok(sw_renderer) => {
+                    eprintln!("[renderer] Using software rendering ({}x{})", width, height);
+                    Ok(HeadlessRenderer::Software(sw_renderer))
+                }
+                Err(sw_error) => {
+                    Err(io::Error::other(format!(
+                        "Both GPU and software rendering failed. GPU error: {}, Software error: {}",
+                        gpu_error, sw_error
+                    )))
+                }
+            }
+        }
+    }
+}
+
 fn fetch_binary(url: &str, user_agent: &str) -> io::Result<Vec<u8>> {
     let mut easy = Easy::new();
     let mut data = Vec::new();
@@ -579,7 +718,7 @@ impl TabProcess {
             .create()
             .map_err(io_other)?;
 
-        let renderer = HeadlessGlRenderer::new(width, height)?;
+        let renderer = create_headless_renderer(width, height)?;
 
         self.shared_surface = Some(SharedSurface {
             shmem,
@@ -987,7 +1126,7 @@ impl TabProcess {
         let animation_time = self.animation_time();
         if let Some(ref mut shared) = self.shared_surface {
             {
-                let canvas = shared.renderer.surface.canvas();
+                let canvas = shared.renderer.get_canvas();
 
                 // Clear the canvas to prevent old frames from showing through
                 canvas.restore_to_count(1);
@@ -1010,7 +1149,10 @@ impl TabProcess {
                 }
             }
 
-            shared.renderer.gr_context.flush_and_submit();
+            // Only flush GPU context for GPU rendering
+            if let HeadlessRenderer::Gpu(gpu) = &mut shared.renderer {
+                gpu.gr_context.flush_and_submit();
+            }
 
             let dst = unsafe { shared.shmem.as_slice_mut() };
 
