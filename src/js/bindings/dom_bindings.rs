@@ -22,13 +22,13 @@ use mozjs::jsapi::{
     JSPROP_ENUMERATE,
 };
 use mozjs::context::JSContext as SafeJSContext;
-use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, UndefinedValue};
+use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, UInt32Value, UndefinedValue};
 use mozjs::rooted;
 use std::cell::RefCell;
 use std::os::raw::c_uint;
 use tracing::{info, trace, warn};
 use url::Url;
-use crate::js::helpers::ToSafeCx;
+use crate::js::helpers::{define_property_accessor, define_property_getter, ToSafeCx};
 
 // Thread-local storage for DOM reference
 thread_local! {
@@ -1358,7 +1358,6 @@ unsafe fn maybe_update_location_from_history_arg(raw_cx: *mut JSContext, args: &
 }
 
 /// Set up localStorage and sessionStorage
-// TODO: Storage length property is set to 0 and not dynamically updated when items are added/removed
 unsafe fn setup_storage(cx: &mut SafeJSContext, global: *mut JSObject) -> Result<(), String> {
     let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let global_rooted = global);
@@ -1374,9 +1373,8 @@ unsafe fn setup_storage(cx: &mut SafeJSContext, global: *mut JSObject) -> Result
     define_function(cx, local_storage.get(), "removeItem", Some(local_storage_remove_item), 1)?;
     define_function(cx, local_storage.get(), "clear", Some(local_storage_clear), 0)?;
     define_function(cx, local_storage.get(), "key", Some(local_storage_key), 1)?;
-    // FIXME: localStorage.length is set to a static 0 and is never updated when items are added
-    // or removed. Should be a property accessor backed by LOCAL_STORAGE.with(|s| s.borrow().len()).
-    set_int_property(cx, local_storage.get(), "length", 0)?;
+    define_function(cx, local_storage.get(), "__getLength", Some(local_storage_length), 0)?;
+    define_property_getter(cx, local_storage.get(), "length", "__getLength")?;
 
     rooted!(in(raw_cx) let local_storage_val = ObjectValue(local_storage.get()));
     let name = std::ffi::CString::new("localStorage").unwrap();
@@ -1399,9 +1397,8 @@ unsafe fn setup_storage(cx: &mut SafeJSContext, global: *mut JSObject) -> Result
     define_function(cx, session_storage.get(), "removeItem", Some(session_storage_remove_item), 1)?;
     define_function(cx, session_storage.get(), "clear", Some(session_storage_clear), 0)?;
     define_function(cx, session_storage.get(), "key", Some(session_storage_key), 1)?;
-    // FIXME: sessionStorage.length is set to a static 0 and is never updated when items are added
-    // or removed. Should be a property accessor backed by SESSION_STORAGE.with(|s| s.borrow().len()).
-    set_int_property(cx, session_storage.get(), "length", 0)?;
+    define_function(cx, session_storage.get(), "__getLength", Some(session_storage_length), 0)?;
+    define_property_getter(cx, session_storage.get(), "length", "__getLength")?;
 
     rooted!(in(raw_cx) let session_storage_val = ObjectValue(session_storage.get()));
     let name = std::ffi::CString::new("sessionStorage").unwrap();
@@ -3763,6 +3760,20 @@ unsafe extern "C" fn local_storage_key(raw_cx: *mut JSContext, argc: c_uint, vp:
     true
 }
 
+/// localStorage.length implementation
+unsafe extern "C" fn local_storage_length(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    let length = LOCAL_STORAGE.with(|storage| {
+        let storage = storage.borrow();
+        storage.len()
+    });
+
+    args.rval().set(UInt32Value(length as u32));
+    true
+}
+
 /// sessionStorage.getItem implementation
 unsafe extern "C" fn session_storage_get_item(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -3867,6 +3878,19 @@ unsafe extern "C" fn session_storage_key(raw_cx: *mut JSContext, argc: c_uint, v
     } else {
         args.rval().set(mozjs::jsval::NullValue());
     }
+    true
+}
+
+/// sessionStorage.length implementation
+unsafe extern "C" fn session_storage_length(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+
+    let key = SESSION_STORAGE.with(|storage| {
+        let storage = storage.borrow();
+        storage.len()
+    });
+
+    args.rval().set(UInt32Value(key as u32));
     true
 }
 

@@ -321,6 +321,104 @@ pub unsafe fn define_property_accessor(
     }
 }
 
+/// Define a property with getter/setter on a JavaScript object using Object.defineProperty
+pub unsafe fn define_property_getter(
+    cx: &mut SafeJSContext,
+    obj: *mut JSObject,
+    prop_name: &str,
+    getter_name: &str,
+) -> Result<(), String> {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let obj_rooted = obj);
+
+    // Resolve Object.defineProperty once per call without compiling helper scripts.
+    rooted!(in(raw_cx) let global = CurrentGlobalOrNull(cx));
+    if global.get().is_null() {
+        return Err("No global object".to_string());
+    }
+
+    rooted!(in(raw_cx) let mut object_ctor_val = UndefinedValue());
+    let object_name = std::ffi::CString::new("Object").unwrap();
+    if !JS_GetProperty(
+        cx,
+        global.handle().into(),
+        object_name.as_ptr(),
+        object_ctor_val.handle_mut().into(),
+    ) || !object_ctor_val.get().is_object() {
+        return Err("Failed to resolve global Object constructor".to_string());
+    }
+    rooted!(in(raw_cx) let object_ctor_obj = object_ctor_val.get().to_object());
+
+    rooted!(in(raw_cx) let mut define_property_fn = UndefinedValue());
+    let define_property_name = std::ffi::CString::new("defineProperty").unwrap();
+    if !JS_GetProperty(
+        cx,
+        object_ctor_obj.handle().into(),
+        define_property_name.as_ptr(),
+        define_property_fn.handle_mut().into(),
+    ) || !define_property_fn.get().is_object() {
+        return Err("Failed to resolve Object.defineProperty".to_string());
+    }
+
+    rooted!(in(raw_cx) let mut getter_val = UndefinedValue());
+    let getter_cname = std::ffi::CString::new(getter_name).unwrap();
+    if !JS_GetProperty(
+        cx,
+        obj_rooted.handle().into(),
+        getter_cname.as_ptr(),
+        getter_val.handle_mut().into(),
+    ) || !getter_val.get().is_object() {
+        return Err(format!("Failed to resolve getter function {}", getter_name));
+    }
+
+    rooted!(in(raw_cx) let descriptor = JS_NewPlainObject(cx));
+    if descriptor.get().is_null() {
+        return Err("Failed to create property descriptor object".to_string());
+    }
+
+    rooted!(in(raw_cx) let getter_obj = getter_val.get());
+    let get_key = std::ffi::CString::new("get").unwrap();
+    if !JS_SetProperty(cx, descriptor.handle(), get_key.as_ptr(), getter_obj.handle()) {
+        return Err("Failed to define descriptor.get".to_string());
+    }
+
+    rooted!(in(raw_cx) let enumerable = BooleanValue(true));
+    let enumerable_key = std::ffi::CString::new("enumerable").unwrap();
+    if !JS_SetProperty(cx, descriptor.handle(), enumerable_key.as_ptr(), enumerable.handle()) {
+        return Err("Failed to define descriptor.enumerable".to_string());
+    }
+
+    rooted!(in(raw_cx) let configurable = BooleanValue(true));
+    let configurable_key = std::ffi::CString::new("configurable").unwrap();
+    if !JS_SetProperty(cx, descriptor.handle(), configurable_key.as_ptr(), configurable.handle()) {
+        return Err("Failed to define descriptor.configurable".to_string());
+    }
+
+    rooted!(in(raw_cx) let prop_name_val = create_js_string(cx, prop_name));
+    if prop_name_val.get().is_undefined() {
+        return Err(format!("Failed to create JS string for property {}", prop_name));
+    }
+
+    rooted!(in(raw_cx) let define_args = ValueArray::<3usize>::new([
+        ObjectValue(obj_rooted.get()),
+        prop_name_val.get(),
+        ObjectValue(descriptor.get()),
+    ]));
+    rooted!(in(raw_cx) let mut rval = UndefinedValue());
+
+    if !JS_CallFunctionValue(
+        cx,
+        object_ctor_obj.handle().into(),
+        define_property_fn.handle().into(),
+        &HandleValueArray::from(&define_args),
+        rval.handle_mut().into(),
+    ) {
+        Err(format!("Failed to define accessor property {}", prop_name))
+    } else {
+        Ok(())
+    }
+}
+
 /// Get the node ID from an arbitrary JS value (e.g. an argument object) by reading its `__nodeId` property.
 pub unsafe fn get_node_id_from_value(cx: &mut SafeJSContext, val: JSVal) -> Option<usize> {
     let raw_cx = cx.raw_cx();
