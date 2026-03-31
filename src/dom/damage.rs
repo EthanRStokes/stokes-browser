@@ -26,7 +26,9 @@ impl Dom {
         node_id: usize,
         damage_from_parent: RestyleDamage,
     ) -> RestyleDamage {
-        let Some(mut damage) = self.nodes[node_id].damage() else {
+        let mut damage = if let Some(data) = self.nodes[node_id].stylo_data.get_mut() {
+            data.damage
+        } else {
             return RestyleDamage::empty();
         };
         damage |= damage_from_parent;
