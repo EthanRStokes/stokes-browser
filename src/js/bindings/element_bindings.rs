@@ -5,7 +5,7 @@ use crate::dom::events::focus::generate_focus_events;
 use crate::engine::js_provider::ScriptKind;
 use crate::engine::script_type::executable_script_kind;
 use crate::events::DomEvent;
-use crate::js::bindings::dom_bindings::DOM_REF;
+use crate::js::bindings::dom_bindings::{custom_elements_upgrade_for_node, DOM_REF};
 use crate::js::helpers::{create_empty_array, create_js_string, define_function, define_property_accessor, get_node_id_from_this, get_node_id_from_value, js_value_to_string, set_int_property, set_string_property, to_css_property_name, ToSafeCx};
 use crate::js::selectors::{matches_parsed_selector, parse_selector, selector_seed, SelectorSeed};
 use html5ever::ns;
@@ -1610,6 +1610,7 @@ pub(crate) unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, arg
             }
         }
     });
+    custom_elements_upgrade_for_node(safe_cx, child_id);
 
     // Trigger script loading if a <script> element with a src attribute was appended
     trigger_script_load_if_needed(child_id);
@@ -1708,6 +1709,7 @@ pub(crate) unsafe extern "C" fn element_insert_before(raw_cx: *mut JSContext, ar
             }
         }
     });
+    custom_elements_upgrade_for_node(safe_cx, new_child_id);
 
     // Trigger script loading if a <script> element with a src attribute was inserted
     trigger_script_load_if_needed(new_child_id);
@@ -1738,6 +1740,8 @@ pub(crate) unsafe extern "C" fn element_replace_child(raw_cx: *mut JSContext, ar
                     }
                 }
             });
+
+            custom_elements_upgrade_for_node(safe_cx, new_child_id);
 
             trigger_script_load_if_needed(new_child_id);
             args.rval().set(*args.get(1));

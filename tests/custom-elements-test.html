@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Custom Elements Test</title>
+</head>
+<body>
+<div id="root"></div>
+<script>
+    console.log('=== Custom Elements smoke test ===');
+
+    function assert(condition, message) {
+        if (!condition) {
+            throw new Error(message);
+        }
+        console.log('[PASS]', message);
+    }
+
+    assert(!!window.customElements, 'window.customElements exists');
+    assert(typeof window.CustomElementRegistry === 'function', 'window.CustomElementRegistry exists');
+    assert(typeof customElements.define === 'function', 'customElements.define exists');
+    assert(typeof customElements.get === 'function', 'customElements.get exists');
+    assert(typeof customElements.whenDefined === 'function', 'customElements.whenDefined exists');
+    assert(typeof customElements.upgrade === 'function', 'customElements.upgrade exists');
+
+    const root = document.getElementById('root');
+    const late = document.createElement('x-late');
+    root.appendChild(late);
+
+    let connectedCalls = 0;
+    class XLate extends HTMLElement {
+        connectedCallback() {
+            connectedCalls += 1;
+            this.setAttribute('data-connected', 'yes');
+        }
+        ping() {
+            return 'pong';
+        }
+    }
+
+    const whenDefinedLate = customElements.whenDefined('x-late');
+    customElements.define('x-late', XLate);
+
+    whenDefinedLate.then(function(ctor) {
+        assert(ctor === XLate, 'whenDefined resolves with constructor');
+        assert(customElements.get('x-late') === XLate, 'get returns constructor');
+        assert(Object.getPrototypeOf(late) === XLate.prototype, 'existing element upgraded on define');
+        assert(late.ping() === 'pong', 'upgraded element gets class prototype methods');
+        assert(late.getAttribute('data-connected') === 'yes', 'connectedCallback runs on upgraded connected element');
+
+        const created = document.createElement('x-late');
+        root.appendChild(created);
+        assert(Object.getPrototypeOf(created) === XLate.prototype, 'newly created custom element is upgraded');
+
+        const container = document.createElement('div');
+        container.innerHTML = '<x-manual id="manual"></x-manual>';
+
+        class XManual extends HTMLElement {
+            connectedCallback() {
+                this.setAttribute('data-manual', 'ok');
+            }
+        }
+
+        customElements.define('x-manual', XManual);
+        const manual = container.querySelector('#manual');
+        assert(Object.getPrototypeOf(manual) !== XManual.prototype, 'detached subtree is not auto-upgraded');
+        customElements.upgrade(container);
+        assert(Object.getPrototypeOf(manual) === XManual.prototype, 'upgrade(root) upgrades detached subtree');
+
+        root.appendChild(container);
+        assert(manual.getAttribute('data-manual') === 'ok', 'connectedCallback runs after attach');
+
+        assert(connectedCalls >= 1, 'connectedCallback invoked at least once');
+        console.log('=== Custom Elements smoke test done ===');
+    }).catch(function(err) {
+        console.error('[FAIL] custom elements smoke test failed:', err && err.stack ? err.stack : err);
+    });
+</script>
+</body>
+</html>
+
