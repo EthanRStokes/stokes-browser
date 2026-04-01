@@ -21,6 +21,7 @@ pub mod console;
 pub mod css;
 pub mod crypto;
 pub mod event_listeners;
+pub mod event_target;
 pub mod fetch;
 pub mod google;
 pub mod performance;
@@ -107,6 +108,9 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
 
     // Set up AbortSignal and AbortController
     abort_signal::setup_abort_signal(runtime)?;
+
+    // Set up EventTarget bindings (Event and CustomEvent constructors)
+    event_target::setup_event_target(runtime)?;
 
     Ok(())
 }
