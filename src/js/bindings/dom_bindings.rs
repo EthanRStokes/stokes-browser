@@ -1038,16 +1038,25 @@ unsafe fn setup_window(
     define_function(cx, global, "__evaluateMediaQuery", Some(window_evaluate_media_query), 1)?;
 
     // Set window dimension properties
-    set_int_property(cx, global, "innerWidth", get_window_width())?;
-    set_int_property(cx, global, "innerHeight", get_window_height())?;
-    set_int_property(cx, global, "outerWidth", 1920)?;
-    set_int_property(cx, global, "outerHeight", 1080)?;
-    set_int_property(cx, global, "screenX", 0)?;
-    set_int_property(cx, global, "screenY", 0)?;
-    set_int_property(cx, global, "scrollX", get_scroll_x())?;
-    set_int_property(cx, global, "scrollY", get_scroll_y())?;
-    set_int_property(cx, global, "pageXOffset", get_scroll_x())?;
-    set_int_property(cx, global, "pageYOffset", get_scroll_y())?;
+    define_function(cx, global, "__getInnerWidth", Some(window_get_inner_width), 0)?;
+    define_property_getter(cx, global, "innerWidth", "__getInnerWidth")?;
+    define_function(cx, global, "__getInnerHeight", Some(window_get_inner_height), 0)?;
+    define_property_getter(cx, global, "innerHeight", "__getInnerHeight")?;
+    define_function(cx, global, "__getOuterWidth", Some(window_get_outer_width), 0)?;
+    define_property_getter(cx, global, "outerWidth", "__getOuterWidth")?;
+    define_function(cx, global, "__getOuterHeight", Some(window_get_outer_height), 0)?;
+    define_property_getter(cx, global, "outerHeight", "__getOuterHeight")?;
+    define_function(cx, global, "__getScreenX", Some(window_get_screen_x), 0)?;
+    define_property_getter(cx, global, "screenX", "__getScreenX")?;
+    define_function(cx, global, "__getScreenY", Some(window_get_screen_y), 0)?;
+    define_property_getter(cx, global, "screenY", "__getScreenY")?;
+    define_function(cx, global, "__getScrollX", Some(window_get_scroll_x), 0)?;
+    define_property_getter(cx, global, "scrollX", "__getScrollX")?;
+    define_property_getter(cx, global, "pageXOffset", "__getScrollX")?;
+    define_function(cx, global, "__getScrollY", Some(window_get_scroll_y), 0)?;
+    define_property_getter(cx, global, "scrollY", "__getScrollY")?;
+    define_property_getter(cx, global, "pageYOffset", "__getScrollY")?;
+
     // FIXME: devicePixelRatio is hardcoded to 1 even though get_device_pixel_ratio() returns the
     // real scale factor from the DOM viewport. Should use that value instead.
     define_function(cx, global, "__getDevicePixelRatio", Some(window_get_device_pixel_ratio), 0)?;
@@ -3746,7 +3755,7 @@ unsafe extern "C" fn window_get_computed_style(raw_cx: *mut JSContext, argc: c_u
         let _ = define_function(safe_cx, style.get(), "getPropertyValue", Some(style_get_property_value), 1);
         args.rval().set(ObjectValue(style.get()));
     } else {
-        args.rval().set(mozjs::jsval::NullValue());
+        args.rval().set(NullValue());
     }
     true
 }
@@ -3824,6 +3833,56 @@ unsafe extern "C" fn window_remove_event_listener(raw_cx: *mut JSContext, argc: 
     event_listeners::remove_listener(event_listeners::WINDOW_NODE_ID, &event_type, callback_obj, use_capture);
 
     args.rval().set(UndefinedValue());
+    true
+}
+
+unsafe extern "C" fn window_get_inner_width(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    args.rval().set(Int32Value(get_window_width()));
+    true
+}
+
+unsafe extern "C" fn window_get_inner_height(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    args.rval().set(Int32Value(get_window_height()));
+    true
+}
+
+unsafe extern "C" fn window_get_outer_width(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    args.rval().set(Int32Value(1920));
+    true
+}
+
+unsafe extern "C" fn window_get_outer_height(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    args.rval().set(Int32Value(1080));
+    true
+}
+
+unsafe extern "C" fn window_get_screen_x(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    warn_stubbed_binding("window.screenX", "hardcoded to 0; actual screen position not used");
+    args.rval().set(Int32Value(0));
+    true
+}
+
+unsafe extern "C" fn window_get_screen_y(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    warn_stubbed_binding("window.screenY", "hardcoded to 0; actual screen position not used");
+    args.rval().set(Int32Value(0));
+    true
+}
+
+unsafe extern "C" fn window_get_scroll_x(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    args.rval().set(Int32Value(get_scroll_x()));
+    true
+}
+
+unsafe extern "C" fn window_get_scroll_y(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    args.rval().set(Int32Value(get_scroll_y()));
     true
 }
 
@@ -4487,7 +4546,7 @@ unsafe extern "C" fn local_storage_get_item(raw_cx: *mut JSContext, argc: c_uint
     if let Some(val) = value {
         args.rval().set(create_js_string(safe_cx, &val));
     } else {
-        args.rval().set(NullValue());
+        args.rval().set(mozjs::jsval::NullValue());
     }
     true
 }
@@ -4581,7 +4640,6 @@ unsafe extern "C" fn local_storage_key(raw_cx: *mut JSContext, argc: c_uint, vp:
 /// localStorage.length implementation
 unsafe extern "C" fn local_storage_length(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let safe_cx = &mut raw_cx.to_safe_cx();
 
     let length = LOCAL_STORAGE.with(|storage| {
         let storage = storage.borrow();
