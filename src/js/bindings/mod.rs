@@ -68,6 +68,9 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
     // Set up callable SVGElement/SVGSVGElement constructors
     dom_bindings::setup_svg_constructors_deferred(runtime)?;
 
+    // Set up Event and CustomEvent constructors
+    dom_bindings::setup_event_constructors_deferred(runtime)?;
+
     // Set up MutationObserver / MutationRecord polyfill and node patch hooks
     mutation_observer::setup_mutation_observer(runtime)?;
 

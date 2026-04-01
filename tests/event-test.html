@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Event Constructor Test</title>
+</head>
+<body>
+    <h1>Testing Event Constructor</h1>
+    <script>
+        try {
+            // Test Event constructor
+            const event = new Event('click');
+            console.log('Event created successfully:', event);
+            console.log('Event type:', event.type);
+            console.log('Event bubbles:', event.bubbles);
+
+            // Test CustomEvent constructor
+            const customEvent = new CustomEvent('myevent', { detail: { message: 'hello' } });
+            console.log('CustomEvent created successfully:', customEvent);
+            console.log('CustomEvent type:', customEvent.type);
+            console.log('CustomEvent detail:', customEvent.detail);
+        } catch (e) {
+            console.error('Error:', e.message);
+        }
+    </script>
+</body>
+</html>
+

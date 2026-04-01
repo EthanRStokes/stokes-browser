@@ -25,8 +25,8 @@ use mozjs::jsapi::{
 use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, UInt32Value, UndefinedValue};
 use mozjs::rooted;
-use mozjs::rust::ValueArray;
-use mozjs::rust::wrappers2::{JS_CallFunctionValue, JS_ClearPendingException, NewPromiseObject, ResolvePromise};
+use mozjs::rust::{HandleObject, ValueArray};
+use mozjs::rust::wrappers2::{JS_CallFunctionValue, JS_ClearPendingException, JS_DefineFunction, NewPromiseObject, ResolvePromise};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::os::raw::c_uint;
@@ -154,7 +154,7 @@ pub fn setup_dom_bindings(
         setup_html_iframe_element_constructor(cx, global_ptr)?;
 
         // Set up Event and CustomEvent constructors
-        setup_event_constructors(raw_cx, global_ptr)?;
+        setup_event_constructors(raw_cx, global)?;
 
 
         // Set up atob/btoa functions
@@ -2660,33 +2660,187 @@ unsafe fn setup_html_iframe_element_constructor(cx: &mut mozjs::context::JSConte
     Ok(())
 }
 
-/// Set up Event and CustomEvent constructors
-unsafe fn setup_event_constructors(raw_cx: *mut JSContext, global: *mut JSObject) -> Result<(), String> {
-    rooted!(in(raw_cx) let event = JS_NewPlainObject(raw_cx));
-    if event.get().is_null() {
-        return Err("Failed to create Event constructor".to_string());
+/// Event and CustomEvent constructors
+unsafe extern "C" fn event_constructor(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    // Get the event type from first argument
+    let event_type = if argc > 0 {
+        js_value_to_string(safe_cx, *args.get(0))
+    } else {
+        "".to_string()
+    };
+
+    // Create an event object
+    rooted!(in(raw_cx) let event_obj = JS_NewPlainObject(raw_cx));
+    if event_obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
     }
 
-    rooted!(in(raw_cx) let event_val = ObjectValue(event.get()));
-    rooted!(in(raw_cx) let global_rooted = global);
+    // Set the type property
+    set_string_property(safe_cx, event_obj.get(), "type", &event_type)
+        .ok();
 
-    let name = std::ffi::CString::new("Event").unwrap();
+    // Set default event properties
+    set_bool_property(safe_cx, event_obj.get(), "bubbles", false).ok();
+    set_bool_property(safe_cx, event_obj.get(), "cancelable", false).ok();
+    set_bool_property(safe_cx, event_obj.get(), "composed", false).ok();
+
+    // Set the return value to the new event object
+    args.rval().set(ObjectValue(event_obj.get()));
+    true
+}
+
+unsafe extern "C" fn custom_event_constructor(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let safe_cx = &mut raw_cx.to_safe_cx();
+
+    // Get the event type from first argument
+    let event_type = if argc > 0 {
+        js_value_to_string(safe_cx, *args.get(0))
+    } else {
+        "".to_string()
+    };
+
+    // Get the detail from the options object (second argument)
+    let detail = if argc > 1 && args.get(1).is_object() {
+        *args.get(1)
+    } else {
+        UndefinedValue()
+    };
+
+    // Create an event object
+    rooted!(in(raw_cx) let event_obj = JS_NewPlainObject(raw_cx));
+    if event_obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    // Set the type property
+    set_string_property(safe_cx, event_obj.get(), "type", &event_type)
+        .ok();
+
+    // Set default event properties
+    set_bool_property(safe_cx, event_obj.get(), "bubbles", false).ok();
+    set_bool_property(safe_cx, event_obj.get(), "cancelable", false).ok();
+    set_bool_property(safe_cx, event_obj.get(), "composed", false).ok();
+
+    // Set the detail property
+    rooted!(in(raw_cx) let detail_val = detail);
+    rooted!(in(raw_cx) let event_obj_rooted = event_obj.get());
+    let detail_name = std::ffi::CString::new("detail").unwrap();
     JS_DefineProperty(
         raw_cx,
-        global_rooted.handle().into(),
-        name.as_ptr(),
-        event_val.handle().into(),
+        event_obj_rooted.handle().into(),
+        detail_name.as_ptr(),
+        detail_val.handle().into(),
         JSPROP_ENUMERATE as u32,
     );
 
-    let name = std::ffi::CString::new("CustomEvent").unwrap();
-    JS_DefineProperty(
-        raw_cx,
-        global_rooted.handle().into(),
-        name.as_ptr(),
-        event_val.handle().into(),
+    // Set the return value to the new event object
+    args.rval().set(ObjectValue(event_obj.get()));
+    true
+}
+
+/// Set up Event and CustomEvent constructors (basic versions defined in Rust)
+unsafe fn setup_event_constructors(raw_cx: *mut JSContext, global: HandleObject) -> Result<(), String> {
+    use std::ffi::CString;
+
+    // Create Event constructor and define it on global
+    let event_name = CString::new("Event").unwrap();
+    if JS_DefineFunction(
+        &mut raw_cx.to_safe_cx(),
+        global,
+        event_name.as_ptr(),
+        Some(event_constructor),
+        1,
         JSPROP_ENUMERATE as u32,
-    );
+    )
+    .is_null()
+    {
+        return Err("Failed to define Event constructor".to_string());
+    }
+
+    // Create CustomEvent constructor and define it on global
+    let custom_event_name = CString::new("CustomEvent").unwrap();
+    if JS_DefineFunction(
+        &mut raw_cx.to_safe_cx(),
+        global,
+        custom_event_name.as_ptr(),
+        Some(custom_event_constructor),
+        1,
+        JSPROP_ENUMERATE as u32,
+    )
+    .is_null()
+    {
+        return Err("Failed to define CustomEvent constructor".to_string());
+    }
+
+    Ok(())
+}
+
+/// Set up Event and CustomEvent constructors as proper JavaScript constructors
+/// This runs as JS to ensure they work correctly with the `new` operator
+pub fn setup_event_constructors_deferred(runtime: &mut JsRuntime) -> Result<(), String> {
+    let script = r#"
+        (function() {
+            const root = typeof globalThis !== 'undefined' ? globalThis : window;
+
+            // Event constructor
+            function Event(type, eventInitDict) {
+                if (!(this instanceof Event)) {
+                    return new Event(type, eventInitDict);
+                }
+
+                this.type = String(type || '');
+                this.bubbles = false;
+                this.cancelable = false;
+                this.composed = false;
+
+                if (typeof eventInitDict === 'object' && eventInitDict !== null) {
+                    if (eventInitDict.bubbles === true) this.bubbles = true;
+                    if (eventInitDict.cancelable === true) this.cancelable = true;
+                    if (eventInitDict.composed === true) this.composed = true;
+                }
+            }
+
+            // CustomEvent constructor
+            function CustomEvent(type, eventInitDict) {
+                if (!(this instanceof CustomEvent)) {
+                    return new CustomEvent(type, eventInitDict);
+                }
+
+                this.type = String(type || '');
+                this.bubbles = false;
+                this.cancelable = false;
+                this.composed = false;
+                this.detail = null;
+
+                if (typeof eventInitDict === 'object' && eventInitDict !== null) {
+                    if (eventInitDict.bubbles === true) this.bubbles = true;
+                    if (eventInitDict.cancelable === true) this.cancelable = true;
+                    if (eventInitDict.composed === true) this.composed = true;
+                    if ('detail' in eventInitDict) this.detail = eventInitDict.detail;
+                }
+            }
+
+            // Make CustomEvent inherit from Event
+            try {
+                CustomEvent.prototype = Object.create(Event.prototype);
+                CustomEvent.prototype.constructor = CustomEvent;
+            } catch (_) {}
+
+            root.Event = Event;
+            root.CustomEvent = CustomEvent;
+        })();
+    "#;
+
+    runtime.execute(script, false).map_err(|e| {
+        warn!("[JS] Failed to set up Event and CustomEvent constructors: {}", e);
+        e
+    })?;
 
     Ok(())
 }
