@@ -16,6 +16,7 @@ pub(crate) mod registry;
 pub(crate) mod timers;
 pub(crate) mod alert_callback;
 pub(crate) mod warnings;
+pub mod abort_signal;
 pub mod console;
 pub mod css;
 pub mod crypto;
@@ -103,6 +104,9 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
 
     // Set up XMLHttpRequest constructor (full polyfill)
     xhr::setup_xhr(runtime)?;
+
+    // Set up AbortSignal and AbortController
+    abort_signal::setup_abort_signal(runtime)?;
 
     Ok(())
 }
