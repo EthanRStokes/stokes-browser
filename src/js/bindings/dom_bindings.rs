@@ -4847,6 +4847,101 @@ pub fn setup_image_constructor_deferred(runtime: &mut JsRuntime) -> Result<(), S
     Ok(())
 }
 
+/// Set up `HTMLInputElement` as a callable constructor-like global with a stable prototype chain.
+///
+/// Input instances are still created through `document.createElement('input')`.
+/// This wiring ensures wrappers can expose the right constructor/prototype identity.
+// TODO fix prototype
+pub fn setup_html_input_element_constructor_deferred(runtime: &mut JsRuntime) -> Result<(), String> {
+    let script = r#"
+        (function() {
+            const root = typeof globalThis !== 'undefined' ? globalThis : window;
+
+            function ensureHTMLElementConstructor() {
+                if (typeof root.HTMLElement === 'function') {
+                    return root.HTMLElement;
+                }
+
+                function HTMLElement() {
+                    throw new TypeError('Illegal constructor');
+                }
+
+                const oldHTMLElement = root.HTMLElement;
+                if (oldHTMLElement && typeof oldHTMLElement === 'object') {
+                    const keys = Object.getOwnPropertyNames(oldHTMLElement);
+                    for (let i = 0; i < keys.length; i++) {
+                        const key = keys[i];
+                        if (key === 'prototype') {
+                            continue;
+                        }
+                        try {
+                            HTMLElement[key] = oldHTMLElement[key];
+                        } catch (_) {}
+                    }
+                }
+
+                root.HTMLElement = HTMLElement;
+                return HTMLElement;
+            }
+
+            const HTMLElementCtor = ensureHTMLElementConstructor();
+
+            let HTMLInputCtor = root.HTMLInputElement;
+            if (typeof HTMLInputCtor !== 'function') {
+                HTMLInputCtor = function HTMLInputElement() {
+                    throw new TypeError('Illegal constructor');
+                };
+            }
+
+            // Determine the parent prototype to inherit from
+            const parentProto =
+                HTMLElementCtor && HTMLElementCtor.prototype && typeof HTMLElementCtor.prototype === 'object'
+                    ? HTMLElementCtor.prototype
+                    : Object.prototype;
+
+            // Create or update the prototype to inherit from the parent
+            if (!HTMLInputCtor.prototype || typeof HTMLInputCtor.prototype !== 'object') {
+                HTMLInputCtor.prototype = Object.create(parentProto);
+            } else {
+                // If prototype already exists, ensure it inherits from the parent
+                const currentProtoParent = Object.getPrototypeOf(HTMLInputCtor.prototype);
+                if (currentProtoParent !== parentProto) {
+                    try {
+                        Object.setPrototypeOf(HTMLInputCtor.prototype, parentProto);
+                    } catch (_) {
+                        // Fallback: recreate the prototype
+                        try {
+                            HTMLInputCtor.prototype = Object.create(parentProto);
+                        } catch (_2) {}
+                    }
+                }
+            }
+
+            try {
+                Object.setPrototypeOf(HTMLInputCtor, HTMLElementCtor);
+            } catch (_) {}
+
+            try {
+                Object.defineProperty(HTMLInputCtor.prototype, 'constructor', {
+                    value: HTMLInputCtor,
+                    writable: true,
+                    configurable: true,
+                    enumerable: false,
+                });
+            } catch (_) {}
+
+            root.HTMLInputElement = HTMLInputCtor;
+        })();
+    "#;
+
+    runtime.execute(script, false).map_err(|e| {
+        warn!("[JS] Failed to set up HTMLInputElement constructor: {}", e);
+        e
+    })?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{decode_atob_binary_string, evaluate_media_query, normalize_atob_input};

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>HTMLInputElement Test</title>
+    <style>
+        body { font-family: sans-serif; padding: 16px; }
+        .ok { color: #0a7f2e; }
+        .fail { color: #b00020; }
+    </style>
+</head>
+<body>
+    <h1>HTMLInputElement regression test</h1>
+    <pre id="log"></pre>
+
+    <script>
+        (function () {
+            var logEl = document.getElementById("log");
+            var failures = 0;
+
+            function line(text, ok) {
+                var div = document.createElement("div");
+                div.className = ok ? "ok" : "fail";
+                div.textContent = (ok ? "PASS: " : "FAIL: ") + text;
+                logEl.appendChild(div);
+                if (!ok) failures++;
+            }
+
+            function check(name, fn) {
+                try {
+                    line(name, !!fn());
+                } catch (err) {
+                    line(name + " threw " + String(err), false);
+                }
+            }
+
+            var input = document.createElement("input");
+            input.type = "checkbox";
+            input.checked = true;
+            input.value = "hello";
+
+            check("typeof HTMLInputElement is function", function () {
+                return typeof HTMLInputElement === "function";
+            });
+
+            check("HTMLInputElement.prototype inherits HTMLElement.prototype", function () {
+                return typeof HTMLElement === "function" &&
+                    HTMLElement.prototype &&
+                    Object.getPrototypeOf(HTMLInputElement.prototype) === HTMLElement.prototype;
+            });
+
+            check("input.constructor is HTMLInputElement", function () {
+                return input.constructor === HTMLInputElement;
+            });
+
+            check("input is instanceof HTMLInputElement", function () {
+                return input instanceof HTMLInputElement;
+            });
+
+            check("value property reflects JS assignment", function () {
+                return input.value === "hello";
+            });
+
+            check("checked property reflects JS assignment", function () {
+                return input.checked === true;
+            });
+
+            if (failures === 0) {
+                console.log("html-input-element-test: all checks passed");
+            } else {
+                console.log("html-input-element-test: " + failures + " failures");
+            }
+        })();
+    </script>
+</body>
+</html>
+

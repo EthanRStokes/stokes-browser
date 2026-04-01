@@ -385,6 +385,18 @@ unsafe fn ensure_element_shared_prototype(cx: &mut SafeJSContext) -> Result<*mut
 
 fn constructor_name_for_element(is_svg: bool, local_name: &str) -> &'static str {
     if !is_svg {
+        if local_name.eq_ignore_ascii_case("input") {
+            return "HTMLInputElement";
+        }
+        if local_name.eq_ignore_ascii_case("form") {
+            return "HTMLFormElement";
+        }
+        if local_name.eq_ignore_ascii_case("iframe") {
+            return "HTMLIFrameElement";
+        }
+        if local_name.eq_ignore_ascii_case("img") {
+            return "HTMLImageElement";
+        }
         return "HTMLElement";
     }
 
@@ -550,6 +562,7 @@ unsafe fn create_js_element_impl(
     );
 
     // Point element.constructor at the best available global constructor object.
+    let mut instance_prototype = std::ptr::null_mut::<JSObject>();
     rooted!(in(raw_cx) let global = CurrentGlobalOrNull(cx));
     if !global.get().is_null() {
         let ctor_name = std::ffi::CString::new(constructor_name).unwrap();
@@ -565,11 +578,29 @@ unsafe fn create_js_element_impl(
                 ctor_val.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
+
+            let prototype_prop = std::ffi::CString::new("prototype").unwrap();
+            rooted!(in(raw_cx) let mut ctor_proto_val = UndefinedValue());
+            rooted!(in(raw_cx) let ctor_obj = ctor_val.get().to_object());
+            if JS_GetProperty(
+                cx,
+                ctor_obj.handle().into(),
+                prototype_prop.as_ptr(),
+                ctor_proto_val.handle_mut().into(),
+            ) && ctor_proto_val.get().is_object() {
+                instance_prototype = ctor_proto_val.get().to_object();
+            }
         }
     }
 
     let shared_proto = ensure_element_shared_prototype(cx)?;
-    set_object_prototype(cx, element.get(), shared_proto)?;
+    if !instance_prototype.is_null() {
+        // Ensure element-specific prototypes inherit the shared Element behavior.
+        set_object_prototype(cx, instance_prototype, shared_proto)?;
+    } else {
+        instance_prototype = shared_proto;
+    }
+    set_object_prototype(cx, element.get(), instance_prototype)?;
 
     // Keep one stable JS wrapper per DOM node so framework internals attached
     // to element objects survive across lookups and event dispatch.
@@ -4059,11 +4090,7 @@ unsafe extern "C" fn element_set_checked_attr(raw_cx: *mut JSContext, argc: c_ui
             }
         };
 
-        if enabled {
-            set_attribute_for_node(node_id, "checked", "");
-        } else {
-            clear_attribute_for_node(node_id, "checked");
-        }
+        set_checked_for_node(node_id, enabled);
     }
 
     args.rval().set(UndefinedValue());
@@ -4140,6 +4167,29 @@ unsafe fn clear_attribute_for_node(node_id: usize, attr: &str) {
             let dom = &mut *dom_ptr;
             let qname = QualName::new(None, markup5ever::ns!(), markup5ever::LocalName::from(attr));
             dom.clear_attribute(node_id, qname);
+        }
+    });
+}
+
+unsafe fn set_checked_for_node(node_id: usize, checked: bool) {
+    DOM_REF.with(|dom_ref| {
+        if let Some(dom_ptr) = *dom_ref.borrow() {
+            let dom = &mut *dom_ptr;
+
+            if let Some(node) = dom.get_node_mut(node_id) {
+                if let Some(element) = node.element_data_mut() {
+                    if let Some(current) = element.checkbox_input_checked_mut() {
+                        *current = checked;
+                    }
+                }
+            }
+
+            let qname = QualName::new(None, markup5ever::ns!(), markup5ever::LocalName::from("checked"));
+            if checked {
+                dom.set_attribute(node_id, qname, "");
+            } else {
+                dom.clear_attribute(node_id, qname);
+            }
         }
     });
 }

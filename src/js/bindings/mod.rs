@@ -97,6 +97,9 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
     // Set up the global Image / HTMLImageElement constructor
     dom_bindings::setup_image_constructor_deferred(runtime)?;
 
+    // Set up HTMLInputElement constructor/prototype wiring
+    dom_bindings::setup_html_input_element_constructor_deferred(runtime)?;
+
     // Set up XMLHttpRequest constructor (full polyfill)
     xhr::setup_xhr(runtime)?;
 
