@@ -2,8 +2,10 @@ use super::JsResult;
 use crate::dom::Dom;
 use crate::js::bindings::timers::TimerManager;
 use crate::js::jsapi::define_native_function::define_native_function;
-use crate::js::jsapi::objects::get_obj_prop_val_as_string;
+use crate::js::helpers::js_value_to_string;
+use crate::js::jsapi::objects::{get_obj_prop_val, get_obj_prop_val_as_string};
 use crate::js::jsapi::promise::{clear_pending_jobs_for_navigation, enqueue_promise_job};
+use blitz_traits::net::Request;
 use hirofa_utils::eventloop::EventLoop;
 use lazy_static::lazy_static;
 use log::trace;
@@ -11,13 +13,13 @@ use mozjs::context::{JSContext, RawJSContext};
 use mozjs::conversions::jsstr_to_string;
 use mozjs::gc::HandleObject;
 use mozjs::glue::JobQueueTraps;
-use mozjs::jsapi::{CallArgs, JSContext as ApiJSContext, SetModuleMetadataHook, SetModulePrivate, SetScriptPrivate, SourceText};
+use mozjs::jsapi::{CallArgs, JSContext as ApiJSContext, SetModuleDynamicImportHook, SetModuleMetadataHook, SetModulePrivate, SetModuleResolveHook, SetScriptPrivate, SourceText};
 use mozjs::jsapi::{Heap, JSObject, JSScript, OnNewGlobalHookOption};
 // JavaScript runtime management using Mozilla's SpiderMonkey (mozjs)
-use mozjs::jsval::{PrivateValue, StringValue, UndefinedValue};
+use mozjs::jsval::{ObjectValue, PrivateValue, StringValue, UndefinedValue};
 use mozjs::panic::{maybe_resume_unwind};
 use mozjs::rooted;
-use mozjs::rust::wrappers2::{Compile1, CompileModule1, JS_ClearPendingException, JS_DefineProperty, JS_ExecuteScript, JS_GetPendingException, JS_GetScriptPrivate, JS_IsExceptionPending, JS_NewGlobalObject, JS_NewUCStringCopyN, JS_ValueToSource, ModuleEvaluate, ModuleLink};
+use mozjs::rust::wrappers2::{Compile1, CompileModule1, GetModuleNamespace, JS_ClearPendingException, JS_DefineProperty, JS_ExecuteScript, JS_GetPendingException, JS_GetScriptPrivate, JS_IsExceptionPending, JS_NewGlobalObject, JS_NewUCStringCopyN, JS_SetPendingException, JS_ValueToSource, ModuleEvaluate, ModuleLink, RejectPromise, ResolvePromise};
 use mozjs::rust::{transform_str_to_source_text, CompileOptionsWrapper, JSEngine, MutableHandleValue, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -25,8 +27,10 @@ use std::os::raw::c_void;
 use std::ptr;
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::sync::mpsc;
 use std::time::Duration;
 use mozjs::realm::AutoRealm;
+use tracing::error;
 use url::Url;
 use crate::js::bindings::initialize_bindings;
 use crate::js::bindings::event_listeners::clear_all_listeners;
@@ -142,10 +146,12 @@ impl JsRuntime {
 
         unsafe {
             rooted!(in(raw_cx) let global_root = global_ptr);
-            let cx = AutoRealm::new_from_handle(cx, global_root.handle());
+            let _realm = AutoRealm::new_from_handle(cx, global_root.handle());
 
             // Required for import.meta support in module scripts.
             SetModuleMetadataHook(self.runtime.rt(), Some(module_metadata_hook));
+            SetModuleResolveHook(self.runtime.rt(), Some(module_resolve_hook));
+            SetModuleDynamicImportHook(self.runtime.rt(), Some(module_dynamic_import_hook));
 
             initialize_bindings(self, dom, user_agent, timer_manager)?;
         }
@@ -356,6 +362,84 @@ impl JsRuntime {
         unsafe { CompileModule1(context, options.ptr, &mut transform_str_to_source_text(text)) }
     }
 
+    fn resolve_module_url(&self, specifier: &str, referencing_url: Option<&str>) -> JsResult<Url> {
+        if let Ok(url) = Url::parse(specifier) {
+            return Ok(url);
+        }
+
+        let base = referencing_url
+            .and_then(|raw| Url::parse(raw).ok())
+            .or_else(|| unsafe { Url::parse((&*self.dom).url.to_string().as_str()).ok() })
+            .ok_or_else(|| "Unable to resolve module base URL".to_string())?;
+
+        base.join(specifier)
+            .map_err(|e| format!("Failed to resolve module specifier '{specifier}': {e}"))
+    }
+
+    fn fetch_module_source(&self, url: &Url) -> JsResult<String> {
+        let net_provider = unsafe { (&*self.dom).net_provider.clone() };
+        let (tx, rx) = mpsc::channel();
+        net_provider.fetch_with_callback(
+            Request::get(url.clone()),
+            Box::new(move |result| {
+                let _ = tx.send(result);
+            }),
+        );
+
+        let result = rx
+            .recv()
+            .map_err(|e| format!("Module fetch callback dropped for '{}': {e}", url))?;
+
+        let (_final_url, bytes) = result
+            .map_err(|e| format!("Failed to fetch module '{}': {e:?}", url))?;
+
+        String::from_utf8(bytes.to_vec())
+            .map_err(|e| format!("Module '{}' is not valid UTF-8: {e}", url))
+    }
+
+    unsafe fn set_module_private_url(context: &mut JSContext, raw_cx: *mut RawJSContext, module: *mut JSObject, source_name: &str) {
+        let source_url_utf16: Vec<u16> = source_name.encode_utf16().collect();
+        rooted!(in(raw_cx) let source_url_js = JS_NewUCStringCopyN(context, source_url_utf16.as_ptr(), source_url_utf16.len()));
+        rooted!(in(raw_cx) let module_private = StringValue(&*source_url_js.get()));
+        let module_private_value = module_private.get();
+        SetModulePrivate(module, &module_private_value);
+    }
+
+    unsafe fn load_or_compile_module(
+        &mut self,
+        context: &mut JSContext,
+        raw_cx: *mut RawJSContext,
+        specifier: &str,
+        referencing_url: Option<&str>,
+    ) -> JsResult<*mut JSObject> {
+        let resolved_url = self.resolve_module_url(specifier, referencing_url)?;
+        let resolved_url_str = resolved_url.to_string();
+
+        if let Some(module) = self.module_cache.get(&resolved_url_str) {
+            return Ok(module.get());
+        }
+
+        let source = self.fetch_module_source(&resolved_url)?;
+        let module = Self::compile_module_script(context, &source, &resolved_url_str, 1);
+        if module.is_null() {
+            return Err(Self::extract_js_exception(
+                context,
+                raw_cx,
+                "JavaScript MODULE COMPILE error",
+                &source,
+                true,
+            ));
+        }
+
+        Self::set_module_private_url(context, raw_cx, module, &resolved_url_str);
+
+        let mut rooted_module = Heap::default();
+        rooted_module.set(module);
+        self.module_cache.insert(resolved_url_str, rooted_module);
+
+        Ok(module)
+    }
+
     unsafe fn extract_js_exception(
         context: &mut JSContext,
         raw_cx: *mut RawJSContext,
@@ -417,22 +501,14 @@ impl JsRuntime {
 
             if let Some(cache_key) = cache_key.as_ref() {
                 if !self.module_cache.contains_key(cache_key) {
-                    let source_url_utf16: Vec<u16> = source_name.encode_utf16().collect();
-                    rooted!(in(raw_cx) let source_url_js = JS_NewUCStringCopyN(cx, source_url_utf16.as_ptr(), source_url_utf16.len()));
-                    rooted!(in(raw_cx) let module_private = StringValue(&*source_url_js.get()));
-                    let module_private_value = module_private.get();
-                    SetModulePrivate(module.get(), &module_private_value);
+                    Self::set_module_private_url(cx, raw_cx, module.get(), &source_name);
 
                     let mut rooted_module = Heap::default();
                     rooted_module.set(module.get());
                     self.module_cache.insert(cache_key.clone(), rooted_module);
                 }
             } else {
-                let source_url_utf16: Vec<u16> = source_name.encode_utf16().collect();
-                rooted!(in(raw_cx) let source_url_js = JS_NewUCStringCopyN(cx, source_url_utf16.as_ptr(), source_url_utf16.len()));
-                rooted!(in(raw_cx) let module_private = StringValue(&*source_url_js.get()));
-                let module_private_value = module_private.get();
-                SetModulePrivate(module.get(), &module_private_value);
+                Self::set_module_private_url(cx, raw_cx, module.get(), &source_name);
             }
 
             if !ModuleLink(cx, module.handle().into()) {
@@ -654,6 +730,220 @@ unsafe extern "C" fn module_metadata_hook(
         module_private.handle().into(),
         mozjs::jsapi::JSPROP_ENUMERATE as u32,
     )
+}
+
+unsafe extern "C" fn module_resolve_hook(
+    raw_cx: *mut ApiJSContext,
+    referencing_private: mozjs::jsapi::HandleValue,
+    module_request: mozjs::jsapi::HandleObject,
+) -> *mut JSObject {
+    let safe_cx = &mut raw_cx.to_safe_cx();
+    let request_obj = HandleObject::from_marked_location(&module_request.get());
+    let Some(specifier) = extract_module_request_specifier(safe_cx, raw_cx, request_obj) else {
+        return fail_module_resolution(safe_cx, raw_cx, "Module request specifier was empty");
+    };
+
+    rooted!(in(raw_cx) let private_value = referencing_private.get());
+    let referencing_url = if private_value.get().is_string() {
+        Some(jsstr_to_string(
+            raw_cx,
+            NonNull::new(private_value.get().to_string()).unwrap(),
+        ))
+    } else {
+        None
+    };
+
+    RUNTIME.with(|cell| unsafe {
+        let mut runtime_ptr = cell.borrow_mut();
+        let Some(runtime_ptr) = runtime_ptr.as_mut() else {
+            return fail_module_resolution(
+                safe_cx,
+                raw_cx,
+                "module_resolve_hook called without an active runtime pointer",
+            );
+        };
+        let runtime = &mut **runtime_ptr;
+
+        match runtime.load_or_compile_module(safe_cx, raw_cx, &specifier, referencing_url.as_deref()) {
+            Ok(module) => module,
+            Err(err) => {
+                let msg = format!("Failed to resolve module '{specifier}': {err}");
+                fail_module_resolution(safe_cx, raw_cx, &msg)
+            }
+        }
+    })
+}
+
+unsafe fn extract_module_request_specifier(
+    context: &mut JSContext,
+    raw_cx: *mut RawJSContext,
+    request_obj: HandleObject,
+) -> Option<String> {
+    const PROPS: [&str; 4] = ["specifier", "moduleSpecifier", "value", "request"];
+
+    for prop in PROPS {
+        rooted!(in(raw_cx) let mut value = UndefinedValue());
+        if get_obj_prop_val(
+            context,
+            request_obj,
+            prop,
+            MutableHandleValue::from(value.handle_mut()),
+        )
+        .is_ok()
+        {
+            if let Some(specifier) = normalize_module_specifier_value(context, raw_cx, *value) {
+                return Some(specifier);
+            }
+        }
+    }
+
+    // Last resort: stringify the request object and extract specifier-looking text.
+    let raw = js_value_to_string(context, ObjectValue(request_obj.get()));
+    parse_specifier_from_text(&raw)
+}
+
+unsafe fn normalize_module_specifier_value(
+    context: &mut JSContext,
+    raw_cx: *mut RawJSContext,
+    value: mozjs::jsval::JSVal,
+) -> Option<String> {
+    let mut text = js_value_to_string(context, value);
+
+    if (text.is_empty() || text == "undefined" || text == "null") && value.is_object() {
+        rooted!(in(raw_cx) let obj = value.to_object());
+        let nested_obj = HandleObject::from_marked_location(&obj.get());
+        rooted!(in(raw_cx) let mut nested = UndefinedValue());
+        if get_obj_prop_val(
+            context,
+            nested_obj,
+            "specifier",
+            MutableHandleValue::from(nested.handle_mut()),
+        )
+        .is_ok()
+        {
+            text = js_value_to_string(context, *nested);
+        }
+    }
+
+    if !text.is_empty() && text != "undefined" && text != "null" {
+        if let Some(parsed) = parse_specifier_from_text(&text) {
+            return Some(parsed);
+        }
+        return Some(text);
+    }
+
+    None
+}
+
+fn parse_specifier_from_text(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed == "undefined" || trimmed == "null" {
+        return None;
+    }
+
+    if (trimmed.starts_with('"') && trimmed.ends_with('"'))
+        || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+    {
+        let unquoted = &trimmed[1..trimmed.len().saturating_sub(1)];
+        if !unquoted.is_empty() {
+            return Some(unquoted.to_string());
+        }
+    }
+
+    if looks_like_module_specifier(trimmed) {
+        return Some(trimmed.to_string());
+    }
+
+    for needle in ["specifier:\"", "specifier: \"", "specifier:'", "specifier: '"] {
+        if let Some(start) = trimmed.find(needle) {
+            let quote = needle.chars().last().unwrap_or('"');
+            let begin = start + needle.len();
+            if let Some(end_rel) = trimmed[begin..].find(quote) {
+                let spec = &trimmed[begin..begin + end_rel];
+                if !spec.is_empty() {
+                    return Some(spec.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn looks_like_module_specifier(value: &str) -> bool {
+    value.starts_with("./")
+        || value.starts_with("../")
+        || value.starts_with('/')
+        || value.starts_with("http://")
+        || value.starts_with("https://")
+        || value.starts_with("file://")
+        || value.starts_with("data:")
+}
+
+unsafe fn fail_module_resolution(
+    context: &mut JSContext,
+    raw_cx: *mut RawJSContext,
+    message: &str,
+) -> *mut JSObject {
+    error!("{message}");
+    set_pending_exception_message(context, raw_cx, message);
+    ptr::null_mut()
+}
+
+unsafe fn set_pending_exception_message(
+    context: &mut JSContext,
+    raw_cx: *mut RawJSContext,
+    message: &str,
+) {
+    let utf16: Vec<u16> = message.encode_utf16().collect();
+    rooted!(in(raw_cx) let message_js = JS_NewUCStringCopyN(context, utf16.as_ptr(), utf16.len()));
+    if message_js.get().is_null() {
+        return;
+    }
+    rooted!(in(raw_cx) let message_val = StringValue(&*message_js.get()));
+    JS_SetPendingException(
+        context,
+        message_val.handle().into(),
+        mozjs::jsapi::ExceptionStackBehavior::DoNotCapture,
+    );
+}
+
+unsafe extern "C" fn module_dynamic_import_hook(
+    raw_cx: *mut ApiJSContext,
+    referencing_private: mozjs::jsapi::HandleValue,
+    module_request: mozjs::jsapi::HandleObject,
+    promise: mozjs::jsapi::HandleObject,
+) -> bool {
+    let safe_cx = &mut raw_cx.to_safe_cx();
+    let module = module_resolve_hook(raw_cx, referencing_private, module_request);
+    if module.is_null() {
+        return false;
+    }
+
+    rooted!(in(raw_cx) let module_root = module);
+    if !ModuleLink(safe_cx, module_root.handle().into()) {
+        return false;
+    }
+
+    rooted!(in(raw_cx) let mut eval_result = UndefinedValue());
+    if !ModuleEvaluate(safe_cx, module_root.handle().into(), eval_result.handle_mut().into()) {
+        return false;
+    }
+
+    rooted!(in(raw_cx) let namespace = GetModuleNamespace(safe_cx, module_root.handle().into()));
+    if namespace.get().is_null() {
+        return false;
+    }
+
+    let promise_obj = mozjs::rust::HandleObject::from_marked_location(&promise.get());
+    rooted!(in(raw_cx) let namespace_value = ObjectValue(namespace.get()));
+    if !ResolvePromise(safe_cx, promise_obj, namespace_value.handle().into()) {
+        rooted!(in(raw_cx) let reason = namespace_value.get());
+        let _ = RejectPromise(safe_cx, promise_obj, reason.handle().into());
+        return false;
+    }
+
+    true
 }
 
 /// Helper to convert a Rust string to a SourceText for SpiderMonkey

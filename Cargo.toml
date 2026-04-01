@@ -80,7 +80,6 @@ selectors = "0.36.1"
 
 # Blitz
 blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "781ae63f" }
-blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "781ae63f" }
 stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "781ae63f", features = ["floats"] }
 dioxus-asset-resolver = { version = "0.7.4", features = ["native"] }
 

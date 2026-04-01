@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Dynamic Import Test</title>
+    <style>
+        body { font-family: sans-serif; padding: 16px; }
+        .ok { color: #0a7f2e; }
+        .fail { color: #b00020; }
+        #log { background: #f5f5f5; padding: 12px; border-radius: 6px; }
+    </style>
+</head>
+<body>
+    <h1>Dynamic import regression test</h1>
+    <div id="log"></div>
+
+    <script>
+        (async function () {
+            var logEl = document.getElementById("log");
+            var failures = 0;
+
+            function line(text, ok) {
+                var div = document.createElement("div");
+                div.className = ok ? "ok" : "fail";
+                div.textContent = (ok ? "PASS: " : "FAIL: ") + text;
+                logEl.appendChild(div);
+                if (!ok) failures++;
+            }
+
+            function check(name, condition) {
+                line(name, !!condition);
+            }
+
+            try {
+                var ns1 = await import("./modules/dynamic-import/entry.js");
+                check("import() resolves to namespace object", !!ns1 && typeof ns1 === "object");
+                check("namespace.answer exported", ns1.answer === 42);
+                check("nested static import works", ns1.describe() === "entry:nested:leaf-ok:42");
+                check("module side effect executed", window.__DYN_IMPORT_SIDE_EFFECT__ === "nested-loaded");
+
+                var ns2 = await import("./modules/dynamic-import/entry.js");
+                check("same namespace object is reused", ns1 === ns2);
+            } catch (err) {
+                line("unexpected failure importing entry module: " + String(err), false);
+            }
+
+            try {
+                await import("./modules/dynamic-import/reject.js");
+                line("failing module should reject", false);
+            } catch (_err) {
+                line("failing module rejects promise", true);
+            }
+
+            window.__TEST_FAILURES__ = failures;
+            window.__TEST_DONE__ = true;
+
+            if (failures === 0) {
+                console.log("dynamic-import-test: all checks passed");
+            } else {
+                console.log("dynamic-import-test: " + failures + " failure(s)");
+            }
+        })();
+    </script>
+</body>
+</html>
+
+
+
