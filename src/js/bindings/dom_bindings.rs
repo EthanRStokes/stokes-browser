@@ -740,6 +740,8 @@ unsafe fn setup_document(cx: &mut mozjs::context::JSContext, global: *mut JSObje
     set_string_property(cx, document.get(), "baseURI", &base_url_str)?;
     set_string_property(cx, document.get(), "URL", &base_url_str)?;
     set_string_property(cx, document.get(), "documentURI", &base_url_str)?;
+    set_int_property(cx, document.get(), "nodeType", 9)?;
+    set_string_property(cx, document.get(), "nodeName", "#document")?;
     set_string_property(cx, document.get(), "readyState", "complete")?;
     set_string_property(cx, document.get(), "compatMode", "CSS1Compat")?;
     set_string_property(cx, document.get(), "characterSet", "UTF-8")?;
@@ -798,25 +800,62 @@ unsafe fn setup_window(
 
     rooted!(in(raw_cx) let window_constructor_val = ObjectValue(window_constructor.get()));
     let name = std::ffi::CString::new("Window").unwrap();
-    JS_DefineProperty(
+    if !JS_DefineProperty(
         raw_cx,
         global_rooted.handle().into(),
         name.as_ptr(),
         window_constructor_val.handle().into(),
         JSPROP_ENUMERATE as u32,
-    );
+    ) {
+        return Err("Failed to define Window constructor".to_string());
+    }
 
     // window, self, top, parent, globalThis, frames all point to global
     // FIXME: `frames` should be a proper WindowProxy collection that allows indexed access to child iframes
     for name in &["window", "self", "top", "parent", "globalThis", "frames"] {
         let cname = std::ffi::CString::new(*name).unwrap();
-        JS_DefineProperty(
+        if !JS_DefineProperty(
             raw_cx,
             global_rooted.handle().into(),
             cname.as_ptr(),
             global_val.handle().into(),
             JSPROP_ENUMERATE as u32,
-        );
+        ) {
+            return Err(format!("Failed to define global alias: {}", name));
+        }
+    }
+
+    // Bridge document <-> window for libraries that require defaultView/parentWindow.
+    rooted!(in(raw_cx) let mut document_val = UndefinedValue());
+    let document_name = std::ffi::CString::new("document").unwrap();
+    if JS_GetProperty(
+        raw_cx,
+        global_rooted.handle().into(),
+        document_name.as_ptr(),
+        document_val.handle_mut().into(),
+    ) && document_val.get().is_object() {
+        rooted!(in(raw_cx) let document_obj = document_val.get().to_object());
+        let default_view = std::ffi::CString::new("defaultView").unwrap();
+        if !JS_DefineProperty(
+            raw_cx,
+            document_obj.handle().into(),
+            default_view.as_ptr(),
+            global_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        ) {
+            return Err("Failed to define document.defaultView".to_string());
+        }
+
+        let parent_window = std::ffi::CString::new("parentWindow").unwrap();
+        if !JS_DefineProperty(
+            raw_cx,
+            document_obj.handle().into(),
+            parent_window.as_ptr(),
+            global_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        ) {
+            return Err("Failed to define document.parentWindow".to_string());
+        }
     }
 
     // Define window functions on global
