@@ -349,17 +349,27 @@ unsafe fn ensure_element_shared_prototype(cx: &mut SafeJSContext) -> Result<*mut
     define_property_accessor(cx, proto.get(), "value", "__getValue", "__setValue")?;
     define_property_accessor(cx, proto.get(), "checked", "__getChecked", "__setChecked")?;
 
-    // Layout/scroll values are currently fixed stubs, so define them once on the prototype.
-    set_int_property(cx, proto.get(), "offsetWidth", 0)?;
-    set_int_property(cx, proto.get(), "offsetHeight", 0)?;
-    set_int_property(cx, proto.get(), "offsetLeft", 0)?;
-    set_int_property(cx, proto.get(), "offsetTop", 0)?;
-    set_int_property(cx, proto.get(), "clientWidth", 0)?;
-    set_int_property(cx, proto.get(), "clientHeight", 0)?;
-    set_int_property(cx, proto.get(), "scrollWidth", 0)?;
-    set_int_property(cx, proto.get(), "scrollHeight", 0)?;
-    set_int_property(cx, proto.get(), "scrollLeft", 0)?;
-    set_int_property(cx, proto.get(), "scrollTop", 0)?;
+    // Layout/scroll values are currently fixed stubs, so define them with warning getters.
+    define_function(cx, proto.get(), "__getOffsetWidth", Some(element_get_offset_width), 0)?;
+    define_property_accessor(cx, proto.get(), "offsetWidth", "__getOffsetWidth", "__setObjectPropertyNoop")?;
+    define_function(cx, proto.get(), "__getOffsetHeight", Some(element_get_offset_height), 0)?;
+    define_property_accessor(cx, proto.get(), "offsetHeight", "__getOffsetHeight", "__setObjectPropertyNoop")?;
+    define_function(cx, proto.get(), "__getOffsetLeft", Some(element_get_offset_left), 0)?;
+    define_property_accessor(cx, proto.get(), "offsetLeft", "__getOffsetLeft", "__setObjectPropertyNoop")?;
+    define_function(cx, proto.get(), "__getOffsetTop", Some(element_get_offset_top), 0)?;
+    define_property_accessor(cx, proto.get(), "offsetTop", "__getOffsetTop", "__setObjectPropertyNoop")?;
+    define_function(cx, proto.get(), "__getClientWidth", Some(element_get_client_width), 0)?;
+    define_property_accessor(cx, proto.get(), "clientWidth", "__getClientWidth", "__setObjectPropertyNoop")?;
+    define_function(cx, proto.get(), "__getClientHeight", Some(element_get_client_height), 0)?;
+    define_property_accessor(cx, proto.get(), "clientHeight", "__getClientHeight", "__setObjectPropertyNoop")?;
+    define_function(cx, proto.get(), "__getScrollWidth", Some(element_get_scroll_width), 0)?;
+    define_property_accessor(cx, proto.get(), "scrollWidth", "__getScrollWidth", "__setObjectPropertyNoop")?;
+    define_function(cx, proto.get(), "__getScrollHeight", Some(element_get_scroll_height), 0)?;
+    define_property_accessor(cx, proto.get(), "scrollHeight", "__getScrollHeight", "__setObjectPropertyNoop")?;
+    define_function(cx, proto.get(), "__getScrollLeft", Some(element_get_scroll_left), 0)?;
+    define_property_accessor(cx, proto.get(), "scrollLeft", "__getScrollLeft", "__setObjectPropertyNoop")?;
+    define_function(cx, proto.get(), "__getScrollTop", Some(element_get_scroll_top), 0)?;
+    define_property_accessor(cx, proto.get(), "scrollTop", "__getScrollTop", "__setObjectPropertyNoop")?;
 
     rooted!(in(raw_cx) let proto_val = ObjectValue(proto.get()));
     JS_DefineProperty(
@@ -2817,6 +2827,120 @@ unsafe extern "C" fn element_replace_with(raw_cx: *mut JSContext, argc: c_uint, 
         });
     }
     args.rval().set(UndefinedValue());
+    true
+}
+
+// ============================================================================
+// Layout and geometry getter functions
+// ============================================================================
+
+/// element.offsetWidth getter - warns that this is hardcoded to 0
+unsafe extern "C" fn element_get_offset_width(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    warn_stubbed_binding(
+        "Element.offsetWidth",
+        "hardcoded to 0 (layout not yet interactive)",
+    );
+    args.rval().set(mozjs::jsval::Int32Value(0));
+    true
+}
+
+/// element.offsetHeight getter - warns that this is hardcoded to 0
+unsafe extern "C" fn element_get_offset_height(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    warn_stubbed_binding(
+        "Element.offsetHeight",
+        "hardcoded to 0 (layout not yet interactive)",
+    );
+    args.rval().set(mozjs::jsval::Int32Value(0));
+    true
+}
+
+/// element.offsetLeft getter - warns that this is hardcoded to 0
+unsafe extern "C" fn element_get_offset_left(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    warn_stubbed_binding(
+        "Element.offsetLeft",
+        "hardcoded to 0 (layout not yet interactive)",
+    );
+    args.rval().set(mozjs::jsval::Int32Value(0));
+    true
+}
+
+/// element.offsetTop getter - warns that this is hardcoded to 0
+unsafe extern "C" fn element_get_offset_top(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    warn_stubbed_binding(
+        "Element.offsetTop",
+        "hardcoded to 0 (layout not yet interactive)",
+    );
+    args.rval().set(mozjs::jsval::Int32Value(0));
+    true
+}
+
+/// element.clientWidth getter - warns that this is hardcoded to 0
+unsafe extern "C" fn element_get_client_width(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    warn_stubbed_binding(
+        "Element.clientWidth",
+        "hardcoded to 0 (layout not yet interactive)",
+    );
+    args.rval().set(mozjs::jsval::Int32Value(0));
+    true
+}
+
+/// element.clientHeight getter - warns that this is hardcoded to 0
+unsafe extern "C" fn element_get_client_height(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    warn_stubbed_binding(
+        "Element.clientHeight",
+        "hardcoded to 0 (layout not yet interactive)",
+    );
+    args.rval().set(mozjs::jsval::Int32Value(0));
+    true
+}
+
+/// element.scrollWidth getter - warns that this is hardcoded to 0
+unsafe extern "C" fn element_get_scroll_width(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    warn_stubbed_binding(
+        "Element.scrollWidth",
+        "hardcoded to 0 (layout not yet interactive)",
+    );
+    args.rval().set(mozjs::jsval::Int32Value(0));
+    true
+}
+
+/// element.scrollHeight getter - warns that this is hardcoded to 0
+unsafe extern "C" fn element_get_scroll_height(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    warn_stubbed_binding(
+        "Element.scrollHeight",
+        "hardcoded to 0 (layout not yet interactive)",
+    );
+    args.rval().set(mozjs::jsval::Int32Value(0));
+    true
+}
+
+/// element.scrollLeft getter - warns that this is hardcoded to 0
+unsafe extern "C" fn element_get_scroll_left(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    warn_stubbed_binding(
+        "Element.scrollLeft",
+        "hardcoded to 0 (layout not yet interactive)",
+    );
+    args.rval().set(mozjs::jsval::Int32Value(0));
+    true
+}
+
+/// element.scrollTop getter - warns that this is hardcoded to 0
+unsafe extern "C" fn element_get_scroll_top(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    warn_stubbed_binding(
+        "Element.scrollTop",
+        "hardcoded to 0 (layout not yet interactive)",
+    );
+    args.rval().set(mozjs::jsval::Int32Value(0));
     true
 }
 

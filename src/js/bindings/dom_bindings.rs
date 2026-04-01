@@ -1050,7 +1050,8 @@ unsafe fn setup_window(
     set_int_property(cx, global, "pageYOffset", get_scroll_y())?;
     // FIXME: devicePixelRatio is hardcoded to 1 even though get_device_pixel_ratio() returns the
     // real scale factor from the DOM viewport. Should use that value instead.
-    set_int_property(cx, global, "devicePixelRatio", 1)?;
+    define_function(cx, global, "__getDevicePixelRatio", Some(window_get_device_pixel_ratio), 0)?;
+    define_property_getter(cx, global, "devicePixelRatio", "__getDevicePixelRatio")?;
 
     Ok(())
 }
@@ -3825,6 +3826,25 @@ unsafe extern "C" fn window_remove_event_listener(raw_cx: *mut JSContext, argc: 
     args.rval().set(UndefinedValue());
     true
 }
+
+/// window.devicePixelRatio getter
+unsafe extern "C" fn window_get_device_pixel_ratio(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let _safe_cx = &mut raw_cx.to_safe_cx();
+
+    trace!("[JS] window.devicePixelRatio getter called");
+    warn_stubbed_binding(
+        "window.devicePixelRatio",
+        "hardcoded to 1; real device pixel ratio from DOM viewport not used",
+    );
+
+    // Return hardcoded 1.0 for now
+    // In a full implementation, this would return the actual device pixel ratio
+    args.rval().set(mozjs::jsval::DoubleValue(1.0));
+    true
+}
+
+
 
 /// document.addEventListener implementation
 unsafe extern "C" fn document_add_event_listener(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {

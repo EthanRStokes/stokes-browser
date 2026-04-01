@@ -25,7 +25,7 @@
 /// | `google.tick` | Top-level tick recorder — delegates to the load-timer store |
 
 use crate::js::bindings::dom_bindings::DOM_REF;
-use crate::js::helpers::{define_function, get_node_id_from_value, js_value_to_string, set_bool_property, set_int_property, ToSafeCx};
+use crate::js::helpers::{define_function, get_node_id_from_value, js_value_to_string, set_bool_property, set_int_property, ToSafeCx, define_stubbed_property};
 use crate::js::JsRuntime;
 use mozjs::jsapi::{
     CallArgs, HandleValueArray, JSContext, JSObject,
@@ -338,8 +338,9 @@ unsafe fn setup_google(cx: &mut mozjs::context::JSContext, global: *mut JSObject
 
     // ------------------------------------------------------------------
     // google.xsrf — XSRF token map (populated later by server responses)
+    // This is a stubbed property that warns when accessed.
     // ------------------------------------------------------------------
-    let _ = get_or_create_object_property(cx, google.get(), "xsrf", false)?;
+    define_stubbed_property(cx, google.get(), "xsrf")?;
 
     Ok(())
 }
@@ -375,8 +376,6 @@ unsafe fn invoke_callback_with_global_this(cx: &mut SafeJSContext, callback_val:
 }
 
 unsafe fn setup_google_c(cx: &mut SafeJSContext, c: *mut JSObject) -> Result<(), String> {
-    let raw_cx = cx.raw_cx();
-
     // Timing recorders
     ensure_function(cx, c, "e", Some(google_c_e), 3)?;
     ensure_function(cx, c, "r", Some(google_c_r), 2)?;
@@ -407,9 +406,9 @@ unsafe fn setup_google_c(cx: &mut SafeJSContext, c: *mut JSObject) -> Result<(),
     ensure_int_prop(cx, c, "wh", 0)?;
 
     // iim  — "immediately-invoke metrics" map, populated by other inline scripts
+    // This is a stubbed property that warns when accessed
     if get_existing_object_property(cx, c, "iim").is_none() {
-        rooted!(in(raw_cx) let iim = new_plain_object(cx, "google.c.iim")?);
-        define_prop(cx, c, "iim", ObjectValue(iim.get()))?;
+        define_stubbed_property(cx, c, "iim")?;
     }
 
     Ok(())
@@ -418,8 +417,11 @@ unsafe fn setup_google_c(cx: &mut SafeJSContext, c: *mut JSObject) -> Result<(),
 unsafe fn setup_google_timers(cx: &mut SafeJSContext, timers: *mut JSObject) -> Result<(), String> {
     // google.timers = { load: { e: {}, t: {}, tick: fn } }
     let (load, _) = get_or_create_object_property(cx, timers, "load", false)?;
-    let _ = get_or_create_object_property(cx, load, "e", false)?;
-    let _ = get_or_create_object_property(cx, load, "t", false)?;
+
+    // google.timers.load.e and .t are stubbed/placeholder objects
+    define_stubbed_property(cx, load, "e")?;
+    define_stubbed_property(cx, load, "t")?;
+
     ensure_function(cx, load, "tick", Some(google_timers_load_tick), 2)?;
     Ok(())
 }
