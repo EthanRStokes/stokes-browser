@@ -32,6 +32,7 @@ use style::thread_state::ThreadState;
 use crate::engine::js_provider::{JsProviderMessage, ScriptKind, StokesJsProvider};
 use crate::engine::nav_provider::StokesNavigationProvider;
 use crate::engine::script_type::executable_script_kind;
+use crate::engine::net_provider::ProviderError;
 
 thread_local! {
     pub(crate) static ENGINE_REF: RefCell<Option<*mut Engine>> = RefCell::new(None);
@@ -148,14 +149,16 @@ impl Engine {
                 style::thread_state::enter(ThreadState::SCRIPT);
                 self.execute_document_scripts().await;
                 style::thread_state::exit(ThreadState::SCRIPT);
+            }
 
-                // Fire DOMContentLoaded then load after all inline scripts have run.
+            self.resolve(0.0);
+
+            if self.config.enable_javascript {
+                // Fire DOMContentLoaded/load only after parser scripts have actually executed.
                 if let Some(dom) = self.dom.as_ref() {
                     crate::js::bindings::event_listeners::fire_load_events(dom);
                 }
             }
-
-            self.resolve(0.0);
 
             // Calculate layout with CSS styles applied
             self.update_content_dimensions();
@@ -468,64 +471,107 @@ impl Engine {
             self.initialize_js_runtime();
         }
 
-        let dom = self.dom();
-        let script_elements = dom.query_selector("script");
+        struct PendingScript {
+            node_id: usize,
+            kind: ScriptKind,
+            inline_script: Option<String>,
+            external_url: Option<url::Url>,
+            source_url: Option<String>,
+        }
 
-        for script_element in script_elements {
-            if let NodeData::Element(element_data) = &script_element.data {
-                let script_node_id = script_element.id;
-                let script_type = element_data.attr(local_name!("type"));
+        let mut pending_scripts = Vec::new();
+        {
+            let dom = self.dom();
+            let script_elements = dom.query_selector("script");
 
-                let Some(script_kind) = executable_script_kind(script_type) else {
-                    // Non-JS types are data blocks by spec and are not executed.
-                    continue;
-                };
+            for script_element in script_elements {
+                if let NodeData::Element(element_data) = &script_element.data {
+                    let Some(script_kind) = executable_script_kind(element_data.attr(local_name!("type"))) else {
+                        // Non-JS types are data blocks by spec and are not executed.
+                        continue;
+                    };
 
-                // Check for external scripts
-                if let Some(src) = element_data.attr(local_name!("src")) {
-                    println!("Found external script: {}", src);
-                    let net_provider = dom.net_provider.clone();
-                    let js_provider = self.js_provider.clone();
-                    let url = dom.resolve_url(src);
-                    let url_str = url.to_string();
-                    let source_url = (script_kind == ScriptKind::Module).then(|| url_str.clone());
-                    net_provider.fetch_with_callback(
-                        Request::get(url),
-                        Box::new(move |result| {
-                            match result {
-                                Ok((_, bytes)) => {
-                                    match String::from_utf8(Vec::from(bytes)) {
-                                        Ok(script) => {
-                                            if script_kind == ScriptKind::Module {
-                                                js_provider.execute_module_script_with_node_id(script, script_node_id, source_url.clone());
-                                            } else {
-                                                js_provider.execute_script_with_node_id(script, script_node_id);
-                                            }
-                                        }
-                                        Err(e) => eprintln!("[JS] External script at '{}' is not valid UTF-8: {}", url_str, e),
-                                    }
-                                }
-                                Err(e) => eprintln!("[JS] Failed to load external script '{}': {:?}", url_str, e),
-                            }
-                        })
-                    );
-                } else {
-                    // Get inline script content
-                    let script_content = script_element.text_content();
-                    if !script_content.trim().is_empty() {
-                        if script_kind == ScriptKind::Module {
-                            self.js_provider.execute_module_script_with_node_id(
-                                script_content,
-                                script_node_id,
-                                Some(dom.url.to_string()),
-                            );
-                        } else {
-                            self.js_provider.execute_script_with_node_id(script_content, script_node_id);
+                    let node_id = script_element.id;
+                    if let Some(src) = element_data.attr(local_name!("src")) {
+                        let resolved_url = dom.resolve_url(src);
+                        let source_url = (script_kind == ScriptKind::Module).then(|| resolved_url.to_string());
+                        pending_scripts.push(PendingScript {
+                            node_id,
+                            kind: script_kind,
+                            inline_script: None,
+                            external_url: Some(resolved_url),
+                            source_url,
+                        });
+                    } else {
+                        let script_content = script_element.text_content();
+                        if !script_content.trim().is_empty() {
+                            pending_scripts.push(PendingScript {
+                                node_id,
+                                kind: script_kind,
+                                inline_script: Some(script_content),
+                                external_url: None,
+                                source_url: (script_kind == ScriptKind::Module).then(|| dom.url.to_string()),
+                            });
                         }
                     }
                 }
             }
         }
+
+        for pending in pending_scripts {
+            let script = if let Some(inline_script) = pending.inline_script {
+                inline_script
+            } else if let Some(external_url) = pending.external_url {
+                match self.fetch_external_script_for_execution(Request::get(external_url.clone())).await {
+                    Ok(script) => script,
+                    Err(error) => {
+                        eprintln!("[JS] Failed to load external script '{}': {}", external_url, error);
+                        continue;
+                    }
+                }
+            } else {
+                continue;
+            };
+
+            if pending.kind == ScriptKind::Module {
+                self.js_provider
+                    .execute_module_script_with_node_id(script, pending.node_id, pending.source_url);
+            } else {
+                self.js_provider.execute_script_with_node_id(script, pending.node_id);
+            }
+        }
+    }
+
+    async fn fetch_external_script_for_execution(&self, request: Request) -> Result<String, String> {
+        let net_provider = self
+            .new_http_client
+            .as_ref()
+            .map(|client| client.net_provider.clone())
+            .or_else(|| self.dom.as_ref().map(|dom| dom.net_provider.clone()))
+            .ok_or_else(|| "Network provider unavailable".to_string())?;
+
+        let request_url = request.url.to_string();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<String, String>>();
+
+        net_provider.fetch_with_callback(
+            request,
+            Box::new(move |result| {
+                let response = match result {
+                    Ok((_, bytes)) => String::from_utf8(bytes.to_vec())
+                        .map_err(|error| format!("External script at '{}' is not valid UTF-8: {}", request_url, error)),
+                    Err(error) => Err(match error {
+                        ProviderError::Blocked => format!("Blocked by content filtering: {}", request_url),
+                        _ => format!("{:?}", error),
+                    }),
+                };
+
+                let _ = tx.send(response);
+            }),
+        );
+
+        rx.recv()
+            .await
+            .ok_or_else(|| "Script fetch callback dropped before script delivery".to_string())?
     }
 
     /// Fire a click event on a DOM node
