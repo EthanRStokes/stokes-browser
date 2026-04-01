@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>jQuery Test File</title>
+    <!-- Load jQuery from CDN -->
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.4/jquery.min.js"></script>
+    <style>
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>jQuery Test</h1>
+    <button id="testBtn">Click Me</button>
+    <div id="result" class="hidden">Success: jQuery is working!</div>
+</div>
+
+<script>
+    // Ensure DOM is ready
+    $(document).ready(function() {
+        // Select the button and attach a click event
+        $('#testBtn').click(function() {
+            // Hide the button and show the result div
+            $(this).hide();
+            $('#result').removeClass('hidden');
+            console.log('jQuery is loaded and functional.');
+        });
+    });
+</script>
+</body>
+</html>
