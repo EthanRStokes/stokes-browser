@@ -63,9 +63,6 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
     // Set up DOM bindings
     dom_bindings::setup_dom_bindings(runtime, document_root, user_agent)?;
 
-    // Provide a lightweight `$` / `jQuery` fallback for pages that assume jQuery is present.
-    dom_bindings::setup_jquery_compat_deferred(runtime)?;
-
     // Set up callable SVGElement/SVGSVGElement constructors
     dom_bindings::setup_svg_constructors_deferred(runtime)?;
 
