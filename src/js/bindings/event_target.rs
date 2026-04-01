@@ -581,6 +581,8 @@ pub fn setup_event_target(runtime: &mut crate::js::JsRuntime) -> JsResult<()> {
     // Set up Event constructor
     let event_constructor_script = r#"
         (function() {
+            const root = typeof globalThis !== 'undefined' ? globalThis : window;
+
             globalThis.Event = function(type, eventInitDict) {
                 if (!(this instanceof Event)) {
                     return new Event(type, eventInitDict);
@@ -640,6 +642,105 @@ pub fn setup_event_target(runtime: &mut crate::js::JsRuntime) -> JsResult<()> {
             globalThis.Event.CAPTURING_PHASE = 1;
             globalThis.Event.AT_TARGET = 2;
             globalThis.Event.BUBBLING_PHASE = 3;
+
+            // Minimal EventTarget constructor for libraries that instantiate or check it.
+            function EventTarget() {
+                if (!(this instanceof EventTarget)) {
+                    throw new TypeError("Failed to construct 'EventTarget': Please use the 'new' operator.");
+                }
+                Object.defineProperty(this, '__listeners', {
+                    value: Object.create(null),
+                    configurable: true,
+                    enumerable: false,
+                    writable: true
+                });
+            }
+
+            EventTarget.prototype.addEventListener = function(type, listener, options) {
+                if (!listener || (typeof listener !== 'function' && typeof listener.handleEvent !== 'function')) {
+                    return;
+                }
+
+                const eventType = String(type || '');
+                const capture = typeof options === 'boolean'
+                    ? options
+                    : !!(options && typeof options === 'object' && options.capture);
+
+                if (!this.__listeners) {
+                    Object.defineProperty(this, '__listeners', {
+                        value: Object.create(null),
+                        configurable: true,
+                        enumerable: false,
+                        writable: true
+                    });
+                }
+
+                const list = this.__listeners[eventType] || (this.__listeners[eventType] = []);
+                for (let i = 0; i < list.length; i++) {
+                    const entry = list[i];
+                    if (entry.listener === listener && entry.capture === capture) {
+                        return;
+                    }
+                }
+
+                list.push({ listener: listener, capture: capture });
+            };
+
+            EventTarget.prototype.removeEventListener = function(type, listener, options) {
+                if (!this.__listeners || !listener) {
+                    return;
+                }
+
+                const eventType = String(type || '');
+                const capture = typeof options === 'boolean'
+                    ? options
+                    : !!(options && typeof options === 'object' && options.capture);
+                const list = this.__listeners[eventType];
+
+                if (!list || list.length === 0) {
+                    return;
+                }
+
+                for (let i = 0; i < list.length; i++) {
+                    const entry = list[i];
+                    if (entry.listener === listener && entry.capture === capture) {
+                        list.splice(i, 1);
+                        break;
+                    }
+                }
+            };
+
+            EventTarget.prototype.dispatchEvent = function(event) {
+                if (!event || typeof event !== 'object') {
+                    throw new TypeError("Failed to execute 'dispatchEvent' on 'EventTarget': parameter 1 is not of type 'Event'.");
+                }
+
+                const eventType = String(event.type || '');
+                const list = this.__listeners && this.__listeners[eventType]
+                    ? this.__listeners[eventType].slice()
+                    : [];
+
+                if (event.target === null || event.target === undefined) {
+                    event.target = this;
+                }
+                event.currentTarget = this;
+                event.eventPhase = Event.AT_TARGET;
+
+                for (let i = 0; i < list.length; i++) {
+                    const listener = list[i].listener;
+                    if (typeof listener === 'function') {
+                        listener.call(this, event);
+                    } else if (listener && typeof listener.handleEvent === 'function') {
+                        listener.handleEvent.call(listener, event);
+                    }
+                }
+
+                event.currentTarget = null;
+                event.eventPhase = Event.NONE;
+                return event.defaultPrevented !== true;
+            };
+
+            root.EventTarget = EventTarget;
         })();
     "#;
 
