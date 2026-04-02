@@ -1,7 +1,7 @@
 use std::ptr;
 use std::rc::Rc;
 use mozjs::glue::CreateJobQueue;
-use mozjs::jsapi::SetJobQueue;
+use mozjs::rust::wrappers2::SetJobQueue;
 use crate::dom::Dom;
 use crate::js::bindings::timers::TimerManager;
 use crate::js::{JsResult, JsRuntime};
@@ -32,8 +32,7 @@ pub mod xhr;
 pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, user_agent: String, timer_manager: Rc<TimerManager>) -> JsResult<()> {
     let job_queue = unsafe { CreateJobQueue(&JOB_QUEUE_TRAPS, ptr::null_mut(), ptr::null_mut()) };
     runtime.do_with_jsapi(|cx, global| unsafe {
-        let raw_cx = cx.raw_cx();
-        SetJobQueue(raw_cx, job_queue);
+        SetJobQueue(cx, job_queue);
         init_rejection_tracker(cx);
     });
     // Set up timers
