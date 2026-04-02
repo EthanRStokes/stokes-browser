@@ -417,7 +417,7 @@ dependencies = [
 [[package]]
 name = "blitz-traits"
 version = "0.2.0"
-source = "git+https://github.com/DioxusLabs/blitz?rev=781ae63f#781ae63fdb6e76baa0969ba8cbce557327c7dfca"
+source = "git+https://github.com/DioxusLabs/blitz?rev=fed6fa6#fed6fa643a01c249b61cb0c44bfd967a27adeda7"
 dependencies = [
  "bitflags 2.11.0",
  "bytes",
@@ -819,7 +819,7 @@ version = "0.36.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dae61cf9c0abb83bd659dab65b7e4e38d8236824c85f0f804f173567bda257d2"
 dependencies = [
- "cssparser-macros 0.6.1",
+ "cssparser-macros",
  "dtoa-short",
  "itoa",
  "phf",
@@ -828,32 +828,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "cssparser"
-version = "0.37.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c9cdaae01d5ed7882b04d795e7f752f46ff52d2fa3b50a20d28c464510bba98"
-dependencies = [
- "cssparser-macros 0.7.0",
- "dtoa-short",
- "itoa",
- "smallvec",
-]
-
-[[package]]
 name = "cssparser-macros"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13b588ba4ac1a99f7f2964d24b3d896ddc6bf847ee3855dbd4366f058cfcd331"
-dependencies = [
- "quote",
- "syn",
-]
-
-[[package]]
-name = "cssparser-macros"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10a2a99df6e410a8ff4245aa2006499ea662245f967cc7c0a38c83ef8eb44dbf"
 dependencies = [
  "quote",
  "syn",
@@ -1399,9 +1377,9 @@ checksum = "02a596f5713680923a2080d86de50fe472fb290693cf0f701187a1c8b36996b7"
 
 [[package]]
 name = "font-types"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1e4d2d0cf79d38430cc9dc9aadec84774bff2e1ba30ae2bf6c16cfce9385a23"
+checksum = "73829a7b5c91198af28a99159b7ae4afbb252fb906159ff7f189f3a2ceaa3df2"
 dependencies = [
  "bytemuck",
 ]
@@ -1442,7 +1420,7 @@ dependencies = [
  "objc2-core-text",
  "objc2-foundation",
  "parlance",
- "read-fonts",
+ "read-fonts 0.37.0",
  "roxmltree 0.21.1",
  "smallvec",
  "windows 0.62.2",
@@ -1747,7 +1725,7 @@ dependencies = [
  "bitflags 2.11.0",
  "bytemuck",
  "core_maths",
- "read-fonts",
+ "read-fonts 0.37.0",
  "smallvec",
 ]
 
@@ -3349,7 +3327,7 @@ dependencies = [
  "linebender_resource_handle",
  "parlance",
  "parley_data",
- "skrifa",
+ "skrifa 0.40.0",
 ]
 
 [[package]]
@@ -3886,7 +3864,17 @@ checksum = "7b634fabf032fab15307ffd272149b622260f55974d9fad689292a5d33df02e5"
 dependencies = [
  "bytemuck",
  "core_maths",
- "font-types 0.11.0",
+ "font-types 0.11.1",
+]
+
+[[package]]
+name = "read-fonts"
+version = "0.38.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70eac20eeee8bd51247a0c2f349f657563fffd19d041cd12988cc2801ec2ebef"
+dependencies = [
+ "bytemuck",
+ "font-types 0.11.1",
 ]
 
 [[package]]
@@ -4163,7 +4151,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c5d9c0c92a92d33f08817311cf3f2c29a3538a8240e94a6a3c622ce652d7e00c"
 dependencies = [
  "bitflags 2.11.0",
- "cssparser 0.36.0",
+ "cssparser",
  "derive_more",
  "log",
  "new_debug_unreachable",
@@ -4359,7 +4347,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fbdfe3d2475fbd7ddd1f3e5cf8288a30eb3e5f95832829570cd88115a7434ac"
 dependencies = [
  "bytemuck",
- "read-fonts",
+ "read-fonts 0.37.0",
+]
+
+[[package]]
+name = "skrifa"
+version = "0.41.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77c3bef975c2f5f07c0a780f95e1f5002deafb716f8e0484816cc08b1a823d2f"
+dependencies = [
+ "bytemuck",
+ "read-fonts 0.38.0",
 ]
 
 [[package]]
@@ -4476,7 +4474,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stokes-browser"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "adblock",
  "aes-gcm",
@@ -4489,7 +4487,7 @@ dependencies = [
  "blitz-traits",
  "bytes",
  "color",
- "cssparser 0.36.0",
+ "cssparser",
  "curl",
  "cursor-icon",
  "data-url",
@@ -4533,7 +4531,7 @@ dependencies = [
  "sha2",
  "shared_memory",
  "skia-safe",
- "skrifa",
+ "skrifa 0.41.0",
  "slab",
  "smallvec",
  "smol_str",
@@ -4649,7 +4647,7 @@ dependencies = [
  "atomic_refcell",
  "bitflags 2.11.0",
  "byteorder",
- "cssparser 0.36.0",
+ "cssparser",
  "derive_more",
  "encoding_rs",
  "euclid",
@@ -4735,7 +4733,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1cdff8744ef9ccdd7381e28566413446608759cb5eeec418a798c72ae95d86fd"
 dependencies = [
  "app_units",
- "cssparser 0.36.0",
+ "cssparser",
  "euclid",
  "selectors",
  "servo_arc",
@@ -4755,7 +4753,7 @@ checksum = "61b56e722f192b3716459e30f3d5ae4825f476757703446a3580086668784a8c"
 [[package]]
 name = "stylo_taffy"
 version = "0.2.0"
-source = "git+https://github.com/DioxusLabs/blitz?rev=781ae63f#781ae63fdb6e76baa0969ba8cbce557327c7dfca"
+source = "git+https://github.com/DioxusLabs/blitz?rev=fed6fa6#fed6fa643a01c249b61cb0c44bfd967a27adeda7"
 dependencies = [
  "stylo",
  "stylo_atoms",
@@ -4770,7 +4768,7 @@ checksum = "354e851d78b99d3ab591a76a9f768048493540d3575d1acc1e59ad640f36e449"
 dependencies = [
  "app_units",
  "bitflags 2.11.0",
- "cssparser 0.36.0",
+ "cssparser",
  "euclid",
  "malloc_size_of_derive",
  "selectors",
@@ -4852,11 +4850,11 @@ dependencies = [
 
 [[package]]
 name = "taffy"
-version = "0.9.2"
-source = "git+https://github.com/DioxusLabs/taffy?rev=4b6687da0ca1e9d71da4e48b4c659f5c45060707#4b6687da0ca1e9d71da4e48b4c659f5c45060707"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96fb9d22ffe63c7aa8996275aa0017404b513619bb6cf6309d9f822095afb414"
 dependencies = [
  "arrayvec",
- "cssparser 0.37.0",
  "grid",
  "serde",
  "slotmap",
@@ -5043,7 +5041,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eab187810ca1e6aaa4c97a06492aac9ade2ffae6a301fd2aac103656f5a69edb"
 dependencies = [
- "cssparser 0.36.0",
+ "cssparser",
  "servo_arc",
  "smallbitvec",
  "smallvec",

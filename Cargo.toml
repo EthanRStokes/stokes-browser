@@ -1,6 +1,6 @@
 [package]
 name = "stokes-browser"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 
 [dependencies]
@@ -25,7 +25,17 @@ shared_memory = "0.12.4"
 serde = { version = "1.0", features = ["derive"] }
 rfd = "0.17.2"
 url = "2"
-taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "4b6687da0ca1e9d71da4e48b4c659f5c45060707", features = ["strict_provenance"] }
+#taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "4b6687da0ca1e9d71da4e48b4c659f5c45060707", features = ["strict_provenance"] }
+taffy = { version = "0.10.0", default-features = false, features = [
+    "std",
+    "flexbox",
+    "grid",
+    "block_layout",
+    "content_size",
+    "calc",
+    "detailed_layout_info",
+    "strict_provenance"
+]}
 slab = "0.4.12"
 markup5ever = "0.39.0"
 xml5ever = "0.39.0"
@@ -33,7 +43,7 @@ parley = { git = "https://github.com/linebender/parley", rev = "07980878fc9ea4b1
 euclid = "0.22.13"
 bitflags = { version = "2.11.0", features = ["serde"] }
 atomic_refcell = "0.1.13"
-skrifa = "0.40.0"
+skrifa = "0.41.0"
 kurbo = "0.13.0"
 bytes = "1.11.1"
 tracing = "0.1.44"
@@ -79,8 +89,8 @@ stylo_dom = "0.14.0"
 selectors = "0.36.1"
 
 # Blitz
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "781ae63f" }
-stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "781ae63f", features = ["floats"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "fed6fa6" }
+stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "fed6fa6", features = ["floats"] }
 dioxus-asset-resolver = { version = "0.7.4", features = ["native"] }
 
 [dependencies.glutin-winit]

@@ -71,7 +71,7 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
     // Set up Event and CustomEvent constructors
     dom_bindings::setup_event_constructors_deferred(runtime)?;
 
-    // Set up MutationObserver / MutationRecord polyfill and node patch hooks
+    // Set up MutationObserver / MutationRecord native bindings
     mutation_observer::setup_mutation_observer(runtime)?;
 
     // Set up window.matchMedia and MediaQueryList behavior

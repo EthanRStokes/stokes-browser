@@ -35,6 +35,7 @@ use url::Url;
 use crate::js::bindings::initialize_bindings;
 use crate::js::bindings::event_listeners::clear_all_listeners;
 use crate::js::bindings::element_bindings::clear_element_wrapper_cache;
+use crate::js::bindings::mutation_observer::{clear_mutation_observer_state, deliver_pending_mutation_observers};
 use crate::js::helpers::ToSafeCx;
 
 lazy_static! {
@@ -168,6 +169,7 @@ impl JsRuntime {
         clear_all_listeners();
         clear_pending_jobs_for_navigation();
         clear_element_wrapper_cache();
+        clear_mutation_observer_state();
         self.module_cache.clear();
 
         // Create a new global so top-level lexical bindings from the previous
@@ -538,6 +540,9 @@ impl JsRuntime {
 
         self.do_with_jsapi(|cx, _global| {
             let executed = perform_microtask_checkpoint(cx);
+            unsafe {
+                deliver_pending_mutation_observers(cx);
+            }
             if executed > 0 {
                 log::trace!("Executed {} promise jobs", executed);
             }

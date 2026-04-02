@@ -1,3 +1,49 @@
+                if dom.get_node(self_id).and_then(|n| n.parent).is_some() {
+                    if dom.get_node(self_id).and_then(|n| n.parent).is_some() {
+                    if dom.get_node(self_id).and_then(|n| n.parent).is_some() {
+            if let Some(parent_id) = get_node_id_from_this(safe_cx, &args) {
+            // Update parent reference in child node
+            if let Some(parent_id) = get_node_id_from_this(safe_cx, &args) {
+            // Update parent reference in child node
+            if let Some(parent_id) = get_node_id_from_this(safe_cx, &args) {
+unsafe fn create_js_node_wrapper_by_id(cx: &mut SafeJSContext, node_id: usize) -> Option<JSVal> {
+    maybe_patch_mutation_observer_node(cx, element.get());
+
+unsafe fn maybe_patch_mutation_observer_node(cx: &mut SafeJSContext, node_obj: *mut JSObject) {
+    let raw_cx = cx.raw_cx();
+    rooted!(in(raw_cx) let global = CurrentGlobalOrNull(cx));
+    if global.get().is_null() {
+        return;
+    }
+
+    rooted!(in(raw_cx) let mut patch_fn = UndefinedValue());
+    let patch_name = std::ffi::CString::new("__stokesPatchMutationObserverNode").unwrap();
+    if !JS_GetProperty(
+        cx,
+        global.handle().into(),
+        patch_name.as_ptr(),
+        patch_fn.handle_mut().into(),
+    ) {
+        return;
+use crate::js::bindings::mutation_observer;
+    }
+
+    if !patch_fn.get().is_object() {
+        return;
+    }
+
+    rooted!(in(raw_cx) let node_rooted = node_obj);
+    rooted!(in(raw_cx) let call_args = ValueArray::<0usize>::new([]));
+    rooted!(in(raw_cx) let mut rval = UndefinedValue());
+    let _ = JS_CallFunctionValue(
+        cx,
+        node_rooted.handle().into(),
+        patch_fn.handle().into(),
+        &HandleValueArray::from(&call_args),
+        rval.handle_mut().into(),
+    );
+}
+
 // Element bindings for JavaScript using mozjs
 use blitz_traits::net::Request;
 use crate::dom::{AttributeMap, NodeData, ShadowRootMode};
@@ -25,7 +71,6 @@ use std::os::raw::c_uint;
 use blitz_traits::shell::ShellProvider;
 use tracing::{trace, warn};
 use crate::js::bindings::event_listeners;
-use crate::js::bindings::warnings::warn_stubbed_binding;
 
 struct PinnedElementWrapper {
     rooted_value: Box<Heap<JSVal>>,
@@ -79,40 +124,6 @@ unsafe fn get_cached_element_wrapper(node_id: usize) -> Option<*mut JSObject> {
 }
 
 unsafe fn cache_element_wrapper(cx: &mut SafeJSContext, node_id: usize, obj: *mut JSObject) {
-    ELEMENT_WRAPPER_CACHE.with(|cache| {
-        cache
-            .borrow_mut()
-            .insert(node_id, PinnedElementWrapper::new(cx, obj));
-    });
-}
-
-fn has_backing_dom_node(node_id: usize) -> bool {
-    DOM_REF.with(|dom_ref| {
-        dom_ref
-            .borrow()
-            .as_ref()
-            .is_some_and(|dom_ptr| unsafe { (&**dom_ptr).get_node(node_id).is_some() })
-    })
-}
-
-fn simple_id_selector(selector: &str) -> Option<&str> {
-    let trimmed = selector.trim();
-    let id = trimmed.strip_prefix('#')?;
-    if id.is_empty() {
-        return None;
-    }
-
-    if id
-        .chars()
-        .any(|c| matches!(c, '.' | '#' | '[' | ']' | ' ' | '\t' | '\n' | '\r' | '>' | '+' | '~' | ',' | ':'))
-    {
-        return None;
-    }
-
-    Some(id)
-}
-
-fn is_descendant_of(dom: &crate::dom::Dom, root_id: usize, candidate_id: usize) -> bool {
     let mut current = Some(candidate_id);
     while let Some(cur_id) = current {
         if cur_id == root_id {
@@ -570,8 +581,6 @@ unsafe fn create_js_element_impl(
         if JS_GetProperty(cx, global.handle().into(), ctor_name.as_ptr(), ctor_val.handle_mut().into())
             && ctor_val.get().is_object()
         {
-            let constructor_prop = std::ffi::CString::new("constructor").unwrap();
-            JS_DefineProperty(
                 cx,
                 element_rooted.handle().into(),
                 constructor_prop.as_ptr(),
@@ -689,7 +698,7 @@ unsafe fn create_js_comment_node_by_id(cx: &mut SafeJSContext, node_id: usize) -
     }
 
     set_int_property(cx, comment_node.get(), "nodeType", 8)?; // COMMENT_NODE
-    set_string_property(cx, comment_node.get(), "nodeName", "#comment")?;
+pub(crate) unsafe fn create_js_node_wrapper_by_id(cx: &mut SafeJSContext, node_id: usize) -> Option<JSVal> {
     set_string_property(cx, comment_node.get(), "nodeValue", "")?;
     set_string_property(cx, comment_node.get(), "textContent", "")?;
     define_function(cx, comment_node.get(), "hasChildNodes", Some(element_has_child_nodes), 0)?;
@@ -1392,6 +1401,22 @@ unsafe extern "C" fn element_get_attribute(raw_cx: *mut JSContext, argc: c_uint,
 
     if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
         let value = DOM_REF.with(|dom_ref| {
+        let old_value = DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &*dom_ptr;
+                if let Some(node) = dom.get_node(node_id) {
+                    if let NodeData::Element(ref elem_data) = node.data {
+                        return elem_data
+                            .attributes
+                            .iter()
+                            .find(|attr| attr.name.local.as_ref() == attr_name)
+                            .map(|attr| attr.value.to_string());
+                    }
+                }
+            }
+            None
+        });
+
             if let Some(dom_ptr) = *dom_ref.borrow() {
                 let dom = &*dom_ptr;
                 if let Some(node) = dom.get_node(node_id) {
@@ -1404,6 +1429,8 @@ unsafe extern "C" fn element_get_attribute(raw_cx: *mut JSContext, argc: c_uint,
             }
             None
         });
+
+        mutation_observer::queue_attribute_mutation(node_id, attr_name.clone(), old_value);
 
         if let Some(val) = value {
             trace!("[JS] getAttribute('{}') = '{}'", attr_name, val);
@@ -1424,6 +1451,22 @@ unsafe extern "C" fn element_set_attribute(raw_cx: *mut JSContext, argc: c_uint,
 
     let attr_name = if argc > 0 {
         js_value_to_string(safe_cx, *args.get(0))
+        let old_value = DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                let dom = &*dom_ptr;
+                if let Some(node) = dom.get_node(node_id) {
+                    if let NodeData::Element(ref elem_data) = node.data {
+                        return elem_data
+                            .attributes
+                            .iter()
+                            .find(|attr| attr.name.local.as_ref() == attr_name)
+                            .map(|attr| attr.value.to_string());
+                    }
+                }
+            }
+            None
+        });
+
     } else {
         String::new()
     };
@@ -1435,6 +1478,8 @@ unsafe extern "C" fn element_set_attribute(raw_cx: *mut JSContext, argc: c_uint,
 
     trace!("[JS] element.setAttribute('{}', '{}') called", attr_name, attr_value);
 
+
+        mutation_observer::queue_attribute_mutation(node_id, attr_name.clone(), old_value);
     if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
         DOM_REF.with(|dom_ref| {
             if let Some(dom_ptr) = *dom_ref.borrow() {
@@ -1554,21 +1599,30 @@ fn trigger_script_load_if_needed(child_id: usize) {
     if let Some((url, net_provider, js_provider, script_node_id, script_kind)) = script_load_info {
         println!("[JS] Dynamically loading script: {}", url);
         let url_str = url.to_string();
+            let mut appended: Option<(usize, Option<usize>)> = None;
         let module_source_url = (script_kind == ScriptKind::Module).then(|| url_str.clone());
         net_provider.fetch_with_callback(
             Request::get(url),
+                    let previous_sibling = dom.last_child_id(parent_id);
             Box::new(move |result| {
                 match result {
+                    appended = Some((text_node_id, previous_sibling));
                     Ok((_, bytes)) => {
                         match String::from_utf8(bytes.to_vec()) {
+            if let Some((text_node_id, previous_sibling)) = appended {
+                mutation_observer::queue_child_list_mutation(parent_id, vec![text_node_id], Vec::new(), previous_sibling, None);
+            }
                             Ok(script) => {
                                 if script_kind == ScriptKind::Module {
+            let mut previous_sibling = None;
                                     js_provider.execute_module_script_with_node_id(script, script_node_id, module_source_url.clone());
                                 } else {
                                     js_provider.execute_script_with_node_id(script, script_node_id);
+                    previous_sibling = dom.last_child_id(parent_id);
                                 }
                             }
                             Err(e) => eprintln!("[JS] Dynamic script at '{}' is not valid UTF-8: {}", url_str, e),
+            mutation_observer::queue_child_list_mutation(parent_id, vec![child_id], Vec::new(), previous_sibling, None);
                         }
                     }
                     Err(e) => eprintln!("[JS] Failed to load dynamic script '{}': {:?}", url_str, e),
@@ -1598,15 +1652,20 @@ pub(crate) unsafe extern "C" fn element_append(raw_cx: *mut JSContext, argc: c_u
         if arg.is_string() {
             // DOMString argument: create a text node and append it
             let text = js_value_to_string(safe_cx, arg);
+    let parent_id = get_node_id_from_this(safe_cx, &args);
+    let mut previous_sibling = None;
             DOM_REF.with(|dom| {
                 if let Some(dom_ptr) = *dom.borrow() {
                     let dom = &mut *dom_ptr;
-                    let text_node_id = dom.create_text_node(&text);
-                    dom.append_children(parent_id, &[text_node_id]);
+            if let Some(parent_id) = parent_id {
+                previous_sibling = dom.last_child_id(parent_id);
                 }
             });
         } else if let Some(child_id) = get_node_id_from_value(safe_cx, arg) {
             // Node argument: append directly
+    if let Some(parent_id) = parent_id {
+        mutation_observer::queue_child_list_mutation(parent_id, vec![child_id], Vec::new(), previous_sibling, None);
+    }
             DOM_REF.with(|dom| {
                 if let Some(dom_ptr) = *dom.borrow() {
                     let dom = &mut *dom_ptr;
@@ -1642,15 +1701,28 @@ pub(crate) unsafe extern "C" fn element_append_child(raw_cx: *mut JSContext, arg
         args.rval().set(UndefinedValue());
         return true;
     };
+    let parent_id = get_node_id_from_this(safe_cx, &args);
+    let mut previous_sibling = None;
+    let mut next_sibling = None;
+    let mut removed = false;
     DOM_REF.with(|dom| {
         if let Some(dom_ptr) = *dom.borrow() {
             let dom = &mut *dom_ptr;
-            // Update parent reference in child node
-            if let Some(parent_id) = get_node_id_from_this(safe_cx, &args) {
+            if let Some(parent_id) = parent_id {
+                if dom.parent_id(child_id) == Some(parent_id) {
+                    previous_sibling = dom.previous_sibling_id(child_id);
+                    next_sibling = dom.next_sibling_id(child_id);
+                }
                 dom.append_children(parent_id, &[child_id]);
+                removed = true;
             }
         }
     });
+    if removed {
+        if let Some(parent_id) = parent_id {
+            mutation_observer::queue_child_list_mutation(parent_id, Vec::new(), vec![child_id], previous_sibling, next_sibling);
+        }
+    }
     custom_elements_upgrade_for_node(safe_cx, child_id);
 
     // Trigger script loading if a <script> element with a src attribute was appended
@@ -1689,23 +1761,36 @@ pub(crate) unsafe extern "C" fn element_remove_child(raw_cx: *mut JSContext, arg
     DOM_REF.with(|dom| {
         if let Some(dom_ptr) = *dom.borrow() {
             let dom = &mut *dom_ptr;
+    let parent_id = get_node_id_from_this(safe_cx, &args);
+    let mut previous_sibling = None;
+    let mut next_sibling = None;
+    let mut inserted = false;
             // Update parent reference in child node
             if let Some(parent_id) = get_node_id_from_this(safe_cx, &args) {
                 dom.remove_node(child_id);
-            }
+            if let Some(parent_id) = parent_id {
         }
     });
+                        previous_sibling = dom.previous_sibling_id(ref_id);
+                        next_sibling = Some(ref_id);
     if argc > 0 {
         // Return the child that was appended
         args.rval().set(*args.get(0));
     } else {
+                        previous_sibling = dom.last_child_id(parent_id);
         args.rval().set(UndefinedValue());
     }
     true
 }
+                inserted = true;
 
 /// element.insertBefore implementation
 pub(crate) unsafe extern "C" fn element_insert_before(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+    if inserted {
+        if let Some(parent_id) = parent_id {
+            mutation_observer::queue_child_list_mutation(parent_id, vec![new_child_id], Vec::new(), previous_sibling, next_sibling);
+        }
+    }
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -1729,14 +1814,30 @@ pub(crate) unsafe extern "C" fn element_insert_before(raw_cx: *mut JSContext, ar
     // Second argument is the reference node. If null/undefined, fall back to appendChild.
     let reference_id = if argc > 1 {
         get_node_id_from_value(safe_cx, *args.get(1))
+            let mut previous_sibling = None;
+            let mut next_sibling = None;
+            let mut replaced = false;
     } else {
         None
     };
 
+                        previous_sibling = dom.previous_sibling_id(old_child_id);
+                        next_sibling = dom.next_sibling_id(old_child_id);
     DOM_REF.with(|dom| {
+                        replaced = true;
         if let Some(dom_ptr) = *dom.borrow() {
             let dom = &mut *dom_ptr;
             if let Some(parent_id) = get_node_id_from_this(safe_cx, &args) {
+
+            if replaced {
+                mutation_observer::queue_child_list_mutation(
+                    parent_id,
+                    vec![new_child_id],
+                    vec![old_child_id],
+                    previous_sibling,
+                    next_sibling,
+                );
+            }
                 match reference_id {
                     Some(ref_id) => {
                         // Insert new_child immediately before the reference node.
@@ -2698,12 +2799,19 @@ pub(crate) unsafe extern "C" fn element_get_root_node(raw_cx: *mut JSContext, ar
                 Err(_) => args.rval().set(NullValue()),
             }
         }
+        let mut mutation = None;
         Some((root_id, RootKind::Element)) => {
             // Disconnected subtree – if the root is this very node return `this`
             if root_id == start_id {
+                if let Some(parent_id) = dom.parent_id(node_id) {
+                    mutation = Some((parent_id, dom.previous_sibling_id(node_id), dom.next_sibling_id(node_id)));
+                }
                 args.rval().set(args.thisv().get());
             } else {
                 // Build a JS wrapper for the disconnected root element
+        if let Some((parent_id, previous_sibling, next_sibling)) = mutation {
+            mutation_observer::queue_child_list_mutation(parent_id, Vec::new(), vec![node_id], previous_sibling, next_sibling);
+        }
                 let elem_info = DOM_REF.with(|dom_ref| {
                     if let Some(dom_ptr) = *dom_ref.borrow() {
                         let dom = &*dom_ptr;
@@ -2737,16 +2845,19 @@ pub(crate) unsafe extern "C" fn element_get_root_node(raw_cx: *mut JSContext, ar
 // ============================================================================
 
 /// element.remove() — removes this element from its parent (ChildNode mixin).
+            let mut next_sibling = None;
 unsafe extern "C" fn element_remove(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     trace!("[JS] element.remove() called");
+                    next_sibling = first_child;
     if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
         DOM_REF.with(|dom| {
             if let Some(dom_ptr) = *dom.borrow() {
                 let dom = &mut *dom_ptr;
                 dom.remove_node(node_id);
             }
+            mutation_observer::queue_child_list_mutation(parent_id, new_ids.clone(), Vec::new(), None, next_sibling);
         });
     }
     args.rval().set(UndefinedValue());
@@ -2761,14 +2872,19 @@ unsafe fn collect_nodes_from_varargs(cx: &mut SafeJSContext, args: &CallArgs, ar
         if arg.is_string() {
             let text = js_value_to_string(cx, arg);
             DOM_REF.with(|dom| {
+            let mut mutation = None;
                 if let Some(dom_ptr) = *dom.borrow() {
                     let dom = &mut *dom_ptr;
                     ids.push(dom.create_text_node(&text));
-                }
+                    if let Some(parent_id) = dom.get_node(self_id).and_then(|n| n.parent) {
+                        mutation = Some((parent_id, dom.previous_sibling_id(self_id)));
             });
         } else if let Some(id) = get_node_id_from_value(cx, arg) {
             ids.push(id);
         }
+            if let Some((parent_id, previous_sibling)) = mutation {
+                mutation_observer::queue_child_list_mutation(parent_id, new_ids.clone(), Vec::new(), previous_sibling, Some(self_id));
+            }
     }
     ids
 }
@@ -2783,14 +2899,19 @@ unsafe extern "C" fn element_prepend(raw_cx: *mut JSContext, argc: c_uint, vp: *
         if !new_ids.is_empty() {
             DOM_REF.with(|dom| {
                 if let Some(dom_ptr) = *dom.borrow() {
+            let mut mutation = None;
                     let dom = &mut *dom_ptr;
                     let first_child = dom.get_node(parent_id).and_then(|n| n.children.first().copied());
                     match first_child {
-                        Some(fc) => dom.insert_nodes_before(fc, &new_ids),
+                    if let Some(parent_id) = dom.get_node(self_id).and_then(|n| n.parent) {
+                        mutation = Some((parent_id, dom.next_sibling_id(self_id)));
                         None => dom.append_children(parent_id, &new_ids),
                     }
                 }
             });
+            if let Some((parent_id, next_sibling)) = mutation {
+                mutation_observer::queue_child_list_mutation(parent_id, new_ids.clone(), Vec::new(), Some(self_id), next_sibling);
+            }
         }
     }
     args.rval().set(UndefinedValue());
@@ -2804,14 +2925,19 @@ unsafe extern "C" fn element_before(raw_cx: *mut JSContext, argc: c_uint, vp: *m
     trace!("[JS] element.before() called");
     if let Some(self_id) = get_node_id_from_this(safe_cx, &args) {
         let new_ids = collect_nodes_from_varargs(safe_cx, &args, argc);
+        let mut mutation = None;
         if !new_ids.is_empty() {
             DOM_REF.with(|dom| {
                 if let Some(dom_ptr) = *dom.borrow() {
-                    let dom = &mut *dom_ptr;
+                if let Some(parent_id) = dom.get_node(self_id).and_then(|n| n.parent) {
+                    mutation = Some((parent_id, dom.previous_sibling_id(self_id), dom.next_sibling_id(self_id)));
                     if dom.get_node(self_id).and_then(|n| n.parent).is_some() {
                         dom.insert_nodes_before(self_id, &new_ids);
                     }
                 }
+        if let Some((parent_id, previous_sibling, next_sibling)) = mutation {
+            mutation_observer::queue_child_list_mutation(parent_id, new_ids.clone(), vec![self_id], previous_sibling, next_sibling);
+        }
             });
         }
     }
@@ -3757,12 +3883,21 @@ unsafe extern "C" fn element_get_text_content(raw_cx: *mut JSContext, argc: c_ui
     if args.thisv().is_object() && !args.thisv().is_null() {
         rooted!(in(raw_cx) let this_obj = args.thisv().to_object());
         rooted!(in(raw_cx) let mut cache_val = UndefinedValue());
+        let old_value = DOM_REF.with(|dom_ref| {
+            if let Some(dom_ptr) = *dom_ref.borrow() {
+                return (*dom_ptr).get_node(node_id).map(|node| node.text_content());
+            }
+            None
+        });
+
         let cache_name = std::ffi::CString::new("__textContentCache").unwrap();
         if JS_GetProperty(
             safe_cx,
             this_obj.handle().into(),
             cache_name.as_ptr(),
             cache_val.handle_mut().into(),
+
+        mutation_observer::queue_character_data_mutation(node_id, old_value);
         ) && cache_val.get().is_string() {
             let cached = js_value_to_string(safe_cx, cache_val.get());
             args.rval().set(create_js_string(safe_cx, &cached));
