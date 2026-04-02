@@ -20,13 +20,18 @@ pub struct EngineConfig {
 
 impl Default for EngineConfig {
     fn default() -> Self {
+        #[cfg(debug_assertions)]
+        let debug_js = true;
+        #[cfg(not(debug_assertions))]
+        let debug_js = false;
+
         Self {
             user_agent: format!("Mozilla/5.0 (Linux; x86_64) Stokes/1.0 Chrome/145.0.0.0 AppleWebKit/537.36 Safari/537.36"),
             homepage: "https://example.com".to_string(),
             enable_javascript: true,
             block_ads: true,
             debug_hitboxes: false, // Enable for debugging click issues
-            debug_js: true,
+            debug_js,
             debug_net: false,
         }
     }
