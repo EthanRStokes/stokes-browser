@@ -21,7 +21,6 @@ use crate::renderer::text::{draw_text_selection, stroke_text, SELECTION_COLOR};
 use crate::renderer::painter::ToColorColor;
 use anyrender::{CustomPaint, Paint, PaintScene};
 use color::{AlphaColor, Srgb};
-use euclid::Transform3D;
 use kurbo::{Affine, BezPath, Insets, Point, Rect, Stroke, Vec2};
 use markup5ever::local_name;
 use parley::PositionedLayoutItem;

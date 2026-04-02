@@ -410,9 +410,9 @@ impl PersistentRooted {
         self.heap_obj.set(js_obj);
         self.permanent_js_root.set(ObjectValue(js_obj));
         let c_str = CString::new("EsPersistentRooted::root").unwrap();
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86_64", target_os = "macos"))]
         let c_str = c_str.as_ptr() as *const i8;
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
         let c_str = c_str.as_ptr() as *const u8;
         assert!(AddRawValueRoot(
             cx,

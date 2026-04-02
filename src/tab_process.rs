@@ -464,7 +464,11 @@ impl Drop for AsyncReadback {
 
 fn create_headless_display() -> io::Result<GlutinDisplay> {
     let raw_display = RawDisplayHandle::Xlib(XlibDisplayHandle::new(None, 0));
-    unsafe { GlutinDisplay::new(raw_display, DisplayApiPreference::Egl).map_err(io_other) }
+    #[cfg(not(target_os = "macos"))]
+    let preference = DisplayApiPreference::Egl;
+    #[cfg(target_os = "macos")]
+    let preference = DisplayApiPreference::Cgl;
+    unsafe { GlutinDisplay::new(raw_display, preference).map_err(io_other) }
 }
 
 fn pick_gl_config(display: &GlutinDisplay, width: u32, height: u32) -> io::Result<Config> {

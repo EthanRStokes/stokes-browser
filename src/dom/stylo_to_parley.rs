@@ -151,11 +151,11 @@ pub(crate) fn style(
                     // Legacy web compatibility
                     #[cfg(target_vendor = "apple")]
                     if name == "-apple-system" {
-                        break 'ret parley::FontFamily::Generic(parley::GenericFamily::SystemUi);
+                        break 'ret parley::FontFamilyName::Generic(parley::GenericFamily::SystemUi);
                     }
                     #[cfg(target_os = "macos")]
                     if name == "BlinkMacSystemFont" {
-                        break 'ret parley::FontFamily::Generic(parley::GenericFamily::SystemUi);
+                        break 'ret parley::FontFamilyName::Generic(parley::GenericFamily::SystemUi);
                     }
 
                     break 'ret parley::FontFamilyName::Named(Cow::Owned(name.to_string()));
