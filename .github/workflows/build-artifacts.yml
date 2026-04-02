@@ -51,9 +51,7 @@ jobs:
         with:
           name: stokes-browser-linux-x64
           if-no-files-found: error
-          path: |
-            target/x86_64-unknown-linux-gnu/release/stokes-browser
-            assets/**
+          path: target/x86_64-unknown-linux-gnu/release/stokes-browser
 
   build-linux-arm64:
     name: Build (linux-arm64)
@@ -102,9 +100,7 @@ jobs:
         with:
           name: stokes-browser-linux-arm64
           if-no-files-found: error
-          path: |
-            target/aarch64-unknown-linux-gnu/release/stokes-browser
-            assets/**
+          path: target/aarch64-unknown-linux-gnu/release/stokes-browser
 
   build-windows:
     name: Build (windows-x64)
@@ -138,9 +134,7 @@ jobs:
         with:
           name: stokes-browser-windows-x64
           if-no-files-found: error
-          path: |
-            target/x86_64-pc-windows-msvc/release/stokes-browser.exe
-            assets/**
+          path: target/x86_64-pc-windows-msvc/release/stokes-browser.exe
 
   build-macos-arm64:
     name: Build (macos-arm64)
@@ -168,6 +162,4 @@ jobs:
         with:
           name: stokes-browser-macos-arm64
           if-no-files-found: error
-          path: |
-            target/aarch64-apple-darwin/release/stokes-browser
-            assets/**
+          path: target/aarch64-apple-darwin/release/stokes-browser
