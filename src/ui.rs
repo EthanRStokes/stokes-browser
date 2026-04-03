@@ -254,6 +254,10 @@ pub struct BrowserUI {
     pub settings_svg: Tree,
     /// Whether the settings panel is open
     pub show_settings: bool,
+    /// Whether we are currently dragging a text selection in a chrome text field.
+    text_selection_drag_active: bool,
+    /// Anchor byte-position used while extending selection during a drag.
+    text_selection_drag_anchor: Option<usize>,
 }
 
 impl BrowserUI {
@@ -329,6 +333,8 @@ impl BrowserUI {
             close_tab_svg: load_svg(include_str!("../assets/close.svg")).unwrap(),
             settings_svg: load_svg(include_str!("../assets/settings.svg")).unwrap(),
             show_settings: false,
+            text_selection_drag_active: false,
+            text_selection_drag_anchor: None,
         }
     }
 
@@ -787,7 +793,7 @@ impl BrowserUI {
     /// Set focus to a text field at a specific click position
     /// First click: selects all text
     /// Subsequent clicks: positions cursor at click location
-    pub fn set_focus_at_click(&mut self, component_id: &str, click_x: f32) {
+    pub fn set_focus_at_click(&mut self, component_id: &str, click_x: f32, shift_held: bool) {
         // First check if the text field already has focus and collect data needed for cursor calculation
         let mut already_focused = false;
         let mut field_data: Option<(String, f32)> = None;
@@ -823,10 +829,16 @@ impl BrowserUI {
                         if already_focused {
                             // Already focused: position cursor at click location
                             if let Some(pos) = new_cursor_pos {
+                                if shift_held {
+                                    let anchor = selection_start.unwrap_or(*cursor_position);
+                                    *selection_start = Some(anchor);
+                                    *selection_end = Some(pos);
+                                } else {
+                                    *selection_start = None;
+                                    *selection_end = None;
+                                }
                                 *cursor_position = pos;
                             }
-                            *selection_start = None;
-                            *selection_end = None;
                         } else {
                             // First focus: select all text
                             *has_focus = true;
@@ -849,11 +861,15 @@ impl BrowserUI {
 
     /// Calculate the cursor position (character index) from a click x-coordinate
     fn calculate_cursor_position_from_click(&self, text: &str, field_x: f32, click_x: f32) -> usize {
+        Self::calculate_cursor_position_from_click_with_scale(text, field_x, click_x, self.viewport.hidpi_scale)
+    }
+
+    fn calculate_cursor_position_from_click_with_scale(text: &str, field_x: f32, click_x: f32, hidpi_scale: f32) -> usize {
         if text.is_empty() {
             return 0;
         }
 
-        let text_padding = 5.0 * self.viewport.hidpi_scale;
+        let text_padding = 5.0 * hidpi_scale;
         let text_start_x = field_x + text_padding;
 
         // Click is before the text
@@ -871,7 +887,7 @@ impl BrowserUI {
             .unwrap_or_else(|| font_mgr.legacy_make_typeface(None, FontStyle::default()).unwrap());
 
         let base_font_size = 14.0;
-        let scaled_font_size = base_font_size * self.viewport.hidpi_scale;
+        let scaled_font_size = base_font_size * hidpi_scale;
         let font = Font::new(typeface, scaled_font_size);
 
         // Calculate relative click position from text start
@@ -913,27 +929,11 @@ impl BrowserUI {
 
     /// Handle text input for focused component
     pub fn handle_text_input(&mut self, text: &str) {
-        for comp in &mut self.components {
-            if let UiComponent::TextField { has_focus: true, text: field_text, cursor_position, .. } = comp {
-                // Ensure cursor is within bounds and at a char boundary
-                if *cursor_position > field_text.len() {
-                    *cursor_position = field_text.len();
-                }
-                if !field_text.is_char_boundary(*cursor_position) {
-                    *cursor_position = Self::prev_char_boundary(field_text, *cursor_position);
-                }
-
-                // Insert text at cursor position (safe because we are at a char boundary)
-                field_text.insert_str(*cursor_position, text);
-                // Advance cursor to after inserted text
-                *cursor_position = (*cursor_position).saturating_add(text.len());
-                break;
-            }
-        }
+        self.insert_text_at_cursor(text);
     }
 
     /// Handle key input for text editing
-    pub fn handle_key_input(&mut self, key: &str) -> Option<String> {
+    pub fn handle_key_input(&mut self, key: &str, shift_held: bool, action_mod: bool) -> Option<String> {
         for comp in &mut self.components {
             if let UiComponent::TextField {
                 id,
@@ -952,11 +952,23 @@ impl BrowserUI {
                     *cursor_position -= 1;
                 }
 
+                let selected_range = Self::selection_range(field_text, *selection_start, *selection_end);
+
                 match key {
                     "Backspace" => {
-                        if *cursor_position > 0 {
+                        if let Some((start, end)) = selected_range {
+                            field_text.replace_range(start..end, "");
+                            *cursor_position = start;
+                            *selection_start = None;
+                            *selection_end = None;
+                        } else if action_mod {
+                            let start = Self::prev_word_boundary(field_text, *cursor_position);
+                            if start < *cursor_position {
+                                field_text.replace_range(start..*cursor_position, "");
+                                *cursor_position = start;
+                            }
+                        } else if *cursor_position > 0 {
                             let prev = Self::prev_char_boundary(field_text, *cursor_position);
-                            // Remove the previous character (range from prev..cursor)
                             if prev < *cursor_position && *cursor_position <= field_text.len() {
                                 field_text.replace_range(prev..*cursor_position, "");
                                 *cursor_position = prev;
@@ -964,7 +976,17 @@ impl BrowserUI {
                         }
                     }
                     "Delete" => {
-                        if *cursor_position < field_text.len() {
+                        if let Some((start, end)) = selected_range {
+                            field_text.replace_range(start..end, "");
+                            *cursor_position = start;
+                            *selection_start = None;
+                            *selection_end = None;
+                        } else if action_mod {
+                            let end = Self::next_word_boundary(field_text, *cursor_position);
+                            if *cursor_position < end {
+                                field_text.replace_range(*cursor_position..end, "");
+                            }
+                        } else if *cursor_position < field_text.len() {
                             let next = Self::next_char_boundary(field_text, *cursor_position);
                             if *cursor_position < next && next <= field_text.len() {
                                 field_text.replace_range(*cursor_position..next, "");
@@ -972,21 +994,59 @@ impl BrowserUI {
                         }
                     }
                     "ArrowLeft" => {
-                        if *cursor_position > 0 {
-                            *cursor_position = Self::prev_char_boundary(field_text, *cursor_position);
+                        let next_pos = if action_mod {
+                            Self::prev_word_boundary(field_text, *cursor_position)
+                        } else {
+                            Self::prev_char_boundary(field_text, *cursor_position)
+                        };
+                        if shift_held {
+                            let anchor = selection_start.unwrap_or(*cursor_position);
+                            *selection_start = Some(anchor);
+                            *selection_end = Some(next_pos);
+                        } else {
+                            *selection_start = None;
+                            *selection_end = None;
                         }
+                        *cursor_position = next_pos;
                     }
                     "ArrowRight" => {
-                        if *cursor_position < field_text.len() {
-                            *cursor_position = Self::next_char_boundary(field_text, *cursor_position);
+                        let next_pos = if action_mod {
+                            Self::next_word_boundary(field_text, *cursor_position)
+                        } else {
+                            Self::next_char_boundary(field_text, *cursor_position)
+                        };
+                        if shift_held {
+                            let anchor = selection_start.unwrap_or(*cursor_position);
+                            *selection_start = Some(anchor);
+                            *selection_end = Some(next_pos);
+                        } else {
+                            *selection_start = None;
+                            *selection_end = None;
                         }
+                        *cursor_position = next_pos;
                     }
                     "Home" => {
+                        if shift_held {
+                            let anchor = selection_start.unwrap_or(*cursor_position);
+                            *selection_start = Some(anchor);
+                            *selection_end = Some(0);
+                        } else {
+                            *selection_start = None;
+                            *selection_end = None;
+                        }
                         *cursor_position = 0;
                     }
                     "End" => {
+                        let end_pos = field_text.len();
+                        if shift_held {
+                            let anchor = selection_start.unwrap_or(*cursor_position);
+                            *selection_start = Some(anchor);
+                            *selection_end = Some(end_pos);
+                        } else {
+                            *selection_start = None;
+                            *selection_end = None;
+                        }
                         *cursor_position = field_text.len();
-                        // make sure it's on a char boundary
                         while *cursor_position > 0 && !field_text.is_char_boundary(*cursor_position) {
                             *cursor_position -= 1;
                         }
@@ -1052,10 +1112,13 @@ impl BrowserUI {
     /// Clear focus from all components
     pub fn clear_focus(&mut self) {
         for comp in &mut self.components {
-            if let UiComponent::TextField { has_focus, .. } = comp {
+            if let UiComponent::TextField { has_focus, selection_start, selection_end, .. } = comp {
                 *has_focus = false;
+                *selection_start = None;
+                *selection_end = None;
             }
         }
+        self.end_text_selection_drag();
     }
 
     /// Check if any text field has focus
@@ -1155,6 +1218,12 @@ impl BrowserUI {
                 }
 
                 // Insert text at cursor position
+                if *cursor_position > text.len() {
+                    *cursor_position = text.len();
+                }
+                if !text.is_char_boundary(*cursor_position) {
+                    *cursor_position = Self::prev_char_boundary(text, *cursor_position);
+                }
                 if *cursor_position <= text.len() {
                     text.insert_str(*cursor_position, insert_text);
                     *cursor_position += insert_text.len();
@@ -1162,6 +1231,55 @@ impl BrowserUI {
                 break;
             }
         }
+    }
+
+    /// Begin a mouse-driven selection gesture for a text field.
+    pub fn begin_text_selection_drag(&mut self, component_id: &str, click_x: f32, shift_held: bool) {
+        self.set_focus_at_click(component_id, click_x, shift_held);
+
+        let mut anchor = None;
+        for comp in &self.components {
+            if let UiComponent::TextField { id, has_focus: true, cursor_position, selection_start, .. } = comp {
+                if id == component_id {
+                    anchor = Some(selection_start.unwrap_or(*cursor_position));
+                    break;
+                }
+            }
+        }
+
+        self.text_selection_drag_active = true;
+        self.text_selection_drag_anchor = anchor;
+    }
+
+    /// Extend focused text-field selection to the current pointer x position.
+    pub fn update_text_selection_drag(&mut self, pointer_x: f32) -> bool {
+        if !self.text_selection_drag_active {
+            return false;
+        }
+
+        let hidpi_scale = self.viewport.hidpi_scale;
+
+        for comp in &mut self.components {
+            if let UiComponent::TextField { has_focus: true, text, x, cursor_position, selection_start, selection_end, .. } = comp {
+                let next_pos = Self::calculate_cursor_position_from_click_with_scale(text, *x, pointer_x, hidpi_scale);
+                let anchor = self.text_selection_drag_anchor.unwrap_or(*cursor_position);
+                *selection_start = Some(anchor);
+                *selection_end = Some(next_pos);
+                *cursor_position = next_pos;
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub fn end_text_selection_drag(&mut self) {
+        self.text_selection_drag_active = false;
+        self.text_selection_drag_anchor = None;
+    }
+
+    pub fn is_text_selection_drag_active(&self) -> bool {
+        self.text_selection_drag_active
     }
 
     /// Clear selection in the focused text field
@@ -1465,7 +1583,7 @@ impl BrowserUI {
                         tooltips_to_render.push((tooltip, *x, *y));
                     }
                 }
-                UiComponent::TextField { text, x, y, width, height, color, border_color, has_focus, cursor_position, .. } => {
+                UiComponent::TextField { text, x, y, width, height, color, border_color, has_focus, cursor_position, selection_start, selection_end, .. } => {
                     let rect = Rect::from_xywh(*x, *y, *width, *height);
 
                     // Draw field shadow
@@ -1497,6 +1615,25 @@ impl BrowserUI {
                     paint.set_stroke_width(if *has_focus { 2.0 * self.viewport.hidpi_scale } else { 1.0 * self.viewport.hidpi_scale });
                     canvas.draw_round_rect(rect, 2.0, 2.0, &paint);
                     paint.set_stroke(false);
+
+                    // Draw text selection highlight first so glyphs render on top.
+                    if *has_focus {
+                        if let Some((sel_start, sel_end)) = Self::selection_range(text, *selection_start, *selection_end) {
+                            let text_before_selection = &text[..sel_start];
+                            let selected_text = &text[sel_start..sel_end];
+                            let (prefix_width, _) = font.measure_str(text_before_selection, None);
+                            let (selected_width, _) = font.measure_str(selected_text, None);
+
+                            paint.set_color(Color::from_argb(140, 132, 185, 255));
+                            let selection_rect = Rect::from_xywh(
+                                rect.left() + text_padding + prefix_width,
+                                rect.top() + (2.0 * self.viewport.hidpi_scale),
+                                selected_width.max(1.0),
+                                rect.height() - (4.0 * self.viewport.hidpi_scale),
+                            );
+                            canvas.draw_rect(selection_rect, &paint);
+                        }
+                    }
 
                     // Draw text content with scaled padding, centered vertically
                     paint.set_color(Color::BLACK);
@@ -2394,5 +2531,89 @@ impl BrowserUI {
             }
         }
         s.len()
+    }
+
+    fn prev_word_boundary(s: &str, byte_pos: usize) -> usize {
+        if s.is_empty() {
+            return 0;
+        }
+
+        let mut idx = byte_pos.min(s.len());
+        while idx > 0 && !s.is_char_boundary(idx) {
+            idx -= 1;
+        }
+
+        while idx > 0 {
+            let prev = Self::prev_char_boundary(s, idx);
+            let ch = s[prev..idx].chars().next().unwrap_or(' ');
+            if !ch.is_whitespace() {
+                break;
+            }
+            idx = prev;
+        }
+
+        while idx > 0 {
+            let prev = Self::prev_char_boundary(s, idx);
+            let ch = s[prev..idx].chars().next().unwrap_or(' ');
+            if ch.is_whitespace() {
+                break;
+            }
+            idx = prev;
+        }
+
+        idx
+    }
+
+    fn next_word_boundary(s: &str, byte_pos: usize) -> usize {
+        if s.is_empty() {
+            return 0;
+        }
+
+        let mut idx = byte_pos.min(s.len());
+        while idx < s.len() && !s.is_char_boundary(idx) {
+            idx += 1;
+        }
+
+        while idx < s.len() {
+            let next = Self::next_char_boundary(s, idx);
+            let ch = s[idx..next].chars().next().unwrap_or(' ');
+            if ch.is_whitespace() {
+                break;
+            }
+            idx = next;
+        }
+
+        while idx < s.len() {
+            let next = Self::next_char_boundary(s, idx);
+            let ch = s[idx..next].chars().next().unwrap_or(' ');
+            if !ch.is_whitespace() {
+                break;
+            }
+            idx = next;
+        }
+
+        idx
+    }
+
+    fn selection_range(text: &str, start: Option<usize>, end: Option<usize>) -> Option<(usize, usize)> {
+        let (Some(start), Some(end)) = (start, end) else {
+            return None;
+        };
+
+        let mut s = start.min(end).min(text.len());
+        let mut e = start.max(end).min(text.len());
+
+        if !text.is_char_boundary(s) {
+            s = Self::prev_char_boundary(text, s);
+        }
+        if !text.is_char_boundary(e) {
+            e = Self::next_char_boundary(text, e);
+        }
+
+        if s < e {
+            Some((s, e))
+        } else {
+            None
+        }
     }
 }

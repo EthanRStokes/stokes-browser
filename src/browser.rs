@@ -223,7 +223,12 @@ impl BrowserApp {
 
         // Handle UI clicks
         let action = input::handle_mouse_click_ui(
-            x, y, self.ui.as_mut().unwrap(), &tabs, self.active_tab_index
+            x,
+            y,
+            self.ui.as_mut().unwrap(),
+            &tabs,
+            self.active_tab_index,
+            self.modifiers.state().shift_key(),
         );
 
         self.handle_input_action(&action, event_loop);
@@ -768,6 +773,8 @@ impl ApplicationHandler for BrowserApp {
                 let x = self.pointer_position.0 as f32;
                 let y = self.pointer_position.1 as f32;
 
+                self.ui_mut().end_text_selection_drag();
+
                 // Check if we were dragging a tab
                 if self.ui().is_dragging_tab() {
                     // End the drag and get reorder info
@@ -975,10 +982,15 @@ impl ApplicationHandler for BrowserApp {
                     ui.update_tab_drag(position.x as f32);
                     self.env.as_ref().unwrap().window.request_redraw();
                 } else {
+                    if ui.update_text_selection_drag(position.x as f32) {
+                        self.env.as_ref().unwrap().window.request_redraw();
+                    }
+
                     // Update UI hover state on cursor movement
                     ui.update_mouse_hover(position.x as f32, position.y as f32, Instant::now());
 
-                    if let Some(tab_id) = self.active_tab_id().cloned() {
+                    if !ui.is_text_selection_drag_active() {
+                        if let Some(tab_id) = self.active_tab_id().cloned() {
                         let event = UiEvent::PointerMove(BlitzPointerEvent {
                             id: pointer_source_to_blitz(&source),
                             is_primary: primary,
@@ -989,6 +1001,7 @@ impl ApplicationHandler for BrowserApp {
                             details: pointer_source_to_blitz_details(&source)
                         });
                         let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
+                        }
                     }
                 }
 

@@ -6,6 +6,16 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseScrollDelta};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::Window;
 
+#[cfg(target_os = "macos")]
+fn action_mod_pressed(modifiers: &Modifiers) -> bool {
+    modifiers.state().super_key()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn action_mod_pressed(modifiers: &Modifiers) -> bool {
+    modifiers.state().control_key()
+}
+
 /// Result of input action that may affect tabs
 #[derive(Debug, PartialEq)]
 pub enum InputAction {
@@ -49,6 +59,7 @@ pub fn handle_mouse_click_ui(
     ui: &mut BrowserUI,
     tabs: &[(String, String)], // (tab_id, tab_title) pairs
     active_tab_index: usize,
+    shift_held: bool,
 ) -> InputAction {
     // If settings panel is open, route clicks to it first
     if ui.show_settings {
@@ -101,7 +112,7 @@ pub fn handle_mouse_click_ui(
             return InputAction::OpenSettings;
         } else if component_id == "address_bar" {
             // Focus the address bar for typing with click position
-            ui.set_focus_at_click("address_bar", x);
+            ui.begin_text_selection_drag("address_bar", x, shift_held);
             return InputAction::RequestRedraw;
         } else if component_id.starts_with("tab") {
             // Tab switching by clicking
@@ -211,10 +222,11 @@ pub fn handle_keyboard_input(
 
 
     // Handle keyboard shortcuts with modifiers (browser-level)
-    if modifiers.state().control_key() {
+    if action_mod_pressed(modifiers) {
         match &event.logical_key {
             Key::Character(text) => {
-                match text.as_str() {
+                let lower = text.to_lowercase();
+                match lower.as_str() {
                     "a" => {
                         // Ctrl+A: Select all text in address bar
                         if has_focused_text_field {
@@ -337,7 +349,7 @@ pub fn handle_keyboard_input(
     }
 
     // Handle number keys for tab switching (Ctrl+1, Ctrl+2, etc.)
-    if modifiers.state().control_key() {
+    if action_mod_pressed(modifiers) {
         if let Key::Character(text) = &event.logical_key {
             if let Ok(num) = text.parse::<usize>() {
                 if num >= 1 && num <= 9 {
@@ -364,21 +376,21 @@ pub fn handle_keyboard_input(
         }
         Key::Named(NamedKey::Backspace) => {
             if has_focused_text_field {
-                ui.handle_key_input("Backspace");
+                ui.handle_key_input("Backspace", modifiers.state().shift_key(), action_mod_pressed(modifiers));
                 return InputAction::RequestRedraw;
             }
             return InputAction::ForwardToTab(KeyboardInput::Named("Backspace".to_string()));
         }
         Key::Named(NamedKey::Delete) => {
             if has_focused_text_field {
-                ui.handle_key_input("Delete");
+                ui.handle_key_input("Delete", modifiers.state().shift_key(), action_mod_pressed(modifiers));
                 return InputAction::RequestRedraw;
             }
             return InputAction::ForwardToTab(KeyboardInput::Named("Delete".to_string()));
         }
         Key::Named(NamedKey::ArrowLeft) => {
             if has_focused_text_field {
-                ui.handle_key_input("ArrowLeft");
+                ui.handle_key_input("ArrowLeft", modifiers.state().shift_key(), action_mod_pressed(modifiers));
                 return InputAction::RequestRedraw;
             }
             // Forward to tab for page scrolling
@@ -389,7 +401,7 @@ pub fn handle_keyboard_input(
         }
         Key::Named(NamedKey::ArrowRight) => {
             if has_focused_text_field {
-                ui.handle_key_input("ArrowRight");
+                ui.handle_key_input("ArrowRight", modifiers.state().shift_key(), action_mod_pressed(modifiers));
                 return InputAction::RequestRedraw;
             }
             return InputAction::ForwardToTab(KeyboardInput::Scroll {
@@ -415,21 +427,21 @@ pub fn handle_keyboard_input(
         }
         Key::Named(NamedKey::Home) => {
             if has_focused_text_field {
-                ui.handle_key_input("Home");
+                ui.handle_key_input("Home", modifiers.state().shift_key(), action_mod_pressed(modifiers));
                 return InputAction::RequestRedraw;
             }
             return InputAction::ForwardToTab(KeyboardInput::Named("Home".to_string()));
         }
         Key::Named(NamedKey::End) => {
             if has_focused_text_field {
-                ui.handle_key_input("End");
+                ui.handle_key_input("End", modifiers.state().shift_key(), action_mod_pressed(modifiers));
                 return InputAction::RequestRedraw;
             }
             return InputAction::ForwardToTab(KeyboardInput::Named("End".to_string()));
         }
         Key::Named(NamedKey::Enter) => {
             if has_focused_text_field {
-                if let Some(url) = ui.handle_key_input("Enter") {
+                if let Some(url) = ui.handle_key_input("Enter", modifiers.state().shift_key(), action_mod_pressed(modifiers)) {
                     // Navigate to the URL from the address bar
                     let url_to_navigate = if url.starts_with("http://")
                         || url.starts_with("https://")
