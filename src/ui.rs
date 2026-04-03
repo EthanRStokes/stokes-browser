@@ -1149,14 +1149,7 @@ impl BrowserUI {
     pub fn get_selected_text(&self) -> Option<String> {
         for comp in &self.components {
             if let UiComponent::TextField { has_focus: true, text, selection_start, selection_end, .. } = comp {
-                if let (Some(&start), Some(&end)) = (selection_start.as_ref(), selection_end.as_ref()) {
-                    let start = start.min(end);
-                    let end = start.max(end);
-                    if start < end && end <= text.len() {
-                        return Some(text[start..end].to_string());
-                    }
-                }
-                break;
+                return Self::selected_text_for_range(text, *selection_start, *selection_end);
             }
         }
         None
@@ -2595,6 +2588,11 @@ impl BrowserUI {
         idx
     }
 
+    fn selected_text_for_range(text: &str, start: Option<usize>, end: Option<usize>) -> Option<String> {
+        let (s, e) = Self::selection_range(text, start, end)?;
+        Some(text[s..e].to_string())
+    }
+
     fn selection_range(text: &str, start: Option<usize>, end: Option<usize>) -> Option<(usize, usize)> {
         let (Some(start), Some(end)) = (start, end) else {
             return None;
@@ -2617,3 +2615,41 @@ impl BrowserUI {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::BrowserUI;
+
+    #[test]
+    fn selected_text_for_range_handles_forward_selection() {
+        assert_eq!(
+            BrowserUI::selected_text_for_range("hello world", Some(0), Some(5)),
+            Some("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn selected_text_for_range_handles_reversed_selection() {
+        assert_eq!(
+            BrowserUI::selected_text_for_range("hello world", Some(5), Some(0)),
+            Some("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn selected_text_for_range_returns_none_for_empty_selection() {
+        assert_eq!(
+            BrowserUI::selected_text_for_range("hello world", Some(3), Some(3)),
+            None
+        );
+    }
+
+    #[test]
+    fn selected_text_for_range_snaps_to_utf8_boundaries() {
+        assert_eq!(
+            BrowserUI::selected_text_for_range("a🙂b", Some(2), Some(4)),
+            Some("🙂".to_string())
+        );
+    }
+}
+
