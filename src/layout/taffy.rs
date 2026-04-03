@@ -1,16 +1,15 @@
 use crate::dom::node::SpecialElementData;
-use crate::dom::{Dom, ImageData, NodeData};
+use crate::dom::{Dom, ImageData, NodeData, StyloData};
 use crate::layout::replaced::{replaced_measure_function, ReplacedContext};
-use crate::layout::stylo_style::StyloStyleRef;
-use crate::layout::table::{TableContext, TableTreeWrapper};
+use crate::layout::table::TableTreeWrapper;
 use markup5ever::local_name;
 use std::cell::Ref;
 use std::sync::Arc;
+use taffy::CoreStyle;
 use style::values::computed::length_percentage::CalcLengthPercentage;
 use style::values::computed::{CSSPixelLength, LineHeight};
 use stylo_atoms::Atom;
-pub(crate) use taffy::{compute_block_layout, compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout, AvailableSpace, BlockContext, CacheTree, CollapsibleMarginSet, Display, Layout, LayoutBlockContainer, LayoutFlexboxContainer, LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, PrintTree, ResolveOrZero, RoundTree, RunMode, Size, Style, TraversePartialTree, TraverseTree};
-use taffy::CoreStyle;
+pub(crate) use taffy::{compute_block_layout, compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout, AvailableSpace, BlockContext, CacheTree, CollapsibleMarginSet, Display, Layout, LayoutBlockContainer, LayoutFlexboxContainer, LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, PrintTree, ResolveOrZero, RoundTree, Size, TraversePartialTree, TraverseTree};
 
 impl Dom {
     fn compute_child_layout_internal(
@@ -37,7 +36,7 @@ impl Dom {
         let line_height = font_styles.map(|s| s.1);
 
         match &mut node.data {
-            NodeData::Text(data) => {
+            NodeData::Text(_) => {
                 taffy::LayoutOutput::HIDDEN
                 // unreachable!();
 
@@ -70,7 +69,7 @@ impl Dom {
                         .attr(local_name!("cols"))
                         .and_then(|val| val.parse::<f32>().ok());
 
-                    let style = self.stylo_style_ref(node_id);
+                    let style = &self.node_from_id(node_id).stylo_data;
                     return compute_leaf_layout(
                         inputs,
                         &style,
@@ -91,7 +90,7 @@ impl Dom {
                             return taffy::LayoutOutput::HIDDEN;
                         }
                         Some("checkbox") => {
-                            let style = self.stylo_style_ref(node_id);
+                            let style = &self.node_from_id(node_id).stylo_data;
                             return compute_leaf_layout(
                                 inputs,
                                 &style,
@@ -114,7 +113,7 @@ impl Dom {
                             );
                         }
                         None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
-                            let style = self.stylo_style_ref(node_id);
+                            let style = &self.node_from_id(node_id).stylo_data;
                             return compute_leaf_layout(
                                 inputs,
                                 &style,
@@ -176,7 +175,7 @@ impl Dom {
                         attr_size,
                     };
 
-                    let style = self.stylo_style_ref(node_id);
+                    let style = &self.node_from_id(node_id).stylo_data;
                     let computed = replaced_measure_function(
                         inputs.known_dimensions,
                         inputs.parent_size,
@@ -276,14 +275,14 @@ impl TraverseTree for Dom {}
 
 impl LayoutPartialTree for Dom {
     type CoreContainerStyle<'a>
-        = &'a StyloStyleRef<'a>
+        = &'a StyloData
     where
         Self: 'a;
 
     type CustomIdent = Atom;
 
     fn get_core_container_style(&self, node_id: NodeId) -> Self::CoreContainerStyle<'_> {
-        StyloStyleRef::new(&**self.node_from_id(node_id).primary_styles().unwrap())
+        &self.node_from_id(node_id).stylo_data
     }
 
     fn set_unrounded_layout(&mut self, node_id: NodeId, layout: &Layout) {
@@ -317,20 +316,20 @@ impl CacheTree for Dom {
 
 impl LayoutBlockContainer for Dom {
     type BlockContainerStyle<'a>
-        = StyloStyleRef<'a>
+        = &'a StyloData
     where
         Self: 'a;
     type BlockItemStyle<'a>
-        = StyloStyleRef<'a>
+        = &'a StyloData
     where
         Self: 'a;
 
     fn get_block_container_style(&self, node_id: NodeId) -> Self::BlockContainerStyle<'_> {
-        self.stylo_style_ref(node_id)
+        &self.node_from_id(node_id).stylo_data
     }
 
     fn get_block_child_style(&self, child_node_id: NodeId) -> Self::BlockItemStyle<'_> {
-        self.stylo_style_ref(child_node_id)
+        &self.node_from_id(child_node_id).stylo_data
     }
 
     fn compute_block_child_layout(
@@ -347,39 +346,39 @@ impl LayoutBlockContainer for Dom {
 
 impl LayoutFlexboxContainer for Dom {
     type FlexboxContainerStyle<'a>
-        = StyloStyleRef<'a>
+        = &'a StyloData
     where
         Self: 'a;
     type FlexboxItemStyle<'a>
-        = StyloStyleRef<'a>
+        = &'a StyloData
     where
         Self: 'a;
 
     fn get_flexbox_container_style(&self, node_id: NodeId) -> Self::FlexboxContainerStyle<'_> {
-        self.stylo_style_ref(node_id)
+        &self.node_from_id(node_id).stylo_data
     }
 
     fn get_flexbox_child_style(&self, child_node_id: NodeId) -> Self::FlexboxItemStyle<'_> {
-        self.stylo_style_ref(child_node_id)
+        &self.node_from_id(child_node_id).stylo_data
     }
 }
 
 impl LayoutGridContainer for Dom {
     type GridContainerStyle<'a>
-        = StyloStyleRef<'a>
+        = &'a StyloData
     where
         Self: 'a;
     type GridItemStyle<'a>
-        = StyloStyleRef<'a>
+        = &'a StyloData
     where
         Self: 'a;
 
     fn get_grid_container_style(&self, node_id: NodeId) -> Self::GridContainerStyle<'_> {
-        self.stylo_style_ref(node_id)
+        &self.node_from_id(node_id).stylo_data
     }
 
     fn get_grid_child_style(&self, child_node_id: NodeId) -> Self::GridItemStyle<'_> {
-        self.stylo_style_ref(child_node_id)
+        &self.node_from_id(child_node_id).stylo_data
     }
 }
 

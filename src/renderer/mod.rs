@@ -474,7 +474,7 @@ impl HtmlRenderer<'_> {
             NodeData::Element(_) | NodeData::AnonymousBlock(_) => {
                 self.render_element(scene, node_id, location)
             }
-            NodeData::Text(text) => {
+            NodeData::Text(_) => {
                 unreachable!()
             }
             NodeData::Document => {}
@@ -490,7 +490,11 @@ impl HtmlRenderer<'_> {
         layout: Layout,
         position: Point,
     ) -> Element<'a> {
-        let style = node.stylo_data.primary_styles().as_ref().map(|styles| (*styles).clone())
+        let style = node
+            .stylo_data
+            .primary_styles()
+            .as_ref()
+            .map(|styles| Arc::new((*styles).clone()))
             .unwrap_or(
                 ComputedValues::initial_values_with_font_override(Font::initial_values())
             );

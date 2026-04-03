@@ -33,6 +33,7 @@ pub use self::node::{
     ShadowRootData,
     ShadowRootMode,
 };
+pub use self::stylo_data::StyloData;
 pub use self::parser::HtmlParser;
 use crate::css::stylo::RecalcStyle;
 use crate::dom::config::DomConfig;
@@ -918,17 +919,6 @@ impl Dom {
         &mut self.nodes[node_id.into()]
     }
 
-    /// Create a StyloStyleRef wrapper for a node's computed styles.
-    /// This lazily reads the styles from the Stylo data on the node,
-    /// implementing Taffy's layout traits without needing a pre-converted taffy::Style.
-    pub fn stylo_style_ref(&self, node_id: taffy::prelude::NodeId) -> crate::layout::stylo_style::StyloStyleRef<'_> {
-        let node = &self.nodes[node_id.into()];
-        let style = node.primary_styles().unwrap_or_else(|| {
-            // Fallback to initial values for nodes without styles (shouldn't normally happen during layout)
-            panic!("Node {} has no computed styles during layout", usize::from(node_id))
-        });
-        crate::layout::stylo_style::StyloStyleRef::new(style)
-    }
 
     pub(crate) fn remove_and_drop_pe(&mut self, node_id: usize) -> Option<DomNode> {
         fn remove_pe_ignoring_parent(dom: &mut Dom, node_id: usize) -> Option<DomNode> {

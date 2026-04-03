@@ -25,7 +25,7 @@ impl Dom {
 
         // Extract all needed style values eagerly to avoid holding the borrow
         let (is_scroll_container, padding, border, box_sizing, aspect_ratio, style_size, style_min_size, style_max_size) = {
-            let style = self.stylo_style_ref(NodeId::from(node_id));
+            let style = &self.nodes[node_id].stylo_data;
             let overflow = style.overflow();
             let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
             let padding = style.padding().resolve_or_zero(parent_size.width, resolve_calc_value);
@@ -148,7 +148,7 @@ impl Dom {
         // Extract all needed style values eagerly, then drop the borrow
         let (margin, padding, border, box_sizing, overflow, scrollbar_width, is_block, position,
              aspect_ratio, style_size, style_min_size, style_max_size) = {
-            let style = self.stylo_style_ref(NodeId::from(node_id));
+            let style = &self.nodes[node_id].stylo_data;
             let margin = style.margin().resolve_or_zero(parent_size.width, resolve_calc_value);
             let padding = style.padding().resolve_or_zero(parent_size.width, resolve_calc_value);
             let border = style.border().resolve_or_zero(parent_size.width, resolve_calc_value);
@@ -293,7 +293,7 @@ impl Dom {
         };
 
         for ibox in inline_layout.layout.inline_boxes_mut() {
-            let style = self.stylo_style_ref(NodeId::from(ibox.id));
+            let style = &self.nodes[ibox.id as usize].stylo_data;
             let margin = style
                 .margin()
                 .resolve_or_zero(inputs.parent_size, resolve_calc_value);
@@ -304,7 +304,6 @@ impl Dom {
                 ibox.width = 0.0;
                 ibox.height = 0.0;
             } else {
-                drop(style);
                 let output = self.compute_child_layout(NodeId::from(ibox.id), child_inputs);
                 ibox.width = (margin.left + margin.right + output.size.width) * scale;
                 ibox.height = (margin.top + margin.bottom + output.size.height) * scale;
@@ -346,13 +345,12 @@ impl Dom {
                     AvailableSpace::MinContent => {
                         let mut width: f32 = 0.0;
                         for ibox in inline_layout.layout.inline_boxes_mut() {
-                            let style = self.stylo_style_ref(NodeId::from(ibox.id));
+                            let style = &self.nodes[ibox.id as usize].stylo_data;
 
                             if BlockItemStyle::float(&style).is_floated() {
                                 let margin = style
                                     .margin()
                                     .resolve_or_zero(inputs.parent_size, resolve_calc_value);
-                                drop(style);
                                 let output =
                                     self.compute_child_layout(NodeId::from(ibox.id), child_inputs);
                                 width = width.max(output.size.width + margin.left + margin.right);
@@ -364,13 +362,12 @@ impl Dom {
                     AvailableSpace::MaxContent => {
                         let mut width: f32 = 0.0;
                         for ibox in inline_layout.layout.inline_boxes_mut() {
-                            let style = self.stylo_style_ref(NodeId::from(ibox.id));
+                            let style = &self.nodes[ibox.id as usize].stylo_data;
 
                             if BlockItemStyle::float(&style).is_floated() {
                                 let margin = style
                                     .margin()
                                     .resolve_or_zero(inputs.parent_size, resolve_calc_value);
-                                drop(style);
                                 let output =
                                     self.compute_child_layout(NodeId::from(ibox.id), child_inputs);
                                 width += output.size.width + margin.left + margin.right;
@@ -482,7 +479,7 @@ impl Dom {
                         let node_id = box_break_data.inline_box_id as usize;
 
                         // We can assume that the box is a float because we only set `break_on_box: true` for floats
-                        let style = self.stylo_style_ref(NodeId::from(node_id));
+                        let style = &self.nodes[node_id].stylo_data;
                         let direction = match BlockItemStyle::float(&style) {
                             Float::Left => taffy::FloatDirection::Left,
                             Float::Right => taffy::FloatDirection::Right,
@@ -492,7 +489,6 @@ impl Dom {
                         let margin = style
                             .margin()
                             .resolve_or_zero(inputs.parent_size, resolve_calc_value);
-                        drop(style);
 
                         let margin_sum = margin.sum_axes();
 
@@ -588,7 +584,7 @@ impl Dom {
         for line in inline_layout.layout.lines() {
             for item in line.items() {
                 if let parley::layout::PositionedLayoutItem::InlineBox(ibox) = item {
-                    let style = self.stylo_style_ref(NodeId::from(ibox.id));
+                    let style = &self.nodes[ibox.id as usize].stylo_data;
                     let padding = style
                         .padding()
                         .resolve_or_zero(child_inputs.parent_size, resolve_calc_value);
@@ -616,7 +612,6 @@ impl Dom {
 
                     let is_floated = BlockItemStyle::float(&style) != Float::None;
                     let is_absolute = style.position() == Position::Absolute;
-                    drop(style);
 
                     let node = &mut self.nodes[ibox.id as usize];
 

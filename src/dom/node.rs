@@ -1433,7 +1433,7 @@ impl DomNode {
         self.set_restyle_hint(RestyleHint::restyle_subtree());
     }
 
-    pub fn primary_styles(&self) -> Option<impl Deref<Target = ServoArc<ComputedValues>>> {
+    pub fn primary_styles(&self) -> Option<impl Deref<Target = ComputedValues>> {
         self.stylo_data.primary_styles()
     }
 

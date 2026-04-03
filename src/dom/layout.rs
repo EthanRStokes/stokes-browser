@@ -233,6 +233,7 @@ pub(crate) fn collect_layout_children(
                         continue;
                     }
 
+                    // Floated elements should be included in inline layout contexts
                     let is_in_flow = matches!(
                         position,
                         PositionProperty::Static
@@ -240,22 +241,32 @@ pub(crate) fn collect_layout_children(
                             | PositionProperty::Sticky
                     ) && matches!(float, Float::None);
 
-                    if !is_in_flow {
+                    let is_floated = !matches!(float, Float::None);
+
+                    if !is_in_flow && !is_floated {
                         continue;
                     }
 
-                    all_out_of_flow = false;
-                    match display.outside() {
-                        DisplayOutside::None => {}
-                        DisplayOutside::Block
-                        | DisplayOutside::TableCaption
-                        | DisplayOutside::InternalTable => all_inline = false,
-                        DisplayOutside::Inline => {
-                            all_block = false;
+                    // Only update all_out_of_flow for in-flow elements (not floats)
+                    if is_in_flow {
+                        all_out_of_flow = false;
+                    }
 
-                            // We need the "complex" tree fixing when an inline contains a block
-                            if child.is_or_contains_block() {
-                                all_inline = false;
+                    // For all_inline/all_block determination, only consider in-flow children
+                    // Floats should not prevent an inline layout context
+                    if !is_floated {
+                        match display.outside() {
+                            DisplayOutside::None => {}
+                            DisplayOutside::Block
+                            | DisplayOutside::TableCaption
+                            | DisplayOutside::InternalTable => all_inline = false,
+                            DisplayOutside::Inline => {
+                                all_block = false;
+
+                                // We need the "complex" tree fixing when an inline contains a block
+                                if child.is_or_contains_block() {
+                                    all_inline = false;
+                                }
                             }
                         }
                     }
