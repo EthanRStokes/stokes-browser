@@ -8,7 +8,7 @@ use winit::window::Window;
 
 #[cfg(target_os = "macos")]
 fn action_mod_pressed(modifiers: &Modifiers) -> bool {
-    modifiers.state().super_key()
+    modifiers.state().meta_key()
 }
 
 #[cfg(not(target_os = "macos"))]
