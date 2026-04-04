@@ -18,7 +18,7 @@ mod selection;
 pub(crate) mod form;
 mod sub_dom;
 pub mod stylo_to_kurbo;
-mod stylo_data;
+pub mod stylo_data;
 
 use html5ever::ns;
 pub use events::{EventDispatcher, EventType};
@@ -95,6 +95,7 @@ use style::values::computed::font::{GenericFontFamily, QueryFontMetricsFlags};
 use style::values::computed::{Au, CSSPixelLength, Length, Overflow};
 use stylo_atoms::Atom;
 use taffy::Point;
+use tracing::warn;
 use crate::dom::events::pointer::{DragMode, ScrollAnimationState};
 use crate::dom::selection::TextSelection;
 use crate::dom::stylo_to_cursor::stylo_to_cursor_icon;
@@ -526,6 +527,9 @@ impl Dom {
 
         let entry = self.nodes.vacant_entry();
         let id = entry.key();
+        if id == 1088 {
+            warn!("WE FOUND THAT DIRTY NIGGER");
+        }
         entry.insert(DomNode::new(slab_ptr, id, self.lock.clone(), data));
 
         id
@@ -543,6 +547,10 @@ impl Dom {
         let node = self.get_node_mut(id).unwrap();
 
         *node.stylo_data.ensure_init_mut() = style::data::ElementData {
+            styles: ElementStyles {
+                primary: Some(ComputedValues::initial_values_with_font_override(Font::initial_values()).to_arc()),
+                ..Default::default()
+            },
             damage: ALL_DAMAGE,
             ..Default::default()
         };

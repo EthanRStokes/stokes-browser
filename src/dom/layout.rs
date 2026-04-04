@@ -42,18 +42,23 @@ macro_rules! qual_name {
 
 pub(crate) const DUMMY_NAME: QualName = qual_name!("div", html);
 
+#[inline]
+fn is_layout_child(node: &DomNode) -> bool {
+    node.data.kind() != NodeKind::Comment
+}
+
 fn push_children_and_pseudos(layout_children: &mut Vec<usize>, node: &DomNode) {
     if let Some(before) = node.before {
         layout_children.push(before);
     }
     layout_children.extend(node.children.iter().copied().filter(|child_id| {
         let child_node = node.get_node(*child_id);
-        child_node.data.kind() != NodeKind::Comment
+        is_layout_child(child_node)
     }));
     if let Some(shadow_root_id) = node.shadow_root {
         layout_children.extend(node.get_node(shadow_root_id).children.iter().copied().filter(|child_id| {
             let child_node = node.get_node(*child_id);
-            child_node.data.kind() != NodeKind::Comment
+            is_layout_child(child_node)
         }));
     }
     if let Some(after) = node.after {
@@ -69,7 +74,10 @@ fn push_non_whitespace_children_and_pseudos(layout_children: &mut Vec<usize>, no
         node.children
             .iter()
             .copied()
-            .filter(|child_id| !node.get_node(*child_id).is_whitespace_node()),
+            .filter(|child_id| {
+                let child_node = node.get_node(*child_id);
+                is_layout_child(child_node) && !child_node.is_whitespace_node()
+            }),
     );
     if let Some(shadow_root_id) = node.shadow_root {
         layout_children.extend(
@@ -77,7 +85,10 @@ fn push_non_whitespace_children_and_pseudos(layout_children: &mut Vec<usize>, no
                 .children
                 .iter()
                 .copied()
-                .filter(|child_id| !node.get_node(*child_id).is_whitespace_node()),
+                .filter(|child_id| {
+                    let child_node = node.get_node(*child_id);
+                    is_layout_child(child_node) && !child_node.is_whitespace_node()
+                }),
         );
     }
     if let Some(after) = node.after {

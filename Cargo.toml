@@ -25,7 +25,8 @@ shared_memory = "0.12.4"
 serde = { version = "1.0", features = ["derive"] }
 rfd = "0.17.2"
 url = "2"
-taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "4b6687da0ca1e9d71da4e48b4c659f5c45060707", features = ["strict_provenance"] }
+#taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "4b6687da0ca1e9d71da4e48b4c659f5c45060707", features = ["strict_provenance"] }
+taffy = { version = "0.10.0", features = ["strict_provenance"] }
 slab = "0.4.12"
 markup5ever = "0.39.0"
 xml5ever = "0.39.0"
@@ -72,16 +73,16 @@ adblock = "0.12.1"
 oaty = "0.1.0"
 
 # Stylo
-stylo = "0.14.0"
-stylo_traits = "0.14.0"
-stylo_atoms = "0.14.0"
-stylo_static_prefs = "0.14.0"
-stylo_dom = "0.14.0"
+stylo = "0.15.0"
+stylo_traits = "0.15.0"
+stylo_atoms = "0.15.0"
+stylo_static_prefs = "0.15.0"
+stylo_dom = "0.15.0"
 selectors = "0.36.1"
 
 # Blitz
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "781ae63f" }
-stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "781ae63f", features = ["floats"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "782732fd" }
+stylo_taffy = { git = "https://github.com/EthanRStokes/blitz", rev = "6aaae153", features = ["floats"] }
 dioxus-asset-resolver = { version = "0.7.4", features = ["native"] }
 
 [dependencies.glutin-winit]
