@@ -33,6 +33,11 @@ enum TabCloseResult {
     NoAction,
 }
 
+#[cfg(debug_assertions)]
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-dev");
+#[cfg(not(debug_assertions))]
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 const DEFAULT_HOMEPAGE: &str = "https://html.duckduckgo.com";
 
 /// The main browser application (parent process)

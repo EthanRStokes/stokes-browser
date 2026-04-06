@@ -9,6 +9,7 @@ use skia_safe::{Canvas, Color, Data, Font, FontStyle, Image, Paint, Rect, TextBl
 use std::f32::consts::PI;
 use std::time::{Duration, Instant};
 use usvg::Tree;
+use crate::browser::VERSION;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TextBrush {
@@ -258,6 +259,8 @@ pub struct BrowserUI {
     text_selection_drag_active: bool,
     /// Anchor byte-position used while extending selection during a drag.
     text_selection_drag_anchor: Option<usize>,
+    /// Cached typeface for UI rendering so we don't recreate FontMgr every frame
+    pub ui_typeface: skia_safe::Typeface,
 }
 
 impl BrowserUI {
@@ -277,6 +280,14 @@ impl BrowserUI {
         let window_width = viewport.window_size.0 as f32;
         let scale_factor = viewport.hidpi_scale;
         let scaled = |v: f32| v * scale_factor;
+
+        let font_mgr = skia_safe::FontMgr::new();
+        let ui_typeface = font_mgr.match_family_style("DejaVu Sans", FontStyle::default())
+            .or_else(|| font_mgr.match_family_style("Noto Sans", FontStyle::default()))
+            .or_else(|| font_mgr.match_family_style("Arial Unicode MS", FontStyle::default()))
+            .or_else(|| font_mgr.match_family_style("Segoe UI Symbol", FontStyle::default()))
+            .or_else(|| font_mgr.legacy_make_typeface(None, FontStyle::default()))
+            .unwrap_or_else(|| font_mgr.legacy_make_typeface(None, FontStyle::default()).unwrap());
 
         Self {
             components: vec![
@@ -335,6 +346,7 @@ impl BrowserUI {
             show_settings: false,
             text_selection_drag_active: false,
             text_selection_drag_anchor: None,
+            ui_typeface,
         }
     }
 
@@ -861,10 +873,10 @@ impl BrowserUI {
 
     /// Calculate the cursor position (character index) from a click x-coordinate
     fn calculate_cursor_position_from_click(&self, text: &str, field_x: f32, click_x: f32) -> usize {
-        Self::calculate_cursor_position_from_click_with_scale(text, field_x, click_x, self.viewport.hidpi_scale)
+        Self::calculate_cursor_position_from_click_with_scale(text, field_x, click_x, self.viewport.hidpi_scale, self.ui_typeface.clone())
     }
 
-    fn calculate_cursor_position_from_click_with_scale(text: &str, field_x: f32, click_x: f32, hidpi_scale: f32) -> usize {
+    fn calculate_cursor_position_from_click_with_scale(text: &str, field_x: f32, click_x: f32, hidpi_scale: f32, typeface: skia_safe::Typeface) -> usize {
         if text.is_empty() {
             return 0;
         }
@@ -876,15 +888,6 @@ impl BrowserUI {
         if click_x <= text_start_x {
             return 0;
         }
-
-        // Create font for measuring (same as in render)
-        let font_mgr = skia_safe::FontMgr::new();
-        let typeface = font_mgr.match_family_style("DejaVu Sans", FontStyle::default())
-            .or_else(|| font_mgr.match_family_style("Noto Sans", FontStyle::default()))
-            .or_else(|| font_mgr.match_family_style("Arial Unicode MS", FontStyle::default()))
-            .or_else(|| font_mgr.match_family_style("Segoe UI Symbol", FontStyle::default()))
-            .or_else(|| font_mgr.legacy_make_typeface(None, FontStyle::default()))
-            .unwrap_or_else(|| font_mgr.legacy_make_typeface(None, FontStyle::default()).unwrap());
 
         let base_font_size = 14.0;
         let scaled_font_size = base_font_size * hidpi_scale;
@@ -1254,7 +1257,7 @@ impl BrowserUI {
 
         for comp in &mut self.components {
             if let UiComponent::TextField { has_focus: true, text, x, cursor_position, selection_start, selection_end, .. } = comp {
-                let next_pos = Self::calculate_cursor_position_from_click_with_scale(text, *x, pointer_x, hidpi_scale);
+                let next_pos = Self::calculate_cursor_position_from_click_with_scale(text, *x, pointer_x, hidpi_scale, self.ui_typeface.clone());
                 let anchor = self.text_selection_drag_anchor.unwrap_or(*cursor_position);
                 *selection_start = Some(anchor);
                 *selection_end = Some(next_pos);
@@ -1412,24 +1415,15 @@ impl BrowserUI {
         canvas.draw_rect(border_rect, &chrome_paint);
 
         let mut paint = Paint::default();
-        let font_mgr = skia_safe::FontMgr::new();
-
-        // Try to create a font that supports Unicode symbols
-        let typeface = font_mgr.match_family_style("DejaVu Sans", FontStyle::default())
-            .or_else(|| font_mgr.match_family_style("Noto Sans", FontStyle::default()))
-            .or_else(|| font_mgr.match_family_style("Arial Unicode MS", FontStyle::default()))
-            .or_else(|| font_mgr.match_family_style("Segoe UI Symbol", FontStyle::default()))
-            .or_else(|| font_mgr.legacy_make_typeface(None, FontStyle::default()))
-            .expect("Failed to create any typeface");
 
         // Apply scale factor to font size for proper DPI scaling
         let base_font_size = 14.0;
         let scaled_font_size = base_font_size * self.viewport.hidpi_scale;
-        let font = Font::new(typeface.clone(), scaled_font_size);
+        let font = Font::new(self.ui_typeface.clone(), scaled_font_size);
 
         // Draw BROWSING WITH STOKES text in the top-right corner
         {
-            let text = "STOKES BROWSER";
+            let text = &format!("STOKES BROWSER {VERSION}");
             let mut builder = layout_ctx.ranged_builder(font_ctx, text, self.viewport.hidpi_scale, true);
 
             builder.push_default(GenericFamily::SystemUi);
@@ -1491,29 +1485,6 @@ impl BrowserUI {
                         }
                     }
                 }
-            }
-
-            // Draw "browsing the web" text in small-caps 18px Times New Roman
-            let times_typeface = font_mgr.match_family_style("Times New Roman", FontStyle::bold_italic())
-                .or_else(|| font_mgr.match_family_style("Liberation Serif", FontStyle::default()))
-                .or_else(|| font_mgr.match_family_style("Times", FontStyle::default()))
-                .or_else(|| font_mgr.match_family_style("serif", FontStyle::default()))
-                .unwrap_or(typeface);
-
-            let custom_font_size = 18.0 * self.viewport.hidpi_scale;
-            let mut custom_font = Font::new(times_typeface, custom_font_size);
-
-            // Enable small-caps by setting font features
-            custom_font.set_subpixel(true);
-
-            // Render text in small-caps style (manually convert to uppercase with smaller caps)
-            paint.set_color(Color::from_rgb(60, 60, 60));
-
-            if let Some(text_blob) = TextBlob::new(text, &custom_font) {
-                let text_bounds = text_blob.bounds();
-                let text_x = canvas_width - text_bounds.width() - (20.0 * self.viewport.hidpi_scale);
-                let text_y = 22.0 * self.viewport.hidpi_scale;
-                //canvas.draw_text_blob(&text_blob, (text_x, text_y), &paint);
             }
         }
 
