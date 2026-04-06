@@ -216,20 +216,15 @@ unsafe fn invoke_function_timer_callback(runtime: &mut JsRuntime, callback_obj: 
     JS_ClearPendingException(&cx);
 }
 
-// Thread-local storage for the timer manager pointer
-thread_local! {
-    static TIMER_MANAGER: RefCell<Option<Rc<TimerManager>>> = RefCell::new(None);
-}
-
 /// Set up timer functions in the JavaScript context
 pub fn setup_timers(runtime: &mut JsRuntime, timer_manager: Rc<TimerManager>) -> Result<(), String> {
-    // Store timer manager in thread-local storage
-    TIMER_MANAGER.with(|tm| {
-        *tm.borrow_mut() = Some(timer_manager);
-    });
+    let set_timeout_manager = timer_manager.clone();
+    let clear_timeout_manager = timer_manager.clone();
+    let set_interval_manager = timer_manager.clone();
+    let clear_interval_manager = timer_manager;
 
     // setTimeout
-    runtime.add_global_function("setTimeout", |cx, args| {
+    runtime.add_global_function("setTimeout", move |cx, args| {
         unsafe {
             let argc = args.argc_;
             // Get callback (first argument)
@@ -263,13 +258,7 @@ pub fn setup_timers(runtime: &mut JsRuntime, timer_manager: Rc<TimerManager>) ->
                 0
             };
 
-            let id = TIMER_MANAGER.with(|tm| {
-                if let Some(ref manager) = *tm.borrow() {
-                    manager.set_timeout(callback, delay)
-                } else {
-                    0
-                }
-            });
+            let id = set_timeout_manager.set_timeout(callback, delay);
 
             args.rval().set(Int32Value(id as i32));
             true
@@ -277,7 +266,7 @@ pub fn setup_timers(runtime: &mut JsRuntime, timer_manager: Rc<TimerManager>) ->
     });
 
     // clearTimeout
-    runtime.add_global_function("clearTimeout", |_cx, args| {
+    runtime.add_global_function("clearTimeout", move |_cx, args| {
         let argc = args.argc_;
         if argc > 0 {
             let id_val = *args.get(0);
@@ -289,11 +278,7 @@ pub fn setup_timers(runtime: &mut JsRuntime, timer_manager: Rc<TimerManager>) ->
                 0
             };
 
-            TIMER_MANAGER.with(|tm| {
-                if let Some(ref manager) = *tm.borrow() {
-                    manager.clear_timer(id);
-                }
-            });
+            clear_timeout_manager.clear_timer(id);
         }
 
         args.rval().set(UndefinedValue());
@@ -301,7 +286,7 @@ pub fn setup_timers(runtime: &mut JsRuntime, timer_manager: Rc<TimerManager>) ->
     });
 
     // setInterval
-    runtime.add_global_function("setInterval", |cx, args| {
+    runtime.add_global_function("setInterval", move |cx, args| {
         unsafe {
             let argc = args.argc_;
             // Get callback (first argument)
@@ -335,13 +320,7 @@ pub fn setup_timers(runtime: &mut JsRuntime, timer_manager: Rc<TimerManager>) ->
                 0
             };
 
-            let id = TIMER_MANAGER.with(|tm| {
-                if let Some(ref manager) = *tm.borrow() {
-                    manager.set_interval(callback, delay)
-                } else {
-                    0
-                }
-            });
+            let id = set_interval_manager.set_interval(callback, delay);
 
             args.rval().set(Int32Value(id as i32));
             true
@@ -349,7 +328,7 @@ pub fn setup_timers(runtime: &mut JsRuntime, timer_manager: Rc<TimerManager>) ->
     });
 
     // clearInterval
-    runtime.add_global_function("clearInterval", |_cx, args| {
+    runtime.add_global_function("clearInterval", move |_cx, args| {
         let argc = args.argc_;
         if argc > 0 {
             let id_val = *args.get(0);
@@ -361,11 +340,7 @@ pub fn setup_timers(runtime: &mut JsRuntime, timer_manager: Rc<TimerManager>) ->
                 0
             };
 
-            TIMER_MANAGER.with(|tm| {
-                if let Some(ref manager) = *tm.borrow() {
-                    manager.clear_timer(id);
-                }
-            });
+            clear_interval_manager.clear_timer(id);
         }
 
         args.rval().set(UndefinedValue());

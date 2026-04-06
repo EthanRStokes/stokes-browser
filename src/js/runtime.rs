@@ -5,7 +5,7 @@ use crate::js::jsapi::define_native_function::define_native_function;
 use crate::js::helpers::js_value_to_string;
 use crate::js::jsapi::objects::{get_obj_prop_val, get_obj_prop_val_as_string};
 use crate::js::jsapi::promise::{clear_pending_jobs_for_navigation, enqueue_promise_job};
-use blitz_traits::net::Request;
+use crate::js::module_loader::{DefaultModuleLoader, ModuleLoader};
 use hirofa_utils::eventloop::EventLoop;
 use lazy_static::lazy_static;
 use log::trace;
@@ -13,13 +13,13 @@ use mozjs::context::{JSContext, RawJSContext};
 use mozjs::conversions::jsstr_to_string;
 use mozjs::gc::HandleObject;
 use mozjs::glue::JobQueueTraps;
-use mozjs::jsapi::{CallArgs, JSContext as ApiJSContext, SetModuleDynamicImportHook, SetModuleMetadataHook, SetModulePrivate, SetModuleResolveHook, SetScriptPrivate, SourceText};
+use mozjs::jsapi::{CallArgs, JSContext as ApiJSContext, SetModuleDynamicImportHook, SetModuleMetadataHook, SetModuleResolveHook, SetScriptPrivate, SourceText};
 use mozjs::jsapi::{Heap, JSObject, JSScript, OnNewGlobalHookOption};
 // JavaScript runtime management using Mozilla's SpiderMonkey (mozjs)
 use mozjs::jsval::{ObjectValue, PrivateValue, StringValue, UndefinedValue};
 use mozjs::panic::{maybe_resume_unwind};
 use mozjs::rooted;
-use mozjs::rust::wrappers2::{Compile1, CompileModule1, GetModuleNamespace, JS_ClearPendingException, JS_DefineProperty, JS_ExecuteScript, JS_GetPendingException, JS_GetScriptPrivate, JS_IsExceptionPending, JS_NewGlobalObject, JS_NewUCStringCopyN, JS_SetPendingException, JS_ValueToSource, ModuleEvaluate, ModuleLink, RejectPromise, ResolvePromise};
+use mozjs::rust::wrappers2::{Compile1, GetModuleNamespace, JS_ClearPendingException, JS_DefineProperty, JS_ExecuteScript, JS_GetPendingException, JS_GetScriptPrivate, JS_IsExceptionPending, JS_NewGlobalObject, JS_NewUCStringCopyN, JS_SetPendingException, JS_ValueToSource, ModuleEvaluate, ModuleLink, RejectPromise, ResolvePromise};
 use mozjs::rust::{transform_str_to_source_text, CompileOptionsWrapper, JSEngine, MutableHandleValue, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -27,7 +27,6 @@ use std::os::raw::c_void;
 use std::ptr;
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::mpsc;
 use std::time::Duration;
 use mozjs::realm::AutoRealm;
 use tracing::error;
@@ -36,6 +35,7 @@ use crate::js::bindings::initialize_bindings;
 use crate::js::bindings::event_listeners::clear_all_listeners;
 use crate::js::bindings::element_bindings::clear_element_wrapper_cache;
 use crate::js::helpers::ToSafeCx;
+use crate::js::runtime_context::RuntimeContext;
 
 lazy_static! {
     static ref ENGINE_HANDLER_PRODUCER: EventLoop = EventLoop::new();
@@ -45,11 +45,10 @@ thread_local! {
     static ENGINE: RefCell<JSEngine> = RefCell::new(JSEngine::init().unwrap());
 }
 
-pub type GlobalOp = dyn Fn(*mut ApiJSContext, CallArgs) -> bool + Send + 'static;
+pub type GlobalOp = dyn Fn(*mut ApiJSContext, CallArgs) -> bool + 'static;
 
 thread_local! {
     pub(crate) static RUNTIME: RefCell<Option<*mut JsRuntime>> = RefCell::new(None);
-    static GLOBAL_OPS: RefCell<HashMap<&'static str, Box<GlobalOp>>> = RefCell::new(HashMap::new());
 }
 
 pub(crate) static JOB_QUEUE_TRAPS: JobQueueTraps = JobQueueTraps {
@@ -71,16 +70,28 @@ const _RED_ZONE: usize = 32 * 1024;
 pub struct JsRuntime {
     // IMPORTANT: Field order matters for drop order!
     // runtime must be dropped before engine since runtime holds a handle to engine
-    dom: *mut Dom,
+    context: RuntimeContext,
     timer_manager: Rc<TimerManager>,
-    user_agent: String,
+    global_ops: HashMap<&'static str, Box<GlobalOp>>,
     global: Box<Heap<*mut JSObject>>,
-    module_cache: HashMap<String, Heap<*mut JSObject>>,
+    module_loader: DefaultModuleLoader,
     event_loop: EventLoop,
     runtime: Runtime,
 }
 
 impl JsRuntime {
+    pub(crate) fn context(&self) -> &RuntimeContext {
+        &self.context
+    }
+
+    pub(crate) fn context_mut(&mut self) -> &mut RuntimeContext {
+        &mut self.context
+    }
+
+    pub(crate) fn timer_manager(&self) -> Rc<TimerManager> {
+        self.timer_manager.clone()
+    }
+
     fn create_global(runtime: &mut Runtime) -> JsResult<Box<Heap<*mut JSObject>>> {
         let global = Box::new(Heap::default());
         let cx = runtime.cx();
@@ -118,31 +129,31 @@ impl JsRuntime {
         let global = Self::create_global(&mut runtime)?;
 
         let mut js_runtime = Self {
-            dom,
+            context: RuntimeContext::new(dom, user_agent),
             timer_manager: timer_manager.clone(),
-            user_agent,
+            global_ops: HashMap::new(),
             global,
-            module_cache: HashMap::new(),
+            module_loader: DefaultModuleLoader::new(),
             event_loop: EventLoop::new(),
             runtime,
         };
         // NOTE: Do NOT set RUNTIME here — js_runtime is a local stack variable that will be
         // moved when this function returns Ok(js_runtime).  The caller must update RUNTIME
         // after placing the returned value in its final, stable memory location.
-        let user_agent = js_runtime.user_agent.clone();
-
         // Enter the realm for the global object before setting up bindings
-        js_runtime.enter_realm_and_initialize(dom, user_agent, timer_manager)?;
+        js_runtime.enter_realm_and_initialize(timer_manager)?;
 
         Ok(js_runtime)
     }
 
     /// Enter the realm and initialize bindings
-    fn enter_realm_and_initialize(&mut self, dom: *mut Dom, user_agent: String, timer_manager: Rc<TimerManager>) -> JsResult<()> {
+    fn enter_realm_and_initialize(&mut self, timer_manager: Rc<TimerManager>) -> JsResult<()> {
         // Get raw pointers before entering the realm to avoid borrow conflicts
         let raw_cx = unsafe { self.runtime.cx().raw_cx() };
         let cx = &mut raw_cx.to_safe_cx();
         let global_ptr = self.global.get();
+        let dom = self.context.dom_ptr();
+        let user_agent = self.context.user_agent().to_string();
 
         unsafe {
             rooted!(in(raw_cx) let global_root = global_ptr);
@@ -160,21 +171,20 @@ impl JsRuntime {
 
     /// Reset document-scoped JS state and rebind globals for a new navigation.
     pub fn reset_for_navigation(&mut self, dom: *mut Dom, user_agent: String) -> JsResult<()> {
-        self.dom = dom;
-        self.user_agent = user_agent.clone();
+        self.context.update_for_navigation(dom, user_agent);
 
         // Keep the same runtime/realm but clear state that must not leak across documents.
         self.timer_manager.clear_all();
         clear_all_listeners();
         clear_pending_jobs_for_navigation();
         clear_element_wrapper_cache();
-        self.module_cache.clear();
+        self.module_loader.clear();
 
         // Create a new global so top-level lexical bindings from the previous
         // document (e.g. `const`/`let`) do not survive into the next load.
         self.global = Self::create_global(&mut self.runtime)?;
 
-        self.enter_realm_and_initialize(dom, user_agent, self.timer_manager.clone())?;
+        self.enter_realm_and_initialize(self.timer_manager.clone())?;
 
         // Refresh thread-local runtime pointer after navigation reset.
         RUNTIME.with(|cell| *cell.borrow_mut() = Some(self as *mut JsRuntime));
@@ -211,7 +221,7 @@ impl JsRuntime {
             rooted!(in(raw_cx) let mut rval = UndefinedValue());
             let rval = rval.handle_mut();
 
-            let dom_ref = &*self.dom;
+            let dom_ref = &*self.context.dom_ptr();
             let url = Url::from(&dom_ref.url);
 
             // Compile the script first
@@ -331,144 +341,14 @@ impl JsRuntime {
         }
     }
 
-    fn effective_module_source_url(&self, source_url: Option<&str>) -> String {
-        source_url
-            .map(str::to_string)
-            .unwrap_or_else(|| unsafe { (&*self.dom).url.to_string() })
-    }
-
-    fn module_cache_key(&self, source_url: Option<&str>, code: &str) -> Option<String> {
-        let module_url = source_url?;
-        let doc_url = unsafe { (&*self.dom).url.to_string() };
-        // Inline modules commonly inherit the document URL; only cache URL-addressable external modules.
-        if module_url == doc_url {
-            return None;
-        }
-
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        code.hash(&mut hasher);
-        Some(format!("{}#{}", module_url, hasher.finish()))
-    }
-
-    fn compile_module_script(
-        context: &mut JSContext,
-        text: &str,
-        filename: &str,
-        line_number: u32,
-    ) -> *mut JSObject {
-        let options = unsafe { CompileOptionsWrapper::new(&context, filename.parse().unwrap(), line_number) };
-        unsafe { CompileModule1(context, options.ptr, &mut transform_str_to_source_text(text)) }
-    }
-
-    fn resolve_module_url(&self, specifier: &str, referencing_url: Option<&str>) -> JsResult<Url> {
-        if let Ok(url) = Url::parse(specifier) {
-            return Ok(url);
-        }
-
-        let base = referencing_url
-            .and_then(|raw| Url::parse(raw).ok())
-            .or_else(|| unsafe { Url::parse((&*self.dom).url.to_string().as_str()).ok() })
-            .ok_or_else(|| "Unable to resolve module base URL".to_string())?;
-
-        base.join(specifier)
-            .map_err(|e| format!("Failed to resolve module specifier '{specifier}': {e}"))
-    }
-
-    fn fetch_module_source(&self, url: &Url) -> JsResult<String> {
-        let net_provider = unsafe { (&*self.dom).net_provider.clone() };
-        let (tx, rx) = mpsc::channel();
-        net_provider.fetch_with_callback(
-            Request::get(url.clone()),
-            Box::new(move |result| {
-                let _ = tx.send(result);
-            }),
-        );
-
-        let result = rx
-            .recv()
-            .map_err(|e| format!("Module fetch callback dropped for '{}': {e}", url))?;
-
-        let (_final_url, bytes) = result
-            .map_err(|e| format!("Failed to fetch module '{}': {e:?}", url))?;
-
-        String::from_utf8(bytes.to_vec())
-            .map_err(|e| format!("Module '{}' is not valid UTF-8: {e}", url))
-    }
-
-    unsafe fn set_module_private_url(context: &mut JSContext, raw_cx: *mut RawJSContext, module: *mut JSObject, source_name: &str) {
-        let source_url_utf16: Vec<u16> = source_name.encode_utf16().collect();
-        rooted!(in(raw_cx) let source_url_js = JS_NewUCStringCopyN(context, source_url_utf16.as_ptr(), source_url_utf16.len()));
-        rooted!(in(raw_cx) let module_private = StringValue(&*source_url_js.get()));
-        let module_private_value = module_private.get();
-        SetModulePrivate(module, &module_private_value);
-    }
-
-    unsafe fn load_or_compile_module(
-        &mut self,
-        context: &mut JSContext,
-        raw_cx: *mut RawJSContext,
-        specifier: &str,
-        referencing_url: Option<&str>,
-    ) -> JsResult<*mut JSObject> {
-        let resolved_url = self.resolve_module_url(specifier, referencing_url)?;
-        let resolved_url_str = resolved_url.to_string();
-
-        if let Some(module) = self.module_cache.get(&resolved_url_str) {
-            return Ok(module.get());
-        }
-
-        let source = self.fetch_module_source(&resolved_url)?;
-        let module = Self::compile_module_script(context, &source, &resolved_url_str, 1);
-        if module.is_null() {
-            return Err(Self::extract_js_exception(
-                context,
-                raw_cx,
-                "JavaScript MODULE COMPILE error",
-                &source,
-                true,
-            ));
-        }
-
-        Self::set_module_private_url(context, raw_cx, module, &resolved_url_str);
-
-        let mut rooted_module = Heap::default();
-        rooted_module.set(module);
-        self.module_cache.insert(resolved_url_str, rooted_module);
-
-        Ok(module)
-    }
-
-    unsafe fn extract_js_exception(
-        context: &mut JSContext,
-        raw_cx: *mut RawJSContext,
-        prefix: &str,
-        code: &str,
-        print_error: bool,
-    ) -> String {
-        if JS_IsExceptionPending(context) {
-            rooted!(in(raw_cx) let mut exception = UndefinedValue());
-            if JS_GetPendingException(context, MutableHandleValue::from(exception.handle_mut())) {
-                JS_ClearPendingException(context);
-                rooted!(in(raw_cx) let exc_str = JS_ValueToSource(context, exception.handle()));
-                if !exc_str.get().is_null() {
-                    let msg = jsstr_to_string(raw_cx, NonNull::new(exc_str.handle().get()).unwrap());
-                    if print_error {
-                        return format!("{prefix}: {msg}\n{code}");
-                    }
-                    return format!("{prefix}: {msg}");
-                }
-            }
-        }
-
-        prefix.to_string()
-    }
-
     /// Execute JavaScript that originated from `<script type=\"module\">`.
     pub fn execute_module_script(&mut self, code: &str, source_url: Option<&str>, print_eval_error: bool) -> JsResult<()> {
-        let source_name = self.effective_module_source_url(source_url);
-        let cache_key = self.module_cache_key(source_url, code);
+        let source_name = self
+            .module_loader
+            .effective_module_source_url(source_url, self.context.dom_ptr());
+        let cache_key = self
+            .module_loader
+            .module_cache_key(source_url, code, self.context.dom_ptr());
         let cx = self.runtime.cx();
         let raw_cx = unsafe { cx.raw_cx() };
         let global_ptr = self.global.get();
@@ -482,44 +362,38 @@ impl JsRuntime {
             let cx = &mut AutoRealm::new_from_handle(cx, global.handle());
             let raw_cx = cx.raw_cx();
 
-            rooted!(in(raw_cx) let mut module = ptr::null_mut::<JSObject>());
-            if let Some(cache_key) = cache_key.as_ref() {
-                if let Some(cached) = self.module_cache.get(cache_key) {
-                    module.set(cached.get());
+            let module_ptr = match self.module_loader.prepare_root_module(
+                cx,
+                raw_cx,
+                code,
+                &source_name,
+                cache_key.as_ref(),
+                print_eval_error,
+            ) {
+                Ok(module) => module,
+                Err(msg) => {
+                    eprintln!("Module script execution error: {}", msg);
+                    return Err(msg);
                 }
-            }
+            };
+
+            rooted!(in(raw_cx) let module = module_ptr);
 
             if module.get().is_null() {
-                module.set(Self::compile_module_script(cx, code, &source_name, 1));
-            }
-
-            if module.get().is_null() {
-                let msg = Self::extract_js_exception(cx, raw_cx, "JavaScript MODULE COMPILE error", code, print_eval_error);
+                let msg = "JavaScript MODULE COMPILE error".to_string();
                 eprintln!("Module script execution error: {}", msg);
                 return Err(msg);
             }
 
-            if let Some(cache_key) = cache_key.as_ref() {
-                if !self.module_cache.contains_key(cache_key) {
-                    Self::set_module_private_url(cx, raw_cx, module.get(), &source_name);
-
-                    let mut rooted_module = Heap::default();
-                    rooted_module.set(module.get());
-                    self.module_cache.insert(cache_key.clone(), rooted_module);
-                }
-            } else {
-                Self::set_module_private_url(cx, raw_cx, module.get(), &source_name);
-            }
-
             if !ModuleLink(cx, module.handle().into()) {
-                let msg = Self::extract_js_exception(cx, raw_cx, "JavaScript MODULE INSTANTIATE error", code, print_eval_error);
+                let msg = extract_module_exception(cx, raw_cx, "JavaScript MODULE INSTANTIATE error", code, print_eval_error);
                 eprintln!("Module script execution error: {}", msg);
                 return Err(msg);
             }
 
             rooted!(in(raw_cx) let mut eval_result = UndefinedValue());
             if !ModuleEvaluate(cx, module.handle().into(), eval_result.handle_mut().into()) {
-                let msg = Self::extract_js_exception(cx, raw_cx, "JavaScript MODULE EVAL error", code, print_eval_error);
+                let msg = extract_module_exception(cx, raw_cx, "JavaScript MODULE EVAL error", code, print_eval_error);
                 eprintln!("Module script execution error: {}", msg);
                 return Err(msg);
             }
@@ -563,15 +437,13 @@ impl JsRuntime {
     /// Returns true if any timers were executed
     pub fn process_timers(&mut self) -> bool {
         let timer_manager = self.timer_manager.clone();
-        let had_timers = timer_manager.process_timers(self);
+        timer_manager.process_timers(self)
+    }
 
-        if had_timers {
-            // After executing timer callbacks, run any pending promise jobs
-            // that may have been scheduled by the timer callbacks
-            self.run_pending_jobs();
-        }
-
-        had_timers
+    /// Execute one runtime task checkpoint: timers, then microtasks/rejection reporting.
+    pub fn tick(&mut self) {
+        let _ = self.process_timers();
+        self.run_pending_jobs();
     }
 
     /// Get the runtime reference
@@ -599,12 +471,9 @@ impl JsRuntime {
 
     pub fn add_global_function<F>(&mut self, name: &'static str, func: F)
     where
-        F: Fn(*mut RawJSContext, CallArgs) -> bool + Send + 'static,
+        F: Fn(*mut RawJSContext, CallArgs) -> bool + 'static,
     {
-        GLOBAL_OPS.with(move |global_ops_rc| {
-            let global_ops = &mut *global_ops_rc.borrow_mut();
-            global_ops.insert(name, Box::new(func));
-        });
+        self.global_ops.insert(name, Box::new(func));
 
         self.do_with_jsapi(|cx, global| unsafe {
             define_native_function(
@@ -671,6 +540,31 @@ impl Drop for JsRuntime {
     }
 }
 
+unsafe fn extract_module_exception(
+    context: &mut JSContext,
+    raw_cx: *mut RawJSContext,
+    prefix: &str,
+    code: &str,
+    print_error: bool,
+) -> String {
+    if JS_IsExceptionPending(context) {
+        rooted!(in(raw_cx) let mut exception = UndefinedValue());
+        if JS_GetPendingException(context, MutableHandleValue::from(exception.handle_mut())) {
+            JS_ClearPendingException(context);
+            rooted!(in(raw_cx) let exc_str = JS_ValueToSource(context, exception.handle()));
+            if !exc_str.get().is_null() {
+                let msg = jsstr_to_string(raw_cx, NonNull::new(exc_str.handle().get()).unwrap());
+                if print_error {
+                    return format!("{prefix}: {msg}\n{code}");
+                }
+                return format!("{prefix}: {msg}");
+            }
+        }
+    }
+
+    prefix.to_string()
+}
+
 unsafe extern "C" fn empty(_extra: *const c_void) -> bool {
     false
 }
@@ -701,9 +595,17 @@ unsafe extern "C" fn global_op_native_method(
         "name",
     );
     if let Ok(prop_name) = prop_name {
-        return GLOBAL_OPS.with(|global_ops_ref| {
-            let global_ops = &*global_ops_ref.borrow();
-            let boxed_op = global_ops.get(prop_name.as_str()).expect("could not find op");
+        return RUNTIME.with(|runtime_cell| unsafe {
+            let mut runtime_ref = runtime_cell.borrow_mut();
+            let Some(runtime_ptr) = runtime_ref.as_mut() else {
+                return false;
+            };
+
+            let runtime = &mut **runtime_ptr;
+            let Some(boxed_op) = runtime.global_ops.get(prop_name.as_str()) else {
+                return false;
+            };
+
             boxed_op(cx, args)
         });
     }
@@ -764,7 +666,10 @@ unsafe extern "C" fn module_resolve_hook(
         };
         let runtime = &mut **runtime_ptr;
 
-        match runtime.load_or_compile_module(safe_cx, raw_cx, &specifier, referencing_url.as_deref()) {
+        match runtime
+            .module_loader
+            .load_or_compile_module(safe_cx, raw_cx, &specifier, referencing_url.as_deref(), runtime.context.dom_ptr())
+        {
             Ok(module) => module,
             Err(err) => {
                 let msg = format!("Failed to resolve module '{specifier}': {err}");

@@ -1,9 +1,10 @@
 use crate::js::bindings::dom_bindings::DOM_REF;
-use crate::js::helpers::{create_empty_array, create_js_string, define_function, define_property_accessor, js_value_to_string, set_string_property, ToSafeCx};
+use crate::js::helpers::{create_empty_array, create_js_string, define_function, define_js_property_getter, js_value_to_string, set_string_property, ToSafeCx};
+use crate::js::runtime_context::current_document_base_url;
 use crate::js::JsRuntime;
 use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::{
-    CallArgs, HandleObject, JSContext, JSObject, JSPROP_ENUMERATE,
+    CallArgs, JSContext, JSObject, JSPROP_ENUMERATE,
 };
 use mozjs::context::JSContext as SafeJSContext;
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, UndefinedValue};
@@ -364,6 +365,10 @@ fn resolve_url(input: &str, base: Option<&str>) -> Result<Url, String> {
 
 /// Return the current document URL as a string, used as the default base for relative URL resolution.
 fn document_base_url() -> Option<String> {
+    if let Some(url) = current_document_base_url() {
+        return Some(url);
+    }
+
     DOM_REF.with(|dom_ref| {
         dom_ref.borrow().as_ref().map(|dom_ptr| {
             let dom = unsafe { &**dom_ptr };
@@ -504,7 +509,7 @@ unsafe fn create_url_search_params_object(
     define_function(cx, obj.get(), "has", Some(url_search_params_has), 1)?;
     define_function(cx, obj.get(), "toString", Some(url_search_params_to_string), 0)?;
     define_function(cx, obj.get(), "__getSize", Some(url_search_params_get_size), 0)?;
-    define_property_accessor(cx, obj.get(), "size", "__getSize", "__getSize")?;
+    define_js_property_getter(cx, obj.get(), "size", "__getSize")?;
 
     Ok(obj.get())
 }

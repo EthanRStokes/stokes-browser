@@ -20,7 +20,7 @@ use mozjs::context::JSContext as SafeJSContext;
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{JS_GetProperty, JS_DefineProperty, JS_NewPlainObject};
 
-use crate::js::helpers::{js_value_to_string, create_js_string, ToSafeCx};
+use crate::js::helpers::{create_js_string, define_function, js_value_to_string, ToSafeCx};
 use crate::js::JsResult;
 
 // ── EventListener Options Support ──────────────────────────────────────────
@@ -571,247 +571,86 @@ unsafe fn set_event_property_double(
 
 // ── Setup Function ────────────────────────────────────────────────────────
 
-/// Initialize EventTarget bindings globally.
-///
-/// This sets up:
-/// - Event constructor (global)
-/// - CustomEvent constructor (global)
-/// - EventTarget prototype methods (via element/window bindings)
-pub fn setup_event_target(runtime: &mut crate::js::JsRuntime) -> JsResult<()> {
-    // Set up Event constructor
-    let event_constructor_script = r#"
-        (function() {
-            const root = typeof globalThis !== 'undefined' ? globalThis : window;
+/// Install a native EventTarget constructor/prototype pair on the global object.
+pub(crate) unsafe fn setup_event_target_constructor_bindings(
+    cx: &mut SafeJSContext,
+    global: *mut JSObject,
+) -> JsResult<()> {
+    let raw_cx = cx.raw_cx();
 
-            globalThis.Event = function(type, eventInitDict) {
-                if (!(this instanceof Event)) {
-                    return new Event(type, eventInitDict);
-                }
+    rooted!(in(raw_cx) let ctor = JS_NewPlainObject(cx));
+    if ctor.get().is_null() {
+        return Err("Failed to create EventTarget constructor".to_string());
+    }
 
-                var bubbles = false;
-                var cancelable = false;
-                var composed = false;
+    rooted!(in(raw_cx) let proto = JS_NewPlainObject(cx));
+    if proto.get().is_null() {
+        return Err("Failed to create EventTarget prototype".to_string());
+    }
 
-                if (eventInitDict && typeof eventInitDict === 'object') {
-                    if (eventInitDict.bubbles !== undefined) {
-                        bubbles = !!eventInitDict.bubbles;
-                    }
-                    if (eventInitDict.cancelable !== undefined) {
-                        cancelable = !!eventInitDict.cancelable;
-                    }
-                    if (eventInitDict.composed !== undefined) {
-                        composed = !!eventInitDict.composed;
-                    }
-                }
+    define_function(
+        cx,
+        proto.get(),
+        "addEventListener",
+        Some(event_target_add_event_listener),
+        3,
+    )?;
+    define_function(
+        cx,
+        proto.get(),
+        "removeEventListener",
+        Some(event_target_remove_event_listener),
+        3,
+    )?;
+    define_function(
+        cx,
+        proto.get(),
+        "dispatchEvent",
+        Some(event_target_dispatch_event),
+        1,
+    )?;
 
-                this.type = String(type || '');
-                this.bubbles = bubbles;
-                this.cancelable = cancelable;
-                this.composed = composed;
-                this.isTrusted = false;
-                this.defaultPrevented = false;
-                this.eventPhase = 0;
-                this.timeStamp = 0;
-                this.target = null;
-                this.currentTarget = null;
-                this.relatedTarget = null;
+    let prototype_name = CString::new("prototype").unwrap();
+    rooted!(in(raw_cx) let proto_val = ObjectValue(proto.get()));
+    JS_DefineProperty(
+        cx,
+        ctor.handle().into(),
+        prototype_name.as_ptr(),
+        proto_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
-                // Event phase constants
-                this.NONE = 0;
-                this.CAPTURING_PHASE = 1;
-                this.AT_TARGET = 2;
-                this.BUBBLING_PHASE = 3;
-            };
+    let constructor_name = CString::new("constructor").unwrap();
+    rooted!(in(raw_cx) let ctor_val = ObjectValue(ctor.get()));
+    JS_DefineProperty(
+        cx,
+        proto.handle().into(),
+        constructor_name.as_ptr(),
+        ctor_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
-            globalThis.Event.prototype.stopPropagation = function() {};
-            globalThis.Event.prototype.stopImmediatePropagation = function() {};
-            globalThis.Event.prototype.preventDefault = function() {
-                if (this.cancelable) {
-                    this.defaultPrevented = true;
-                }
-            };
-            globalThis.Event.prototype.initEvent = function(type, bubbles, cancelable) {
-                // Deprecated but supported for compatibility
-                this.type = type;
-                this.bubbles = !!bubbles;
-                this.cancelable = !!cancelable;
-            };
-
-            // Event phase constants
-            globalThis.Event.NONE = 0;
-            globalThis.Event.CAPTURING_PHASE = 1;
-            globalThis.Event.AT_TARGET = 2;
-            globalThis.Event.BUBBLING_PHASE = 3;
-
-            // Minimal EventTarget constructor for libraries that instantiate or check it.
-            function EventTarget() {
-                if (!(this instanceof EventTarget)) {
-                    throw new TypeError("Failed to construct 'EventTarget': Please use the 'new' operator.");
-                }
-                Object.defineProperty(this, '__listeners', {
-                    value: Object.create(null),
-                    configurable: true,
-                    enumerable: false,
-                    writable: true
-                });
-            }
-
-            EventTarget.prototype.addEventListener = function(type, listener, options) {
-                if (!listener || (typeof listener !== 'function' && typeof listener.handleEvent !== 'function')) {
-                    return;
-                }
-
-                const eventType = String(type || '');
-                const capture = typeof options === 'boolean'
-                    ? options
-                    : !!(options && typeof options === 'object' && options.capture);
-
-                if (!this.__listeners) {
-                    Object.defineProperty(this, '__listeners', {
-                        value: Object.create(null),
-                        configurable: true,
-                        enumerable: false,
-                        writable: true
-                    });
-                }
-
-                const list = this.__listeners[eventType] || (this.__listeners[eventType] = []);
-                for (let i = 0; i < list.length; i++) {
-                    const entry = list[i];
-                    if (entry.listener === listener && entry.capture === capture) {
-                        return;
-                    }
-                }
-
-                list.push({ listener: listener, capture: capture });
-            };
-
-            EventTarget.prototype.removeEventListener = function(type, listener, options) {
-                if (!this.__listeners || !listener) {
-                    return;
-                }
-
-                const eventType = String(type || '');
-                const capture = typeof options === 'boolean'
-                    ? options
-                    : !!(options && typeof options === 'object' && options.capture);
-                const list = this.__listeners[eventType];
-
-                if (!list || list.length === 0) {
-                    return;
-                }
-
-                for (let i = 0; i < list.length; i++) {
-                    const entry = list[i];
-                    if (entry.listener === listener && entry.capture === capture) {
-                        list.splice(i, 1);
-                        break;
-                    }
-                }
-            };
-
-            EventTarget.prototype.dispatchEvent = function(event) {
-                if (!event || typeof event !== 'object') {
-                    throw new TypeError("Failed to execute 'dispatchEvent' on 'EventTarget': parameter 1 is not of type 'Event'.");
-                }
-
-                const eventType = String(event.type || '');
-                const list = this.__listeners && this.__listeners[eventType]
-                    ? this.__listeners[eventType].slice()
-                    : [];
-
-                if (event.target === null || event.target === undefined) {
-                    event.target = this;
-                }
-                event.currentTarget = this;
-                event.eventPhase = Event.AT_TARGET;
-
-                for (let i = 0; i < list.length; i++) {
-                    const listener = list[i].listener;
-                    if (typeof listener === 'function') {
-                        listener.call(this, event);
-                    } else if (listener && typeof listener.handleEvent === 'function') {
-                        listener.handleEvent.call(listener, event);
-                    }
-                }
-
-                event.currentTarget = null;
-                event.eventPhase = Event.NONE;
-                return event.defaultPrevented !== true;
-            };
-
-            root.EventTarget = EventTarget;
-        })();
-    "#;
-
-    runtime.execute(event_constructor_script, false)?;
-
-    // Set up CustomEvent constructor
-    let custom_event_script = r#"
-        (function() {
-            globalThis.CustomEvent = function(type, customEventInitDict) {
-                if (!(this instanceof CustomEvent)) {
-                    return new CustomEvent(type, customEventInitDict);
-                }
-
-                // Call Event constructor behavior
-                var bubbles = false;
-                var cancelable = false;
-                var composed = false;
-                var detail = undefined;
-
-                if (customEventInitDict && typeof customEventInitDict === 'object') {
-                    if (customEventInitDict.bubbles !== undefined) {
-                        bubbles = !!customEventInitDict.bubbles;
-                    }
-                    if (customEventInitDict.cancelable !== undefined) {
-                        cancelable = !!customEventInitDict.cancelable;
-                    }
-                    if (customEventInitDict.composed !== undefined) {
-                        composed = !!customEventInitDict.composed;
-                    }
-                    if (customEventInitDict.detail !== undefined) {
-                        detail = customEventInitDict.detail;
-                    }
-                }
-
-                this.type = String(type || '');
-                this.bubbles = bubbles;
-                this.cancelable = cancelable;
-                this.composed = composed;
-                this.isTrusted = false;
-                this.defaultPrevented = false;
-                this.eventPhase = 0;
-                this.timeStamp = 0;
-                this.target = null;
-                this.currentTarget = null;
-                this.relatedTarget = null;
-                this.detail = detail;
-            };
-
-            // Inherit from Event
-            if (typeof Object !== 'undefined' && typeof Object.setPrototypeOf === 'function') {
-                Object.setPrototypeOf(CustomEvent.prototype, Event.prototype);
-            }
-
-            CustomEvent.prototype.stopPropagation = function() {
-                Event.prototype.stopPropagation.call(this);
-            };
-            CustomEvent.prototype.stopImmediatePropagation = function() {
-                Event.prototype.stopImmediatePropagation.call(this);
-            };
-            CustomEvent.prototype.preventDefault = function() {
-                Event.prototype.preventDefault.call(this);
-            };
-            CustomEvent.prototype.initEvent = function(type, bubbles, cancelable) {
-                Event.prototype.initEvent.call(this, type, bubbles, cancelable);
-            };
-        })();
-    "#;
-
-    runtime.execute(custom_event_script, false)?;
+    rooted!(in(raw_cx) let global_rooted = global);
+    let event_target_name = CString::new("EventTarget").unwrap();
+    JS_DefineProperty(
+        cx,
+        global_rooted.handle().into(),
+        event_target_name.as_ptr(),
+        ctor_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
 
     Ok(())
+}
+
+/// Initialize EventTarget bindings globally.
+///
+/// Event/CustomEvent constructors are provided via `event::setup_event_constructors`.
+/// This entrypoint now only installs the native EventTarget constructor/prototype pair.
+pub fn setup_event_target(runtime: &mut crate::js::JsRuntime) -> JsResult<()> {
+    runtime.do_with_jsapi(|cx, global| unsafe {
+        setup_event_target_constructor_bindings(cx, global.get())
+    })
 }
 
 #[cfg(test)]

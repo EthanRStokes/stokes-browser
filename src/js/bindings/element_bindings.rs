@@ -5,9 +5,14 @@ use crate::dom::events::focus::generate_focus_events;
 use crate::engine::js_provider::ScriptKind;
 use crate::engine::script_type::executable_script_kind;
 use crate::events::DomEvent;
-use crate::js::bindings::dom_bindings::{custom_elements_upgrade_for_node, DOM_REF};
-use crate::js::helpers::{create_empty_array, create_js_string, define_function, define_property_accessor, get_node_id_from_this, get_node_id_from_value, js_value_to_string, set_int_property, set_string_property, to_css_property_name, ToSafeCx};
+use crate::js::bindings::custom_elements::custom_elements_upgrade_for_node;
+use crate::js::bindings::dom_bindings::DOM_REF;
+use crate::js::helpers::{create_empty_array, create_js_string, define_function, define_js_property_accessor, define_js_property_getter, get_node_id_from_this, get_node_id_from_value, js_value_to_string, set_int_property, set_string_property, to_css_property_name, ToSafeCx};
 use crate::js::selectors::{matches_parsed_selector, parse_selector, selector_seed, SelectorSeed};
+use crate::js::bindings::element;
+pub(crate) use crate::js::bindings::element::{
+    element_add_event_listener, element_dispatch_event, element_remove_event_listener,
+};
 use html5ever::ns;
 use html5ever::local_name;
 use markup5ever::QualName;
@@ -157,16 +162,35 @@ unsafe fn maybe_patch_mutation_observer_node(cx: &mut SafeJSContext, node_obj: *
     );
 }
 
-unsafe fn set_object_prototype(
+pub(crate) unsafe fn set_object_prototype(
     cx: &mut SafeJSContext,
     obj: *mut JSObject,
     proto: *mut JSObject,
 ) -> Result<(), String> {
+    if obj.is_null() || proto.is_null() {
+        return Err("Cannot set prototype on null object".to_string());
+    }
+    if obj == proto {
+        return Ok(());
+    }
+
     let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let global = CurrentGlobalOrNull(cx));
     if global.get().is_null() {
         return Err("No global object for prototype setup".to_string());
     }
+
+    rooted!(in(raw_cx) let mut object_ctor_val = UndefinedValue());
+    let object_name = std::ffi::CString::new("Object").unwrap();
+    if !JS_GetProperty(
+        cx,
+        global.handle().into(),
+        object_name.as_ptr(),
+        object_ctor_val.handle_mut().into(),
+    ) || !object_ctor_val.get().is_object() {
+        return Err("Failed to resolve global Object constructor".to_string());
+    }
+    rooted!(in(raw_cx) let object_ctor_obj = object_ctor_val.get().to_object());
 
     let set_prototype_cache_name = std::ffi::CString::new("__stokesSetPrototypeOfFn").unwrap();
     rooted!(in(raw_cx) let mut set_prototype_fn = UndefinedValue());
@@ -176,18 +200,6 @@ unsafe fn set_object_prototype(
         set_prototype_cache_name.as_ptr(),
         set_prototype_fn.handle_mut().into(),
     ) || !set_prototype_fn.get().is_object() {
-        rooted!(in(raw_cx) let mut object_ctor_val = UndefinedValue());
-        let object_name = std::ffi::CString::new("Object").unwrap();
-        if !JS_GetProperty(
-            cx,
-            global.handle().into(),
-            object_name.as_ptr(),
-            object_ctor_val.handle_mut().into(),
-        ) || !object_ctor_val.get().is_object() {
-            return Err("Failed to resolve global Object constructor".to_string());
-        }
-        rooted!(in(raw_cx) let object_ctor_obj = object_ctor_val.get().to_object());
-
         let set_prototype_name = std::ffi::CString::new("setPrototypeOf").unwrap();
         if !JS_GetProperty(
             cx,
@@ -214,7 +226,7 @@ unsafe fn set_object_prototype(
     rooted!(in(raw_cx) let mut rval = UndefinedValue());
     if !JS_CallFunctionValue(
         cx,
-        global.handle().into(),
+        object_ctor_obj.handle().into(),
         set_prototype_fn.handle().into(),
         &HandleValueArray::from(&set_proto_args),
         rval.handle_mut().into(),
@@ -225,7 +237,7 @@ unsafe fn set_object_prototype(
     Ok(())
 }
 
-unsafe fn ensure_element_shared_prototype(cx: &mut SafeJSContext) -> Result<*mut JSObject, String> {
+pub(crate) unsafe fn ensure_element_shared_prototype(cx: &mut SafeJSContext) -> Result<*mut JSObject, String> {
     let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let global = CurrentGlobalOrNull(cx));
     if global.get().is_null() {
@@ -248,128 +260,8 @@ unsafe fn ensure_element_shared_prototype(cx: &mut SafeJSContext) -> Result<*mut
         return Err("Failed to create element prototype object".to_string());
     }
 
-    // Shared element methods
-    define_function(cx, proto.get(), "getAttribute", Some(element_get_attribute), 1)?;
-    define_function(cx, proto.get(), "setAttribute", Some(element_set_attribute), 2)?;
-    define_function(cx, proto.get(), "removeAttribute", Some(element_remove_attribute), 1)?;
-    define_function(cx, proto.get(), "hasAttribute", Some(element_has_attribute), 1)?;
-    define_function(cx, proto.get(), "append", Some(element_append), 0)?;
-    define_function(cx, proto.get(), "appendChild", Some(element_append_child), 1)?;
-    define_function(cx, proto.get(), "removeChild", Some(element_remove_child), 1)?;
-    define_function(cx, proto.get(), "insertBefore", Some(element_insert_before), 2)?;
-    define_function(cx, proto.get(), "replaceChild", Some(element_replace_child), 2)?;
-    define_function(cx, proto.get(), "cloneNode", Some(element_clone_node), 1)?;
-    define_function(cx, proto.get(), "querySelector", Some(element_query_selector), 1)?;
-    define_function(cx, proto.get(), "querySelectorAll", Some(element_query_selector_all), 1)?;
-    define_function(cx, proto.get(), "addEventListener", Some(element_add_event_listener), 3)?;
-    define_function(cx, proto.get(), "removeEventListener", Some(element_remove_event_listener), 3)?;
-    define_function(cx, proto.get(), "dispatchEvent", Some(element_dispatch_event), 1)?;
-    define_function(cx, proto.get(), "focus", Some(element_focus), 0)?;
-    define_function(cx, proto.get(), "blur", Some(element_blur), 0)?;
-    define_function(cx, proto.get(), "click", Some(element_click), 0)?;
-    define_function(cx, proto.get(), "getBoundingClientRect", Some(element_get_bounding_client_rect), 0)?;
-    define_function(cx, proto.get(), "getClientRects", Some(element_get_client_rects), 0)?;
-    define_function(cx, proto.get(), "closest", Some(element_closest), 1)?;
-    define_function(cx, proto.get(), "matches", Some(element_matches), 1)?;
-    define_function(cx, proto.get(), "contains", Some(element_contains), 1)?;
-    define_function(cx, proto.get(), "hasChildNodes", Some(element_has_child_nodes), 0)?;
-    define_function(cx, proto.get(), "getRootNode", Some(element_get_root_node), 1)?;
-    define_function(cx, proto.get(), "attachShadow", Some(element_attach_shadow), 1)?;
-
-    define_function(cx, proto.get(), "remove", Some(element_remove), 0)?;
-    define_function(cx, proto.get(), "prepend", Some(element_prepend), 0)?;
-    define_function(cx, proto.get(), "before", Some(element_before), 0)?;
-    define_function(cx, proto.get(), "after", Some(element_after), 0)?;
-    define_function(cx, proto.get(), "replaceWith", Some(element_replace_with), 0)?;
-
-    define_function(cx, proto.get(), "insertAdjacentHTML", Some(element_insert_adjacent_html), 2)?;
-    define_function(cx, proto.get(), "insertAdjacentElement", Some(element_insert_adjacent_element), 2)?;
-    define_function(cx, proto.get(), "insertAdjacentText", Some(element_insert_adjacent_text), 2)?;
-
-    define_function(cx, proto.get(), "getAttributeNames", Some(element_get_attribute_names), 0)?;
-    define_function(cx, proto.get(), "hasAttributes", Some(element_has_attributes), 0)?;
-
-    define_function(cx, proto.get(), "scrollIntoView", Some(element_scroll_into_view), 0)?;
-    define_function(cx, proto.get(), "scrollTo", Some(element_scroll_to), 0)?;
-    define_function(cx, proto.get(), "scroll", Some(element_scroll_to), 0)?;
-    define_function(cx, proto.get(), "scrollBy", Some(element_scroll_by), 0)?;
-    define_function(cx, proto.get(), "animate", Some(element_animate), 2)?;
-
-    // Internal getter/setter functions backing reflected properties
-    define_function(cx, proto.get(), "__getTextContent", Some(element_get_text_content), 0)?;
-    define_function(cx, proto.get(), "__setTextContent", Some(element_set_text_content), 1)?;
-    define_function(cx, proto.get(), "__getId", Some(element_get_id), 0)?;
-    define_function(cx, proto.get(), "__setId", Some(element_set_id), 1)?;
-    define_function(cx, proto.get(), "__getClassName", Some(element_get_class_name), 0)?;
-    define_function(cx, proto.get(), "__setClassName", Some(element_set_class_name), 1)?;
-    define_function(cx, proto.get(), "__getShadowRoot", Some(element_get_shadow_root), 0)?;
-    define_function(cx, proto.get(), "__setShadowRoot", Some(element_set_shadow_root_noop), 1)?;
-    define_function(cx, proto.get(), "__getFirstChild", Some(element_get_first_child), 0)?;
-    define_function(cx, proto.get(), "__getLastChild", Some(element_get_last_child), 0)?;
-    define_function(cx, proto.get(), "__getPreviousSibling", Some(element_get_previous_sibling), 0)?;
-    define_function(cx, proto.get(), "__getNextSibling", Some(element_get_next_sibling), 0)?;
-    define_function(cx, proto.get(), "__getChildren", Some(element_get_children), 0)?;
-    define_function(cx, proto.get(), "__getChildNodes", Some(element_get_child_nodes), 0)?;
-    define_function(cx, proto.get(), "__getParentNode", Some(element_get_parent_node), 0)?;
-    define_function(cx, proto.get(), "__getParentElement", Some(element_get_parent_element), 0)?;
-    define_function(cx, proto.get(), "__getStyleObject", Some(element_get_style_object), 0)?;
-    define_function(cx, proto.get(), "__getClassListObject", Some(element_get_class_list_object), 0)?;
-    define_function(cx, proto.get(), "__getDatasetObject", Some(element_get_dataset_object), 0)?;
-    define_function(cx, proto.get(), "__setObjectPropertyNoop", Some(element_set_object_property_noop), 1)?;
-
-    define_property_accessor(cx, proto.get(), "textContent", "__getTextContent", "__setTextContent")?;
-    define_property_accessor(cx, proto.get(), "id", "__getId", "__setId")?;
-    define_property_accessor(cx, proto.get(), "className", "__getClassName", "__setClassName")?;
-    define_property_accessor(cx, proto.get(), "shadowRoot", "__getShadowRoot", "__setShadowRoot")?;
-    define_property_accessor(cx, proto.get(), "firstChild", "__getFirstChild", "__setShadowRoot")?;
-    define_property_accessor(cx, proto.get(), "lastChild", "__getLastChild", "__setShadowRoot")?;
-    define_property_accessor(cx, proto.get(), "previousSibling", "__getPreviousSibling", "__setShadowRoot")?;
-    define_property_accessor(cx, proto.get(), "nextSibling", "__getNextSibling", "__setShadowRoot")?;
-    define_property_accessor(cx, proto.get(), "children", "__getChildren", "__setShadowRoot")?;
-    define_property_accessor(cx, proto.get(), "childNodes", "__getChildNodes", "__setShadowRoot")?;
-    define_property_accessor(cx, proto.get(), "parentNode", "__getParentNode", "__setShadowRoot")?;
-    define_property_accessor(cx, proto.get(), "parentElement", "__getParentElement", "__setShadowRoot")?;
-    define_property_accessor(cx, proto.get(), "style", "__getStyleObject", "__setObjectPropertyNoop")?;
-    define_property_accessor(cx, proto.get(), "classList", "__getClassListObject", "__setObjectPropertyNoop")?;
-    define_property_accessor(cx, proto.get(), "dataset", "__getDatasetObject", "__setObjectPropertyNoop")?;
-
-    define_function(cx, proto.get(), "__getSrc", Some(element_get_src), 0)?;
-    define_function(cx, proto.get(), "__setSrc", Some(element_set_src), 1)?;
-    define_function(cx, proto.get(), "__getType", Some(element_get_type_attr), 0)?;
-    define_function(cx, proto.get(), "__setType", Some(element_set_type_attr), 1)?;
-    define_function(cx, proto.get(), "__getAsync", Some(element_get_async_attr), 0)?;
-    define_function(cx, proto.get(), "__setAsync", Some(element_set_async_attr), 1)?;
-    define_function(cx, proto.get(), "__getValue", Some(element_get_value_attr), 0)?;
-    define_function(cx, proto.get(), "__setValue", Some(element_set_value_attr), 1)?;
-    define_function(cx, proto.get(), "__getChecked", Some(element_get_checked_attr), 0)?;
-    define_function(cx, proto.get(), "__setChecked", Some(element_set_checked_attr), 1)?;
-    define_property_accessor(cx, proto.get(), "src", "__getSrc", "__setSrc")?;
-    define_property_accessor(cx, proto.get(), "type", "__getType", "__setType")?;
-    define_property_accessor(cx, proto.get(), "async", "__getAsync", "__setAsync")?;
-    define_property_accessor(cx, proto.get(), "value", "__getValue", "__setValue")?;
-    define_property_accessor(cx, proto.get(), "checked", "__getChecked", "__setChecked")?;
-
-    // Layout/scroll values are currently fixed stubs, so define them with warning getters.
-    define_function(cx, proto.get(), "__getOffsetWidth", Some(element_get_offset_width), 0)?;
-    define_property_accessor(cx, proto.get(), "offsetWidth", "__getOffsetWidth", "__setObjectPropertyNoop")?;
-    define_function(cx, proto.get(), "__getOffsetHeight", Some(element_get_offset_height), 0)?;
-    define_property_accessor(cx, proto.get(), "offsetHeight", "__getOffsetHeight", "__setObjectPropertyNoop")?;
-    define_function(cx, proto.get(), "__getOffsetLeft", Some(element_get_offset_left), 0)?;
-    define_property_accessor(cx, proto.get(), "offsetLeft", "__getOffsetLeft", "__setObjectPropertyNoop")?;
-    define_function(cx, proto.get(), "__getOffsetTop", Some(element_get_offset_top), 0)?;
-    define_property_accessor(cx, proto.get(), "offsetTop", "__getOffsetTop", "__setObjectPropertyNoop")?;
-    define_function(cx, proto.get(), "__getClientWidth", Some(element_get_client_width), 0)?;
-    define_property_accessor(cx, proto.get(), "clientWidth", "__getClientWidth", "__setObjectPropertyNoop")?;
-    define_function(cx, proto.get(), "__getClientHeight", Some(element_get_client_height), 0)?;
-    define_property_accessor(cx, proto.get(), "clientHeight", "__getClientHeight", "__setObjectPropertyNoop")?;
-    define_function(cx, proto.get(), "__getScrollWidth", Some(element_get_scroll_width), 0)?;
-    define_property_accessor(cx, proto.get(), "scrollWidth", "__getScrollWidth", "__setObjectPropertyNoop")?;
-    define_function(cx, proto.get(), "__getScrollHeight", Some(element_get_scroll_height), 0)?;
-    define_property_accessor(cx, proto.get(), "scrollHeight", "__getScrollHeight", "__setObjectPropertyNoop")?;
-    define_function(cx, proto.get(), "__getScrollLeft", Some(element_get_scroll_left), 0)?;
-    define_property_accessor(cx, proto.get(), "scrollLeft", "__getScrollLeft", "__setObjectPropertyNoop")?;
-    define_function(cx, proto.get(), "__getScrollTop", Some(element_get_scroll_top), 0)?;
-    define_property_accessor(cx, proto.get(), "scrollTop", "__getScrollTop", "__setObjectPropertyNoop")?;
+    // Element prototype only owns Element-specific APIs; Node/EventTarget now flow via parent links.
+    element::define_element_bindings(cx, proto.get())?;
 
     rooted!(in(raw_cx) let proto_val = ObjectValue(proto.get()));
     JS_DefineProperty(
@@ -596,11 +488,27 @@ unsafe fn create_js_element_impl(
     let shared_proto = ensure_element_shared_prototype(cx)?;
     if !instance_prototype.is_null() {
         // Ensure element-specific prototypes inherit the shared Element behavior.
-        set_object_prototype(cx, instance_prototype, shared_proto)?;
+        if instance_prototype != shared_proto {
+            if let Err(err) = set_object_prototype(cx, instance_prototype, shared_proto) {
+                warn!(
+                    "[JS] Failed to link constructor prototype for <{}> (node {}): {}",
+                    resolved_local_name,
+                    node_id,
+                    err
+                );
+            }
+        }
     } else {
         instance_prototype = shared_proto;
     }
-    set_object_prototype(cx, element.get(), instance_prototype)?;
+    if let Err(err) = set_object_prototype(cx, element.get(), instance_prototype) {
+        warn!(
+            "[JS] Failed to link instance prototype for <{}> (node {}): {}",
+            resolved_local_name,
+            node_id,
+            err
+        );
+    }
 
     // Keep one stable JS wrapper per DOM node so framework internals attached
     // to element objects survive across lookups and event dispatch.
@@ -877,7 +785,7 @@ unsafe fn get_classlist_parent_node_id(cx: &mut SafeJSContext, args: &CallArgs) 
     None
 }
 
-unsafe fn create_js_shadow_root_by_id(cx: &mut SafeJSContext, node_id: usize) -> Result<JSVal, String> {
+pub(crate) unsafe fn create_js_shadow_root_by_id(cx: &mut SafeJSContext, node_id: usize) -> Result<JSVal, String> {
     let raw_cx = cx.raw_cx();
     rooted!(in(raw_cx) let shadow_root = JS_NewPlainObject(cx));
     if shadow_root.get().is_null() {
@@ -936,7 +844,7 @@ unsafe fn parse_shadow_root_mode(cx: &mut SafeJSContext, args: &CallArgs, argc: 
     }
 }
 
-unsafe extern "C" fn element_has_child_nodes(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_has_child_nodes(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -958,7 +866,7 @@ unsafe extern "C" fn element_has_child_nodes(raw_cx: *mut JSContext, argc: c_uin
     true
 }
 
-unsafe extern "C" fn element_attach_shadow(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_attach_shadow(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();;
 
@@ -988,7 +896,7 @@ unsafe extern "C" fn element_attach_shadow(raw_cx: *mut JSContext, argc: c_uint,
     true
 }
 
-unsafe extern "C" fn element_get_shadow_root(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_shadow_root(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -1012,13 +920,13 @@ unsafe extern "C" fn element_get_shadow_root(raw_cx: *mut JSContext, argc: c_uin
     true
 }
 
-unsafe extern "C" fn element_set_shadow_root_noop(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_set_shadow_root_noop(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     args.rval().set(UndefinedValue());
     true
 }
 
-unsafe extern "C" fn element_get_style_object(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_style_object(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -1058,7 +966,7 @@ unsafe extern "C" fn element_get_style_object(raw_cx: *mut JSContext, argc: c_ui
     true
 }
 
-unsafe extern "C" fn element_get_class_list_object(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_class_list_object(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -1098,7 +1006,7 @@ unsafe extern "C" fn element_get_class_list_object(raw_cx: *mut JSContext, argc:
     true
 }
 
-unsafe extern "C" fn element_get_dataset_object(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_dataset_object(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -1138,7 +1046,7 @@ unsafe extern "C" fn element_get_dataset_object(raw_cx: *mut JSContext, argc: c_
     true
 }
 
-unsafe extern "C" fn element_set_object_property_noop(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_set_object_property_noop(_raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     warn_stubbed_binding(
         "Element.__setObjectPropertyNoop",
@@ -1195,7 +1103,7 @@ unsafe fn build_parent_wrapper(cx: &mut SafeJSContext, node_id: usize) -> Option
     create_js_element_impl(cx, parent_id, &parent_tag, &parent_attrs, false, false).ok()
 }
 
-unsafe extern "C" fn element_get_parent_node(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_parent_node(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -1209,11 +1117,11 @@ unsafe extern "C" fn element_get_parent_node(raw_cx: *mut JSContext, argc: c_uin
     true
 }
 
-unsafe extern "C" fn element_get_parent_element(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_parent_element(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     element_get_parent_node(raw_cx, argc, vp)
 }
 
-unsafe extern "C" fn element_get_first_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_first_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -1233,7 +1141,7 @@ unsafe extern "C" fn element_get_first_child(raw_cx: *mut JSContext, argc: c_uin
     true
 }
 
-unsafe extern "C" fn element_get_last_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_last_child(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -1253,7 +1161,7 @@ unsafe extern "C" fn element_get_last_child(raw_cx: *mut JSContext, argc: c_uint
     true
 }
 
-unsafe extern "C" fn element_get_previous_sibling(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_previous_sibling(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -1271,7 +1179,7 @@ unsafe extern "C" fn element_get_previous_sibling(raw_cx: *mut JSContext, argc: 
     true
 }
 
-unsafe extern "C" fn element_get_next_sibling(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_next_sibling(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -1289,7 +1197,7 @@ unsafe extern "C" fn element_get_next_sibling(raw_cx: *mut JSContext, argc: c_ui
     true
 }
 
-unsafe extern "C" fn element_get_children(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_children(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -1335,7 +1243,7 @@ unsafe extern "C" fn element_get_children(raw_cx: *mut JSContext, argc: c_uint, 
     true
 }
 
-unsafe extern "C" fn element_get_child_nodes(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_child_nodes(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -1378,7 +1286,7 @@ unsafe extern "C" fn element_get_child_nodes(raw_cx: *mut JSContext, argc: c_uin
 // ============================================================================
 
 /// element.getAttribute implementation
-unsafe extern "C" fn element_get_attribute(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_attribute(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -1418,7 +1326,7 @@ unsafe extern "C" fn element_get_attribute(raw_cx: *mut JSContext, argc: c_uint,
 }
 
 /// element.setAttribute implementation
-unsafe extern "C" fn element_set_attribute(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_set_attribute(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -1455,7 +1363,7 @@ unsafe extern "C" fn element_set_attribute(raw_cx: *mut JSContext, argc: c_uint,
 }
 
 /// element.removeAttribute implementation
-unsafe extern "C" fn element_remove_attribute(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_remove_attribute(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -1486,7 +1394,7 @@ unsafe extern "C" fn element_remove_attribute(raw_cx: *mut JSContext, argc: c_ui
 }
 
 /// element.hasAttribute implementation
-unsafe extern "C" fn element_has_attribute(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_has_attribute(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -1864,7 +1772,7 @@ pub(crate) unsafe extern "C" fn element_clone_node(raw_cx: *mut JSContext, argc:
 }
 
 /// element.querySelector implementation
-unsafe extern "C" fn element_query_selector(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_query_selector(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -1989,7 +1897,7 @@ unsafe extern "C" fn element_query_selector(raw_cx: *mut JSContext, argc: c_uint
 }
 
 /// element.querySelectorAll implementation
-unsafe extern "C" fn element_query_selector_all(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_query_selector_all(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -2110,181 +2018,10 @@ unsafe extern "C" fn element_query_selector_all(raw_cx: *mut JSContext, argc: c_
     true
 }
 
-/// element.addEventListener implementation
-pub(crate) unsafe extern "C" fn element_add_event_listener(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
-    use crate::js::bindings::event_listeners;
-
-    let args = CallArgs::from_vp(vp, argc);
-    let safe_cx = &mut raw_cx.to_safe_cx();
-
-    let event_type = if argc > 0 {
-        js_value_to_string(safe_cx, *args.get(0))
-    } else {
-        args.rval().set(UndefinedValue());
-        return true;
-    };
-
-    // Second argument must be a callable (function or object with handleEvent).
-    if argc < 2 {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let callback_val = *args.get(1);
-    if !callback_val.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let callback_obj = callback_val.to_object();
-
-    // Third argument: options object or boolean (useCapture).
-    let use_capture = if argc >= 3 {
-        let opt = *args.get(2);
-        if opt.is_boolean() {
-            opt.to_boolean()
-        } else if opt.is_object() {
-            // { capture: true/false }
-            let opt_obj = opt.to_object();
-            rooted!(in(raw_cx) let opt_r = opt_obj);
-            rooted!(in(raw_cx) let mut cap_val = UndefinedValue());
-            let cname = std::ffi::CString::new("capture").unwrap();
-            JS_GetProperty(safe_cx, opt_r.handle().into(), cname.as_ptr(), cap_val.handle_mut().into());
-            cap_val.get().is_boolean() && cap_val.get().to_boolean()
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-
-    // Determine the node ID from `this.__nodeId`.
-    let node_id = match get_node_id_from_this(safe_cx, &args) {
-        Some(id) => id,
-        None => {
-            // `this` has no __nodeId; silently ignore (e.g. object literals).
-            args.rval().set(UndefinedValue());
-            return true;
-        }
-    };
-
-    event_listeners::add_listener(safe_cx, node_id, event_type, callback_obj, use_capture);
-
-    args.rval().set(UndefinedValue());
-    true
-}
-
-/// element.removeEventListener implementation
-pub(crate) unsafe extern "C" fn element_remove_event_listener(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
-    use crate::js::bindings::event_listeners;
-
-    let args = CallArgs::from_vp(vp, argc);
-    let safe_cx = &mut raw_cx.to_safe_cx();
-
-    let event_type = if argc > 0 {
-        js_value_to_string(safe_cx, *args.get(0))
-    } else {
-        args.rval().set(UndefinedValue());
-        return true;
-    };
-
-    if argc < 2 {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let callback_val = *args.get(1);
-    if !callback_val.is_object() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    let callback_obj = callback_val.to_object();
-
-    let use_capture = if argc >= 3 {
-        let opt = *args.get(2);
-        if opt.is_boolean() { opt.to_boolean() } else { false }
-    } else {
-        false
-    };
-
-    let node_id = match get_node_id_from_this(safe_cx, &args) {
-        Some(id) => id,
-        None => {
-            args.rval().set(UndefinedValue());
-            return true;
-        }
-    };
-
-    event_listeners::remove_listener(node_id, &event_type, callback_obj, use_capture);
-
-    args.rval().set(UndefinedValue());
-    true
-}
-
-/// element.dispatchEvent implementation
-pub(crate) unsafe extern "C" fn element_dispatch_event(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
-    use crate::js::bindings::event_listeners;
-
-    let args = CallArgs::from_vp(vp, argc);
-    let safe_cx = &mut raw_cx.to_safe_cx();
-
-    // We need the event object (first argument) and the target node ID.
-    if argc < 1 {
-        args.rval().set(BooleanValue(true));
-        return true;
-    }
-
-    let event_val = *args.get(0);
-    if !event_val.is_object() {
-        args.rval().set(BooleanValue(true));
-        return true;
-    }
-
-    let node_id = match get_node_id_from_this(safe_cx, &args) {
-        Some(id) => id,
-        None => {
-            args.rval().set(BooleanValue(true));
-            return true;
-        }
-    };
-
-    let event_obj = event_val.to_object();
-    rooted!(in(raw_cx) let event_r = event_obj);
-
-    // Read event.type
-    rooted!(in(raw_cx) let mut type_val = UndefinedValue());
-    let type_cname = std::ffi::CString::new("type").unwrap();
-    JS_GetProperty(safe_cx, event_r.handle().into(), type_cname.as_ptr(), type_val.handle_mut().into());
-    let event_type = if type_val.get().is_string() {
-        js_value_to_string(safe_cx, *type_val)
-    } else {
-        args.rval().set(BooleanValue(true));
-        return true;
-    };
-
-    // Read event.bubbles
-    rooted!(in(raw_cx) let mut bubbles_val = UndefinedValue());
-    let bubbles_cname = std::ffi::CString::new("bubbles").unwrap();
-    JS_GetProperty(safe_cx, event_r.handle().into(), bubbles_cname.as_ptr(), bubbles_val.handle_mut().into());
-    let bubbles = bubbles_val.get().is_boolean() && bubbles_val.get().to_boolean();
-
-    // Build the node chain (target → ancestors).
-    let chain = DOM_REF.with(|d| {
-        d.borrow().as_ref().map(|dom_ptr| {
-            let dom = &**dom_ptr;
-            dom.node_chain(node_id)
-        }).unwrap_or_else(|| vec![node_id])
-    });
-
-    // Dispatch through JS listeners.
-    rooted!(in(raw_cx) let global = CurrentGlobalOrNull(safe_cx));
-    event_listeners::dispatch_event_obj(safe_cx, global.get(), &chain, &event_type, bubbles, event_obj);
-
-    // Return true if default was not prevented.
-    let not_cancelled = !event_listeners::EVENT_DEFAULT_PREVENTED.with(|f| f.get());
-    args.rval().set(BooleanValue(not_cancelled));
-    true
-}
+// EventTarget extern callbacks moved to `element.rs`.
 
 /// element.focus implementation
-unsafe extern "C" fn element_focus(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_focus(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -2342,7 +2079,7 @@ unsafe extern "C" fn element_focus(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
 }
 
 /// element.blur implementation
-unsafe extern "C" fn element_blur(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_blur(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -2395,7 +2132,7 @@ unsafe extern "C" fn element_blur(raw_cx: *mut JSContext, argc: c_uint, vp: *mut
 }
 
 /// element.click implementation
-unsafe extern "C" fn  element_click(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_click(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     // FIXME: Does not synthesize a click event, invoke registered click listeners, or simulate
     // the default activation behaviour (e.g. following links, submitting forms).
@@ -2405,7 +2142,7 @@ unsafe extern "C" fn  element_click(raw_cx: *mut JSContext, argc: c_uint, vp: *m
 }
 
 /// element.getBoundingClientRect implementation
-unsafe extern "C" fn element_get_bounding_client_rect(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_bounding_client_rect(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     warn!("[JS] element.getBoundingClientRect() called on partial binding (returns zero rect)");
@@ -2431,7 +2168,7 @@ unsafe extern "C" fn element_get_bounding_client_rect(raw_cx: *mut JSContext, ar
 }
 
 /// element.getClientRects implementation
-unsafe extern "C" fn element_get_client_rects(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_client_rects(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     warn!("[JS] element.getClientRects() called on partial binding (returns empty list)");
@@ -2443,7 +2180,7 @@ unsafe extern "C" fn element_get_client_rects(raw_cx: *mut JSContext, argc: c_ui
 }
 
 /// element.closest implementation
-unsafe extern "C" fn element_closest(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_closest(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -2502,7 +2239,7 @@ unsafe extern "C" fn element_closest(raw_cx: *mut JSContext, argc: c_uint, vp: *
 }
 
 /// element.matches implementation
-unsafe extern "C" fn element_matches(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_matches(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -2737,7 +2474,7 @@ pub(crate) unsafe extern "C" fn element_get_root_node(raw_cx: *mut JSContext, ar
 // ============================================================================
 
 /// element.remove() — removes this element from its parent (ChildNode mixin).
-unsafe extern "C" fn element_remove(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_remove(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     trace!("[JS] element.remove() called");
@@ -2774,7 +2511,7 @@ unsafe fn collect_nodes_from_varargs(cx: &mut SafeJSContext, args: &CallArgs, ar
 }
 
 /// element.prepend(...nodes) — inserts nodes at the beginning of this element's children.
-unsafe extern "C" fn element_prepend(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_prepend(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     trace!("[JS] element.prepend() called with {} args", argc);
@@ -2798,7 +2535,7 @@ unsafe extern "C" fn element_prepend(raw_cx: *mut JSContext, argc: c_uint, vp: *
 }
 
 /// element.before(...nodes) — inserts nodes immediately before this element.
-unsafe extern "C" fn element_before(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_before(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     trace!("[JS] element.before() called");
@@ -2820,7 +2557,7 @@ unsafe extern "C" fn element_before(raw_cx: *mut JSContext, argc: c_uint, vp: *m
 }
 
 /// element.after(...nodes) — inserts nodes immediately after this element.
-unsafe extern "C" fn element_after(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_after(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     trace!("[JS] element.after() called");
@@ -2842,7 +2579,7 @@ unsafe extern "C" fn element_after(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
 }
 
 /// element.replaceWith(...nodes) — replaces this element with the given nodes.
-unsafe extern "C" fn element_replace_with(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_replace_with(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     trace!("[JS] element.replaceWith() called");
@@ -2866,7 +2603,7 @@ unsafe extern "C" fn element_replace_with(raw_cx: *mut JSContext, argc: c_uint, 
 // ============================================================================
 
 /// element.offsetWidth getter - warns that this is hardcoded to 0
-unsafe extern "C" fn element_get_offset_width(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_offset_width(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     warn_stubbed_binding(
         "Element.offsetWidth",
@@ -2877,7 +2614,7 @@ unsafe extern "C" fn element_get_offset_width(raw_cx: *mut JSContext, argc: c_ui
 }
 
 /// element.offsetHeight getter - warns that this is hardcoded to 0
-unsafe extern "C" fn element_get_offset_height(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_offset_height(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     warn_stubbed_binding(
         "Element.offsetHeight",
@@ -2888,7 +2625,7 @@ unsafe extern "C" fn element_get_offset_height(raw_cx: *mut JSContext, argc: c_u
 }
 
 /// element.offsetLeft getter - warns that this is hardcoded to 0
-unsafe extern "C" fn element_get_offset_left(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_offset_left(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     warn_stubbed_binding(
         "Element.offsetLeft",
@@ -2899,7 +2636,7 @@ unsafe extern "C" fn element_get_offset_left(raw_cx: *mut JSContext, argc: c_uin
 }
 
 /// element.offsetTop getter - warns that this is hardcoded to 0
-unsafe extern "C" fn element_get_offset_top(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_offset_top(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     warn_stubbed_binding(
         "Element.offsetTop",
@@ -2910,7 +2647,7 @@ unsafe extern "C" fn element_get_offset_top(raw_cx: *mut JSContext, argc: c_uint
 }
 
 /// element.clientWidth getter - warns that this is hardcoded to 0
-unsafe extern "C" fn element_get_client_width(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_client_width(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     warn_stubbed_binding(
         "Element.clientWidth",
@@ -2921,7 +2658,7 @@ unsafe extern "C" fn element_get_client_width(raw_cx: *mut JSContext, argc: c_ui
 }
 
 /// element.clientHeight getter - warns that this is hardcoded to 0
-unsafe extern "C" fn element_get_client_height(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_client_height(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     warn_stubbed_binding(
         "Element.clientHeight",
@@ -2932,7 +2669,7 @@ unsafe extern "C" fn element_get_client_height(raw_cx: *mut JSContext, argc: c_u
 }
 
 /// element.scrollWidth getter - warns that this is hardcoded to 0
-unsafe extern "C" fn element_get_scroll_width(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_scroll_width(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     warn_stubbed_binding(
         "Element.scrollWidth",
@@ -2943,7 +2680,7 @@ unsafe extern "C" fn element_get_scroll_width(raw_cx: *mut JSContext, argc: c_ui
 }
 
 /// element.scrollHeight getter - warns that this is hardcoded to 0
-unsafe extern "C" fn element_get_scroll_height(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_scroll_height(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     warn_stubbed_binding(
         "Element.scrollHeight",
@@ -2954,7 +2691,7 @@ unsafe extern "C" fn element_get_scroll_height(raw_cx: *mut JSContext, argc: c_u
 }
 
 /// element.scrollLeft getter - warns that this is hardcoded to 0
-unsafe extern "C" fn element_get_scroll_left(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_scroll_left(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     warn_stubbed_binding(
         "Element.scrollLeft",
@@ -2965,7 +2702,7 @@ unsafe extern "C" fn element_get_scroll_left(raw_cx: *mut JSContext, argc: c_uin
 }
 
 /// element.scrollTop getter - warns that this is hardcoded to 0
-unsafe extern "C" fn element_get_scroll_top(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_scroll_top(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     warn_stubbed_binding(
         "Element.scrollTop",
@@ -3018,7 +2755,7 @@ unsafe fn insert_adjacent_nodes(self_id: usize, position: &str, new_ids: &[usize
 
 /// element.insertAdjacentHTML(position, html) — parses and inserts HTML relative to the element.
 /// FIXME: The html argument is not parsed as a fragment; it is currently a no-op for safety.
-unsafe extern "C" fn element_insert_adjacent_html(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_insert_adjacent_html(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     let position = if argc > 0 { js_value_to_string(safe_cx, *args.get(0)) } else { String::new() };
@@ -3028,7 +2765,7 @@ unsafe extern "C" fn element_insert_adjacent_html(raw_cx: *mut JSContext, argc: 
 }
 
 /// element.insertAdjacentElement(position, element) — inserts element at a position relative to this one.
-unsafe extern "C" fn element_insert_adjacent_element(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_insert_adjacent_element(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     let position = if argc > 0 { js_value_to_string(safe_cx, *args.get(0)) } else { String::new() };
@@ -3052,7 +2789,7 @@ unsafe extern "C" fn element_insert_adjacent_element(raw_cx: *mut JSContext, arg
 }
 
 /// element.insertAdjacentText(position, text) — inserts a text node at a position relative to this element.
-unsafe extern "C" fn element_insert_adjacent_text(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_insert_adjacent_text(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     let position = if argc > 0 { js_value_to_string(safe_cx, *args.get(0)) } else { String::new() };
@@ -3082,7 +2819,7 @@ unsafe extern "C" fn element_insert_adjacent_text(raw_cx: *mut JSContext, argc: 
 // ============================================================================
 
 /// element.getAttributeNames() — returns an array of the element's attribute names.
-unsafe extern "C" fn element_get_attribute_names(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_attribute_names(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     trace!("[JS] element.getAttributeNames() called");
@@ -3118,7 +2855,7 @@ unsafe extern "C" fn element_get_attribute_names(raw_cx: *mut JSContext, argc: c
 }
 
 /// element.hasAttributes() — returns true if the element has any attributes.
-unsafe extern "C" fn element_has_attributes(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_has_attributes(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -3147,7 +2884,7 @@ unsafe extern "C" fn element_has_attributes(raw_cx: *mut JSContext, argc: c_uint
 // ============================================================================
 
 /// element.scrollIntoView() — no-op stub (layout is not yet interactive).
-unsafe extern "C" fn element_scroll_into_view(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_scroll_into_view(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     // FIXME: Should scroll the nearest scrollable ancestor (or the viewport) so that this element
     // is visible, respecting the scrollIntoViewOptions (behavior, block, inline).
@@ -3157,7 +2894,7 @@ unsafe extern "C" fn element_scroll_into_view(raw_cx: *mut JSContext, argc: c_ui
 }
 
 /// element.scrollTo() / element.scroll() — no-op stub.
-unsafe extern "C" fn element_scroll_to(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_scroll_to(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     // FIXME: Should update the element's scroll position to the given (x, y) coordinates and fire
     // a scroll event.
@@ -3167,7 +2904,7 @@ unsafe extern "C" fn element_scroll_to(raw_cx: *mut JSContext, argc: c_uint, vp:
 }
 
 /// element.scrollBy() — no-op stub.
-unsafe extern "C" fn element_scroll_by(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_scroll_by(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     // FIXME: Should offset the element's current scroll position by the given (dx, dy) delta and
     // fire a scroll event.
@@ -3193,7 +2930,7 @@ unsafe extern "C" fn animation_noop(raw_cx: *mut JSContext, argc: c_uint, vp: *m
 
 /// element.animate(keyframes, options) — returns a minimal stub Animation object.
 // FIXME
-unsafe extern "C" fn element_animate(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_animate(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     warn!("[JS] element.animate() called on partial binding (returns stub Animation)");
@@ -3721,7 +3458,7 @@ unsafe extern "C" fn class_list_replace(raw_cx: *mut JSContext, argc: c_uint, vp
 }
 
 /// element.__getTextContent implementation (internal getter for textContent property)
-unsafe extern "C" fn element_get_text_content(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_text_content(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -3775,7 +3512,7 @@ unsafe extern "C" fn element_get_text_content(raw_cx: *mut JSContext, argc: c_ui
 }
 
 /// element.__setTextContent implementation (internal setter for textContent property)
-unsafe extern "C" fn element_set_text_content(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_set_text_content(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -3814,7 +3551,7 @@ unsafe extern "C" fn element_set_text_content(raw_cx: *mut JSContext, argc: c_ui
 }
 
 /// element.__getId implementation (internal getter for id property)
-unsafe extern "C" fn element_get_id(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_id(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -3839,7 +3576,7 @@ unsafe extern "C" fn element_get_id(raw_cx: *mut JSContext, argc: c_uint, vp: *m
 }
 
 /// element.__setId implementation (internal setter for id property)
-unsafe extern "C" fn element_set_id(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_set_id(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -3868,7 +3605,7 @@ unsafe extern "C" fn element_set_id(raw_cx: *mut JSContext, argc: c_uint, vp: *m
 }
 
 /// element.__getClassName implementation (internal getter for className property)
-unsafe extern "C" fn element_get_class_name(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_class_name(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -3893,7 +3630,7 @@ unsafe extern "C" fn element_get_class_name(raw_cx: *mut JSContext, argc: c_uint
 }
 
 /// element.__setClassName implementation (internal setter for className property)
-unsafe extern "C" fn element_set_class_name(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_set_class_name(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -3922,7 +3659,7 @@ unsafe extern "C" fn element_set_class_name(raw_cx: *mut JSContext, argc: c_uint
 }
 
 /// element.__getSrc implementation (getter for src IDL-reflected attribute)
-unsafe extern "C" fn element_get_src(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_src(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     let value = get_node_id_from_this(safe_cx, &args)
@@ -3933,7 +3670,7 @@ unsafe extern "C" fn element_get_src(raw_cx: *mut JSContext, argc: c_uint, vp: *
 }
 
 /// element.__setSrc implementation (setter for src IDL-reflected attribute)
-unsafe extern "C" fn element_set_src(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_set_src(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
@@ -3945,7 +3682,7 @@ unsafe extern "C" fn element_set_src(raw_cx: *mut JSContext, argc: c_uint, vp: *
 }
 
 /// element.__getType implementation (getter for type IDL-reflected attribute)
-unsafe extern "C" fn element_get_type_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_type_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     let value = get_node_id_from_this(safe_cx, &args)
@@ -3956,7 +3693,7 @@ unsafe extern "C" fn element_get_type_attr(raw_cx: *mut JSContext, argc: c_uint,
 }
 
 /// element.__setType implementation (setter for type IDL-reflected attribute)
-unsafe extern "C" fn element_set_type_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_set_type_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
@@ -3968,7 +3705,7 @@ unsafe extern "C" fn element_set_type_attr(raw_cx: *mut JSContext, argc: c_uint,
 }
 
 /// element.__getAsync implementation (getter for async IDL-reflected boolean attribute)
-unsafe extern "C" fn element_get_async_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_async_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     let present = get_node_id_from_this(safe_cx, &args)
@@ -3979,7 +3716,7 @@ unsafe extern "C" fn element_get_async_attr(raw_cx: *mut JSContext, argc: c_uint
 }
 
 /// element.__setAsync implementation (setter for async IDL-reflected boolean attribute)
-unsafe extern "C" fn element_set_async_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_set_async_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
@@ -4004,7 +3741,7 @@ unsafe extern "C" fn element_set_async_attr(raw_cx: *mut JSContext, argc: c_uint
 }
 
 /// element.__getValue implementation (getter for value IDL-reflected attribute)
-unsafe extern "C" fn element_get_value_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_value_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -4034,7 +3771,7 @@ unsafe extern "C" fn element_get_value_attr(raw_cx: *mut JSContext, argc: c_uint
 }
 
 /// element.__setValue implementation (setter for value IDL-reflected attribute)
-unsafe extern "C" fn element_set_value_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_set_value_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
     if let Some(node_id) = get_node_id_from_this(safe_cx, &args) {
@@ -4046,7 +3783,7 @@ unsafe extern "C" fn element_set_value_attr(raw_cx: *mut JSContext, argc: c_uint
 }
 
 /// element.__getChecked implementation (getter for checked IDL-reflected attribute)
-unsafe extern "C" fn element_get_checked_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_get_checked_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -4074,7 +3811,7 @@ unsafe extern "C" fn element_get_checked_attr(raw_cx: *mut JSContext, argc: c_ui
 }
 
 /// element.__setChecked implementation (setter for checked IDL-reflected attribute)
-unsafe extern "C" fn element_set_checked_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
+pub(crate) unsafe extern "C" fn element_set_checked_attr(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let safe_cx = &mut raw_cx.to_safe_cx();
 
@@ -4119,16 +3856,16 @@ unsafe fn setup_form_element_bindings(cx: &mut SafeJSContext, element: *mut JSOb
     define_function(cx, element, "__getFormElements", Some(form_get_elements), 0)?;
     define_function(cx, element, "__getFormLength", Some(form_get_length), 0)?;
 
-    define_property_accessor(cx, element, "action", "__getFormAction", "__setFormAction")?;
-    define_property_accessor(cx, element, "method", "__getFormMethod", "__setFormMethod")?;
-    define_property_accessor(cx, element, "enctype", "__getFormEnctype", "__setFormEnctype")?;
+    define_js_property_accessor(cx, element, "action", "__getFormAction", "__setFormAction")?;
+    define_js_property_accessor(cx, element, "method", "__getFormMethod", "__setFormMethod")?;
+    define_js_property_accessor(cx, element, "enctype", "__getFormEnctype", "__setFormEnctype")?;
     // encoding is a legacy alias for enctype.
-    define_property_accessor(cx, element, "encoding", "__getFormEnctype", "__setFormEnctype")?;
-    define_property_accessor(cx, element, "target", "__getFormTarget", "__setFormTarget")?;
-    define_property_accessor(cx, element, "name", "__getFormName", "__setFormName")?;
-    define_property_accessor(cx, element, "noValidate", "__getFormNoValidate", "__setFormNoValidate")?;
-    define_property_accessor(cx, element, "elements", "__getFormElements", "__getFormElements")?;
-    define_property_accessor(cx, element, "length", "__getFormLength", "__getFormLength")?;
+    define_js_property_accessor(cx, element, "encoding", "__getFormEnctype", "__setFormEnctype")?;
+    define_js_property_accessor(cx, element, "target", "__getFormTarget", "__setFormTarget")?;
+    define_js_property_accessor(cx, element, "name", "__getFormName", "__setFormName")?;
+    define_js_property_accessor(cx, element, "noValidate", "__getFormNoValidate", "__setFormNoValidate")?;
+    define_js_property_getter(cx, element, "elements", "__getFormElements")?;
+    define_js_property_getter(cx, element, "length", "__getFormLength")?;
 
     Ok(())
 }

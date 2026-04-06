@@ -1,5 +1,7 @@
 // JavaScript engine module (using Mozilla's SpiderMonkey via mozjs)
 pub(crate) mod runtime;
+pub(crate) mod runtime_context;
+pub(crate) mod module_loader;
 mod helpers;
 mod selectors;
 pub(crate) mod bindings;

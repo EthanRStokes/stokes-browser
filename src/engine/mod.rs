@@ -5,7 +5,9 @@ pub mod net_provider;
 pub mod nav_provider;
 pub mod resolve;
 pub mod js_provider;
+pub(crate) mod js_message_handler;
 pub(crate) mod script_type;
+pub(crate) mod script_executor;
 
 pub use self::config::EngineConfig;
 use crate::dom::node::{RasterImageData, SpecialElementData};
@@ -29,10 +31,9 @@ use std::sync::mpsc::{channel, Receiver};
 use blitz_traits::net::Request;
 use style::dom::TNode;
 use style::thread_state::ThreadState;
-use crate::engine::js_provider::{JsProviderMessage, ScriptKind, StokesJsProvider};
+use crate::engine::js_provider::{JsProviderMessage, StokesJsProvider};
 use crate::engine::nav_provider::StokesNavigationProvider;
-use crate::engine::script_type::executable_script_kind;
-use crate::engine::net_provider::ProviderError;
+use crate::engine::script_executor::{collect_pending_scripts, dispatch_script, resolve_script_fetch_context};
 
 thread_local! {
     pub(crate) static ENGINE_REF: RefCell<Option<*mut Engine>> = RefCell::new(None);
@@ -470,59 +471,22 @@ impl Engine {
         if self.js_runtime.is_none() {
             self.initialize_js_runtime();
         }
-
-        struct PendingScript {
-            node_id: usize,
-            kind: ScriptKind,
-            inline_script: Option<String>,
-            external_url: Option<url::Url>,
-            source_url: Option<String>,
-        }
-
-        let mut pending_scripts = Vec::new();
-        {
+        let pending_scripts = {
             let dom = self.dom();
-            let script_elements = dom.query_selector("script");
-
-            for script_element in script_elements {
-                if let NodeData::Element(element_data) = &script_element.data {
-                    let Some(script_kind) = executable_script_kind(element_data.attr(local_name!("type"))) else {
-                        // Non-JS types are data blocks by spec and are not executed.
-                        continue;
-                    };
-
-                    let node_id = script_element.id;
-                    if let Some(src) = element_data.attr(local_name!("src")) {
-                        let resolved_url = dom.resolve_url(src);
-                        let source_url = (script_kind == ScriptKind::Module).then(|| resolved_url.to_string());
-                        pending_scripts.push(PendingScript {
-                            node_id,
-                            kind: script_kind,
-                            inline_script: None,
-                            external_url: Some(resolved_url),
-                            source_url,
-                        });
-                    } else {
-                        let script_content = script_element.text_content();
-                        if !script_content.trim().is_empty() {
-                            pending_scripts.push(PendingScript {
-                                node_id,
-                                kind: script_kind,
-                                inline_script: Some(script_content),
-                                external_url: None,
-                                source_url: (script_kind == ScriptKind::Module).then(|| dom.url.to_string()),
-                            });
-                        }
-                    }
-                }
-            }
-        }
+            collect_pending_scripts(dom)
+        };
+        let fetch_context = resolve_script_fetch_context(self.new_http_client.as_ref(), self.dom.as_ref());
 
         for pending in pending_scripts {
             let script = if let Some(inline_script) = pending.inline_script {
                 inline_script
             } else if let Some(external_url) = pending.external_url {
-                match self.fetch_external_script_for_execution(Request::get(external_url.clone())).await {
+                let Some(fetch_context) = fetch_context.as_ref() else {
+                    eprintln!("[JS] Failed to load external script '{}': Network provider unavailable", external_url);
+                    continue;
+                };
+
+                match fetch_context.fetch_external_script(Request::get(external_url.clone())).await {
                     Ok(script) => script,
                     Err(error) => {
                         eprintln!("[JS] Failed to load external script '{}': {}", external_url, error);
@@ -533,45 +497,8 @@ impl Engine {
                 continue;
             };
 
-            if pending.kind == ScriptKind::Module {
-                self.js_provider
-                    .execute_module_script_with_node_id(script, pending.node_id, pending.source_url);
-            } else {
-                self.js_provider.execute_script_with_node_id(script, pending.node_id);
-            }
+            dispatch_script(&self.js_provider, script, pending.node_id, pending.kind, pending.source_url);
         }
-    }
-
-    async fn fetch_external_script_for_execution(&self, request: Request) -> Result<String, String> {
-        let net_provider = self
-            .new_http_client
-            .as_ref()
-            .map(|client| client.net_provider.clone())
-            .or_else(|| self.dom.as_ref().map(|dom| dom.net_provider.clone()))
-            .ok_or_else(|| "Network provider unavailable".to_string())?;
-
-        let request_url = request.url.to_string();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<String, String>>();
-
-        net_provider.fetch_with_callback(
-            request,
-            Box::new(move |result| {
-                let response = match result {
-                    Ok((_, bytes)) => String::from_utf8(bytes.to_vec())
-                        .map_err(|error| format!("External script at '{}' is not valid UTF-8: {}", request_url, error)),
-                    Err(error) => Err(match error {
-                        ProviderError::Blocked => format!("Blocked by content filtering: {}", request_url),
-                        _ => format!("{:?}", error),
-                    }),
-                };
-
-                let _ = tx.send(response);
-            }),
-        );
-
-        rx.recv()
-            .await
-            .ok_or_else(|| "Script fetch callback dropped before script delivery".to_string())?
     }
 
     /// Fire a click event on a DOM node

@@ -8,14 +8,33 @@ use crate::js::{JsResult, JsRuntime};
 use crate::js::jsapi::promise::init_rejection_tracker;
 use crate::js::runtime::JOB_QUEUE_TRAPS;
 
-pub(crate) mod cookies;
+pub(crate) mod cookie;
+pub(crate) mod custom_elements;
 pub(crate) mod dom_bindings;
+pub(crate) mod dom_implementation;
+pub(crate) mod document;
+pub(crate) mod document_fragment;
+pub(crate) mod element;
 pub(crate) mod element_bindings;
+pub(crate) mod event;
+pub(crate) mod history;
+pub(crate) mod html_form_element;
+pub(crate) mod html_image_element;
+pub(crate) mod html_input_element;
+pub(crate) mod html_iframe_element;
+pub(crate) mod html_svg_element;
+pub(crate) mod location;
 pub(crate) mod mutation_observer;
+pub(crate) mod navigator;
+pub(crate) mod node;
 pub(crate) mod registry;
+pub(crate) mod storage;
 pub(crate) mod timers;
+pub(crate) mod window;
 pub(crate) mod alert_callback;
 pub(crate) mod warnings;
+pub(crate) mod interface_registry;
+
 pub mod abort_signal;
 pub mod console;
 pub mod css;
@@ -35,6 +54,10 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
         SetJobQueue(cx, job_queue);
         init_rejection_tracker(cx);
     });
+
+    // Validate the unified interface descriptor graph before per-API setup.
+    interface_registry::setup_interface_registry(runtime)?;
+
     // Set up timers
     timers::setup_timers(runtime, timer_manager)?;
 
@@ -62,42 +85,25 @@ pub fn initialize_bindings(runtime: &mut JsRuntime, document_root: *mut Dom, use
     // Set up DOM bindings
     dom_bindings::setup_dom_bindings(runtime, document_root, user_agent)?;
 
-    // Set up EventTarget bindings (EventTarget/Event/CustomEvent constructors)
-    event_target::setup_event_target(runtime)?;
 
     // Set up callable SVGElement/SVGSVGElement constructors
-    dom_bindings::setup_svg_constructors_deferred(runtime)?;
-
-    // Set up Event and CustomEvent constructors
-    dom_bindings::setup_event_constructors_deferred(runtime)?;
+    html_svg_element::setup_svg_constructors_deferred(runtime)?;
 
     // Set up MutationObserver / MutationRecord polyfill and node patch hooks
     mutation_observer::setup_mutation_observer(runtime)?;
 
     // Set up window.matchMedia and MediaQueryList behavior
-    dom_bindings::setup_match_media_deferred(runtime)?;
+    window::setup_match_media_deferred(runtime)?;
 
-    // Set up document.cookie property (must be done after DOM bindings are set up)
-    // This uses Object.defineProperty which requires the document object to exist
-    dom_bindings::setup_cookie_property_deferred(runtime)?;
-
-    // Set up document.head property (must be done after DOM bindings are set up)
-    dom_bindings::setup_head_property_deferred(runtime)?;
-
-    // Set up document.body property (must be done after DOM bindings are set up)
-    dom_bindings::setup_body_property_deferred(runtime)?;
-
-    // Set up document.currentScript property (must be done after DOM bindings are set up)
-    dom_bindings::setup_current_script_deferred(runtime)?;
 
     // Set up document.implementation and DOMImplementation methods
-    dom_bindings::setup_document_implementation_deferred(runtime)?;
+    dom_implementation::setup_document_implementation_deferred(runtime)?;
 
     // Set up the global Image / HTMLImageElement constructor
-    dom_bindings::setup_image_constructor_deferred(runtime)?;
+    html_image_element::setup_image_constructor_deferred(runtime)?;
 
     // Set up HTMLInputElement constructor/prototype wiring
-    dom_bindings::setup_html_input_element_constructor_deferred(runtime)?;
+    html_input_element::setup_html_input_element_constructor_deferred(runtime)?;
 
     // Set up XMLHttpRequest constructor (full polyfill)
     xhr::setup_xhr(runtime)?;

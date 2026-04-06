@@ -3,7 +3,8 @@
 
 use crate::js::bindings::dom_bindings::{DOM_REF, USER_AGENT};
 use crate::js::helpers::{js_value_to_string, ToSafeCx};
-use crate::js::jsapi::js_promise::JsPromiseHandle;
+use crate::js::jsapi::js_promise::{JsPromise, JsPromiseBuilder};
+use crate::js::runtime_context::{current_document_base_url, current_net_provider_and_source_url, current_user_agent};
 use crate::js::JsRuntime;
 use curl::easy::{Easy, List};
 use mozjs::context::JSContext as SafeJSContext;
@@ -133,9 +134,9 @@ unsafe extern "C" fn js_fetch(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSV
         }
     }
 
-    // Create a Promise for the fetch operation
-    let promise_ptr = match JsPromiseHandle::create_direct(safe_cx) {
-        Ok((ptr, _handle)) => ptr,
+    // Create a Promise for the fetch operation using shared Promise helpers.
+    let promise = match JsPromise::new(safe_cx) {
+        Ok(promise) => promise,
         Err(e) => {
             eprintln!("fetch: failed to create promise: {}", e.message);
             args.rval().set(UndefinedValue());
@@ -144,7 +145,7 @@ unsafe extern "C" fn js_fetch(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSV
     };
 
     // Get user agent
-    let user_agent = USER_AGENT.with(|ua| ua.borrow().clone());
+    let user_agent = current_user_agent().unwrap_or_else(|| USER_AGENT.with(|ua| ua.borrow().clone()));
 
     // Perform the fetch synchronously (for now - could be made async later)
     let result = perform_fetch(&url, &method, &request_headers, request_body.as_deref(), &user_agent);
@@ -159,26 +160,31 @@ unsafe extern "C" fn js_fetch(raw_cx: *mut JSContext, argc: c_uint, vp: *mut JSV
 
             // Create Response object
             let response_obj = create_response_object(safe_cx, &response);
-            rooted!(in(raw_cx) let promise = promise_ptr);
             rooted!(in(raw_cx) let response_val = ObjectValue(response_obj));
-            ResolvePromise(safe_cx, promise.handle().into(), response_val.handle().into());
+            let _ = promise.resolve(safe_cx, response_val.handle().into());
         }
         Err(err) => {
-            rooted!(in(raw_cx) let promise = promise_ptr);
-            let error_utf16: Vec<u16> = err.encode_utf16().collect();
-            rooted!(in(raw_cx) let error_str = JS_NewUCStringCopyN(safe_cx, error_utf16.as_ptr(), error_utf16.len()));
-            rooted!(in(raw_cx) let error_val = StringValue(&*error_str.get()));
-            RejectPromise(safe_cx, promise.handle().into(), error_val.handle().into());
+            let _ = promise.reject_string(safe_cx, &err);
         }
     }
 
 
     // Return the promise
-    args.rval().set(ObjectValue(promise_ptr));
+    args.rval().set(ObjectValue(promise.get()));
     true
 }
 
 fn resolve_fetch_url(input: &str) -> Result<String, String> {
+    if let Some(base) = current_document_base_url() {
+        let base_url = Url::parse(&base)
+            .map_err(|e| format!("fetch: document base URL unavailable: {e}"))?;
+
+        return base_url
+            .join(input)
+            .map(|u| u.to_string())
+            .map_err(|e| format!("fetch: invalid URL: {e}"));
+    }
+
     DOM_REF.with(|dom_ref| {
         let dom_borrow = dom_ref.borrow();
         let dom_ptr = *dom_borrow
@@ -543,6 +549,13 @@ fn perform_fetch(
 }
 
 fn is_fetch_blocked(url: &str) -> bool {
+    if let Some((net_provider, source_url)) = current_net_provider_and_source_url() {
+        if !net_provider.is_adblock_enabled() {
+            return false;
+        }
+        return net_provider.should_block_url(url, Some(&source_url), "xmlhttprequest");
+    }
+
     DOM_REF.with(|dom_ref| {
         let dom_borrow = dom_ref.borrow();
         let Some(dom_ptr) = dom_borrow.as_ref() else {
@@ -702,20 +715,19 @@ unsafe extern "C" fn response_text(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
         pr.borrow().as_ref().map(|r| r.body.clone()).unwrap_or_default()
     });
 
-    // Create a resolved promise with the body text
-    rooted!(in(raw_cx) let null_obj = std::ptr::null_mut::<JSObject>());
-    rooted!(in(raw_cx) let promise = NewPromiseObject(safe_cx, null_obj.handle()));
+    let promise = match JsPromiseBuilder::resolved_string(safe_cx, &body) {
+        Ok(promise) => promise,
+        Err(_) => {
+            args.rval().set(UndefinedValue());
+            return false;
+        }
+    };
 
     if promise.get().is_null() {
         args.rval().set(UndefinedValue());
         return false;
     }
 
-    let body_utf16: Vec<u16> = body.encode_utf16().collect();
-    rooted!(in(raw_cx) let body_str = JS_NewUCStringCopyN(safe_cx, body_utf16.as_ptr(), body_utf16.len()));
-    rooted!(in(raw_cx) let body_val = StringValue(&*body_str.get()));
-
-    ResolvePromise(safe_cx, promise.handle().into(), body_val.handle().into());
     args.rval().set(ObjectValue(promise.get()));
     true
 }
@@ -730,29 +742,32 @@ unsafe extern "C" fn response_json(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
         pr.borrow().as_ref().map(|r| r.body.clone()).unwrap_or_default()
     });
 
-    // Create a promise
-    rooted!(in(raw_cx) let null_obj = std::ptr::null_mut::<JSObject>());
-    rooted!(in(raw_cx) let promise = NewPromiseObject(safe_cx, null_obj.handle()));
-
-    if promise.get().is_null() {
-        args.rval().set(UndefinedValue());
-        return false;
-    }
-
     // Parse the JSON
     let body_utf16: Vec<u16> = body.encode_utf16().collect();
     rooted!(in(raw_cx) let mut json_val = UndefinedValue());
 
-    if JS_ParseJSON(safe_cx, body_utf16.as_ptr(), body_utf16.len() as u32, json_val.handle_mut().into()) {
-        ResolvePromise(safe_cx, promise.handle().into(), json_val.handle().into());
+    let promise = if JS_ParseJSON(
+        safe_cx,
+        body_utf16.as_ptr(),
+        body_utf16.len() as u32,
+        json_val.handle_mut().into(),
+    ) {
+        match JsPromiseBuilder::resolved(safe_cx, json_val.handle().into()) {
+            Ok(promise) => promise,
+            Err(_) => {
+                args.rval().set(UndefinedValue());
+                return false;
+            }
+        }
     } else {
-        // JSON parse error - reject the promise
-        let error_msg = "JSON parse error";
-        let error_utf16: Vec<u16> = error_msg.encode_utf16().collect();
-        rooted!(in(raw_cx) let error_str = JS_NewUCStringCopyN(safe_cx, error_utf16.as_ptr(), error_utf16.len()));
-        rooted!(in(raw_cx) let error_val = StringValue(&*error_str.get()));
-        RejectPromise(safe_cx, promise.handle().into(), error_val.handle().into());
-    }
+        match JsPromiseBuilder::rejected_string(safe_cx, "JSON parse error") {
+            Ok(promise) => promise,
+            Err(_) => {
+                args.rval().set(UndefinedValue());
+                return false;
+            }
+        }
+    };
 
     args.rval().set(ObjectValue(promise.get()));
     true
@@ -774,15 +789,6 @@ unsafe extern "C" fn response_blob(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
 
     let headers = response.headers;
     let body = &response.body;
-
-    // Create a promise
-    rooted!(in(raw_cx) let null_obj = std::ptr::null_mut::<JSObject>());
-    rooted!(in(raw_cx) let promise = NewPromiseObject(safe_cx, null_obj.handle()));
-
-    if promise.get().is_null() {
-        args.rval().set(UndefinedValue());
-        return false;
-    }
 
     // Create a simple blob-like object (real Blob API would be more complex)
     rooted!(in(raw_cx) let blob = JS_NewPlainObject(safe_cx));
@@ -817,7 +823,13 @@ unsafe extern "C" fn response_blob(raw_cx: *mut JSContext, argc: c_uint, vp: *mu
     );
 
     rooted!(in(raw_cx) let blob_val = ObjectValue(blob.get()));
-    ResolvePromise(safe_cx, promise.handle().into(), blob_val.handle().into());
+    let promise = match JsPromiseBuilder::resolved(safe_cx, blob_val.handle().into()) {
+        Ok(promise) => promise,
+        Err(_) => {
+            args.rval().set(UndefinedValue());
+            return false;
+        }
+    };
     args.rval().set(ObjectValue(promise.get()));
     true
 }
@@ -835,15 +847,6 @@ unsafe extern "C" fn response_array_buffer(raw_cx: *mut JSContext, argc: c_uint,
         pr.borrow().as_ref().map(|r| r.body.clone()).unwrap_or_default()
     });
 
-    // Create a promise
-    rooted!(in(raw_cx) let null_obj = std::ptr::null_mut::<JSObject>());
-    rooted!(in(raw_cx) let promise = NewPromiseObject(safe_cx, null_obj.handle()));
-
-    if promise.get().is_null() {
-        args.rval().set(UndefinedValue());
-        return false;
-    }
-
     // Create an ArrayBuffer with the body size
     // Note: We're using NewArrayBuffer which creates an uninitialized buffer
     // FIXME: The ArrayBuffer is allocated with the correct size but the body bytes are never
@@ -852,17 +855,24 @@ unsafe extern "C" fn response_array_buffer(raw_cx: *mut JSContext, argc: c_uint,
     let body_bytes = body.as_bytes();
     rooted!(in(raw_cx) let array_buffer = NewArrayBuffer(safe_cx, body_bytes.len()));
 
-    if !array_buffer.get().is_null() {
+    let promise = if !array_buffer.get().is_null() {
         rooted!(in(raw_cx) let ab_val = ObjectValue(array_buffer.get()));
-        ResolvePromise(safe_cx, promise.handle().into(), ab_val.handle().into());
+        match JsPromiseBuilder::resolved(safe_cx, ab_val.handle().into()) {
+            Ok(promise) => promise,
+            Err(_) => {
+                args.rval().set(UndefinedValue());
+                return false;
+            }
+        }
     } else {
-        // Failed to create ArrayBuffer
-        let error_msg = "Failed to create ArrayBuffer";
-        let error_utf16: Vec<u16> = error_msg.encode_utf16().collect();
-        rooted!(in(raw_cx) let error_str = JS_NewUCStringCopyN(safe_cx, error_utf16.as_ptr(), error_utf16.len()));
-        rooted!(in(raw_cx) let error_val = StringValue(&*error_str.get()));
-        RejectPromise(safe_cx, promise.handle().into(), error_val.handle().into());
-    }
+        match JsPromiseBuilder::rejected_string(safe_cx, "Failed to create ArrayBuffer") {
+            Ok(promise) => promise,
+            Err(_) => {
+                args.rval().set(UndefinedValue());
+                return false;
+            }
+        }
+    };
 
     args.rval().set(ObjectValue(promise.get()));
     true
@@ -870,22 +880,16 @@ unsafe extern "C" fn response_array_buffer(raw_cx: *mut JSContext, argc: c_uint,
 
 /// Create a rejected promise with an error message
 unsafe fn create_rejected_promise(cx: &mut SafeJSContext, mut rval: MutableHandleValue, error_msg: &str) -> bool {
-    let raw_cx = cx.raw_cx();
-    rooted!(in(raw_cx) let null_obj = std::ptr::null_mut::<JSObject>());
-    rooted!(in(raw_cx) let promise = NewPromiseObject(cx, null_obj.handle()));
-
-    if promise.get().is_null() {
-        rval.set(UndefinedValue());
-        return false;
+    match JsPromiseBuilder::rejected_string(cx, error_msg) {
+        Ok(promise) => {
+            rval.set(ObjectValue(promise.get()));
+            true
+        }
+        Err(_) => {
+            rval.set(UndefinedValue());
+            false
+        }
     }
-
-    let error_utf16: Vec<u16> = error_msg.encode_utf16().collect();
-    rooted!(in(raw_cx) let error_str = JS_NewUCStringCopyN(cx, error_utf16.as_ptr(), error_utf16.len()));
-    rooted!(in(raw_cx) let error_val = StringValue(&*error_str.get()));
-
-    RejectPromise(cx, promise.handle().into(), error_val.handle().into());
-    rval.set(ObjectValue(promise.get()));
-    true
 }
 
 /// Get HTTP status text from status code

@@ -205,8 +205,8 @@ pub unsafe fn get_node_id_from_this(cx: &mut SafeJSContext, args: &CallArgs) -> 
     }
 }
 
-/// Define a property with getter/setter on a JavaScript object using Object.defineProperty
-pub unsafe fn define_property_accessor(
+/// Define a JavaScript property with both getter and setter using `Object.defineProperty`.
+pub unsafe fn define_js_property_accessor(
     cx: &mut SafeJSContext,
     obj: *mut JSObject,
     prop_name: &str,
@@ -321,8 +321,8 @@ pub unsafe fn define_property_accessor(
     }
 }
 
-/// Define a property with getter/setter on a JavaScript object using Object.defineProperty
-pub unsafe fn define_property_getter(
+/// Define a JavaScript property with only a getter using `Object.defineProperty`.
+pub unsafe fn define_js_property_getter(
     cx: &mut SafeJSContext,
     obj: *mut JSObject,
     prop_name: &str,
