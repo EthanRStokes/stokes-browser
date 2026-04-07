@@ -383,6 +383,38 @@ pub(crate) fn fetch_font_face(
     shell_provider: &Arc<StokesShellProvider>,
     read_guard: &SharedRwLockReadGuard,
 ) {
+    fn format_from_string_hint(hint: &str) -> FontFaceSourceFormatKeyword {
+        match hint.to_ascii_lowercase().as_str() {
+            "woff2" => FontFaceSourceFormatKeyword::Woff2,
+            "woff" => FontFaceSourceFormatKeyword::Woff,
+            "ttf" | "truetype" => FontFaceSourceFormatKeyword::Truetype,
+            "otf" | "opentype" => FontFaceSourceFormatKeyword::Opentype,
+            "svg" => FontFaceSourceFormatKeyword::Svg,
+            "eot" | "embedded-opentype" | "embedded_opentype" => {
+                FontFaceSourceFormatKeyword::EmbeddedOpentype
+            }
+            _ => FontFaceSourceFormatKeyword::None,
+        }
+    }
+
+    fn infer_format_from_url(url: &str) -> FontFaceSourceFormatKeyword {
+        let path = Url::parse(url)
+            .ok()
+            .map(|parsed| parsed.path().to_string())
+            .unwrap_or_else(|| {
+                url.split(['?', '#'])
+                    .next()
+                    .unwrap_or(url)
+                    .to_string()
+            });
+
+        let Some((_, ext)) = path.rsplit_once('.') else {
+            return FontFaceSourceFormatKeyword::None;
+        };
+
+        format_from_string_hint(ext)
+    }
+
     sheet
         .contents(read_guard)
         .rules(read_guard)
@@ -403,30 +435,18 @@ pub(crate) fn fetch_font_face(
                 .find_map(|url_source| {
                     let mut format = match &url_source.format_hint {
                         Some(FontFaceSourceFormat::Keyword(fmt)) => *fmt,
-                        Some(FontFaceSourceFormat::String(str)) => match str.as_str() {
-                            "woff2" => FontFaceSourceFormatKeyword::Woff2,
-                            "ttf" => FontFaceSourceFormatKeyword::Truetype,
-                            "otf" => FontFaceSourceFormatKeyword::Opentype,
-                            _ => FontFaceSourceFormatKeyword::None,
-                        },
+                        Some(FontFaceSourceFormat::String(str)) => format_from_string_hint(str),
                         _ => FontFaceSourceFormatKeyword::None,
                     };
+
                     if format == FontFaceSourceFormatKeyword::None {
-                        let (_, end) = url_source.url.as_str().rsplit_once('.')?;
-                        format = match end {
-                            "woff2" => FontFaceSourceFormatKeyword::Woff2,
-                            "woff" => FontFaceSourceFormatKeyword::Woff,
-                            "ttf" => FontFaceSourceFormatKeyword::Truetype,
-                            "otf" => FontFaceSourceFormatKeyword::Opentype,
-                            "svg" => FontFaceSourceFormatKeyword::Svg,
-                            "eot" => FontFaceSourceFormatKeyword::EmbeddedOpentype,
-                            _ => FontFaceSourceFormatKeyword::None,
-                        }
+                        format = infer_format_from_url(url_source.url.as_str());
                     }
 
                     if matches!(
                         format,
-                        FontFaceSourceFormatKeyword::Svg
+                        FontFaceSourceFormatKeyword::None
+                            | FontFaceSourceFormatKeyword::Svg
                             | FontFaceSourceFormatKeyword::EmbeddedOpentype
                     ) {
                         return None;
