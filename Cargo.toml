@@ -10,7 +10,7 @@ gl = "0.14.0"
 skia-safe = { version = "0.93.1", features = ["gpu", "gl"] }
 #skia-safe = { git = "https://github.com/marcpabst/rust-skia", features = ["gpu", "gl", "graphite"] }
 image = "0.25.6"
-tokio = { version = "1.49.0", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1.51.1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"
 curl = "0.4"
 html5ever = "0.39.0"
@@ -25,15 +25,16 @@ shared_memory = "0.12.4"
 serde = { version = "1.0", features = ["derive"] }
 rfd = "0.17.2"
 url = "2"
-taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "4b6687da0ca1e9d71da4e48b4c659f5c45060707", features = ["strict_provenance"] }
+taffy = { version = "0.10.0", features = ["strict_provenance"] }
+#taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "4b6687da0ca1e9d71da4e48b4c659f5c45060707", features = ["strict_provenance"] }
 slab = "0.4.12"
 markup5ever = "0.39.0"
 xml5ever = "0.39.0"
-parley = { git = "https://github.com/linebender/parley", rev = "07980878fc9ea4b16ddc197ac789d01fb8ada7a3" }
+parley = { git = "https://github.com/linebender/parley", rev = "6cfd2009f650749fbb05ffd325e54d084fd6aefc" }
 euclid = "0.22.13"
 bitflags = { version = "2.11.0", features = ["serde"] }
 atomic_refcell = "0.1.13"
-skrifa = "0.40.0"
+skrifa = "0.42.0"
 kurbo = "0.13.0"
 bytes = "1.11.1"
 tracing = "0.1.44"
@@ -72,16 +73,16 @@ adblock = "0.12.1"
 oaty = "0.1.0"
 
 # Stylo
-stylo = "0.14.0"
-stylo_traits = "0.14.0"
-stylo_atoms = "0.14.0"
-stylo_static_prefs = "0.14.0"
-stylo_dom = "0.14.0"
+stylo = "0.15.0"
+stylo_traits = "0.15.0"
+stylo_atoms = "0.15.0"
+stylo_static_prefs = "0.15.0"
+stylo_dom = "0.15.0"
 selectors = "0.36.1"
 
 # Blitz
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "781ae63f" }
-stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "781ae63f", features = ["floats"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a3" }
+stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a3", features = ["floats"] }
 dioxus-asset-resolver = { version = "0.7.4", features = ["native"] }
 
 [dependencies.glutin-winit]
