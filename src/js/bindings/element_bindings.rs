@@ -4074,11 +4074,11 @@ unsafe extern "C" fn form_request_submit(raw_cx: *mut JSContext, argc: c_uint, v
                     if let Some(submitter_id) = get_node_id_from_value(safe_cx, *args.get(0)) {
                         let owns_submitter = dom.controls_to_form.get(&submitter_id).is_some_and(|owner| *owner == form_id);
                         if owns_submitter && form_is_submit_button(dom, submitter_id) {
-                            dom.submit_form(form_id, submitter_id);
+                            dom.submit_form_with_event(form_id, submitter_id);
                         }
                     }
                 } else {
-                    dom.submit_form(form_id, form_id);
+                    dom.submit_form_with_event(form_id, form_id);
                 }
             }
         });

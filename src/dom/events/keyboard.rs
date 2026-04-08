@@ -7,7 +7,6 @@ use crate::dom::node::TextInputData;
 use crate::events::{BlitzInputEvent, BlitzKeyEvent, DomEvent, DomEventData};
 use crate::ui::TextBrush;
 
-// TODO: support keypress events
 enum GeneratedEvent {
     Input,
     Select,
@@ -49,17 +48,30 @@ pub(crate) fn handle_keypress<F: FnMut(DomEvent)>(
         }
     }
 
-    if let Some(node_id) = doc.focus_node_id {
-        if target != node_id {
-            return;
+    let Some(node_id) = doc.focus_node_id else {
+        if should_forward_keypress(&event) {
+            dispatch_event(DomEvent::new(target, DomEventData::KeyPress(event.clone())));
         }
+        return;
+    };
 
-        let node = &mut doc.nodes[node_id];
-        let Some(element_data) = node.element_data_mut() else {
-            return;
-        };
+    if target != node_id {
+        return;
+    }
 
-        if let Some(input_data) = element_data.text_input_data_mut() {
+    if should_forward_keypress(&event) {
+        dispatch_event(DomEvent::new(
+            node_id,
+            DomEventData::KeyPress(event.clone()),
+        ));
+    }
+
+    let node = &mut doc.nodes[node_id];
+    let Some(element_data) = node.element_data_mut() else {
+        return;
+    };
+
+    if let Some(input_data) = element_data.text_input_data_mut() {
             let generated_event = apply_keypress_event(
                 input_data,
                 &mut doc.font_ctx.lock().unwrap(),
@@ -82,11 +94,9 @@ pub(crate) fn handle_keypress<F: FnMut(DomEvent)>(
                         doc.shell_provider.request_redraw();
                     }
                     GeneratedEvent::Submit => {
-                        // TODO: Generate submit event that can be handled by script
                         implicit_form_submission(doc, target);
                     }
                 }
-            }
         }
     }
 }
@@ -95,6 +105,19 @@ pub(crate) fn handle_keypress<F: FnMut(DomEvent)>(
 const ACTION_MOD: Modifiers = Modifiers::SUPER;
 #[cfg(not(target_os = "macos"))]
 const ACTION_MOD: Modifiers = Modifiers::CONTROL;
+
+fn should_forward_keypress(event: &BlitzKeyEvent) -> bool {
+    if !event.state.is_pressed() {
+        return false;
+    }
+
+    let action_mod = event.modifiers.contains(ACTION_MOD);
+    if action_mod {
+        return false;
+    }
+
+    matches!(event.key, Key::Character(_) | Key::Enter)
+}
 
 fn apply_keypress_event(
     input_data: &mut TextInputData,
@@ -295,5 +318,5 @@ fn implicit_form_submission(doc: &Dom, text_target: usize) {
         return;
     }
 
-    doc.submit_form(*form_owner_id, *form_owner_id);
+    doc.submit_form_with_event(*form_owner_id, *form_owner_id);
 }

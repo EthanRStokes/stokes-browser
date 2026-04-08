@@ -11,7 +11,6 @@ use markup5ever::local_name;
 use crate::dom::Dom;
 use crate::dom::node::SpecialElementData;
 use crate::events::{BlitzInputEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, DomEvent, DomEventData, MouseEventButton, MouseEventButtons};
-use crate::shell_provider::ShellProviderMessage;
 use super::focus::generate_focus_events;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -520,14 +519,14 @@ pub(crate) fn handle_click(
                 }
                 local_name!("button") if el.is_submit_button() => {
                     if let Some(form_owner) = doc.controls_to_form.get(&node_id) {
-                        doc.submit_form(*form_owner, node_id);
+                        doc.submit_form_with_event(*form_owner, node_id);
                     }
                     break 'matched true;
                 }
                 local_name!("input")
                 if matches!(el.attr(local_name!("type")), Some("submit" | "image")) => {
                     if let Some(form_owner) = doc.controls_to_form.get(&node_id) {
-                        doc.submit_form(*form_owner, node_id);
+                        doc.submit_form_with_event(*form_owner, node_id);
                     }
                     break 'matched true;
                 }

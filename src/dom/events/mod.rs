@@ -74,6 +74,9 @@ impl Dom {
             DomEventData::Input(_) => {
                 // Do nothing (no default action)
             }
+            DomEventData::Submit(_) => {
+                // Do nothing (handled by form submission helpers)
+            }
             DomEventData::ContextMenu(_) => {
                 // TODO: Open context menu
             }

@@ -4,12 +4,14 @@
 use std::fmt::Display;
 use std::str::FromStr;
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
-use html5ever::serialize::Serializer;
 use blitz_traits::net::{Body, Entry, EntryValue, FormData, Method};
 use html5ever::local_name;
 use markup5ever::LocalName;
 use crate::dom::{Dom, ElementData};
 use crate::dom::traverse::{AncestorTraverser, TreeTraverser};
+use crate::events::{BlitzSubmitEvent, DomEvent, DomEventData};
+use crate::js::bindings::event_listeners::{fire_js_event_on_chain, EVENT_DEFAULT_PREVENTED};
+use crate::js::runtime::RUNTIME;
 
 const DEFAULT_ENCODE_SET: percent_encoding::AsciiSet = percent_encoding::CONTROLS
     // Query Set
@@ -78,7 +80,10 @@ impl Dom {
         }
     }
 
-    /// Submits a form with the given form node ID and submitter node ID
+    /// Submits a form with the given form node ID and submitter node ID.
+    ///
+    /// This is the legacy direct submission path used by `form.submit()`.
+    /// It skips the JS `submit` event.
     ///
     /// # Arguments
     /// * `node_id` - The ID of the form node to submit
@@ -86,6 +91,33 @@ impl Dom {
     ///
     /// <https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>
     pub fn submit_form(&self, node_id: usize, submitter_id: usize) {
+        self.submit_form_without_event(node_id, submitter_id)
+    }
+
+    /// Submits a form after first firing a cancelable JS `submit` event.
+    pub fn submit_form_with_event(&self, node_id: usize, submitter_id: usize) {
+        let chain = self.node_chain(node_id);
+        let submit_event = DomEvent::new(node_id, DomEventData::Submit(BlitzSubmitEvent));
+
+        let mut prevented = false;
+        RUNTIME.with(|cell| {
+            if let Some(rt_ptr) = *cell.borrow() {
+                let rt = unsafe { &mut *rt_ptr };
+                rt.do_with_jsapi(|cx, global| unsafe {
+                    fire_js_event_on_chain(cx, global.get(), &chain, &submit_event);
+                });
+                prevented = EVENT_DEFAULT_PREVENTED.get();
+            }
+        });
+
+        if prevented {
+            return;
+        }
+
+        self.submit_form_without_event(node_id, submitter_id)
+    }
+
+    fn submit_form_without_event(&self, node_id: usize, submitter_id: usize) {
         let node = &self.nodes[node_id];
         let Some(element) = node.element_data() else {
             return;
