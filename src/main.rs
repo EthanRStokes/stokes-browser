@@ -18,6 +18,7 @@ mod browser;
 mod window;
 mod shell_provider;
 mod default_browser;
+mod bookmarks;
 
 use crate::browser::BrowserApp;
 use winit::event_loop::EventLoop;

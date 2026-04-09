@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
-use tracing::{trace, warn};
+use tracing::{debug, trace, warn};
 use tracing::metadata::LevelFilter;
 use url::Url;
 
@@ -555,8 +555,8 @@ fn create_headless_renderer(width: u32, height: u32) -> io::Result<HeadlessRende
             Ok(HeadlessRenderer::Gpu(gpu_renderer))
         }
         Err(gpu_error) => {
-            warn!("[renderer] GPU rendering failed: {}", gpu_error);
-            warn!("[renderer] Falling back to software rendering");
+            debug!("[renderer] GPU rendering failed: {}", gpu_error);
+            trace!("[renderer] Falling back to software rendering");
 
             // Fallback to software rendering
             match SoftwareRenderer::new(width, height) {

@@ -24,6 +24,7 @@ use crate::{input, ipc};
 use crate::convert_events::{button_source_to_blitz, pointer_source_to_blitz, pointer_source_to_blitz_details, winit_ime_to_blitz, winit_key_event_to_blitz, winit_modifiers_to_kbt_modifiers};
 use crate::events::{BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent};
 use crate::shell_provider::ShellProviderMessage;
+use crate::bookmarks::BookmarkStore;
 
 /// Result of closing a tab
 #[derive(Debug, PartialEq)]
@@ -58,6 +59,7 @@ pub(crate) struct BrowserApp {
     layout_ctx: LayoutContext<TextBrush>,
     startup_url: Option<String>,
     buttons: MouseEventButtons,
+    bookmarks: BookmarkStore,
 }
 
 impl BrowserApp {
@@ -82,6 +84,7 @@ impl BrowserApp {
             layout_ctx: LayoutContext::new(),
             startup_url,
             buttons: MouseEventButtons::None,
+            bookmarks: BookmarkStore::load_from_disk(),
         }
     }
 
@@ -339,6 +342,21 @@ impl BrowserApp {
                 crate::default_browser::set_as_default_browser();
                 self.show_alert("Stokes Browser has been set as your default browser.");
             }
+            input::InputAction::AddCurrentPageBookmark => {
+                self.add_current_page_bookmark();
+            }
+            input::InputAction::CreateBookmarkFolder { parent_id } => {
+                self.create_bookmark_folder(parent_id.clone());
+            }
+            input::InputAction::RenameBookmark(id) => {
+                self.rename_bookmark(id);
+            }
+            input::InputAction::EditBookmarkUrl(id) => {
+                self.edit_bookmark_url(id);
+            }
+            input::InputAction::DeleteBookmark(id) => {
+                self.delete_bookmark(id);
+            }
             input::InputAction::RequestRedraw => {}
             input::InputAction::QuitApp => {
                 event_loop.exit();
@@ -587,6 +605,125 @@ impl BrowserApp {
     fn request_redraw(&self) {
         self.env.as_ref().unwrap().window.request_redraw();
     }
+
+    fn sync_bookmarks_ui(&mut self) {
+        let snapshot = self.bookmarks.items().to_vec();
+        self.ui_mut().set_bookmarks(snapshot);
+    }
+
+    fn prompt_input(title: &str, message: &str, default: &str) -> Option<String> {
+        tinyfiledialogs::input_box(title, message, default)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    fn selected_folder_target(&self) -> Option<String> {
+        self.ui()
+            .selected_bookmark_id()
+            .and_then(|id| self.bookmarks.get(id))
+            .and_then(|bookmark| if bookmark.is_folder() { Some(bookmark.id.clone()) } else { None })
+    }
+
+    fn add_current_page_bookmark(&mut self) {
+        let Some(tab_id) = self.active_tab_id().cloned() else {
+            return;
+        };
+        let Some(tab) = self.tab_manager.get_tab(&tab_id) else {
+            return;
+        };
+
+        let default_title = if tab.title.trim().is_empty() { "Bookmark" } else { tab.title.trim() };
+        let Some(title) = Self::prompt_input("Add Bookmark", "Bookmark title:", default_title) else {
+            return;
+        };
+
+        let default_url = if tab.url.trim().is_empty() { DEFAULT_HOMEPAGE } else { tab.url.trim() };
+        let Some(url) = Self::prompt_input("Add Bookmark", "Bookmark URL:", default_url) else {
+            return;
+        };
+
+        let parent = self.selected_folder_target();
+        match self.bookmarks.add_bookmark(title, url, parent.as_deref()) {
+            Ok(_) => {
+                self.bookmarks.save_to_disk();
+                self.sync_bookmarks_ui();
+                self.request_redraw();
+            }
+            Err(err) => self.show_alert(&format!("Failed to add bookmark: {err}")),
+        }
+    }
+
+    fn create_bookmark_folder(&mut self, parent_id: Option<String>) {
+        let Some(title) = Self::prompt_input("New Bookmark Folder", "Folder name:", "New Folder") else {
+            return;
+        };
+
+        let parent = parent_id.or_else(|| self.selected_folder_target());
+        match self.bookmarks.add_folder(title, parent.as_deref()) {
+            Ok(_) => {
+                self.bookmarks.save_to_disk();
+                self.sync_bookmarks_ui();
+                self.request_redraw();
+            }
+            Err(err) => self.show_alert(&format!("Failed to create folder: {err}")),
+        }
+    }
+
+    fn rename_bookmark(&mut self, id: &str) {
+        let Some(current) = self.bookmarks.get(id) else {
+            self.show_alert("Bookmark not found.");
+            return;
+        };
+
+        let Some(title) = Self::prompt_input("Rename Bookmark", "New name:", &current.title) else {
+            return;
+        };
+
+        match self.bookmarks.rename(id, title) {
+            Ok(_) => {
+                self.bookmarks.save_to_disk();
+                self.sync_bookmarks_ui();
+                self.request_redraw();
+            }
+            Err(err) => self.show_alert(&format!("Failed to rename bookmark: {err}")),
+        }
+    }
+
+    fn edit_bookmark_url(&mut self, id: &str) {
+        let Some(current) = self.bookmarks.get(id) else {
+            self.show_alert("Bookmark not found.");
+            return;
+        };
+
+        let Some(existing_url) = current.url.as_deref() else {
+            self.show_alert("Selected bookmark is a folder. Choose a page bookmark to edit its URL.");
+            return;
+        };
+
+        let Some(url) = Self::prompt_input("Edit Bookmark URL", "New URL:", existing_url) else {
+            return;
+        };
+
+        match self.bookmarks.update_url(id, url) {
+            Ok(_) => {
+                self.bookmarks.save_to_disk();
+                self.sync_bookmarks_ui();
+                self.request_redraw();
+            }
+            Err(err) => self.show_alert(&format!("Failed to edit bookmark URL: {err}")),
+        }
+    }
+
+    fn delete_bookmark(&mut self, id: &str) {
+        match self.bookmarks.delete(id) {
+            Ok(_) => {
+                self.bookmarks.save_to_disk();
+                self.sync_bookmarks_ui();
+                self.request_redraw();
+            }
+            Err(err) => self.show_alert(&format!("Failed to delete bookmark: {err}")),
+        }
+    }
 }
 
 impl ApplicationHandler for BrowserApp {
@@ -619,6 +756,7 @@ impl ApplicationHandler for BrowserApp {
         self.ui = Some(ui);
         self.viewport = Some(viewport);
         self.page_viewport = Some(page_viewport);
+        self.sync_bookmarks_ui();
 
         // Create initial tab, navigating to the startup URL if one was provided
         if let Some(url) = self.startup_url.clone() {
@@ -713,10 +851,10 @@ impl ApplicationHandler for BrowserApp {
                 // Check if we're starting a tab drag (only start drag on tabs)
                 let x = self.pointer_position.0 as f32;
                 let y = self.pointer_position.1 as f32;
-                let chrome_height = ui.chrome_height();
+                let tab_row_height = ui.tab_row_height();
 
                 // Only try to start drag if we're in the tab area (first row)
-                if y < chrome_height / 2.0 {
+                if y < tab_row_height {
                     // Check if this is a close button click first
                     if ui.check_close_button_click(x, y).is_some() {
                         // Let handle_click process the close button

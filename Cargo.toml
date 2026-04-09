@@ -71,6 +71,7 @@ raw-window-handle = "0.6.2"
 smallvec = "1.15.1"
 adblock = "0.12.1"
 oaty = "0.1.0"
+tinyfiledialogs = "3.9.1"
 
 # Stylo
 stylo = "0.15.0"

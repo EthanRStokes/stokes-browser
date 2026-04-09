@@ -1,5 +1,5 @@
 use crate::engine::Engine;
-use crate::ui::BrowserUI;
+use crate::ui::{BookmarkUiAction, BrowserUI};
 use arboard::Clipboard;
 use smol_str::SmolStr;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseScrollDelta};
@@ -34,6 +34,11 @@ pub enum InputAction {
     ForwardToTab(KeyboardInput),
     OpenSettings,
     SetDefaultBrowser,
+    AddCurrentPageBookmark,
+    CreateBookmarkFolder { parent_id: Option<String> },
+    RenameBookmark(String),
+    EditBookmarkUrl(String),
+    DeleteBookmark(String),
 }
 
 /// Represents keyboard input to be forwarded to tab process
@@ -61,6 +66,15 @@ pub fn handle_mouse_click_ui(
     active_tab_index: usize,
     shift_held: bool,
 ) -> InputAction {
+    if let Some(bookmark_action) = ui.handle_bookmark_click(x, y) {
+        return match bookmark_action {
+            BookmarkUiAction::Navigate(url) => InputAction::Navigate(url),
+            BookmarkUiAction::AddCurrentPage => InputAction::AddCurrentPageBookmark,
+            BookmarkUiAction::CreateFolderAtRoot => InputAction::CreateBookmarkFolder { parent_id: None },
+            BookmarkUiAction::UiChanged => InputAction::RequestRedraw,
+        };
+    }
+
     // If settings panel is open, route clicks to it first
     if ui.show_settings {
         if let Some(action_id) = ui.handle_settings_panel_click(x, y) {
@@ -227,6 +241,10 @@ pub fn handle_keyboard_input(
             Key::Character(text) => {
                 let lower = text.to_lowercase();
                 match lower.as_str() {
+                    "d" => {
+                        // Ctrl+D: Add current page to bookmarks.
+                        return InputAction::AddCurrentPageBookmark;
+                    }
                     "a" => {
                         // Ctrl+A: Select all text in address bar
                         if has_focused_text_field {
@@ -345,6 +363,44 @@ pub fn handle_keyboard_input(
                 }
             }
             _ => {}
+        }
+    }
+
+    if !has_focused_text_field {
+        match &event.logical_key {
+            Key::Named(NamedKey::F2) => {
+                if let Some(id) = ui.selected_bookmark_id() {
+                    return InputAction::RenameBookmark(id.to_string());
+                }
+            }
+            Key::Named(NamedKey::Delete) => {
+                if let Some(id) = ui.selected_bookmark_id() {
+                    return InputAction::DeleteBookmark(id.to_string());
+                }
+            }
+            _ => {}
+        }
+
+        if action_mod_pressed(modifiers) && modifiers.state().shift_key() {
+            if let Key::Character(ch) = &event.logical_key {
+                let lower = ch.to_lowercase();
+                match lower.as_str() {
+                    "d" => {
+                        let parent_id = if ui.selected_bookmark_is_folder() {
+                            ui.selected_bookmark_id().map(ToString::to_string)
+                        } else {
+                            None
+                        };
+                        return InputAction::CreateBookmarkFolder { parent_id };
+                    }
+                    "u" => {
+                        if let Some(id) = ui.selected_bookmark_id() {
+                            return InputAction::EditBookmarkUrl(id.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 

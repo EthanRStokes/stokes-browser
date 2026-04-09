@@ -1,4 +1,5 @@
 use crate::renderer::painter::ScenePainter;
+use crate::bookmarks::BookmarkNode;
 use anyrender::PaintScene;
 use blitz_traits::shell::Viewport;
 use color::{AlphaColor, Srgb};
@@ -29,6 +30,14 @@ pub struct Tooltip {
     pub show_after: Duration,
     pub hover_start: Option<Instant>,
     pub is_visible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BookmarkUiAction {
+    Navigate(String),
+    AddCurrentPage,
+    CreateFolderAtRoot,
+    UiChanged,
 }
 
 impl Tooltip {
@@ -261,11 +270,14 @@ pub struct BrowserUI {
     text_selection_drag_anchor: Option<usize>,
     /// Cached typeface for UI rendering so we don't recreate FontMgr every frame
     pub ui_typeface: skia_safe::Typeface,
+    bookmarks: Vec<BookmarkNode>,
+    open_bookmark_folder: Option<String>,
+    selected_bookmark_id: Option<String>,
 }
 
 impl BrowserUI {
     // UI layout constants
-    pub const CHROME_HEIGHT: f32 = 88.0;
+    pub const CHROME_HEIGHT: f32 = 124.0;
     const BUTTON_SIZE: f32 = 32.0;
     const BUTTON_MARGIN: f32 = 8.0;
     const ADDRESS_BAR_HEIGHT: f32 = 32.0;
@@ -274,6 +286,10 @@ impl BrowserUI {
     const MAX_TAB_WIDTH: f32 = 200.0;  // Maximum width for a tab
     const MIN_TAB_WIDTH: f32 = 80.0;   // Minimum width before scrolling kicks in
     const TAB_SPACING: f32 = 4.0;       // Spacing between tabs
+    const BOOKMARKS_ROW_Y: f32 = 88.0;
+    const BOOKMARKS_ROW_HEIGHT: f32 = 28.0;
+    const BOOKMARK_ITEM_WIDTH: f32 = 150.0;
+    const BOOKMARK_ITEM_SPACING: f32 = 6.0;
 
     pub fn new(_skia_context: &skia_safe::gpu::DirectContext, viewport: &Viewport) -> Self {
         // Default window width, will be updated on first resize
@@ -347,7 +363,212 @@ impl BrowserUI {
             text_selection_drag_active: false,
             text_selection_drag_anchor: None,
             ui_typeface,
+            bookmarks: Vec::new(),
+            open_bookmark_folder: None,
+            selected_bookmark_id: None,
         }
+    }
+
+    pub fn tab_row_height(&self) -> f32 {
+        48.0 * self.viewport.hidpi_scale
+    }
+
+    pub fn set_bookmarks(&mut self, bookmarks: Vec<BookmarkNode>) {
+        self.bookmarks = bookmarks;
+
+        if let Some(selected) = self.selected_bookmark_id.clone() {
+            if Self::find_bookmark(&self.bookmarks, &selected).is_none() {
+                self.selected_bookmark_id = None;
+            }
+        }
+
+        if let Some(open_folder) = self.open_bookmark_folder.clone() {
+            if Self::find_bookmark(&self.bookmarks, &open_folder)
+                .is_none_or(|bookmark| !bookmark.is_folder())
+            {
+                self.open_bookmark_folder = None;
+            }
+        }
+    }
+
+    pub fn selected_bookmark_id(&self) -> Option<&str> {
+        self.selected_bookmark_id.as_deref()
+    }
+
+    pub fn selected_bookmark_is_folder(&self) -> bool {
+        self.selected_bookmark_id
+            .as_ref()
+            .and_then(|id| Self::find_bookmark(&self.bookmarks, id))
+            .is_some_and(|bookmark| bookmark.is_folder())
+    }
+
+    pub fn handle_bookmark_click(&mut self, x: f32, y: f32) -> Option<BookmarkUiAction> {
+        let (row_x, row_y, row_w, row_h) = self.bookmark_row_rect();
+
+        let (add_x, add_y, add_w, add_h) = self.bookmark_add_button_rect();
+        if x >= add_x && x <= add_x + add_w && y >= add_y && y <= add_y + add_h {
+            return Some(BookmarkUiAction::AddCurrentPage);
+        }
+
+        let (folder_x, folder_y, folder_w, folder_h) = self.bookmark_new_folder_button_rect();
+        if x >= folder_x && x <= folder_x + folder_w && y >= folder_y && y <= folder_y + folder_h {
+            return Some(BookmarkUiAction::CreateFolderAtRoot);
+        }
+
+        if let Some(folder_id) = self.open_bookmark_folder.clone() {
+            if let Some(folder) = Self::find_bookmark(&self.bookmarks, &folder_id).cloned() {
+                if let Some((menu_x, menu_y, menu_w, menu_h)) = self.bookmark_folder_menu_rect(&folder) {
+                    if x >= menu_x && x <= menu_x + menu_w && y >= menu_y && y <= menu_y + menu_h {
+                        if let Some(action) = self.handle_folder_menu_click(&folder, x, y) {
+                            return Some(action);
+                        }
+                    } else if !(x >= row_x && x <= row_x + row_w && y >= row_y && y <= row_y + row_h) {
+                        self.open_bookmark_folder = None;
+                        return Some(BookmarkUiAction::UiChanged);
+                    }
+                }
+            }
+        }
+
+        if !(x >= row_x && x <= row_x + row_w && y >= row_y && y <= row_y + row_h) {
+            return None;
+        }
+
+        let mut cursor_x = row_x + (8.0 * self.viewport.hidpi_scale);
+        let item_width = Self::BOOKMARK_ITEM_WIDTH * self.viewport.hidpi_scale;
+        let item_height = row_h - (6.0 * self.viewport.hidpi_scale);
+        let spacing = Self::BOOKMARK_ITEM_SPACING * self.viewport.hidpi_scale;
+
+        let action_buttons_width = (96.0 * self.viewport.hidpi_scale) + (8.0 * self.viewport.hidpi_scale);
+        let item_max_x = (row_x + row_w - action_buttons_width).max(cursor_x);
+
+        for bookmark in &self.bookmarks {
+            if cursor_x + item_width > item_max_x {
+                break;
+            }
+
+            let item_y = row_y + (3.0 * self.viewport.hidpi_scale);
+            if x >= cursor_x && x <= cursor_x + item_width && y >= item_y && y <= item_y + item_height {
+                self.selected_bookmark_id = Some(bookmark.id.clone());
+                if bookmark.is_folder() {
+                    if self.open_bookmark_folder.as_deref() == Some(bookmark.id.as_str()) {
+                        self.open_bookmark_folder = None;
+                    } else {
+                        self.open_bookmark_folder = Some(bookmark.id.clone());
+                    }
+                    return Some(BookmarkUiAction::UiChanged);
+                }
+
+                self.open_bookmark_folder = None;
+                if let Some(url) = &bookmark.url {
+                    return Some(BookmarkUiAction::Navigate(url.clone()));
+                }
+            }
+
+            cursor_x += item_width + spacing;
+        }
+
+        Some(BookmarkUiAction::UiChanged)
+    }
+
+    fn bookmark_row_rect(&self) -> (f32, f32, f32, f32) {
+        let scale = self.viewport.hidpi_scale;
+        (
+            0.0,
+            Self::BOOKMARKS_ROW_Y * scale,
+            self.window_width(),
+            Self::BOOKMARKS_ROW_HEIGHT * scale,
+        )
+    }
+
+    fn bookmark_add_button_rect(&self) -> (f32, f32, f32, f32) {
+        let scale = self.viewport.hidpi_scale;
+        let (row_x, row_y, row_w, row_h) = self.bookmark_row_rect();
+        let button_w = 44.0 * scale;
+        let button_h = row_h - (6.0 * scale);
+        let x = row_x + row_w - button_w - (8.0 * scale);
+        let y = row_y + 3.0 * scale;
+        (x, y, button_w, button_h)
+    }
+
+    fn bookmark_new_folder_button_rect(&self) -> (f32, f32, f32, f32) {
+        let scale = self.viewport.hidpi_scale;
+        let (add_x, add_y, _add_w, add_h) = self.bookmark_add_button_rect();
+        let button_w = 44.0 * scale;
+        let x = add_x - button_w - (8.0 * scale);
+        (x, add_y, button_w, add_h)
+    }
+
+    fn bookmark_folder_menu_rect(&self, folder: &BookmarkNode) -> Option<(f32, f32, f32, f32)> {
+        if folder.children.is_empty() {
+            return None;
+        }
+
+        let scale = self.viewport.hidpi_scale;
+        let row_h = 28.0 * scale;
+        let width = 280.0 * scale;
+        let count = folder.children.len() as f32;
+        let height = (count * row_h).min(10.0 * row_h);
+        let (row_x, row_y, row_w, row_h_bar) = self.bookmark_row_rect();
+        let mut x = row_x + 8.0 * scale;
+        let y = row_y + row_h_bar + (2.0 * scale);
+
+        // Position dropdown anchored to the selected top-level folder when possible.
+        let item_w = Self::BOOKMARK_ITEM_WIDTH * scale;
+        let spacing = Self::BOOKMARK_ITEM_SPACING * scale;
+        for bookmark in &self.bookmarks {
+            if bookmark.id == folder.id {
+                break;
+            }
+            x += item_w + spacing;
+        }
+
+        if x + width > row_w {
+            x = (row_w - width - 8.0 * scale).max(0.0);
+        }
+
+        Some((x, y, width, height))
+    }
+
+    fn handle_folder_menu_click(&mut self, folder: &BookmarkNode, x: f32, y: f32) -> Option<BookmarkUiAction> {
+        let Some((menu_x, menu_y, menu_w, menu_h)) = self.bookmark_folder_menu_rect(folder) else {
+            return None;
+        };
+
+        if x < menu_x || x > menu_x + menu_w || y < menu_y || y > menu_y + menu_h {
+            return None;
+        }
+
+        let row_h = 28.0 * self.viewport.hidpi_scale;
+        let idx = ((y - menu_y) / row_h).floor() as usize;
+        let Some(bookmark) = folder.children.get(idx) else {
+            return Some(BookmarkUiAction::UiChanged);
+        };
+
+        self.selected_bookmark_id = Some(bookmark.id.clone());
+        if bookmark.is_folder() {
+            self.open_bookmark_folder = Some(bookmark.id.clone());
+            return Some(BookmarkUiAction::UiChanged);
+        }
+
+        if let Some(url) = &bookmark.url {
+            self.open_bookmark_folder = None;
+            return Some(BookmarkUiAction::Navigate(url.clone()));
+        }
+
+        Some(BookmarkUiAction::UiChanged)
+    }
+
+    fn find_bookmark<'a>(bookmarks: &'a [BookmarkNode], id: &str) -> Option<&'a BookmarkNode> {
+        for bookmark in bookmarks {
+            if bookmark.id == id {
+                return Some(bookmark);
+            }
+            if let Some(found) = Self::find_bookmark(&bookmark.children, id) {
+                return Some(found);
+            }
+        }
+        None
     }
 
     /// Update UI layout when window is resized
@@ -1421,6 +1642,8 @@ impl BrowserUI {
         let scaled_font_size = base_font_size * self.viewport.hidpi_scale;
         let font = Font::new(self.ui_typeface.clone(), scaled_font_size);
 
+        self.render_bookmarks_bar(canvas, &font);
+
         // Draw BROWSING WITH STOKES text in the top-right corner
         {
             let text = &format!("STOKES BROWSER {VERSION}");
@@ -1756,6 +1979,133 @@ impl BrowserUI {
 
         // Render settings panel on top of everything
         self.render_settings_panel(canvas, &font);
+    }
+
+    fn render_bookmarks_bar(&self, canvas: &Canvas, font: &Font) {
+        let scale = self.viewport.hidpi_scale;
+        let mut paint = Paint::default();
+        let (row_x, row_y, row_w, row_h) = self.bookmark_row_rect();
+        let row_rect = Rect::from_xywh(row_x, row_y, row_w, row_h);
+
+        paint.set_color(Color::from_rgb(247, 247, 248));
+        canvas.draw_rect(row_rect, &paint);
+        paint.set_color(Color::from_rgb(214, 214, 214));
+        canvas.draw_line((row_x, row_y), (row_x + row_w, row_y), &paint);
+
+        let item_w = Self::BOOKMARK_ITEM_WIDTH * scale;
+        let item_h = row_h - (6.0 * scale);
+        let spacing = Self::BOOKMARK_ITEM_SPACING * scale;
+        let mut cursor_x = row_x + 8.0 * scale;
+        let item_max_x = row_x + row_w - (96.0 * scale);
+
+        for bookmark in &self.bookmarks {
+            if cursor_x + item_w > item_max_x {
+                break;
+            }
+
+            let item_rect = Rect::from_xywh(cursor_x, row_y + 3.0 * scale, item_w, item_h);
+            let is_selected = self.selected_bookmark_id.as_deref() == Some(bookmark.id.as_str());
+
+            paint.set_color(if is_selected {
+                Color::from_rgb(210, 228, 255)
+            } else {
+                Color::from_rgb(236, 236, 238)
+            });
+            canvas.draw_round_rect(item_rect, 4.0 * scale, 4.0 * scale, &paint);
+
+            paint.set_color(Color::from_rgb(180, 180, 190));
+            paint.set_stroke(true);
+            paint.set_stroke_width(1.0 * scale);
+            canvas.draw_round_rect(item_rect, 4.0 * scale, 4.0 * scale, &paint);
+            paint.set_stroke(false);
+
+            let label = if bookmark.is_folder() {
+                format!("{}/", bookmark.title)
+            } else {
+                bookmark.title.clone()
+            };
+            let text = Self::truncate_text_to_width(&label, item_w - (12.0 * scale), font);
+            if let Some(blob) = TextBlob::new(&text, font) {
+                let bounds = blob.bounds();
+                let text_y = item_rect.center_y() - (bounds.top + bounds.height() / 2.0);
+                paint.set_color(Color::from_rgb(45, 45, 45));
+                canvas.draw_text_blob(&blob, (item_rect.left() + 6.0 * scale, text_y), &paint);
+            }
+
+            cursor_x += item_w + spacing;
+        }
+
+        self.draw_bookmark_row_button(canvas, font, self.bookmark_new_folder_button_rect(), "+F");
+        self.draw_bookmark_row_button(canvas, font, self.bookmark_add_button_rect(), "+B");
+
+        if let Some(folder_id) = self.open_bookmark_folder.as_ref() {
+            if let Some(folder) = Self::find_bookmark(&self.bookmarks, folder_id) {
+                self.render_bookmark_folder_menu(canvas, font, folder);
+            }
+        }
+    }
+
+    fn draw_bookmark_row_button(&self, canvas: &Canvas, font: &Font, rect_data: (f32, f32, f32, f32), label: &str) {
+        let scale = self.viewport.hidpi_scale;
+        let mut paint = Paint::default();
+        let rect = Rect::from_xywh(rect_data.0, rect_data.1, rect_data.2, rect_data.3);
+        paint.set_color(Color::from_rgb(226, 236, 250));
+        canvas.draw_round_rect(rect, 4.0 * scale, 4.0 * scale, &paint);
+        paint.set_color(Color::from_rgb(120, 150, 210));
+        paint.set_stroke(true);
+        paint.set_stroke_width(1.0 * scale);
+        canvas.draw_round_rect(rect, 4.0 * scale, 4.0 * scale, &paint);
+        paint.set_stroke(false);
+
+        if let Some(blob) = TextBlob::new(label, font) {
+            let bounds = blob.bounds();
+            let text_x = rect.left() + (rect.width() - bounds.width()) / 2.0;
+            let text_y = rect.center_y() - (bounds.top + bounds.height() / 2.0);
+            paint.set_color(Color::from_rgb(40, 68, 120));
+            canvas.draw_text_blob(&blob, (text_x, text_y), &paint);
+        }
+    }
+
+    fn render_bookmark_folder_menu(&self, canvas: &Canvas, font: &Font, folder: &BookmarkNode) {
+        let scale = self.viewport.hidpi_scale;
+        let Some((x, y, w, h)) = self.bookmark_folder_menu_rect(folder) else {
+            return;
+        };
+
+        let mut paint = Paint::default();
+        let panel = Rect::from_xywh(x, y, w, h);
+        paint.set_color(Color::from_rgb(252, 252, 252));
+        canvas.draw_round_rect(panel, 6.0 * scale, 6.0 * scale, &paint);
+        paint.set_color(Color::from_rgb(190, 190, 200));
+        paint.set_stroke(true);
+        paint.set_stroke_width(1.0 * scale);
+        canvas.draw_round_rect(panel, 6.0 * scale, 6.0 * scale, &paint);
+        paint.set_stroke(false);
+
+        let row_h = 28.0 * scale;
+        for (index, bookmark) in folder.children.iter().enumerate() {
+            let row_y = y + index as f32 * row_h;
+            if row_y + row_h > y + h {
+                break;
+            }
+
+            let is_selected = self.selected_bookmark_id.as_deref() == Some(bookmark.id.as_str());
+            if is_selected {
+                let selected_row = Rect::from_xywh(x + 2.0 * scale, row_y + 1.0 * scale, w - 4.0 * scale, row_h - 2.0 * scale);
+                paint.set_color(Color::from_rgb(221, 235, 255));
+                canvas.draw_round_rect(selected_row, 4.0 * scale, 4.0 * scale, &paint);
+            }
+
+            let prefix = if bookmark.is_folder() { "[Folder] " } else { "" };
+            let label = format!("{}{}", prefix, bookmark.title);
+            let text = Self::truncate_text_to_width(&label, w - (14.0 * scale), font);
+            if let Some(blob) = TextBlob::new(&text, font) {
+                let bounds = blob.bounds();
+                let text_y = row_y + (row_h / 2.0) - (bounds.top + bounds.height() / 2.0);
+                paint.set_color(Color::from_rgb(40, 40, 40));
+                canvas.draw_text_blob(&blob, (x + 8.0 * scale, text_y), &paint);
+            }
+        }
     }
 
     /// Update mouse hover state and handle tooltips
