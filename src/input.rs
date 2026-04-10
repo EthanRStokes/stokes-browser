@@ -34,7 +34,9 @@ pub enum InputAction {
     ForwardToTab(KeyboardInput),
     OpenSettings,
     SetDefaultBrowser,
-    AddCurrentPageBookmark,
+    AddCurrentPageBookmark { parent_id: Option<String> },
+    ToggleCurrentPageBookmark,
+    MoveBookmark { id: String, parent_id: Option<String>, index: Option<usize> },
     CreateBookmarkFolder { parent_id: Option<String> },
     RenameBookmark(String),
     EditBookmarkUrl(String),
@@ -69,8 +71,13 @@ pub fn handle_mouse_click_ui(
     if let Some(bookmark_action) = ui.handle_bookmark_click(x, y) {
         return match bookmark_action {
             BookmarkUiAction::Navigate(url) => InputAction::Navigate(url),
-            BookmarkUiAction::AddCurrentPage => InputAction::AddCurrentPageBookmark,
-            BookmarkUiAction::CreateFolderAtRoot => InputAction::CreateBookmarkFolder { parent_id: None },
+            BookmarkUiAction::AddPage { parent_id } => InputAction::AddCurrentPageBookmark { parent_id },
+            BookmarkUiAction::AddFolder { parent_id } => InputAction::CreateBookmarkFolder { parent_id },
+            BookmarkUiAction::Rename(id) => InputAction::RenameBookmark(id),
+            BookmarkUiAction::EditUrl(id) => InputAction::EditBookmarkUrl(id),
+            BookmarkUiAction::Delete(id) => InputAction::DeleteBookmark(id),
+            BookmarkUiAction::Move { id, parent_id, index } => InputAction::MoveBookmark { id, parent_id, index },
+            BookmarkUiAction::ToggleCurrentPageBookmark => InputAction::ToggleCurrentPageBookmark,
             BookmarkUiAction::UiChanged => InputAction::RequestRedraw,
         };
     }
@@ -124,6 +131,8 @@ pub fn handle_mouse_click_ui(
         } else if component_id == "settings" {
             println!("Settings button clicked");
             return InputAction::OpenSettings;
+        } else if component_id == "bookmark_toggle" {
+            return InputAction::ToggleCurrentPageBookmark;
         } else if component_id == "address_bar" {
             // Focus the address bar for typing with click position
             ui.begin_text_selection_drag("address_bar", x, shift_held);
@@ -243,7 +252,7 @@ pub fn handle_keyboard_input(
                 match lower.as_str() {
                     "d" => {
                         // Ctrl+D: Add current page to bookmarks.
-                        return InputAction::AddCurrentPageBookmark;
+                        return InputAction::AddCurrentPageBookmark { parent_id: None };
                     }
                     "a" => {
                         // Ctrl+A: Select all text in address bar

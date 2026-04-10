@@ -18,7 +18,7 @@ use winit_core::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeReque
 use crate::ipc::{ParentToTabMessage, TabToParentMessage};
 use crate::renderer::painter::{ScenePainter, SkiaCache};
 use crate::tab_manager::{ManagedTab, TabManager};
-use crate::ui::{BrowserUI, TextBrush};
+use crate::ui::{BookmarkUiAction, BrowserUI, TextBrush};
 use crate::window::{create_surface, Env};
 use crate::{input, ipc};
 use crate::convert_events::{button_source_to_blitz, pointer_source_to_blitz, pointer_source_to_blitz_details, winit_ime_to_blitz, winit_key_event_to_blitz, winit_modifiers_to_kbt_modifiers};
@@ -172,6 +172,8 @@ impl BrowserApp {
                 ui.update_address_bar("");
                 ui.set_focus("address_bar");
             }
+
+            self.update_bookmark_button_state();
         }
     }
 
@@ -199,6 +201,7 @@ impl BrowserApp {
                     self.ui.as_mut().unwrap().update_address_bar(&tab.url);
                     self.env.as_ref().unwrap().window.set_title(&format!("{} - Stokes Browser", tab.title));
                 }
+                self.update_bookmark_button_state();
             }
 
             return TabCloseResult::Closed;
@@ -207,17 +210,17 @@ impl BrowserApp {
     }
 
     fn switch_to_tab(&mut self, index: usize) {
-        let ui = self.ui.as_mut().unwrap();
         if index < self.tab_order.len() {
             self.active_tab_index = index;
             let tab_id = &self.tab_order[index];
-            ui.set_active_tab(tab_id);
+            self.ui.as_mut().unwrap().set_active_tab(tab_id);
 
             if let Some(tab) = self.tab_manager.get_tab(tab_id) {
-                ui.update_address_bar(&tab.url);
+                self.ui.as_mut().unwrap().update_address_bar(&tab.url);
                 self.env.as_ref().unwrap().window.set_title(&format!("{} - Stokes Browser", tab.title));
             }
-            ui.clear_focus();
+            self.update_bookmark_button_state();
+            self.ui.as_mut().unwrap().clear_focus();
         }
     }
 
@@ -342,8 +345,8 @@ impl BrowserApp {
                 crate::default_browser::set_as_default_browser();
                 self.show_alert("Stokes Browser has been set as your default browser.");
             }
-            input::InputAction::AddCurrentPageBookmark => {
-                self.add_current_page_bookmark();
+            input::InputAction::AddCurrentPageBookmark { parent_id } => {
+                self.add_current_page_bookmark(parent_id.clone());
             }
             input::InputAction::CreateBookmarkFolder { parent_id } => {
                 self.create_bookmark_folder(parent_id.clone());
@@ -357,6 +360,12 @@ impl BrowserApp {
             input::InputAction::DeleteBookmark(id) => {
                 self.delete_bookmark(id);
             }
+            input::InputAction::MoveBookmark { id, parent_id, index } => {
+                self.move_bookmark(id, parent_id.clone(), *index);
+            }
+            input::InputAction::ToggleCurrentPageBookmark => {
+                self.toggle_current_page_bookmark();
+            }
             input::InputAction::RequestRedraw => {}
             input::InputAction::QuitApp => {
                 event_loop.exit();
@@ -367,6 +376,21 @@ impl BrowserApp {
             input::InputAction::None => {}
         }
         self.env.as_ref().unwrap().window.request_redraw();
+    }
+
+    fn handle_bookmark_ui_action(&mut self, action: BookmarkUiAction, event_loop: &dyn ActiveEventLoop) {
+        let mapped = match action {
+            BookmarkUiAction::Navigate(url) => input::InputAction::Navigate(url),
+            BookmarkUiAction::AddPage { parent_id } => input::InputAction::AddCurrentPageBookmark { parent_id },
+            BookmarkUiAction::AddFolder { parent_id } => input::InputAction::CreateBookmarkFolder { parent_id },
+            BookmarkUiAction::Rename(id) => input::InputAction::RenameBookmark(id),
+            BookmarkUiAction::EditUrl(id) => input::InputAction::EditBookmarkUrl(id),
+            BookmarkUiAction::Delete(id) => input::InputAction::DeleteBookmark(id),
+            BookmarkUiAction::Move { id, parent_id, index } => input::InputAction::MoveBookmark { id, parent_id, index },
+            BookmarkUiAction::ToggleCurrentPageBookmark => input::InputAction::ToggleCurrentPageBookmark,
+            BookmarkUiAction::UiChanged => input::InputAction::RequestRedraw,
+        };
+        self.handle_input_action(&mapped, event_loop);
     }
 
     fn process_tab_messages(&mut self) {
@@ -380,27 +404,33 @@ impl BrowserApp {
         for (tab_id, message) in messages {
             self.tab_manager.process_tab_message(&tab_id, message.clone());
 
-            let env = self.env.as_ref().unwrap();
-
             // Update UI based on messages
             match message {
                 TabToParentMessage::NavigationStarted(_) => {
                     self.ui.as_mut().unwrap().update_tab_loading(&tab_id, true);
                     self.ui.as_mut().unwrap().update_tab_favicon(&tab_id, None);
-                    env.window.request_redraw();
+                    self.env.as_ref().unwrap().window.request_redraw();
                 }
                 TabToParentMessage::TitleChanged(title) => {
                     self.ui.as_mut().unwrap().update_tab_title(&tab_id, &title);
                     if Some(&tab_id) == self.active_tab_id() {
-                        env.window.set_title(&format!("{} - Stokes Browser", title));
+                        self.env.as_ref().unwrap().window.set_title(&format!("{} - Stokes Browser", title));
                     }
                 }
                 TabToParentMessage::NavigationCompleted { url, title } => {
                     self.ui.as_mut().unwrap().update_tab_title(&tab_id, &title);
                     self.ui.as_mut().unwrap().update_tab_loading(&tab_id, false);
+                    if let Some(favicon_bytes) = self
+                        .tab_manager
+                        .get_tab(&tab_id)
+                        .and_then(|tab| tab.favicon.clone())
+                    {
+                        self.persist_bookmark_favicon_for_url(&url, &favicon_bytes);
+                    }
                     if Some(&tab_id) == self.active_tab_id() {
                         self.ui.as_mut().unwrap().update_address_bar(&url);
-                        env.window.set_title(&format!("{} - Stokes Browser", title));
+                        self.env.as_ref().unwrap().window.set_title(&format!("{} - Stokes Browser", title));
+                        self.update_bookmark_button_state();
                     }
                 }
                 TabToParentMessage::LoadingStateChanged(_is_loading) => {
@@ -408,10 +438,10 @@ impl BrowserApp {
                         self.ui.as_mut().unwrap().update_tab_loading(&tab_id, tab.is_loading);
                     }
                     // Update loading indicator
-                    env.window.request_redraw();
+                    self.env.as_ref().unwrap().window.request_redraw();
                 }
                 TabToParentMessage::FrameRendered { .. } => {
-                    env.window.request_redraw();
+                    self.env.as_ref().unwrap().window.request_redraw();
                 }
                 TabToParentMessage::NavigateRequest(url) => {
                     // Handle navigation request from web content (e.g., link clicks)
@@ -419,6 +449,7 @@ impl BrowserApp {
                     let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::Navigate(url.clone()));
                     if Some(&tab_id) == self.active_tab_id() {
                         self.ui.as_mut().unwrap().update_address_bar(&url);
+                        self.update_bookmark_button_state();
                     }
                 }
                 TabToParentMessage::NavigateRequestInNewTab(url) => {
@@ -438,25 +469,25 @@ impl BrowserApp {
                 TabToParentMessage::ShellProvider(shell_msg) => {
                     match shell_msg {
                         ShellProviderMessage::RequestRedraw => {
-                            env.window.request_redraw();
+                            self.env.as_ref().unwrap().window.request_redraw();
                         }
                         ShellProviderMessage::SetCursor(cursor) => {
-                            env.window.set_cursor(Cursor::Icon(CursorIcon::from_str(&cursor).unwrap()));
+                            self.env.as_ref().unwrap().window.set_cursor(Cursor::Icon(CursorIcon::from_str(&cursor).unwrap()));
                         }
                         ShellProviderMessage::SetWindowTitle(title) => {
-                            env.window.set_title(&format!("{} - Stokes Browser", title));
+                            self.env.as_ref().unwrap().window.set_title(&format!("{} - Stokes Browser", title));
                         }
                         ShellProviderMessage::SetImeEnabled(enabled) => {
                             if enabled {
-                                let _ = env.window.request_ime_update(ImeRequest::Enable(
+                                let _ = self.env.as_ref().unwrap().window.request_ime_update(ImeRequest::Enable(
                                     ImeEnableRequest::new(ImeCapabilities::new(), ImeRequestData::default()).unwrap(),
                                 ));
                             } else {
-                                let _ = env.window.request_ime_update(ImeRequest::Disable);
+                                let _ = self.env.as_ref().unwrap().window.request_ime_update(ImeRequest::Disable);
                             }
                         }
                         ShellProviderMessage::SetImeCursorArea { x, y, width, height } => {
-                            let _ = env.window.request_ime_update(ImeRequest::Update(
+                            let _ = self.env.as_ref().unwrap().window.request_ime_update(ImeRequest::Update(
                                 ImeRequestData::default().with_cursor_area(
                                     LogicalPosition::new(x, y).into(),
                                     LogicalSize::new(width, height).into(),
@@ -474,7 +505,15 @@ impl BrowserApp {
                 }
                 TabToParentMessage::FaviconUpdated(favicon) => {
                     self.ui.as_mut().unwrap().update_tab_favicon(&tab_id, favicon.as_deref());
-                    env.window.request_redraw();
+                    let tab_url = self
+                        .tab_manager
+                        .get_tab(&tab_id)
+                        .map(|tab| tab.url.clone())
+                        .unwrap_or_default();
+                    if let Some(bytes) = favicon.as_deref() {
+                        self.persist_bookmark_favicon_for_url(&tab_url, bytes);
+                    }
+                    self.env.as_ref().unwrap().window.request_redraw();
                 }
                 _ => {}
             }
@@ -609,6 +648,7 @@ impl BrowserApp {
     fn sync_bookmarks_ui(&mut self) {
         let snapshot = self.bookmarks.items().to_vec();
         self.ui_mut().set_bookmarks(snapshot);
+        self.update_bookmark_button_state();
     }
 
     fn prompt_input(title: &str, message: &str, default: &str) -> Option<String> {
@@ -624,7 +664,52 @@ impl BrowserApp {
             .and_then(|bookmark| if bookmark.is_folder() { Some(bookmark.id.clone()) } else { None })
     }
 
-    fn add_current_page_bookmark(&mut self) {
+    fn update_bookmark_button_state(&mut self) {
+        let url = self
+            .active_tab_id()
+            .and_then(|id| self.tab_manager.get_tab(id))
+            .map(|tab| tab.url.clone())
+            .unwrap_or_default();
+        let is_bookmarked = !url.trim().is_empty() && self.bookmarks.find_by_url(&url).is_some();
+        self.ui_mut().set_current_page_bookmarked(is_bookmarked);
+    }
+
+    fn persist_bookmark_favicon_for_url(&mut self, url: &str, favicon: &[u8]) {
+        if url.trim().is_empty() || favicon.is_empty() {
+            return;
+        }
+        if self.bookmarks.set_favicon_for_url(url, favicon) {
+            self.bookmarks.save_to_disk();
+            self.sync_bookmarks_ui();
+        }
+    }
+
+    fn find_folder_id_by_title(nodes: &[crate::bookmarks::BookmarkNode], title: &str) -> Option<String> {
+        for node in nodes {
+            if node.is_folder() && node.title.eq_ignore_ascii_case(title) {
+                return Some(node.id.clone());
+            }
+            if let Some(found) = Self::find_folder_id_by_title(&node.children, title) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn resolve_folder_field(&mut self, folder_field: &str) -> Result<Option<String>, String> {
+        let trimmed = folder_field.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+
+        if let Some(found) = Self::find_folder_id_by_title(self.bookmarks.items(), trimmed) {
+            return Ok(Some(found));
+        }
+
+        self.bookmarks.add_folder(trimmed.to_string(), None).map(Some)
+    }
+
+    fn add_current_page_bookmark(&mut self, parent_id: Option<String>) {
         let Some(tab_id) = self.active_tab_id().cloned() else {
             return;
         };
@@ -632,18 +717,23 @@ impl BrowserApp {
             return;
         };
 
-        let default_title = if tab.title.trim().is_empty() { "Bookmark" } else { tab.title.trim() };
-        let Some(title) = Self::prompt_input("Add Bookmark", "Bookmark title:", default_title) else {
+        if tab.url.trim().is_empty() {
+            self.show_alert("Open a page before creating a bookmark.");
             return;
-        };
+        }
 
-        let default_url = if tab.url.trim().is_empty() { DEFAULT_HOMEPAGE } else { tab.url.trim() };
-        let Some(url) = Self::prompt_input("Add Bookmark", "Bookmark URL:", default_url) else {
-            return;
+        let title = if tab.title.trim().is_empty() {
+            tab.url.trim().to_string()
+        } else {
+            tab.title.trim().to_string()
         };
-
-        let parent = self.selected_folder_target();
-        match self.bookmarks.add_bookmark(title, url, parent.as_deref()) {
+        let parent = parent_id.or_else(|| self.selected_folder_target());
+        match self.bookmarks.add_bookmark_with_favicon(
+            title,
+            tab.url.trim().to_string(),
+            parent.as_deref(),
+            tab.favicon.clone(),
+        ) {
             Ok(_) => {
                 self.bookmarks.save_to_disk();
                 self.sync_bookmarks_ui();
@@ -667,6 +757,74 @@ impl BrowserApp {
             }
             Err(err) => self.show_alert(&format!("Failed to create folder: {err}")),
         }
+    }
+
+    fn toggle_current_page_bookmark(&mut self) {
+        let Some(tab_id) = self.active_tab_id().cloned() else {
+            return;
+        };
+        let Some(tab) = self.tab_manager.get_tab(&tab_id) else {
+            return;
+        };
+        let current_url = tab.url.clone();
+        let current_favicon = tab.favicon.clone();
+
+        if current_url.trim().is_empty() {
+            return;
+        }
+
+        if let Some(existing) = self.bookmarks.find_by_url(&current_url).cloned() {
+            let Some(new_title) = Self::prompt_input("Edit Bookmark", "Name:", &existing.title) else {
+                return;
+            };
+
+            let folder_default = self
+                .bookmarks
+                .parent_folder_id(&existing.id)
+                .and_then(|id| self.bookmarks.get(&id).map(|folder| folder.title.clone()))
+                .unwrap_or_default();
+
+            let folder_value = tinyfiledialogs::input_box("Edit Bookmark", "Folder (blank for toolbar root):", &folder_default)
+                .unwrap_or(folder_default);
+            let remove = tinyfiledialogs::message_box_yes_no(
+                "Edit Bookmark",
+                "Remove this bookmark?\nChoose No to save the name/folder changes.",
+                tinyfiledialogs::MessageBoxIcon::Question,
+                tinyfiledialogs::YesNo::No,
+            );
+
+            if remove == tinyfiledialogs::YesNo::Yes {
+                self.delete_bookmark(&existing.id);
+                return;
+            }
+
+            let parent_id = match self.resolve_folder_field(&folder_value) {
+                Ok(parent) => parent,
+                Err(err) => {
+                    self.show_alert(&format!("Failed to resolve folder: {err}"));
+                    return;
+                }
+            };
+
+            if let Err(err) = self.bookmarks.rename(&existing.id, new_title) {
+                self.show_alert(&format!("Failed to update bookmark: {err}"));
+                return;
+            }
+            if let Err(err) = self.bookmarks.move_node(&existing.id, parent_id.as_deref(), None) {
+                self.show_alert(&format!("Failed to move bookmark: {err}"));
+                return;
+            }
+            if let Some(favicon) = current_favicon.as_deref() {
+                let _ = self.bookmarks.set_favicon(&existing.id, favicon);
+            }
+
+            self.bookmarks.save_to_disk();
+            self.sync_bookmarks_ui();
+            self.request_redraw();
+            return;
+        }
+
+        self.add_current_page_bookmark(None);
     }
 
     fn rename_bookmark(&mut self, id: &str) {
@@ -722,6 +880,17 @@ impl BrowserApp {
                 self.request_redraw();
             }
             Err(err) => self.show_alert(&format!("Failed to delete bookmark: {err}")),
+        }
+    }
+
+    fn move_bookmark(&mut self, id: &str, parent_id: Option<String>, index: Option<usize>) {
+        match self.bookmarks.move_node(id, parent_id.as_deref(), index) {
+            Ok(_) => {
+                self.bookmarks.save_to_disk();
+                self.sync_bookmarks_ui();
+                self.request_redraw();
+            }
+            Err(err) => self.show_alert(&format!("Failed to move bookmark: {err}")),
         }
     }
 }
@@ -869,6 +1038,11 @@ impl ApplicationHandler for BrowserApp {
                         }
                     }
                 } else {
+                    if ui.begin_bookmark_drag(x, y) {
+                        self.request_redraw();
+                        return;
+                    }
+
                     self.handle_click(x, y, event_loop);
 
                     let Some(tab_id) = self.active_tab_id().cloned() else {
@@ -915,8 +1089,18 @@ impl ApplicationHandler for BrowserApp {
             WindowEvent::PointerButton { state: ElementState::Released, button: ButtonSource::Mouse(MouseButton::Left), primary, position, .. } => {
                 let x = self.pointer_position.0 as f32;
                 let y = self.pointer_position.1 as f32;
+                let mut consumed_bookmark = false;
 
                 self.ui_mut().end_text_selection_drag();
+
+                if self.ui().is_dragging_bookmark() {
+                    consumed_bookmark = true;
+                    if let Some(action) = self.ui_mut().finish_bookmark_drag() {
+                        self.handle_bookmark_ui_action(action, event_loop);
+                    } else if let Some(action) = self.ui_mut().handle_bookmark_click(x, y) {
+                        self.handle_bookmark_ui_action(action, event_loop);
+                    }
+                }
 
                 // Check if we were dragging a tab
                 if self.ui().is_dragging_tab() {
@@ -953,6 +1137,11 @@ impl ApplicationHandler for BrowserApp {
 
                 // Update hover state after mouse release
                 self.ui_mut().update_mouse_hover(x, y, Instant::now());
+
+                if consumed_bookmark {
+                    self.request_redraw();
+                    return;
+                }
 
 
                 let Some(tab_id) = self.active_tab_id().cloned() else {
@@ -1076,6 +1265,59 @@ impl ApplicationHandler for BrowserApp {
                 let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
                 self.request_redraw();
             }
+            WindowEvent::PointerButton { state: ElementState::Pressed, button: ButtonSource::Mouse(MouseButton::Right), primary, position, .. } => {
+                let x = self.pointer_position.0 as f32;
+                let y = self.pointer_position.1 as f32;
+                if let Some(action) = self.ui_mut().handle_bookmark_right_click(x, y) {
+                    self.handle_bookmark_ui_action(action, event_loop);
+                    return;
+                }
+
+                let Some(tab_id) = self.active_tab_id().cloned() else {
+                    return;
+                };
+                let id = button_source_to_blitz(&ButtonSource::Mouse(MouseButton::Right));
+                let coords = self.pointer_coords(position);
+                self.pointer_position = <(f64, f64)>::from(position);
+                let button = MouseEventButton::Secondary;
+
+                self.buttons |= button.into();
+
+                let event = UiEvent::PointerDown(BlitzPointerEvent {
+                    id,
+                    is_primary: primary,
+                    coords,
+                    button,
+                    buttons: self.buttons,
+                    mods: winit_modifiers_to_kbt_modifiers(self.modifiers.state()),
+                    details: PointerDetails::default(),
+                });
+
+                let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
+            }
+            WindowEvent::PointerButton { state: ElementState::Released, button: ButtonSource::Mouse(MouseButton::Right), primary, position, .. } => {
+                let Some(tab_id) = self.active_tab_id().cloned() else {
+                    return;
+                };
+                let id = button_source_to_blitz(&ButtonSource::Mouse(MouseButton::Right));
+                let coords = self.pointer_coords(position);
+                self.pointer_position = <(f64, f64)>::from(position);
+                let button = MouseEventButton::Secondary;
+
+                self.buttons -= button.into();
+
+                let event = UiEvent::PointerUp(BlitzPointerEvent {
+                    id,
+                    is_primary: primary,
+                    coords,
+                    button,
+                    buttons: self.buttons,
+                    mods: winit_modifiers_to_kbt_modifiers(self.modifiers.state()),
+                    details: PointerDetails::default(),
+                });
+
+                let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
+            }
             WindowEvent::PointerButton { state, button, primary, position, .. } => {
                 let Some(tab_id) = self.active_tab_id().cloned() else {
                     return;
@@ -1124,6 +1366,10 @@ impl ApplicationHandler for BrowserApp {
                 if ui.is_dragging_tab() {
                     ui.update_tab_drag(position.x as f32);
                     self.env.as_ref().unwrap().window.request_redraw();
+                } else if ui.is_dragging_bookmark() {
+                    if ui.update_bookmark_drag(position.x as f32, position.y as f32) {
+                        self.env.as_ref().unwrap().window.request_redraw();
+                    }
                 } else {
                     if ui.update_text_selection_drag(position.x as f32) {
                         self.env.as_ref().unwrap().window.request_redraw();

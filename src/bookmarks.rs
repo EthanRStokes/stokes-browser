@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use base64::Engine;
 
 const STORAGE_VERSION: u32 = 1;
 const BOOKMARKS_FILE: &str = "bookmarks.json";
@@ -9,6 +10,8 @@ pub struct BookmarkNode {
     pub id: String,
     pub title: String,
     pub url: Option<String>,
+    #[serde(default)]
+    pub favicon: Option<String>,
     #[serde(default)]
     pub children: Vec<BookmarkNode>,
 }
@@ -23,6 +26,17 @@ impl BookmarkNode {
             id,
             title,
             url: Some(url),
+            favicon: None,
+            children: Vec::new(),
+        }
+    }
+
+    pub fn bookmark_with_favicon(id: String, title: String, url: String, favicon: Option<String>) -> Self {
+        Self {
+            id,
+            title,
+            url: Some(url),
+            favicon,
             children: Vec::new(),
         }
     }
@@ -32,6 +46,7 @@ impl BookmarkNode {
             id,
             title,
             url: None,
+            favicon: None,
             children: Vec::new(),
         }
     }
@@ -109,8 +124,21 @@ impl BookmarkStore {
     }
 
     pub fn add_bookmark(&mut self, title: String, url: String, parent_id: Option<&str>) -> Result<String, String> {
+        self.add_bookmark_with_favicon(title, url, parent_id, None)
+    }
+
+    pub fn add_bookmark_with_favicon(
+        &mut self,
+        title: String,
+        url: String,
+        parent_id: Option<&str>,
+        favicon_bytes: Option<Vec<u8>>,
+    ) -> Result<String, String> {
         let id = self.allocate_id();
-        let node = BookmarkNode::bookmark(id.clone(), title, url);
+        let favicon = favicon_bytes
+            .as_ref()
+            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes));
+        let node = BookmarkNode::bookmark_with_favicon(id.clone(), title, url, favicon);
 
         match parent_id {
             Some(parent_id) => {
@@ -171,6 +199,37 @@ impl BookmarkStore {
         Ok(())
     }
 
+    pub fn move_node(&mut self, id: &str, new_parent_id: Option<&str>, new_index: Option<usize>) -> Result<(), String> {
+        let mut moving = Self::take_node_by_id(&mut self.items, id)
+            .ok_or_else(|| "Bookmark not found".to_string())?;
+
+        if let Some(parent_id) = new_parent_id {
+            if parent_id == id || Self::contains_id(&moving.children, parent_id) {
+                // Put the node back at root to avoid losing data in invalid moves.
+                self.items.push(moving);
+                return Err("Cannot move a folder into itself or one of its descendants".to_string());
+            }
+
+            let Some(parent) = Self::find_node_mut(&mut self.items, parent_id) else {
+                self.items.push(moving);
+                return Err("Target folder not found".to_string());
+            };
+
+            if !parent.is_folder() {
+                self.items.push(moving);
+                return Err("Target parent is not a folder".to_string());
+            }
+
+            let idx = new_index.unwrap_or(parent.children.len()).min(parent.children.len());
+            parent.children.insert(idx, moving);
+        } else {
+            let idx = new_index.unwrap_or(self.items.len()).min(self.items.len());
+            self.items.insert(idx, moving);
+        }
+
+        Ok(())
+    }
+
     pub fn delete(&mut self, id: &str) -> Result<(), String> {
         if Self::remove_by_id(&mut self.items, id) {
             Ok(())
@@ -181,6 +240,30 @@ impl BookmarkStore {
 
     pub fn get(&self, id: &str) -> Option<&BookmarkNode> {
         Self::find_node(&self.items, id)
+    }
+
+    pub fn find_by_url(&self, url: &str) -> Option<&BookmarkNode> {
+        Self::find_by_url_in(&self.items, url)
+    }
+
+    pub fn parent_folder_id(&self, id: &str) -> Option<String> {
+        Self::find_parent_id(&self.items, id)
+    }
+
+    pub fn set_favicon_for_url(&mut self, url: &str, favicon_bytes: &[u8]) -> bool {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(favicon_bytes);
+        Self::set_favicon_for_url_in(&mut self.items, url, &encoded)
+    }
+
+    pub fn set_favicon(&mut self, id: &str, favicon_bytes: &[u8]) -> Result<(), String> {
+        let Some(node) = Self::find_node_mut(&mut self.items, id) else {
+            return Err("Bookmark not found".to_string());
+        };
+        if node.is_folder() {
+            return Err("Folders do not have favicons".to_string());
+        }
+        node.favicon = Some(base64::engine::general_purpose::STANDARD.encode(favicon_bytes));
+        Ok(())
     }
 
     fn allocate_id(&mut self) -> String {
@@ -226,6 +309,62 @@ impl BookmarkStore {
                 return Some(found);
             }
         }
+        None
+    }
+
+    fn find_by_url_in<'a>(nodes: &'a [BookmarkNode], url: &str) -> Option<&'a BookmarkNode> {
+        for node in nodes {
+            if node.url.as_deref() == Some(url) {
+                return Some(node);
+            }
+            if let Some(found) = Self::find_by_url_in(&node.children, url) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn find_parent_id(nodes: &[BookmarkNode], child_id: &str) -> Option<String> {
+        for node in nodes {
+            if node.children.iter().any(|child| child.id == child_id) {
+                return Some(node.id.clone());
+            }
+            if let Some(found) = Self::find_parent_id(&node.children, child_id) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn set_favicon_for_url_in(nodes: &mut [BookmarkNode], url: &str, encoded: &str) -> bool {
+        let mut updated = false;
+        for node in nodes {
+            if node.url.as_deref() == Some(url) {
+                node.favicon = Some(encoded.to_string());
+                updated = true;
+            }
+            if Self::set_favicon_for_url_in(&mut node.children, url, encoded) {
+                updated = true;
+            }
+        }
+        updated
+    }
+
+    fn contains_id(nodes: &[BookmarkNode], id: &str) -> bool {
+        nodes.iter().any(|node| node.id == id || Self::contains_id(&node.children, id))
+    }
+
+    fn take_node_by_id(nodes: &mut Vec<BookmarkNode>, id: &str) -> Option<BookmarkNode> {
+        if let Some(idx) = nodes.iter().position(|node| node.id == id) {
+            return Some(nodes.remove(idx));
+        }
+
+        for node in nodes.iter_mut() {
+            if let Some(removed) = Self::take_node_by_id(&mut node.children, id) {
+                return Some(removed);
+            }
+        }
+
         None
     }
 
@@ -308,6 +447,45 @@ mod tests {
 
         let new_id = custom.add_bookmark("Y".to_string(), "https://y.example".to_string(), None).unwrap();
         assert_eq!(new_id, "bm43");
+    }
+
+    #[test]
+    fn move_node_reparents_to_folder() {
+        let mut store = BookmarkStore::default();
+        let folder_id = store.add_folder("Folder".to_string(), None).unwrap();
+        let bm_id = store
+            .add_bookmark("Rust".to_string(), "https://www.rust-lang.org".to_string(), None)
+            .unwrap();
+
+        store.move_node(&bm_id, Some(&folder_id), None).unwrap();
+
+        let folder = store.get(&folder_id).unwrap();
+        assert_eq!(folder.children.len(), 1);
+        assert_eq!(folder.children[0].id, bm_id);
+    }
+
+    #[test]
+    fn find_by_url_locates_nested_bookmarks() {
+        let mut store = BookmarkStore::default();
+        let folder_id = store.add_folder("Folder".to_string(), None).unwrap();
+        store
+            .add_bookmark("Nested".to_string(), "https://nested.example".to_string(), Some(&folder_id))
+            .unwrap();
+
+        let found = store.find_by_url("https://nested.example").expect("bookmark should exist");
+        assert_eq!(found.title, "Nested");
+    }
+
+    #[test]
+    fn set_favicon_for_url_updates_matching_nodes() {
+        let mut store = BookmarkStore::default();
+        let id = store
+            .add_bookmark("Rust".to_string(), "https://www.rust-lang.org".to_string(), None)
+            .unwrap();
+
+        let changed = store.set_favicon_for_url("https://www.rust-lang.org", &[1, 2, 3, 4]);
+        assert!(changed);
+        assert!(store.get(&id).and_then(|node| node.favicon.clone()).is_some());
     }
 }
 
