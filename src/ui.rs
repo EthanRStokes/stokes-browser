@@ -287,6 +287,7 @@ pub struct BrowserUI {
     pub forward_svg: Tree,
     pub reload_svg: Tree,
     pub home_svg: Tree,
+    pub bookmark_svg: Tree,
     pub new_tab_svg: Tree,
     pub close_tab_svg: Tree,
     pub settings_svg: Tree,
@@ -410,6 +411,7 @@ impl BrowserUI {
             forward_svg: load_svg(include_str!("../assets/right_arrow.svg")).unwrap(),
             reload_svg: load_svg(include_str!("../assets/reload.svg")).unwrap(),
             home_svg: load_svg(include_str!("../assets/home.svg")).unwrap(),
+            bookmark_svg: load_svg(include_str!("../assets/bookmark.svg")).unwrap(),
             new_tab_svg: load_svg(include_str!("../assets/plus.svg")).unwrap(),
             close_tab_svg: load_svg(include_str!("../assets/close.svg")).unwrap(),
             settings_svg: load_svg(include_str!("../assets/settings.svg")).unwrap(),
@@ -2790,22 +2792,7 @@ impl BrowserUI {
                 Self::render_svg(painter, &self.home_svg, rect, icon_color, hidpi_scale);
             }
             IconType::Bookmark => {
-                let cx = rect.center_x() as f64;
-                let top = rect.top() as f64 + rect.height() as f64 * 0.2;
-                let bottom = rect.bottom() as f64 - rect.height() as f64 * 0.2;
-                let left = rect.left() as f64 + rect.width() as f64 * 0.28;
-                let right = rect.right() as f64 - rect.width() as f64 * 0.28;
-                let tip_y = rect.bottom() as f64 - rect.height() as f64 * 0.2;
-
-                let mut path = kurbo::BezPath::new();
-                path.move_to((left, top));
-                path.line_to((right, top));
-                path.line_to((right, bottom));
-                path.line_to((cx, tip_y));
-                path.line_to((left, bottom));
-                path.close_path();
-
-                painter.stroke(&stroke, Affine::IDENTITY, icon_color, None, &path);
+                Self::render_svg(painter, &self.bookmark_svg, rect, icon_color, hidpi_scale);
             }
             IconType::NewTab => {
                 Self::render_svg(painter, &self.new_tab_svg, rect, icon_color, hidpi_scale);
