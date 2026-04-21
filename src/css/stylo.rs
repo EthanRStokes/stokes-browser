@@ -25,7 +25,7 @@ use style::context::{QuirksMode, SharedStyleContext, StyleContext};
 use style::data::{ElementData, ElementDataMut, ElementDataRef};
 use style::dom::{AttributeProvider, LayoutIterator, NodeInfo, OpaqueNode, TDocument, TElement, TNode, TShadowRoot};
 use style::properties::{ComputedValues, Importance, PropertyDeclaration, PropertyDeclarationBlock};
-use style::rule_tree::CascadeLevel;
+use style::rule_tree::{CascadeLevel, CascadeOrigin};
 use style::selector_parser::{AttrValue, Lang, NonTSPseudoClass, PseudoElement, RestyleDamage, SelectorImpl};
 use style::servo_arc::{Arc, ArcBorrow};
 use style::shared_lock::{Locked, SharedRwLock};
@@ -659,7 +659,7 @@ impl<'a> TElement for Node<'a> {
         let mut push_style = |decl: PropertyDeclaration| {
             hints.push(ApplicableDeclarationBlock::from_declarations(
                 Arc::new(self.lock.wrap(PropertyDeclarationBlock::with_one(decl, Importance::Normal))),
-                CascadeLevel::PresHints,
+                CascadeLevel::new(CascadeOrigin::PresHints),
                 LayerOrder::root(),
             ));
         };

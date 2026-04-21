@@ -420,7 +420,10 @@ pub(crate) fn fetch_font_face(
         .rules(read_guard)
         .iter()
         .filter_map(|rule| match rule {
-            CssRule::FontFace(font_face) => font_face.read_with(read_guard).sources.as_ref(),
+            CssRule::FontFace(font_face) => {
+                let descriptor = &font_face.read_with(read_guard).descriptors;
+                descriptor.src.as_ref().filter(|_| descriptor.font_family.is_some())
+            },
             _ => None,
         })
         .for_each(|source_list| {

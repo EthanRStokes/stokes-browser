@@ -25,12 +25,12 @@ shared_memory = "0.12.4"
 serde = { version = "1.0", features = ["derive"] }
 rfd = "0.17.2"
 url = "2"
-taffy = { version = "0.10.0", features = ["strict_provenance"] }
+taffy = { version = "0.10.1", features = ["strict_provenance"] }
 #taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "4b6687da0ca1e9d71da4e48b4c659f5c45060707", features = ["strict_provenance"] }
 slab = "0.4.12"
 markup5ever = "0.39.0"
 xml5ever = "0.39.0"
-parley = { git = "https://github.com/linebender/parley", rev = "6cfd2009f650749fbb05ffd325e54d084fd6aefc" }
+parley = { git = "https://github.com/linebender/parley", rev = "5660d0b1acec4a3118f0301c2d35508b33dfe785" }
 euclid = "0.22.13"
 bitflags = { version = "2.11.0", features = ["serde"] }
 atomic_refcell = "0.1.13"
@@ -74,16 +74,16 @@ oaty = "0.1.0"
 tinyfiledialogs = "3.9.1"
 
 # Stylo
-stylo = "0.15.0"
-stylo_traits = "0.15.0"
-stylo_atoms = "0.15.0"
-stylo_static_prefs = "0.15.0"
-stylo_dom = "0.15.0"
-selectors = "0.36.1"
+stylo = "0.16.0"
+stylo_traits = "0.16.0"
+stylo_atoms = "0.16.0"
+stylo_static_prefs = "0.16.0"
+stylo_dom = "0.16.0"
+selectors = "0.37.0"
 
 # Blitz
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a3" }
-stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a3", features = ["floats"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "6319e46" }
+stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "6319e46", features = ["floats"] }
 dioxus-asset-resolver = { version = "0.7.4", features = ["native"] }
 
 [dependencies.glutin-winit]
