@@ -602,6 +602,8 @@ impl CosmicBrowserApp {
             mouse_area(image_widget)
                 .on_press(Message::PageClick)
                 .on_release(Message::PageButtonReleased)
+                .on_middle_press(Message::PagePointerPressed { button: CosmicMouseButton::Middle })
+                .on_middle_release(Message::PagePointerReleased { button: CosmicMouseButton::Middle })
                 .on_move(|pos: cosmic::iced::Point| Message::PageMouseMove { x: pos.x, y: pos.y })
                 .on_scroll(|delta| {
                     use cosmic::iced::mouse::ScrollDelta;
@@ -786,7 +788,6 @@ impl Application for CosmicBrowserApp {
                 let (x, y) = self.page_mouse_position;
                 if let Some(tab_id) = self.active_tab_id().cloned() {
                     use crate::events::{BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails};
-                    use keyboard_types::Modifiers;
                     let event = UiEvent::PointerDown(BlitzPointerEvent {
                         id: BlitzPointerId::Mouse,
                         is_primary: true,
@@ -800,7 +801,7 @@ impl Application for CosmicBrowserApp {
                         },
                         button: MouseEventButton::Main,
                         buttons: MouseEventButtons::Primary,
-                        mods: Modifiers::empty(),
+                        mods: cosmic_modifiers_to_kbt_modifiers(self.keyboard_modifiers),
                         details: PointerDetails::default(),
                     });
                     let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
@@ -824,7 +825,7 @@ impl Application for CosmicBrowserApp {
                         },
                         button: MouseEventButton::Main,
                         buttons: MouseEventButtons::None,
-                        mods: keyboard_types::Modifiers::empty(),
+                        mods: cosmic_modifiers_to_kbt_modifiers(self.keyboard_modifiers),
                         details: PointerDetails::default(),
                     });
                     let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
@@ -885,7 +886,6 @@ impl Application for CosmicBrowserApp {
                 let (x, y) = self.page_mouse_position;
                 if let Some(tab_id) = self.active_tab_id().cloned() {
                     use crate::events::{BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails};
-                    use keyboard_types::Modifiers;
 
                     let (blitz_button, buttons) = match button {
                         CosmicMouseButton::Left => (MouseEventButton::Main, MouseEventButtons::Primary),
@@ -907,7 +907,7 @@ impl Application for CosmicBrowserApp {
                         },
                         button: blitz_button,
                         buttons,
-                        mods: Modifiers::empty(),
+                        mods: cosmic_modifiers_to_kbt_modifiers(self.keyboard_modifiers),
                         details: PointerDetails::default(),
                     });
                     let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
@@ -919,7 +919,6 @@ impl Application for CosmicBrowserApp {
                 let (x, y) = self.page_mouse_position;
                 if let Some(tab_id) = self.active_tab_id().cloned() {
                     use crate::events::{BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails};
-                    use keyboard_types::Modifiers;
 
                     let (blitz_button, buttons) = match button {
                         CosmicMouseButton::Left => (MouseEventButton::Main, MouseEventButtons::None),
@@ -941,7 +940,7 @@ impl Application for CosmicBrowserApp {
                         },
                         button: blitz_button,
                         buttons,
-                        mods: Modifiers::empty(),
+                        mods: cosmic_modifiers_to_kbt_modifiers(self.keyboard_modifiers),
                         details: PointerDetails::default(),
                     });
                     let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
@@ -951,6 +950,40 @@ impl Application for CosmicBrowserApp {
             // Keyboard input handling
             Message::KeyPressed { key, modified_key, location, modifiers, text, repeat } => {
                 self.keyboard_modifiers = modifiers;
+
+                // Browser-level keybinds — intercept before forwarding to tab
+                if modifiers.control() {
+                    use cosmic::iced::keyboard::Key;
+                    use cosmic::iced::keyboard::key::Named;
+                    match &key {
+                        Key::Character(ch) if ch.as_str() == "t" => {
+                            self.add_tab_with_url(None);
+                            return Task::none();
+                        }
+                        Key::Character(ch) if ch.as_str() == "w" => {
+                            if let Some(tab_id) = self.active_tab_id().cloned() {
+                                self.close_tab(&tab_id);
+                            }
+                            return Task::none();
+                        }
+                        Key::Named(Named::Tab) => {
+                            let n = self.tab_order.len();
+                            if n > 0 {
+                                if modifiers.shift() {
+                                    let prev = (self.active_tab_index + n - 1) % n;
+                                    self.switch_to_tab(prev);
+                                } else {
+                                    let next = (self.active_tab_index + 1) % n;
+                                    self.switch_to_tab(next);
+                                }
+                                self.current_frame = None;
+                            }
+                            return Task::none();
+                        }
+                        _ => {}
+                    }
+                }
+
                 if let Some(tab_id) = self.active_tab_id().cloned() {
                     if let Some(event) = cosmic_key_to_blitz_key_down(key, modified_key, location, modifiers, text, repeat) {
                         let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(UiEvent::KeyDown(event)));

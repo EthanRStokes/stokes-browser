@@ -1104,7 +1104,7 @@ impl TabProcess {
                 self.init_shared_surface(width as u32, height as u32)?;
                 should_render = true;
             }
-            // todo ctrl+click nav new tab, middle click, Home + End keys, keyboard scrolling
+            // todo Home + End keys, keyboard scrolling
             ParentToTabMessage::UI(event) => {
                 if let Some(dom) = self.dom_mut() {
                     dom.handle_ui_event(event);
