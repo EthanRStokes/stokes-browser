@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 use cosmic::app::{Core, Task};
 use std::sync::Arc;
@@ -8,6 +9,7 @@ use cosmic::iced::Alignment;
 use cosmic::widget::{self, mouse_area};
 use cosmic::{Application, Element};
 
+use base64::Engine as _;
 use crate::bookmarks::BookmarkStore;
 use crate::events::UiEvent;
 use crate::ipc::ParentToTabMessage;
@@ -42,6 +44,9 @@ pub struct CosmicBrowserApp {
     page_mouse_position: (f32, f32),
     // Track keyboard modifiers
     keyboard_modifiers: cosmic::iced::keyboard::Modifiers,
+
+    tab_favicon_handles: HashMap<String, widget::image::Handle>,
+    bookmark_favicon_handles: HashMap<String, widget::image::Handle>,
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +164,29 @@ fn cosmic_modifiers_to_kbt_modifiers(modifiers: cosmic::iced::keyboard::Modifier
     result
 }
 
+fn decode_favicon_to_handle(bytes: &[u8]) -> Option<cosmic::iced::widget::image::Handle> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let rgba = img.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    let pixels = rgba.into_raw();
+    Some(widget::image::Handle::from_rgba(width, height, pixels))
+}
+
+fn build_bookmark_favicon_handles(items: &[crate::bookmarks::BookmarkNode]) -> HashMap<String, cosmic::iced::widget::image::Handle> {
+    let mut handles = HashMap::new();
+    for node in items {
+        if let Some(favicon_b64) = &node.favicon {
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(favicon_b64) {
+                if let Some(handle) = decode_favicon_to_handle(&bytes) {
+                    handles.insert(node.id.clone(), handle);
+                }
+            }
+        }
+        handles.extend(build_bookmark_favicon_handles(&node.children));
+    }
+    handles
+}
+
 // Convert cosmic key event to BlitzKeyEvent for KeyDown
 fn cosmic_key_to_blitz_key_down(
     key: cosmic::iced::keyboard::Key,
@@ -244,6 +272,7 @@ impl CosmicBrowserApp {
         }
         if let Some(idx) = self.tab_order.iter().position(|id| id == tab_id) {
             self.tab_order.remove(idx);
+            self.tab_favicon_handles.remove(tab_id);
             let _ = self.tab_manager.close_tab(tab_id);
             if self.active_tab_index >= self.tab_order.len() {
                 self.active_tab_index = self.tab_order.len() - 1;
@@ -274,16 +303,12 @@ impl CosmicBrowserApp {
         for (tab_id, message) in messages {
             self.tab_manager.process_tab_message(&tab_id, message.clone());
             match message {
-                TabToParentMessage::NavigationStarted(_) => {}
+                TabToParentMessage::NavigationStarted(_) => {
+                    self.tab_favicon_handles.remove(&tab_id);
+                }
                 TabToParentMessage::NavigationCompleted { url, .. } => {
                     if Some(&tab_id) == self.active_tab_id() {
                         self.url_input = url.clone();
-                    }
-                    // Update bookmark favicon if available
-                    if let Some(tab) = self.tab_manager.get_tab(&tab_id) {
-                        if let Some(favicon_bytes) = tab.favicon.clone() {
-                            self.bookmarks.set_favicon_for_url(&url, &favicon_bytes);
-                        }
                     }
                 }
                 TabToParentMessage::NavigateRequest(url) => {
@@ -313,12 +338,24 @@ impl CosmicBrowserApp {
                     }
                 }
                 TabToParentMessage::FaviconUpdated(Some(bytes)) => {
+                    if let Some(handle) = decode_favicon_to_handle(&bytes) {
+                        self.tab_favicon_handles.insert(tab_id.clone(), handle);
+                    }
                     let tab_url = self.tab_manager.get_tab(&tab_id)
                         .map(|t| t.url.clone())
                         .unwrap_or_default();
                     if !tab_url.is_empty() {
                         self.bookmarks.set_favicon_for_url(&tab_url, &bytes);
+                        if let Some(bm) = self.bookmarks.find_by_url(&tab_url) {
+                            let bm_id = bm.id.clone();
+                            if let Some(handle) = decode_favicon_to_handle(&bytes) {
+                                self.bookmark_favicon_handles.insert(bm_id, handle);
+                            }
+                        }
                     }
+                }
+                TabToParentMessage::FaviconUpdated(None) => {
+                    self.tab_favicon_handles.remove(&tab_id);
                 }
                 TabToParentMessage::Alert(msg) => {
                     eprintln!("Alert from tab {}: {}", tab_id, msg);
@@ -344,10 +381,16 @@ impl CosmicBrowserApp {
                 title.to_string()
             });
 
-            let loading_indicator = if is_loading {
+            let loading_indicator: Element<'_, Message> = if is_loading {
                 Element::from(widget::text("⟳").size(14))
+            } else if let Some(handle) = self.tab_favicon_handles.get(tab_id) {
+                Element::from(
+                    widget::image::Image::new(handle.clone())
+                        .width(Length::Fixed(16.0))
+                        .height(Length::Fixed(16.0))
+                )
             } else {
-                Element::from(widget::space::horizontal().width(Length::Fixed(14.0)))
+                Element::from(widget::space::horizontal().width(Length::Fixed(16.0)))
             };
 
             let close_btn = widget::button::icon(
@@ -471,8 +514,22 @@ impl CosmicBrowserApp {
                 // Folders shown as plain buttons for now (no popover in this iteration)
                 row = row.push(folder_btn);
             } else if let Some(url) = &node.url {
+                let favicon_elem: Element<'_, Message> = if let Some(handle) = self.bookmark_favicon_handles.get(&node.id) {
+                    Element::from(
+                        widget::image::Image::new(handle.clone())
+                            .width(Length::Fixed(14.0))
+                            .height(Length::Fixed(14.0))
+                    )
+                } else {
+                    Element::from(widget::space::horizontal().width(Length::Fixed(14.0)))
+                };
                 let bm_btn = widget::button::custom(
-                    widget::text(&node.title).size(13)
+                    widget::row![
+                        favicon_elem,
+                        widget::text(&node.title).size(13),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center)
                 )
                 .on_press(Message::OpenBookmark(url.clone()))
                 .class(cosmic::theme::Button::Text)
@@ -542,6 +599,7 @@ impl Application for CosmicBrowserApp {
     fn init(core: Core, flags: Self::Flags) -> (Self, Task<Self::Message>) {
         let tab_manager = TabManager::new().expect("Failed to create tab manager");
         let bookmarks = BookmarkStore::load_from_disk();
+        let bookmark_favicon_handles = build_bookmark_favicon_handles(bookmarks.items());
 
         let mut app = Self {
             core,
@@ -558,6 +616,8 @@ impl Application for CosmicBrowserApp {
             startup_url: flags,
             page_mouse_position: (0.0, 0.0),
             keyboard_modifiers: cosmic::iced::keyboard::Modifiers::empty(),
+            tab_favicon_handles: HashMap::new(),
+            bookmark_favicon_handles,
         };
 
         let startup_url = app.startup_url.clone();
@@ -890,9 +950,17 @@ impl Application for CosmicBrowserApp {
                         let favicon = tab.favicon.clone();
                         if !url.trim().is_empty() {
                             let _ = self.bookmarks.add_bookmark_with_favicon(
-                                title, url, None, favicon,
+                                title, url.clone(), None, favicon.clone(),
                             );
                             self.bookmarks.save_to_disk();
+                            if let Some(favicon_bytes) = &favicon {
+                                if let Some(bm) = self.bookmarks.find_by_url(&url) {
+                                    let bm_id = bm.id.clone();
+                                    if let Some(handle) = decode_favicon_to_handle(favicon_bytes) {
+                                        self.bookmark_favicon_handles.insert(bm_id, handle);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
