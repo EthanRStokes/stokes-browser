@@ -127,12 +127,10 @@ impl From<cosmic::iced::mouse::Button> for CosmicMouseButton {
 fn cosmic_key_to_kbt_key(key: &cosmic::iced::keyboard::Key) -> keyboard_types::Key {
     match key {
         cosmic::iced::keyboard::Key::Character(ch) => keyboard_types::Key::Character(ch.as_str().into()),
-        cosmic::iced::keyboard::Key::Named(_) => {
-            // Convert named key to string and use that
-            // For simplicity, use Unidentified for now
-            // TODO: Add proper named key conversion
-            keyboard_types::Key::Unidentified
-        }
+        cosmic::iced::keyboard::Key::Named(named) => match named {
+            cosmic::iced::keyboard::key::Named::Enter => keyboard_types::Key::Enter,
+            _ => keyboard_types::Key::Unidentified,
+        },
         _ => keyboard_types::Key::Unidentified,
     }
 }
