@@ -4,7 +4,7 @@ use cosmic::iced::widget::image as iced_image;
 use cosmic::iced::{Length, Subscription};
 use cosmic::iced::Alignment;
 use cosmic::widget::{self, mouse_area};
-use cosmic::{Application, Element};
+use cosmic::{iced, Application, Element};
 
 use crate::bookmarks::BookmarkStore;
 use crate::events::UiEvent;
@@ -29,6 +29,7 @@ pub struct CosmicBrowserApp {
     active_tab_index: usize,
     tab_order: Vec<String>,
     current_frame: Option<iced_image::Handle>,
+    current_frame_size: Option<(u32, u32)>,
     window_size: (u32, u32),
 
     spinner_angle: f32,
@@ -207,14 +208,18 @@ impl CosmicBrowserApp {
         }
     }
 
+    // COSMIC header bar height (approximate: 32px base + padding)
+    const COSMIC_HEADER_HEIGHT: f32 = 48.0;
+
     fn add_tab_with_url(&mut self, url: Option<&str>) {
         if let Ok(new_tab_id) = self.tab_manager.create_tab() {
             self.tab_order.push(new_tab_id.clone());
             self.active_tab_index = self.tab_order.len() - 1;
 
             let (width, height) = self.window_size;
-            let chrome_height: u32 = 120; // approximate chrome height in logical pixels
-            let page_height = height.saturating_sub(chrome_height);
+            let chrome_height: u32 = 112; // chrome height: tab_bar(40) + nav_bar(40) + bookmarks_bar(32)
+            let cosmic_header: u32 = Self::COSMIC_HEADER_HEIGHT as u32;
+            let page_height = height.saturating_sub(cosmic_header).saturating_sub(chrome_height);
 
             let _ = self.tab_manager.send_to_tab(&new_tab_id, ParentToTabMessage::Resize {
                 width: width as f32,
@@ -295,6 +300,8 @@ impl CosmicBrowserApp {
                         if let Ok(pixels) = TabManager::load_frame_pixels_from_shmem(tab, &shmem_name, width, height) {
                             if Some(&tab_id) == self.active_tab_id() {
                                 self.current_frame = Some(iced_image::Handle::from_rgba(width, height, pixels));
+                                self.current_frame_size = Some((width, height));
+                                eprintln!("[frame] received frame size=({},{})", width, height);
                             }
                         }
                     }
@@ -478,11 +485,12 @@ impl CosmicBrowserApp {
 
     fn page_content_view(&self) -> Element<'_, Message> {
         let image_widget: Element<'_, Message> = if let Some(handle) = &self.current_frame {
-            Element::from(
-                iced_image::Image::new(handle.clone())
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-            )
+            // Image with Fill to stretch to container width
+            let img = iced_image::Image::new(handle.clone())
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .content_fit(iced::ContentFit::Fill);
+            Element::from(img)
         } else {
             Element::from(
                 widget::container(widget::text("Loading..."))
@@ -537,6 +545,7 @@ impl Application for CosmicBrowserApp {
             active_tab_index: 0,
             tab_order: vec![],
             current_frame: None,
+            current_frame_size: None,
             window_size: (1280, 800),
             spinner_angle: 0.0,
             settings_open: false,
@@ -896,9 +905,10 @@ impl Application for CosmicBrowserApp {
     }
 
     fn on_window_resize(&mut self, _id: cosmic::iced::window::Id, width: f32, height: f32) {
-        let chrome_height: f32 = 120.0;
-        let page_height = (height - chrome_height).max(0.0);
+        let chrome_height: f32 = 112.0;
+        let page_height = (height - Self::COSMIC_HEADER_HEIGHT - chrome_height).max(0.0);
         self.window_size = (width as u32, height as u32);
+        eprintln!("[resize] window_size=({},{}) page_height={}", width, height, page_height);
 
         for tab_id in &self.tab_order.clone() {
             let _ = self.tab_manager.send_to_tab(tab_id, ParentToTabMessage::Resize {
@@ -914,15 +924,15 @@ impl Application for CosmicBrowserApp {
         let bookmarks_bar = self.bookmarks_bar_view();
         let page = self.page_content_view();
 
-        Element::from(
-            widget::column![
-                tab_bar,
-                nav_bar,
-                bookmarks_bar,
-                page,
-            ]
-            .width(Length::Fill)
-            .height(Length::Fill)
-        )
+        widget::column![
+            tab_bar,
+            nav_bar,
+            bookmarks_bar,
+            page,
+        ]
+        .spacing(0)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     }
 }

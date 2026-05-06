@@ -314,7 +314,7 @@ pub struct BrowserUI {
 
 impl BrowserUI {
     // UI layout constants
-    pub const CHROME_HEIGHT: f32 = 124.0;
+    pub const CHROME_HEIGHT: f32 = 112.0;
     const BUTTON_SIZE: f32 = 32.0;
     const BUTTON_MARGIN: f32 = 8.0;
     const ADDRESS_BAR_HEIGHT: f32 = 32.0;

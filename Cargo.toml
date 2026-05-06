@@ -114,7 +114,8 @@ libcosmic = {
         "winit",
         "tokio",
         "multi-window",
-        "serde-keycode"
+        "serde-keycode",
+        "wgpu"
     ]
 }
 
@@ -133,7 +134,8 @@ libcosmic = {
         "dbus-config",
         "a11y",
         "multi-window",
-        "serde-keycode"
+        "serde-keycode",
+        "wgpu"
     ]
 }
 
