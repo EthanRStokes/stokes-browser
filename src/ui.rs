@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::time::{Duration, Instant};
 use usvg::Tree;
-use crate::browser::VERSION;
+use crate::cosmic_app::VERSION;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TextBrush {

@@ -187,6 +187,41 @@ impl TabManager {
         }
     }
 
+    /// Load raw RGBA pixels from shared memory (used by the cosmic UI layer)
+    pub fn load_frame_pixels_from_shmem(
+        tab: &mut ManagedTab,
+        shmem_name: &str,
+        width: u32,
+        height: u32,
+    ) -> io::Result<Vec<u8>> {
+        let needs_reopen = tab
+            .frame_source
+            .as_ref()
+            .map(|source| source.shmem_name.as_str() != shmem_name)
+            .unwrap_or(true);
+
+        if needs_reopen {
+            let shmem = ShmemConf::new()
+                .os_id(shmem_name)
+                .open()
+                .map_err(io::Error::other)?;
+
+            tab.frame_source = Some(SharedFrameSource {
+                shmem_name: shmem_name.to_string(),
+                shmem,
+            });
+        }
+
+        let shmem = &tab.frame_source.as_ref().expect("frame_source must be initialized").shmem;
+        let size = (width * height * 4) as usize;
+
+        let pixels = unsafe {
+            std::slice::from_raw_parts(shmem.as_ptr() as *const u8, size).to_vec()
+        };
+
+        Ok(pixels)
+    }
+
     /// Load a rendered frame from shared memory
     fn load_frame_from_shmem(
         tab: &mut ManagedTab,

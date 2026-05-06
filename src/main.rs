@@ -10,28 +10,32 @@ mod css;
 mod js;
 pub mod convert_events;
 pub mod events;
-mod input;
 mod ipc;
 mod tab_process;
 mod tab_manager;
-mod browser;
-mod window;
+mod cosmic_app;
 mod shell_provider;
 mod default_browser;
 mod bookmarks;
 
-use crate::browser::BrowserApp;
-use winit::event_loop::EventLoop;
-use winit_core::event_loop::ControlFlow;
+use cosmic::app::Settings;
+use tokio::runtime::Builder;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check if this is a tab process
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 4 && args[1] == "--tab-process" {
         let tab_id = args[2].clone();
         let server_name = args[3].clone();
-        return tab_process::tab_process_main(tab_id, server_name).await.map_err(|e| e.into());
+
+        // tokio
+        let rt = Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+
+        return rt.block_on(async {
+            tab_process::tab_process_main(tab_id, server_name).await.map_err(|e| e.into())
+        });
     }
 
     // Main browser process
@@ -41,14 +45,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let startup_url: Option<String> = args.iter().skip(1).find(|a| {
         a.starts_with("http://") || a.starts_with("https://") || a.starts_with("about:")
     }).cloned();
-    for arg in args {
-        println!("{}", arg);
-    }
 
-    let event_loop = EventLoop::new()?;
-    event_loop.set_control_flow(ControlFlow::Poll);
-    let app = BrowserApp::new(&event_loop, startup_url).await;
+    cosmic::app::run::<cosmic_app::CosmicBrowserApp>(Settings::default(), startup_url)
+        .expect("cosmic run failed");
 
-    event_loop.run_app(app)?;
     Ok(())
 }
