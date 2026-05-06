@@ -34,6 +34,11 @@ pub struct CosmicBrowserApp {
     spinner_angle: f32,
     settings_open: bool,
     startup_url: Option<String>,
+
+    // Track mouse position over the page for input events
+    page_mouse_position: (f32, f32),
+    // Track keyboard modifiers
+    keyboard_modifiers: cosmic::iced::keyboard::Modifiers,
 }
 
 #[derive(Debug, Clone)]
@@ -57,16 +62,138 @@ pub enum Message {
     Tick,
 
     // Page input forwarding
-    PageClick { x: f32, y: f32 },
+    PageClick,                    // Use tracked mouse position
     PageMouseMove { x: f32, y: f32 },
     PageScroll { delta_x: f32, delta_y: f32 },
-    PageButtonReleased { x: f32, y: f32 },
+    PageButtonReleased,            // Use tracked mouse position
+    PagePointerPressed { button: CosmicMouseButton },
+    PagePointerReleased { button: CosmicMouseButton },
+
+    // Keyboard input
+    KeyPressed {
+        key: cosmic::iced::keyboard::Key,
+        modified_key: cosmic::iced::keyboard::Key,
+        location: cosmic::iced::keyboard::Location,
+        modifiers: cosmic::iced::keyboard::Modifiers,
+        text: Option<String>,
+        repeat: bool,
+    },
+    KeyReleased {
+        key: cosmic::iced::keyboard::Key,
+        modified_key: cosmic::iced::keyboard::Key,
+        location: cosmic::iced::keyboard::Location,
+        modifiers: cosmic::iced::keyboard::Modifiers,
+    },
+    ModifiersChanged(cosmic::iced::keyboard::Modifiers),
 
     // Bookmarks
     OpenBookmark(String),
     AddBookmark,
     ToggleSettings,
     SetDefaultBrowser,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CosmicMouseButton {
+    Left,
+    Right,
+    Middle,
+    Other(u16),
+}
+
+// Conversion from cosmic::iced::mouse::Button
+impl From<cosmic::iced::mouse::Button> for CosmicMouseButton {
+    fn from(button: cosmic::iced::mouse::Button) -> Self {
+        match button {
+            cosmic::iced::mouse::Button::Left => CosmicMouseButton::Left,
+            cosmic::iced::mouse::Button::Right => CosmicMouseButton::Right,
+            cosmic::iced::mouse::Button::Middle => CosmicMouseButton::Middle,
+            cosmic::iced::mouse::Button::Other(val) => CosmicMouseButton::Other(val),
+            _ => CosmicMouseButton::Other(0), // Back, Forward, etc.
+        }
+    }
+}
+
+// Convert cosmic Key to keyboard_types::Key
+fn cosmic_key_to_kbt_key(key: &cosmic::iced::keyboard::Key) -> keyboard_types::Key {
+    match key {
+        cosmic::iced::keyboard::Key::Character(ch) => keyboard_types::Key::Character(ch.as_str().into()),
+        cosmic::iced::keyboard::Key::Named(_) => {
+            // Convert named key to string and use that
+            // For simplicity, use Unidentified for now
+            // TODO: Add proper named key conversion
+            keyboard_types::Key::Unidentified
+        }
+        _ => keyboard_types::Key::Unidentified,
+    }
+}
+
+// Convert cosmic Location to keyboard_types::Location
+fn cosmic_location_to_kbt_location(location: cosmic::iced::keyboard::Location) -> keyboard_types::Location {
+    match location {
+        cosmic::iced::keyboard::Location::Standard => keyboard_types::Location::Standard,
+        cosmic::iced::keyboard::Location::Left => keyboard_types::Location::Left,
+        cosmic::iced::keyboard::Location::Right => keyboard_types::Location::Right,
+        cosmic::iced::keyboard::Location::Numpad => keyboard_types::Location::Numpad,
+    }
+}
+
+// Convert cosmic Modifiers to keyboard_types::Modifiers
+fn cosmic_modifiers_to_kbt_modifiers(modifiers: cosmic::iced::keyboard::Modifiers) -> keyboard_types::Modifiers {
+    let mut result = keyboard_types::Modifiers::empty();
+    if modifiers.shift() {
+        result |= keyboard_types::Modifiers::SHIFT;
+    }
+    if modifiers.control() {
+        result |= keyboard_types::Modifiers::CONTROL;
+    }
+    if modifiers.alt() {
+        result |= keyboard_types::Modifiers::ALT;
+    }
+    if modifiers.logo() {
+        result |= keyboard_types::Modifiers::META;
+    }
+    result
+}
+
+// Convert cosmic key event to BlitzKeyEvent for KeyDown
+fn cosmic_key_to_blitz_key_down(
+    key: cosmic::iced::keyboard::Key,
+    modified_key: cosmic::iced::keyboard::Key,
+    location: cosmic::iced::keyboard::Location,
+    modifiers: cosmic::iced::keyboard::Modifiers,
+    text: Option<String>,
+    repeat: bool,
+) -> Option<crate::events::BlitzKeyEvent> {
+    Some(crate::events::BlitzKeyEvent {
+        key: cosmic_key_to_kbt_key(&key),
+        code: keyboard_types::Code::Unidentified,
+        modifiers: cosmic_modifiers_to_kbt_modifiers(modifiers),
+        location: cosmic_location_to_kbt_location(location),
+        is_auto_repeating: repeat,
+        is_composing: false,
+        state: crate::events::KeyState::Pressed,
+        text: text.map(|t| t.into()),
+    })
+}
+
+// Convert cosmic key event to BlitzKeyEvent for KeyUp
+fn cosmic_key_to_blitz_key_up(
+    key: cosmic::iced::keyboard::Key,
+    modified_key: cosmic::iced::keyboard::Key,
+    location: cosmic::iced::keyboard::Location,
+    modifiers: cosmic::iced::keyboard::Modifiers,
+) -> Option<crate::events::BlitzKeyEvent> {
+    Some(crate::events::BlitzKeyEvent {
+        key: cosmic_key_to_kbt_key(&key),
+        code: keyboard_types::Code::Unidentified,
+        modifiers: cosmic_modifiers_to_kbt_modifiers(modifiers),
+        location: cosmic_location_to_kbt_location(location),
+        is_auto_repeating: false,
+        is_composing: false,
+        state: crate::events::KeyState::Released,
+        text: None,
+    })
 }
 
 impl CosmicBrowserApp {
@@ -368,8 +495,8 @@ impl CosmicBrowserApp {
 
         Element::from(
             mouse_area(image_widget)
-                .on_press(Message::PageClick { x: 0.0, y: 0.0 })
-                .on_release(Message::PageButtonReleased { x: 0.0, y: 0.0 })
+                .on_press(Message::PageClick)
+                .on_release(Message::PageButtonReleased)
                 .on_move(|pos: cosmic::iced::Point| Message::PageMouseMove { x: pos.x, y: pos.y })
                 .on_scroll(|delta| {
                     use cosmic::iced::mouse::ScrollDelta;
@@ -414,6 +541,8 @@ impl Application for CosmicBrowserApp {
             spinner_angle: 0.0,
             settings_open: false,
             startup_url: flags,
+            page_mouse_position: (0.0, 0.0),
+            keyboard_modifiers: cosmic::iced::keyboard::Modifiers::empty(),
         };
 
         let startup_url = app.startup_url.clone();
@@ -424,8 +553,48 @@ impl Application for CosmicBrowserApp {
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
-        cosmic::iced::time::every(Duration::from_millis(16))
-            .map(|_| Message::Tick)
+        Subscription::batch([
+            cosmic::iced::time::every(Duration::from_millis(16))
+                .map(|_| Message::Tick),
+
+            // Listen to keyboard events
+            cosmic::iced::event::listen_with(|event, _status, _id| {
+                match event {
+                    cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
+                        key,
+                        modified_key,
+                        physical_key: _,
+                        location,
+                        modifiers,
+                        text,
+                        repeat,
+                    }) => Some(Message::KeyPressed {
+                        key,
+                        modified_key,
+                        location,
+                        modifiers,
+                        text: text.map(|t| t.to_string()),
+                        repeat,
+                    }),
+                    cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyReleased {
+                        key,
+                        modified_key,
+                        physical_key: _,
+                        location,
+                        modifiers,
+                    }) => Some(Message::KeyReleased {
+                        key,
+                        modified_key,
+                        location,
+                        modifiers,
+                    }),
+                    cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::ModifiersChanged(modifiers)) => {
+                        Some(Message::ModifiersChanged(modifiers))
+                    }
+                    _ => None,
+                }
+            }),
+        ])
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
@@ -499,7 +668,8 @@ impl Application for CosmicBrowserApp {
                 self.current_frame = None;
             }
 
-            Message::PageClick { x, y } => {
+            Message::PageClick => {
+                let (x, y) = self.page_mouse_position;
                 if let Some(tab_id) = self.active_tab_id().cloned() {
                     use crate::events::{BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails};
                     use keyboard_types::Modifiers;
@@ -523,7 +693,8 @@ impl Application for CosmicBrowserApp {
                 }
             }
 
-            Message::PageButtonReleased { x, y } => {
+            Message::PageButtonReleased => {
+                let (x, y) = self.page_mouse_position;
                 if let Some(tab_id) = self.active_tab_id().cloned() {
                     use crate::events::{BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails};
                     use keyboard_types::Modifiers;
@@ -548,6 +719,9 @@ impl Application for CosmicBrowserApp {
             }
 
             Message::PageMouseMove { x, y } => {
+                // Track mouse position for click events
+                self.page_mouse_position = (x, y);
+
                 if let Some(tab_id) = self.active_tab_id().cloned() {
                     use crate::events::{BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails};
                     use keyboard_types::Modifiers;
@@ -572,24 +746,116 @@ impl Application for CosmicBrowserApp {
             }
 
             Message::PageScroll { delta_x, delta_y } => {
+                let (x, y) = self.page_mouse_position;
                 if let Some(tab_id) = self.active_tab_id().cloned() {
                     use crate::events::{BlitzWheelDelta, BlitzWheelEvent, MouseEventButtons, PointerCoords};
                     use keyboard_types::Modifiers;
                     let event = UiEvent::Wheel(BlitzWheelEvent {
                         delta: BlitzWheelDelta::Pixels(delta_x as f64, delta_y as f64),
                         coords: PointerCoords {
-                            screen_x: 0.0,
-                            screen_y: 0.0,
-                            client_x: 0.0,
-                            client_y: 0.0,
-                            page_x: 0.0,
-                            page_y: 0.0,
+                            screen_x: x,
+                            screen_y: y,
+                            client_x: x,
+                            client_y: y,
+                            page_x: x,
+                            page_y: y,
                         },
                         buttons: MouseEventButtons::None,
                         mods: Modifiers::empty(),
                     });
                     let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
                 }
+            }
+
+            // Handle pointer pressed with specific button
+            Message::PagePointerPressed { button } => {
+                let (x, y) = self.page_mouse_position;
+                if let Some(tab_id) = self.active_tab_id().cloned() {
+                    use crate::events::{BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails};
+                    use keyboard_types::Modifiers;
+
+                    let (blitz_button, buttons) = match button {
+                        CosmicMouseButton::Left => (MouseEventButton::Main, MouseEventButtons::Primary),
+                        CosmicMouseButton::Right => (MouseEventButton::Secondary, MouseEventButtons::Secondary),
+                        CosmicMouseButton::Middle => (MouseEventButton::Auxiliary, MouseEventButtons::Auxiliary),
+                        CosmicMouseButton::Other(_) => (MouseEventButton::Main, MouseEventButtons::Primary),
+                    };
+
+                    let event = UiEvent::PointerDown(BlitzPointerEvent {
+                        id: BlitzPointerId::Mouse,
+                        is_primary: true,
+                        coords: PointerCoords {
+                            screen_x: x,
+                            screen_y: y,
+                            client_x: x,
+                            client_y: y,
+                            page_x: x,
+                            page_y: y,
+                        },
+                        button: blitz_button,
+                        buttons,
+                        mods: Modifiers::empty(),
+                        details: PointerDetails::default(),
+                    });
+                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
+                }
+            }
+
+            // Handle pointer released with specific button
+            Message::PagePointerReleased { button } => {
+                let (x, y) = self.page_mouse_position;
+                if let Some(tab_id) = self.active_tab_id().cloned() {
+                    use crate::events::{BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails};
+                    use keyboard_types::Modifiers;
+
+                    let (blitz_button, buttons) = match button {
+                        CosmicMouseButton::Left => (MouseEventButton::Main, MouseEventButtons::None),
+                        CosmicMouseButton::Right => (MouseEventButton::Secondary, MouseEventButtons::None),
+                        CosmicMouseButton::Middle => (MouseEventButton::Auxiliary, MouseEventButtons::None),
+                        CosmicMouseButton::Other(_) => (MouseEventButton::Main, MouseEventButtons::None),
+                    };
+
+                    let event = UiEvent::PointerUp(BlitzPointerEvent {
+                        id: BlitzPointerId::Mouse,
+                        is_primary: true,
+                        coords: PointerCoords {
+                            screen_x: x,
+                            screen_y: y,
+                            client_x: x,
+                            client_y: y,
+                            page_x: x,
+                            page_y: y,
+                        },
+                        button: blitz_button,
+                        buttons,
+                        mods: Modifiers::empty(),
+                        details: PointerDetails::default(),
+                    });
+                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(event));
+                }
+            }
+
+            // Keyboard input handling
+            Message::KeyPressed { key, modified_key, location, modifiers, text, repeat } => {
+                self.keyboard_modifiers = modifiers;
+                if let Some(tab_id) = self.active_tab_id().cloned() {
+                    if let Some(event) = cosmic_key_to_blitz_key_down(key, modified_key, location, modifiers, text, repeat) {
+                        let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(UiEvent::KeyDown(event)));
+                    }
+                }
+            }
+
+            Message::KeyReleased { key, modified_key, location, modifiers } => {
+                self.keyboard_modifiers = modifiers;
+                if let Some(tab_id) = self.active_tab_id().cloned() {
+                    if let Some(event) = cosmic_key_to_blitz_key_up(key, modified_key, location, modifiers) {
+                        let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::UI(UiEvent::KeyUp(event)));
+                    }
+                }
+            }
+
+            Message::ModifiersChanged(modifiers) => {
+                self.keyboard_modifiers = modifiers;
             }
 
             Message::OpenBookmark(url) => {

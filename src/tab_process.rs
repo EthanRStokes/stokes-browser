@@ -35,6 +35,37 @@ use tracing::{debug, trace, warn};
 use tracing::metadata::LevelFilter;
 use url::Url;
 
+/// Flip pixels vertically in-place (convert from bottom-left to top-left origin)
+fn flip_pixels_vertical_with_scratch(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    scratch: &mut Vec<u8>,
+) {
+    let bytes_per_row = (width * 4) as usize;
+    let total_rows = height as usize;
+
+    if scratch.len() < bytes_per_row {
+        scratch.resize(bytes_per_row, 0);
+    }
+
+    for y in 0..total_rows / 2 {
+        let top_start = y * bytes_per_row;
+        let bottom_start = (total_rows - 1 - y) * bytes_per_row;
+
+        // Split into two non-overlapping mutable slices to avoid borrow conflicts
+        let (left, right) = pixels.split_at_mut(bottom_start);
+
+        // Copy top row to scratch
+        scratch[..bytes_per_row].copy_from_slice(&left[top_start..top_start + bytes_per_row]);
+        // Copy bottom row to top
+        left[top_start..top_start + bytes_per_row]
+            .copy_from_slice(&right[0..bytes_per_row]);
+        // Copy scratch to bottom
+        right[0..bytes_per_row].copy_from_slice(&scratch[..bytes_per_row]);
+    }
+}
+
 /// Tab process that runs in its own OS process
 pub struct TabProcess {
     pub(crate) engine: Engine,
@@ -112,11 +143,10 @@ impl HeadlessRenderer {
                 gpu.readback_into_shmem(dst, width, height)
             }
             HeadlessRenderer::Software(_) => {
-                // For software rendering, directly copy pixels
+                // For software rendering, directly copy pixels (raster surface uses top-left origin, matching Iced's expectation)
                 if let Some(pixmap) = self.surface_mut().peek_pixels() {
                     if let Some(src) = pixmap.bytes() {
-                        let bytes_per_row = (width * 4) as usize;
-                        let total_bytes = bytes_per_row * height as usize;
+                        let total_bytes = (width * height * 4) as usize;
 
                         if dst.len() < total_bytes {
                             return Err(io::Error::new(
@@ -125,20 +155,7 @@ impl HeadlessRenderer {
                             ));
                         }
 
-                        // Flip the image vertically by copying rows in reverse order
-                        // Software rendering (raster) has top-left origin, but we need bottom-left
-                        for y in 0..height as usize {
-                            let src_row_start = y * bytes_per_row;
-                            let src_row_end = src_row_start + bytes_per_row;
-
-                            // Destination row is reversed
-                            let dst_y = (height as usize - 1) - y;
-                            let dst_row_start = dst_y * bytes_per_row;
-                            let dst_row_end = dst_row_start + bytes_per_row;
-
-                            dst[dst_row_start..dst_row_end]
-                                .copy_from_slice(&src[src_row_start..src_row_end]);
-                        }
+                        dst.copy_from_slice(&src[..total_bytes]);
                     } else {
                         return Err(io::Error::new(
                             io::ErrorKind::Other,
@@ -187,6 +204,9 @@ impl SoftwareRenderer {
 struct AsyncReadback {
     slots: Vec<ReadbackSlot>,
     bytes_per_frame: usize,
+    width: u32,
+    height: u32,
+    row_scratch: Vec<u8>,
 }
 
 struct ReadbackSlot {
@@ -269,7 +289,7 @@ impl HeadlessGlRenderer {
             gl_config.stencil_size() as usize,
         )?;
 
-        let readback = match AsyncReadback::new((width * height * 4) as usize) {
+        let readback = match AsyncReadback::new(width, height, (width * height * 4) as usize) {
             Ok(async_readback) => ReadbackPipeline::Async(async_readback),
             Err(e) => {
                 eprintln!("[readback] async path unavailable, using sync mode: {e}");
@@ -329,10 +349,11 @@ impl HeadlessGlRenderer {
 impl AsyncReadback {
     const SLOT_COUNT: usize = 3;
 
-    fn new(bytes_per_frame: usize) -> io::Result<Self> {
+    fn new(width: u32, height: u32, bytes_per_frame: usize) -> io::Result<Self> {
         if bytes_per_frame == 0 {
             return Err(io::Error::other("Invalid readback size"));
         }
+        let row_scratch = vec![0u8; (width * 4) as usize];
 
         let mut slots = Vec::with_capacity(Self::SLOT_COUNT);
         for _ in 0..Self::SLOT_COUNT {
@@ -358,6 +379,9 @@ impl AsyncReadback {
         Ok(Self {
             slots,
             bytes_per_frame,
+            width,
+            height,
+            row_scratch,
         })
     }
 
@@ -431,8 +455,10 @@ impl AsyncReadback {
                     return Err(io::Error::other("Failed to map PBO readback buffer"));
                 }
 
-                ptr::copy_nonoverlapping(mapped as *const u8, dst.as_mut_ptr(), self.bytes_per_frame);
-                gl::UnmapBuffer(gl::PIXEL_PACK_BUFFER);
+            ptr::copy_nonoverlapping(mapped as *const u8, dst.as_mut_ptr(), self.bytes_per_frame);
+            // Flip pixels since PBO data is from glReadPixels (bottom-left origin)
+            flip_pixels_vertical_with_scratch(dst, self.width, self.height, &mut self.row_scratch);
+            gl::UnmapBuffer(gl::PIXEL_PACK_BUFFER);
                 gl::BindBuffer(gl::PIXEL_PACK_BUFFER, 0);
 
                 gl::DeleteSync(fence);
@@ -542,6 +568,9 @@ fn sync_readback(fboid: u32, dst: &mut [u8], width: u32, height: u32) -> io::Res
             dst.as_mut_ptr() as *mut _,
         );
     }
+
+    // Flip pixels vertically since glReadPixels returns bottom-left origin
+    //flip_pixels_vertical(dst, width, height);
 
     Ok(())
 }
