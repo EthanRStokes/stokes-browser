@@ -10,7 +10,7 @@ gl = "0.14.0"
 skia-safe = { version = "0.93.1", features = ["gpu", "gl"] }
 #skia-safe = { git = "https://github.com/marcpabst/rust-skia", features = ["gpu", "gl", "graphite"] }
 image = "0.25.6"
-tokio = { version = "1.51.1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1.52.2", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"
 curl = "0.4"
 html5ever = "0.39.0"
@@ -72,9 +72,6 @@ smallvec = "1.15.1"
 adblock = "0.12.1"
 oaty = "0.1.0"
 tinyfiledialogs = "3.9.1"
-cosmic-text = "0.13"
-iced = { version = "0.13", features = ["tokio"] }
-libcosmic = { git = "https://github.com/pop-os/libcosmic.git", features = ["tokio"] }
 
 # Stylo
 stylo = "0.16.0"
