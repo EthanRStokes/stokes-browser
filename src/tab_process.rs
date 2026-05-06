@@ -207,6 +207,9 @@ struct AsyncReadback {
     width: u32,
     height: u32,
     row_scratch: Vec<u8>,
+    // Private buffer: flip here first, then copy to shmem in one shot
+    // to avoid the parent reading a half-flipped frame from shmem.
+    frame_scratch: Vec<u8>,
 }
 
 struct ReadbackSlot {
@@ -382,6 +385,7 @@ impl AsyncReadback {
             width,
             height,
             row_scratch,
+            frame_scratch: vec![0u8; bytes_per_frame],
         })
     }
 
@@ -455,10 +459,12 @@ impl AsyncReadback {
                     return Err(io::Error::other("Failed to map PBO readback buffer"));
                 }
 
-            ptr::copy_nonoverlapping(mapped as *const u8, dst.as_mut_ptr(), self.bytes_per_frame);
-            // Flip pixels since PBO data is from glReadPixels (bottom-left origin)
-            flip_pixels_vertical_with_scratch(dst, self.width, self.height, &mut self.row_scratch);
+            // Flip into private buffer, then write to shmem in one shot.
+            // Avoids parent reading a half-flipped frame during an in-place shmem flip.
+            ptr::copy_nonoverlapping(mapped as *const u8, self.frame_scratch.as_mut_ptr(), self.bytes_per_frame);
             gl::UnmapBuffer(gl::PIXEL_PACK_BUFFER);
+            flip_pixels_vertical_with_scratch(&mut self.frame_scratch, self.width, self.height, &mut self.row_scratch);
+            ptr::copy_nonoverlapping(self.frame_scratch.as_ptr(), dst.as_mut_ptr(), self.bytes_per_frame);
                 gl::BindBuffer(gl::PIXEL_PACK_BUFFER, 0);
 
                 gl::DeleteSync(fence);
@@ -555,6 +561,9 @@ fn sync_readback(fboid: u32, dst: &mut [u8], width: u32, height: u32) -> io::Res
         return Err(io::Error::other("Shared-memory destination too small"));
     }
 
+    // Read into private buffer, flip there, then write to shmem in one shot.
+    // Avoids parent reading a half-flipped frame during an in-place shmem flip.
+    let mut buf = vec![0u8; required];
     unsafe {
         gl::BindFramebuffer(gl::FRAMEBUFFER, fboid);
         gl::PixelStorei(gl::PACK_ALIGNMENT, 1);
@@ -565,12 +574,13 @@ fn sync_readback(fboid: u32, dst: &mut [u8], width: u32, height: u32) -> io::Res
             height as i32,
             gl::RGBA,
             gl::UNSIGNED_BYTE,
-            dst.as_mut_ptr() as *mut _,
+            buf.as_mut_ptr() as *mut _,
         );
     }
 
-    // Flip pixels vertically since glReadPixels returns bottom-left origin
-    //flip_pixels_vertical(dst, width, height);
+    let mut scratch = Vec::new();
+    flip_pixels_vertical_with_scratch(&mut buf, width, height, &mut scratch);
+    dst[..required].copy_from_slice(&buf);
 
     Ok(())
 }
