@@ -35,6 +35,7 @@ pub struct CosmicBrowserApp {
     current_frame: Option<BrowserFramePrimitive>,
     current_frame_size: Option<(u32, u32)>,
     window_size: (u32, u32),
+    window_scale_factor: f32,
 
     spinner_angle: f32,
     settings_open: bool,
@@ -238,6 +239,39 @@ impl CosmicBrowserApp {
         }
     }
 
+    fn window_scale(&self) -> f32 {
+        self.window_scale_factor.max(0.1)
+    }
+
+    fn sync_scale_factor_from_core(&mut self) {
+        let scale = self.core.scale_factor() as f32;
+        if (scale - self.window_scale_factor).abs() > f32::EPSILON {
+            self.window_scale_factor = scale;
+            for tab_id in &self.tab_order {
+                let _ = self.tab_manager.send_to_tab(tab_id, ParentToTabMessage::SetScaleFactor(scale));
+            }
+            self.send_resize_to_tabs();
+        }
+    }
+
+    fn page_size_physical(&self, width: f32, height: f32) -> (f32, f32) {
+        let chrome_height: f32 = 112.0;
+        let page_height = (height - Self::COSMIC_HEADER_HEIGHT - chrome_height).max(0.0);
+        let scale = self.window_scale();
+        (width * scale, page_height * scale)
+    }
+
+    fn send_resize_to_tabs(&mut self) {
+        let (width, height) = self.window_size;
+        let (physical_width, physical_height) = self.page_size_physical(width as f32, height as f32);
+        for tab_id in &self.tab_order.clone() {
+            let _ = self.tab_manager.send_to_tab(tab_id, ParentToTabMessage::Resize {
+                width: physical_width,
+                height: physical_height,
+            });
+        }
+    }
+
     // COSMIC header bar height (approximate: 32px base + padding)
     const COSMIC_HEADER_HEIGHT: f32 = 48.0;
 
@@ -246,15 +280,15 @@ impl CosmicBrowserApp {
             self.tab_order.push(new_tab_id.clone());
             self.active_tab_index = self.tab_order.len() - 1;
 
+            self.sync_scale_factor_from_core();
             let (width, height) = self.window_size;
-            let chrome_height: u32 = 112; // chrome height: tab_bar(40) + nav_bar(40) + bookmarks_bar(32)
-            let cosmic_header: u32 = Self::COSMIC_HEADER_HEIGHT as u32;
-            let page_height = height.saturating_sub(cosmic_header).saturating_sub(chrome_height);
+            let (physical_width, physical_height) = self.page_size_physical(width as f32, height as f32);
 
             let _ = self.tab_manager.send_to_tab(&new_tab_id, ParentToTabMessage::Resize {
-                width: width as f32,
-                height: page_height as f32,
+                width: physical_width,
+                height: physical_height,
             });
+            let _ = self.tab_manager.send_to_tab(&new_tab_id, ParentToTabMessage::SetScaleFactor(self.window_scale()));
 
             if let Some(u) = url {
                 self.url_input = u.to_string();
@@ -611,6 +645,7 @@ impl Application for CosmicBrowserApp {
             current_frame: None,
             current_frame_size: None,
             window_size: (1280, 800),
+            window_scale_factor: 1.0,
             spinner_angle: 0.0,
             settings_open: false,
             startup_url: flags,
@@ -619,6 +654,9 @@ impl Application for CosmicBrowserApp {
             tab_favicon_handles: HashMap::new(),
             bookmark_favicon_handles,
         };
+
+        let initial_scale = app.core.scale_factor() as f32;
+        app.window_scale_factor = initial_scale;
 
         let startup_url = app.startup_url.clone();
         app.add_tab_with_url(startup_url.as_deref().or(Some(DEFAULT_HOMEPAGE)));
@@ -676,6 +714,7 @@ impl Application for CosmicBrowserApp {
         match message {
             Message::Tick => {
                 self.process_tab_messages();
+                self.sync_scale_factor_from_core();
 
                 // Animate spinner
                 let is_any_loading = self.tab_order.iter().any(|id| {
@@ -772,7 +811,6 @@ impl Application for CosmicBrowserApp {
                 let (x, y) = self.page_mouse_position;
                 if let Some(tab_id) = self.active_tab_id().cloned() {
                     use crate::events::{BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails};
-                    use keyboard_types::Modifiers;
                     let event = UiEvent::PointerUp(BlitzPointerEvent {
                         id: BlitzPointerId::Mouse,
                         is_primary: true,
@@ -933,6 +971,7 @@ impl Application for CosmicBrowserApp {
                 self.keyboard_modifiers = modifiers;
             }
 
+
             Message::OpenBookmark(url) => {
                 self.navigate_to_url(&url);
                 self.url_input = url;
@@ -979,15 +1018,15 @@ impl Application for CosmicBrowserApp {
     }
 
     fn on_window_resize(&mut self, _id: cosmic::iced::window::Id, width: f32, height: f32) {
-        let chrome_height: f32 = 112.0;
-        let page_height = (height - Self::COSMIC_HEADER_HEIGHT - chrome_height).max(0.0);
+        self.sync_scale_factor_from_core();
         self.window_size = (width as u32, height as u32);
-        eprintln!("[resize] window_size=({},{}) page_height={}", width, height, page_height);
+        let (physical_width, physical_height) = self.page_size_physical(width, height);
+        eprintln!("[resize] window_size=({},{}) page_height={}", width, height, physical_height);
 
         for tab_id in &self.tab_order.clone() {
             let _ = self.tab_manager.send_to_tab(tab_id, ParentToTabMessage::Resize {
-                width,
-                height: page_height,
+                width: physical_width,
+                height: physical_height,
             });
         }
     }

@@ -22,6 +22,34 @@ mod bookmarks;
 use cosmic::app::Settings;
 use tokio::runtime::Builder;
 
+fn parse_scale_factor(var: &str) -> Option<f32> {
+    std::env::var(var)
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| *value > 0.1)
+}
+
+fn resolve_scale_factor() -> Option<f32> {
+    let env_candidates = [
+        "COSMIC_SCALE",
+        "GDK_SCALE",
+        "QT_SCALE_FACTOR",
+        "WINIT_SCALE_FACTOR",
+        "WINIT_HIDPI_FACTOR",
+    ];
+
+    for var in env_candidates {
+        if let Some(value) = parse_scale_factor(var) {
+            return Some(value);
+        }
+    }
+
+    std::env::var("XFT_DPI")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .map(|dpi| (dpi / 96.0).max(0.1))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check if this is a tab process
     let args: Vec<String> = std::env::args().collect();
@@ -47,7 +75,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         a.starts_with("http://") || a.starts_with("https://") || a.starts_with("about:")
     }).cloned();
 
-    cosmic::app::run::<cosmic_app::CosmicBrowserApp>(Settings::default(), startup_url)
+    let mut settings = Settings::default();
+    if let Some(scale_factor) = resolve_scale_factor() {
+        settings = settings.scale_factor(scale_factor);
+    }
+
+    cosmic::app::run::<cosmic_app::CosmicBrowserApp>(settings, startup_url)
         .expect("cosmic run failed");
 
     Ok(())
