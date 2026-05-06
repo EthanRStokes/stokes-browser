@@ -364,7 +364,6 @@ impl CosmicBrowserApp {
                                     height,
                                 });
                                 self.current_frame_size = Some((width, height));
-                                eprintln!("[frame] received frame size=({},{})", width, height);
                             }
                         }
                     }
@@ -1054,7 +1053,6 @@ impl Application for CosmicBrowserApp {
         self.sync_scale_factor_from_core();
         self.window_size = (width as u32, height as u32);
         let (physical_width, physical_height) = self.page_size_physical(width, height);
-        eprintln!("[resize] window_size=({},{}) page_height={}", width, height, physical_height);
 
         for tab_id in &self.tab_order.clone() {
             let _ = self.tab_manager.send_to_tab(tab_id, ParentToTabMessage::Resize {
