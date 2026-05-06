@@ -189,7 +189,7 @@ fn build_bookmark_favicon_handles(items: &[crate::bookmarks::BookmarkNode]) -> H
 // Convert cosmic key event to BlitzKeyEvent for KeyDown
 fn cosmic_key_to_blitz_key_down(
     key: cosmic::iced::keyboard::Key,
-    modified_key: cosmic::iced::keyboard::Key,
+    _modified_key: cosmic::iced::keyboard::Key,
     location: cosmic::iced::keyboard::Location,
     modifiers: cosmic::iced::keyboard::Modifiers,
     text: Option<String>,
@@ -210,7 +210,7 @@ fn cosmic_key_to_blitz_key_down(
 // Convert cosmic key event to BlitzKeyEvent for KeyUp
 fn cosmic_key_to_blitz_key_up(
     key: cosmic::iced::keyboard::Key,
-    modified_key: cosmic::iced::keyboard::Key,
+    _modified_key: cosmic::iced::keyboard::Key,
     location: cosmic::iced::keyboard::Location,
     modifiers: cosmic::iced::keyboard::Modifiers,
 ) -> Option<crate::events::BlitzKeyEvent> {
@@ -299,8 +299,8 @@ impl CosmicBrowserApp {
 
     fn close_tab(&mut self, tab_id: &str) {
         if self.tab_order.len() <= 1 {
-            // Last tab — just close the app (no-op here; cosmic handles window close)
-            return;
+            // Last tab — exit the app process so the window actually closes.
+            std::process::exit(0);
         }
         if let Some(idx) = self.tab_order.iter().position(|id| id == tab_id) {
             self.tab_order.remove(idx);
@@ -954,10 +954,12 @@ impl Application for CosmicBrowserApp {
                     use cosmic::iced::keyboard::Key;
                     use cosmic::iced::keyboard::key::Named;
                     match &key {
+                        // New Tab
                         Key::Character(ch) if ch.as_str() == "t" => {
                             self.add_tab_with_url(None);
                             return Task::none();
                         }
+                        // Close Tab
                         Key::Character(ch) if ch.as_str() == "w" => {
                             if let Some(tab_id) = self.active_tab_id().cloned() {
                                 self.close_tab(&tab_id);
