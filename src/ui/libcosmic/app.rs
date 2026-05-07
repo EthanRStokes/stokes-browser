@@ -18,9 +18,9 @@ use crate::shell_provider::ShellProviderMessage;
 use crate::tab_manager::TabManager;
 use crate::ui::libcosmic::messages::{CosmicMouseButton, Message};
 use std::collections::HashSet;
-use crate::ui::libcosmic::state::{BookmarkClipboardEntry, BookmarkDragState, BookmarkEditState, PendingFolder, TabDragState};
+use crate::ui::libcosmic::state::{BookmarkClipboardEntry, BookmarkDragState, BookmarkEditState, FolderDropdownState, FolderLevel, PendingFolder, TabDragState};
 use crate::ui::libcosmic::views;
-use crate::ui::libcosmic::views::bookmarks::{compute_drag_insert_index, find_bookmark_at_x};
+use crate::ui::libcosmic::views::bookmarks::{bar_x_of_id, compute_drag_insert_index, find_bookmark_at_x, POPUP_WIDTH, BAR_TOP_OFFSET, FOLDER_ITEM_HEIGHT};
 use crate::ui::libcosmic::views::tabs::{compute_tab_width, find_tab_at_x, tab_drag_insert_index};
 
 const DEFAULT_HOMEPAGE: &str = "https://html.duckduckgo.com";
@@ -62,6 +62,7 @@ pub struct CosmicBrowserApp {
     pub(crate) bookmark_edit: Option<BookmarkEditState>,
     pub(crate) bookmark_bar_mouse_x: f32,
     pub(crate) cursor_over_bar: bool,
+    pub(crate) folder_dropdown: Option<FolderDropdownState>,
 }
 
 // --- Key conversion helpers ---
@@ -376,6 +377,7 @@ impl Application for CosmicBrowserApp {
             bookmark_edit: None,
             bookmark_bar_mouse_x: 0.0,
             cursor_over_bar: false,
+            folder_dropdown: None,
         };
 
         let initial_scale = app.core.scale_factor() as f32;
@@ -451,6 +453,48 @@ impl Application for CosmicBrowserApp {
                     self.spinner_angle += 0.1;
                     if self.spinner_angle >= std::f32::consts::TAU {
                         self.spinner_angle -= std::f32::consts::TAU;
+                    }
+                }
+
+                // Subfolder hover timer: open nested popup after 750ms
+                let mut open_subfolder: Option<(usize, String, f32, f32)> = None;
+                if let Some(dd) = &self.folder_dropdown {
+                    for i in 0..dd.levels.len() {
+                        if let (Some(subfolder_id), Some(started)) = (
+                            dd.levels[i].hovered_subfolder.clone(),
+                            dd.levels[i].hover_started,
+                        ) {
+                            if started.elapsed().as_millis() >= 500 {
+                                let parent = &dd.levels[i];
+                                let subfolder_idx = self.bookmarks.get(&parent.folder_id)
+                                    .map(|f| f.children.iter().position(|c| c.id == subfolder_id).unwrap_or(0))
+                                    .unwrap_or(0);
+                                let item_y = parent.popup_y + subfolder_idx as f32 * FOLDER_ITEM_HEIGHT;
+                                let nested_x = parent.popup_x + POPUP_WIDTH + 4.0;
+                                let clamped_x = if nested_x + POPUP_WIDTH > self.window_size.0 as f32 {
+                                    parent.popup_x - POPUP_WIDTH - 4.0
+                                } else {
+                                    nested_x
+                                };
+                                open_subfolder = Some((i, subfolder_id, clamped_x, item_y));
+                                break;
+                            }
+                        }
+                    }
+                }
+                if let Some((parent_level, subfolder_id, nested_x, nested_y)) = open_subfolder {
+                    if let Some(dd) = &mut self.folder_dropdown {
+                        dd.levels.truncate(parent_level + 1);
+                        dd.levels[parent_level].hover_started = None;
+                        dd.levels.push(FolderLevel {
+                            folder_id: subfolder_id,
+                            popup_x: nested_x,
+                            popup_y: nested_y,
+                            cursor_y: 0.0,
+                            cursor_over: false,
+                            hovered_subfolder: None,
+                            hover_started: None,
+                        });
                     }
                 }
             }
@@ -679,6 +723,7 @@ impl Application for CosmicBrowserApp {
             Message::OpenBookmark(url) => {
                 self.navigate_to_url(&url);
                 self.url_input = url;
+                self.folder_dropdown = None;
             }
 
             Message::AddBookmark => {
@@ -918,6 +963,7 @@ impl Application for CosmicBrowserApp {
                 self.bookmark_bar_mouse_x = x;
                 if let Some(drag) = &mut self.bookmark_drag {
                     drag.current_x = x;
+                    drag.over_folder_level = None;
                     if !drag.active && (x - drag.start_x).abs() > 8.0 {
                         drag.active = true;
                     }
@@ -944,19 +990,123 @@ impl Application for CosmicBrowserApp {
                         });
                     }
                 }
-                if self.cursor_over_bar {
-                    if let Some(id) = find_bookmark_at_x(self.bookmarks.items(), self.bookmark_bar_mouse_x) {
-                        self.bookmark_drag = Some(BookmarkDragState {
-                            id,
-                            start_x: self.bookmark_bar_mouse_x,
-                            current_x: self.bookmark_bar_mouse_x,
-                            active: false,
-                        });
+                if let Some(dd) = &self.folder_dropdown {
+                    let mut drag_init: Option<BookmarkDragState> = None;
+                    for (i, level) in dd.levels.iter().enumerate() {
+                        if level.cursor_over {
+                            let item_idx = (level.cursor_y / FOLDER_ITEM_HEIGHT) as usize;
+                            if let Some(folder) = self.bookmarks.get(&level.folder_id) {
+                                if let Some(child) = folder.children.get(item_idx) {
+                                    drag_init = Some(BookmarkDragState {
+                                        id: child.id.clone(),
+                                        source_folder_id: Some(level.folder_id.clone()),
+                                        start_x: self.bookmark_bar_mouse_x,
+                                        start_y: level.cursor_y,
+                                        current_x: self.bookmark_bar_mouse_x,
+                                        current_y: level.cursor_y,
+                                        active: false,
+                                        over_folder_level: Some(i),
+                                    });
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    if let Some(d) = drag_init {
+                        self.bookmark_drag = Some(d);
                     }
                 }
             }
 
-            Message::BookmarkMousePressed { id: _ } => {}
+            Message::BookmarkMousePressed { id } => {
+                self.bookmark_drag = Some(BookmarkDragState {
+                    id,
+                    source_folder_id: None,
+                    start_x: self.bookmark_bar_mouse_x,
+                    start_y: 0.0,
+                    current_x: self.bookmark_bar_mouse_x,
+                    current_y: 0.0,
+                    active: false,
+                    over_folder_level: None,
+                });
+            }
+
+            Message::BookmarkFolderOpen { id, bar_x } => {
+                let clamped_x = bar_x.min(self.window_size.0 as f32 - POPUP_WIDTH - 8.0).max(0.0);
+                self.folder_dropdown = Some(FolderDropdownState {
+                    levels: vec![FolderLevel {
+                        folder_id: id,
+                        popup_x: clamped_x,
+                        popup_y: BAR_TOP_OFFSET,
+                        cursor_y: 0.0,
+                        cursor_over: false,
+                        hovered_subfolder: None,
+                        hover_started: None,
+                    }],
+                });
+            }
+
+            Message::BookmarkFolderClose => {
+                self.folder_dropdown = None;
+            }
+
+            Message::FolderLevelMouseMove { level, x: _, y } => {
+                if let Some(dd) = &mut self.folder_dropdown {
+                    if let Some(lv) = dd.levels.get_mut(level) {
+                        lv.cursor_y = y;
+                    }
+                }
+                if let Some(drag) = &mut self.bookmark_drag {
+                    drag.over_folder_level = Some(level);
+                    drag.current_y = y;
+                    if !drag.active && (y - drag.start_y).abs() > 8.0 {
+                        drag.active = true;
+                    }
+                }
+            }
+
+            Message::FolderLevelEntered(level) => {
+                if let Some(dd) = &mut self.folder_dropdown {
+                    if let Some(lv) = dd.levels.get_mut(level) {
+                        lv.cursor_over = true;
+                    }
+                }
+                if let Some(drag) = &mut self.bookmark_drag {
+                    drag.over_folder_level = Some(level);
+                }
+            }
+
+            Message::FolderLevelLeft(level) => {
+                if let Some(dd) = &mut self.folder_dropdown {
+                    if let Some(lv) = dd.levels.get_mut(level) {
+                        lv.cursor_over = false;
+                        lv.hovered_subfolder = None;
+                        lv.hover_started = None;
+                    }
+                    // Pop any deeper levels when leaving a parent level
+                    if dd.levels.len() > level + 1 {
+                        dd.levels.truncate(level + 1);
+                    }
+                }
+            }
+
+            Message::FolderSubfolderHovered { level, subfolder_id } => {
+                if let Some(dd) = &mut self.folder_dropdown {
+                    if let Some(lv) = dd.levels.get_mut(level) {
+                        lv.hovered_subfolder = Some(subfolder_id);
+                        lv.hover_started = Some(std::time::Instant::now());
+                    }
+                }
+            }
+
+            Message::FolderSubfolderLeft(level) => {
+                if let Some(dd) = &mut self.folder_dropdown {
+                    if let Some(lv) = dd.levels.get_mut(level) {
+                        lv.hovered_subfolder = None;
+                        lv.hover_started = None;
+                    }
+                }
+            }
 
             Message::BookmarkDragReleased => {
                 if let Some(drag) = self.tab_drag.take() {
@@ -981,14 +1131,70 @@ impl Application for CosmicBrowserApp {
 
                 if let Some(drag) = self.bookmark_drag.take() {
                     if drag.active {
-                        let insert_idx = compute_drag_insert_index(self.bookmarks.items(), drag.current_x);
-                        let _ = self.bookmarks.move_node(&drag.id, None, Some(insert_idx));
-                        self.bookmarks.save_to_disk();
-                    } else {
-                        if let Some(node) = self.bookmarks.get(&drag.id) {
-                            if let Some(url) = node.url.clone() {
+                        if let Some(level_idx) = drag.over_folder_level {
+                            // Drop into an open folder popup
+                            let (target_folder_id, insert_idx) = {
+                                let dd = self.folder_dropdown.as_ref();
+                                let level = dd.and_then(|d| d.levels.get(level_idx));
+                                let folder_id = level.map(|l| l.folder_id.clone());
+                                let cursor_y = level.map(|l| l.cursor_y).unwrap_or(0.0);
+                                let idx = (cursor_y / FOLDER_ITEM_HEIGHT) as usize;
+                                (folder_id, idx)
+                            };
+                            if let Some(fid) = target_folder_id {
+                                let _ = self.bookmarks.move_node(&drag.id, Some(&fid), Some(insert_idx));
+                                self.bookmarks.save_to_disk();
+                            }
+                        } else {
+                            // Drop on root bar — check if dropped onto a folder button
+                            let insert_idx = compute_drag_insert_index(self.bookmarks.items(), drag.current_x);
+                            let drop_target_id = find_bookmark_at_x(self.bookmarks.items(), drag.current_x);
+                            let is_drop_on_folder = drop_target_id.as_deref()
+                                .and_then(|tid| self.bookmarks.get(tid))
+                                .map(|n| n.is_folder())
+                                .unwrap_or(false);
+                            if is_drop_on_folder {
+                                if let Some(folder_id) = drop_target_id {
+                                    if folder_id != drag.id {
+                                        let _ = self.bookmarks.move_node(&drag.id, Some(&folder_id), None);
+                                        self.bookmarks.save_to_disk();
+                                    }
+                                }
+                            } else {
+                                let _ = self.bookmarks.move_node(&drag.id, None, Some(insert_idx));
+                                self.bookmarks.save_to_disk();
+                            }
+                        }
+                    } else if drag.source_folder_id.is_none() {
+                        // Short click from root bar only — popup items handle their own navigation
+                        if let Some(node) = self.bookmarks.get(&drag.id).cloned() {
+                            if let Some(url) = node.url {
                                 self.navigate_to_url(&url);
                                 self.url_input = url;
+                                self.folder_dropdown = None;
+                            } else {
+                                // Folder click — toggle dropdown
+                                let already_open = self.folder_dropdown.as_ref()
+                                    .and_then(|d| d.levels.first())
+                                    .map(|l| l.folder_id == drag.id)
+                                    .unwrap_or(false);
+                                if already_open {
+                                    self.folder_dropdown = None;
+                                } else {
+                                    let bx = bar_x_of_id(self.bookmarks.items(), &drag.id);
+                                    let clamped_x = bx.min(self.window_size.0 as f32 - POPUP_WIDTH - 8.0).max(0.0);
+                                    self.folder_dropdown = Some(FolderDropdownState {
+                                        levels: vec![FolderLevel {
+                                            folder_id: drag.id,
+                                            popup_x: clamped_x,
+                                            popup_y: BAR_TOP_OFFSET,
+                                            cursor_y: 0.0,
+                                            cursor_over: false,
+                                            hovered_subfolder: None,
+                                            hover_started: None,
+                                        }],
+                                    });
+                                }
                             }
                         }
                     }
@@ -1022,14 +1228,17 @@ impl Application for CosmicBrowserApp {
         .width(Length::Fill)
         .height(Length::Fill);
 
+        let mut layers: Vec<Element<'_, Message>> = vec![base.into()];
+        if self.folder_dropdown.is_some() {
+            layers.push(views::bookmarks::folder_dropdown_overlay_view(self));
+        }
         if self.bookmark_edit.is_some() {
-            cosmic::iced::widget::stack([
-                base.into(),
-                views::bookmarks::bookmark_edit_dialog_view(self),
-            ])
-            .into()
+            layers.push(views::bookmarks::bookmark_edit_dialog_view(self));
+        }
+        if layers.len() == 1 {
+            layers.remove(0)
         } else {
-            base.into()
+            cosmic::iced::widget::stack(layers).into()
         }
     }
 }

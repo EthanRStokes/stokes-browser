@@ -8,6 +8,11 @@ use crate::ui::libcosmic::context_menus::{BookmarkContextAction, build_bookmark_
 use crate::ui::libcosmic::messages::Message;
 use crate::ui::libcosmic::state::{BookmarkEditState, PendingFolder};
 
+pub const POPUP_WIDTH: f32 = 220.0;
+pub const FOLDER_ITEM_HEIGHT: f32 = 28.0;
+pub const BAR_TOP_OFFSET: f32 = 114.0;
+const MAX_POPUP_HEIGHT: f32 = 400.0;
+
 pub fn bookmarks_bar_view(app: &CosmicBrowserApp) -> Element<'_, Message> {
     let drag_insert_idx = app.bookmark_drag.as_ref()
         .filter(|d| d.active)
@@ -351,7 +356,7 @@ fn render_folder_level<'a>(
 }
 
 pub fn compute_drag_insert_index(
-    items: &[crate::ui::bookmarks::BookmarkNode],
+    items: &[BookmarkNode],
     current_x: f32,
 ) -> usize {
     let mut x = 0.0f32;
@@ -366,7 +371,7 @@ pub fn compute_drag_insert_index(
 }
 
 pub fn find_bookmark_at_x(
-    items: &[crate::ui::bookmarks::BookmarkNode],
+    items: &[BookmarkNode],
     x: f32,
 ) -> Option<String> {
     let mut cur_x = 0.0f32;
@@ -380,6 +385,144 @@ pub fn find_bookmark_at_x(
     None
 }
 
-fn estimated_bookmark_width(node: &crate::ui::bookmarks::BookmarkNode) -> f32 {
+pub fn bar_x_of_id(items: &[BookmarkNode], id: &str) -> f32 {
+    let mut x = 0.0f32;
+    for node in items {
+        if node.id == id {
+            return x;
+        }
+        x += estimated_bookmark_width(node) + 2.0;
+    }
+    x
+}
+
+fn estimated_bookmark_width(node: &BookmarkNode) -> f32 {
     node.title.len() as f32 * 7.5 + 32.0
+}
+
+pub fn folder_dropdown_overlay_view(app: &CosmicBrowserApp) -> Element<'_, Message> {
+    let dd = match app.folder_dropdown.as_ref() {
+        Some(d) => d,
+        None => return widget::space::horizontal().into(),
+    };
+
+    // Bottom layer: transparent click-outside-to-close surface
+    let close_bg: Element<'_, Message> = mouse_area(
+        widget::container(widget::space::horizontal())
+            .width(Length::Fill)
+            .height(Length::Fill)
+    )
+    .on_press(Message::BookmarkFolderClose)
+    .into();
+
+    let mut stack_layers: Vec<Element<'_, Message>> = vec![close_bg];
+
+    for (level_idx, level) in dd.levels.iter().enumerate() {
+        let folder = match app.bookmarks.get(&level.folder_id) {
+            Some(f) => f,
+            None => continue,
+        };
+
+        let drag_insert_idx: Option<usize> = app.bookmark_drag.as_ref()
+            .filter(|d| d.active && d.over_folder_level == Some(level_idx))
+            .map(|d| (d.current_y / FOLDER_ITEM_HEIGHT) as usize);
+
+        let mut popup_col = widget::column::with_capacity(folder.children.len() * 2);
+
+        for (child_idx, child) in folder.children.iter().enumerate() {
+            if drag_insert_idx == Some(child_idx) {
+                popup_col = popup_col.push(widget::divider::horizontal::light());
+            }
+
+            let icon_elem: Element<'_, Message> = if child.is_folder() {
+                Element::from(widget::icon::from_name("folder-symbolic").size(14).icon())
+            } else if let Some(handle) = app.bookmark_favicon_handles.get(&child.id) {
+                Element::from(
+                    widget::image::Image::new(handle.clone())
+                        .width(Length::Fixed(14.0))
+                        .height(Length::Fixed(14.0))
+                )
+            } else {
+                Element::from(widget::space::horizontal().width(Length::Fixed(14.0)))
+            };
+
+            let child_is_folder = child.is_folder();
+
+            let btn = widget::button::custom(
+                widget::row![
+                    icon_elem,
+                    widget::text(&child.title).size(13),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center)
+            )
+            .width(Length::Fill)
+            .class(cosmic::theme::Button::Text)
+            .padding([3, 8]);
+
+            let item: Element<'_, Message> = if child_is_folder {
+                let subfolder_id = child.id.clone();
+                mouse_area(btn.on_press(Message::FolderSubfolderHovered {
+                    level: level_idx,
+                    subfolder_id: subfolder_id.clone(),
+                }))
+                .on_enter(Message::FolderSubfolderHovered {
+                    level: level_idx,
+                    subfolder_id,
+                })
+                .on_exit(Message::FolderSubfolderLeft(level_idx))
+                .into()
+            } else if let Some(url) = child.url.clone() {
+                btn.on_press(Message::OpenBookmark(url)).into()
+            } else {
+                btn.into()
+            };
+
+            popup_col = popup_col.push(item);
+        }
+
+        if drag_insert_idx == Some(folder.children.len()) {
+            popup_col = popup_col.push(widget::divider::horizontal::light());
+        }
+
+        let popup_height = MAX_POPUP_HEIGHT.min(folder.children.len() as f32 * FOLDER_ITEM_HEIGHT + 8.0);
+
+        let inner = widget::container(
+            widget::scrollable(popup_col)
+                .height(Length::Fixed(popup_height))
+        )
+        .padding(4)
+        .width(Length::Fixed(POPUP_WIDTH))
+        .class(cosmic::theme::Container::Primary);
+
+        let tracked = mouse_area(inner)
+            .on_move(move |pos: cosmic::iced::Point| Message::FolderLevelMouseMove {
+                level: level_idx,
+                x: pos.x,
+                y: pos.y,
+            })
+            .on_enter(Message::FolderLevelEntered(level_idx))
+            .on_exit(Message::FolderLevelLeft(level_idx));
+
+        let clamped_x = level.popup_x.max(0.0).min(app.window_size.0 as f32 - POPUP_WIDTH - 4.0);
+
+        // Each level is positioned independently from window top-left using spacers,
+        // then placed in the stack so all levels are z-stacked correctly.
+        let positioned: Element<'_, Message> = widget::container(
+            widget::column![
+                widget::space::vertical().height(Length::Fixed(level.popup_y)),
+                widget::row![
+                    widget::space::horizontal().width(Length::Fixed(clamped_x)),
+                    tracked,
+                ]
+            ]
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into();
+
+        stack_layers.push(positioned);
+    }
+
+    cosmic::iced::widget::stack(stack_layers).into()
 }

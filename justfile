@@ -21,10 +21,12 @@ clean:
 
 # Install the project
 install:
-    install -Dm0755 {{TARGET}} /usr/bin/stokes-browser
-    install -Dm0644 assets/com.ethanstokes.stokes-browser.desktop /usr/share/applications/com.ethanstokes.stokes-browser.desktop
-    install -Dm0644 assets/com.ethanstokes.stokes-browser.png /usr/share/icons/hicolor/256x256/apps/com.ethanstokes.stokes-browser.png
+    sudo install -Dm0755 {{TARGET}} /usr/bin/stokes-browser
+    sudo install -Dm0644 assets/com.ethanstokes.stokes-browser.desktop /usr/share/applications/com.ethanstokes.stokes-browser.desktop
+    sudo install -Dm0644 assets/com.ethanstokes.stokes-browser.png /usr/share/icons/hicolor/256x256/apps/com.ethanstokes.stokes-browser.png
 
 # Uninstall the project
 uninstall:
-    rm /usr/bin/stokes-browser /usr/share/applications/com.ethanstokes.stokes-browser.desktop /usr/share/icons/hicolor/256x256/apps/com.ethanstokes.stokes-browser.png
+    sudo rm /usr/bin/stokes-browser /usr/share/applications/com.ethanstokes.stokes-browser.desktop /usr/share/icons/hicolor/256x256/apps/com.ethanstokes.stokes-browser.png
+
+replace: build uninstall install

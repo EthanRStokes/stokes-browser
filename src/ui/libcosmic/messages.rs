@@ -79,6 +79,15 @@ pub enum Message {
     BookmarkMousePressed { id: String },
     LeftMousePressed,
     BookmarkDragReleased,
+
+    // Folder dropdowns
+    BookmarkFolderOpen { id: String, bar_x: f32 },
+    BookmarkFolderClose,
+    FolderLevelMouseMove { level: usize, x: f32, y: f32 },
+    FolderLevelEntered(usize),
+    FolderLevelLeft(usize),
+    FolderSubfolderHovered { level: usize, subfolder_id: String },
+    FolderSubfolderLeft(usize),
 }
 
 #[derive(Debug, Clone, Copy)]
