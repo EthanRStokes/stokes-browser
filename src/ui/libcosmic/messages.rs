@@ -43,10 +43,21 @@ pub enum Message {
     },
     ModifiersChanged(cosmic::iced::keyboard::Modifiers),
 
+    // Settings menu
+    ToggleSettings,
+    NewWindow,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    ShowAbout,
+    CloseAbout,
+    ShowSettingsPage,
+    CloseSettingsPage,
+    Exit,
+
     // Bookmarks
     OpenBookmark(String),
     AddBookmark,
-    ToggleSettings,
     SetDefaultBrowser,
 
     // Bookmark context menu

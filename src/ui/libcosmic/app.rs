@@ -46,6 +46,9 @@ pub struct CosmicBrowserApp {
 
     pub(crate) spinner_angle: f32,
     pub(crate) settings_open: bool,
+    pub(crate) show_about: bool,
+    pub(crate) show_settings_page: bool,
+    pub(crate) zoom_level: f32,
     pub(crate) startup_url: Option<String>,
 
     pub(crate) page_mouse_position: (f32, f32),
@@ -364,6 +367,9 @@ impl Application for CosmicBrowserApp {
             window_scale_factor: 1.0,
             spinner_angle: 0.0,
             settings_open: false,
+            show_about: false,
+            show_settings_page: false,
+            zoom_level: 1.0,
             startup_url: flags,
             page_mouse_position: (0.0, 0.0),
             keyboard_modifiers: cosmic::iced::keyboard::Modifiers::empty(),
@@ -562,6 +568,7 @@ impl Application for CosmicBrowserApp {
 
             Message::NewTab => {
                 self.add_tab_with_url(None);
+                self.settings_open = false;
             }
 
             Message::CloseTab(tab_id) => {
@@ -697,6 +704,11 @@ impl Application for CosmicBrowserApp {
                             self.add_tab_with_url(None);
                             return Task::none();
                         }
+                        Key::Character(ch) if ch.as_str() == "n" => {
+                            let exe = std::env::current_exe().unwrap();
+                            let _ = Command::new(exe).spawn();
+                            return Task::none();
+                        }
                         Key::Character(ch) if ch.as_str() == "w" => {
                             if let Some(tab_id) = self.active_tab_id().cloned() {
                                 self.close_tab(&tab_id);
@@ -771,6 +783,55 @@ impl Application for CosmicBrowserApp {
 
             Message::ToggleSettings => {
                 self.settings_open = !self.settings_open;
+            }
+
+            Message::NewWindow => {
+                let exe = std::env::current_exe().unwrap();
+                let _ = Command::new(exe).spawn();
+                self.settings_open = false;
+            }
+
+            Message::ZoomIn => {
+                self.zoom_level = (self.zoom_level + 0.1).min(3.0);
+                if let Some(tab_id) = self.active_tab_id().cloned() {
+                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::SetZoom(self.zoom_level));
+                }
+            }
+
+            Message::ZoomOut => {
+                self.zoom_level = (self.zoom_level - 0.1).max(0.25);
+                if let Some(tab_id) = self.active_tab_id().cloned() {
+                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::SetZoom(self.zoom_level));
+                }
+            }
+
+            Message::ZoomReset => {
+                self.zoom_level = 1.0;
+                if let Some(tab_id) = self.active_tab_id().cloned() {
+                    let _ = self.tab_manager.send_to_tab(&tab_id, ParentToTabMessage::SetZoom(self.zoom_level));
+                }
+            }
+
+            Message::ShowAbout => {
+                self.show_about = true;
+                self.settings_open = false;
+            }
+
+            Message::CloseAbout => {
+                self.show_about = false;
+            }
+
+            Message::ShowSettingsPage => {
+                self.show_settings_page = true;
+                self.settings_open = false;
+            }
+
+            Message::CloseSettingsPage => {
+                self.show_settings_page = false;
+            }
+
+            Message::Exit => {
+                std::process::exit(0);
             }
 
             Message::SetDefaultBrowser => {
@@ -1267,6 +1328,15 @@ impl Application for CosmicBrowserApp {
         }
         if self.bookmark_edit.is_some() {
             layers.push(views::bookmarks::bookmark_edit_dialog_view(self));
+        }
+        if self.settings_open {
+            layers.push(views::settings_menu::settings_dropdown_view(self));
+        }
+        if self.show_about {
+            layers.push(views::settings_menu::about_overlay_view(self));
+        }
+        if self.show_settings_page {
+            layers.push(views::settings_menu::settings_page_overlay_view(self));
         }
         if layers.len() == 1 {
             layers.remove(0)
