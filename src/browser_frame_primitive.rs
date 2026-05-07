@@ -3,7 +3,7 @@ use cosmic::iced::widget::shader::{self, Pipeline, Primitive, Viewport};
 use cosmic::iced::Rectangle;
 use cosmic::iced::wgpu;
 
-use crate::cosmic_app::Message;
+use crate::ui::libcosmic::messages::Message;
 
 const SHADER: &str = r#"
 struct VertexOutput {

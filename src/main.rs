@@ -13,12 +13,10 @@ pub mod events;
 mod ipc;
 mod tab_process;
 mod tab_manager;
-mod cosmic_app;
 mod browser_frame_primitive;
 mod shell_provider;
 mod default_browser;
 mod bookmarks;
-mod bookmark_context_menu;
 
 use cosmic::app::Settings;
 use tokio::runtime::Builder;
@@ -76,12 +74,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         a.starts_with("http://") || a.starts_with("https://") || a.starts_with("about:")
     }).cloned();
 
+    let use_legacy = args.iter().any(|a| a == "--legacy");
+
+    if use_legacy {
+        return ui::legacy::browser::run(startup_url);
+    }
+
     let mut settings = Settings::default();
     if let Some(scale_factor) = resolve_scale_factor() {
         settings = settings.scale_factor(scale_factor);
     }
 
-    cosmic::app::run::<cosmic_app::CosmicBrowserApp>(settings, startup_url)
+    cosmic::app::run::<ui::libcosmic::CosmicBrowserApp>(settings, startup_url)
         .expect("cosmic run failed");
 
     Ok(())

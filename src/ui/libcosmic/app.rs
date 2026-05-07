@@ -1,25 +1,24 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 use cosmic::app::{Core, Task};
-use std::sync::Arc;
 use cosmic::iced::widget::shader::Shader;
-use crate::browser_frame_primitive::{BrowserFramePrimitive, BrowserFrameProgram};
 use cosmic::iced::{Length, Subscription};
 use cosmic::iced::Alignment;
 use cosmic::widget::{self, mouse_area};
 use cosmic::{Application, Element};
-
 use base64::Engine as _;
-use crate::bookmark_context_menu::{
-    BookmarkClipboardEntry, BookmarkDragState, BookmarkEditState,
-    build_bookmark_context_menu, compute_drag_insert_index, find_bookmark_at_x,
-};
+
 use crate::bookmarks::BookmarkStore;
+use crate::browser_frame_primitive::{BrowserFramePrimitive, BrowserFrameProgram};
 use crate::events::UiEvent;
-use crate::ipc::ParentToTabMessage;
-use crate::tab_manager::TabManager;
-use crate::ipc::TabToParentMessage;
+use crate::ipc::{ParentToTabMessage, TabToParentMessage};
 use crate::shell_provider::ShellProviderMessage;
+use crate::tab_manager::TabManager;
+use crate::ui::libcosmic::messages::{CosmicMouseButton, Message};
+use crate::ui::libcosmic::state::{BookmarkClipboardEntry, BookmarkDragState, BookmarkEditState};
+use crate::ui::libcosmic::views;
+use crate::ui::libcosmic::views::bookmarks::{compute_drag_insert_index, find_bookmark_at_x};
 
 const DEFAULT_HOMEPAGE: &str = "https://html.duckduckgo.com";
 
@@ -29,133 +28,38 @@ pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-dev");
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub struct CosmicBrowserApp {
-    core: Core,
-    tab_manager: TabManager,
-    bookmarks: BookmarkStore,
+    pub(crate) core: Core,
+    pub(crate) tab_manager: TabManager,
+    pub(crate) bookmarks: BookmarkStore,
 
-    url_input: String,
-    active_tab_index: usize,
-    tab_order: Vec<String>,
-    current_frame: Option<BrowserFramePrimitive>,
-    current_frame_size: Option<(u32, u32)>,
-    window_size: (u32, u32),
-    window_scale_factor: f32,
+    pub(crate) url_input: String,
+    pub(crate) active_tab_index: usize,
+    pub(crate) tab_order: Vec<String>,
+    pub(crate) current_frame: Option<BrowserFramePrimitive>,
+    pub(crate) current_frame_size: Option<(u32, u32)>,
+    pub(crate) window_size: (u32, u32),
+    pub(crate) window_scale_factor: f32,
 
-    spinner_angle: f32,
-    settings_open: bool,
-    startup_url: Option<String>,
+    pub(crate) spinner_angle: f32,
+    pub(crate) settings_open: bool,
+    pub(crate) startup_url: Option<String>,
 
-    // Track mouse position over the page for input events
-    page_mouse_position: (f32, f32),
-    // Track keyboard modifiers
-    keyboard_modifiers: cosmic::iced::keyboard::Modifiers,
+    pub(crate) page_mouse_position: (f32, f32),
+    pub(crate) keyboard_modifiers: cosmic::iced::keyboard::Modifiers,
 
-    tab_favicon_handles: HashMap<String, widget::image::Handle>,
-    bookmark_favicon_handles: HashMap<String, widget::image::Handle>,
+    pub(crate) tab_favicon_handles: HashMap<String, widget::image::Handle>,
+    pub(crate) bookmark_favicon_handles: HashMap<String, widget::image::Handle>,
 
-    bookmark_clipboard: Option<BookmarkClipboardEntry>,
-    bookmark_drag: Option<BookmarkDragState>,
-    bookmark_edit: Option<BookmarkEditState>,
-    bookmark_bar_mouse_x: f32,
-    cursor_over_bar: bool,
+    pub(crate) bookmark_clipboard: Option<BookmarkClipboardEntry>,
+    pub(crate) bookmark_drag: Option<BookmarkDragState>,
+    pub(crate) bookmark_edit: Option<BookmarkEditState>,
+    pub(crate) bookmark_bar_mouse_x: f32,
+    pub(crate) cursor_over_bar: bool,
 }
 
-#[derive(Debug, Clone)]
-pub enum Message {
-    // URL bar
-    UrlChanged(String),
-    UrlSubmit,
+// --- Key conversion helpers ---
 
-    // Navigation
-    GoBack,
-    GoForward,
-    Refresh,
-    Home,
-
-    // Tabs
-    NewTab,
-    CloseTab(String),
-    SwitchTab(usize),
-
-    // Frame polling
-    Tick,
-
-    // Page input forwarding
-    PageClick,                    // Use tracked mouse position
-    PageMouseMove { x: f32, y: f32 },
-    PageScroll { delta_x: f32, delta_y: f32 },
-    PageButtonReleased,            // Use tracked mouse position
-    PagePointerPressed { button: CosmicMouseButton },
-    PagePointerReleased { button: CosmicMouseButton },
-
-    // Keyboard input
-    KeyPressed {
-        key: cosmic::iced::keyboard::Key,
-        modified_key: cosmic::iced::keyboard::Key,
-        location: cosmic::iced::keyboard::Location,
-        modifiers: cosmic::iced::keyboard::Modifiers,
-        text: Option<String>,
-        repeat: bool,
-    },
-    KeyReleased {
-        key: cosmic::iced::keyboard::Key,
-        modified_key: cosmic::iced::keyboard::Key,
-        location: cosmic::iced::keyboard::Location,
-        modifiers: cosmic::iced::keyboard::Modifiers,
-    },
-    ModifiersChanged(cosmic::iced::keyboard::Modifiers),
-
-    // Bookmarks
-    OpenBookmark(String),
-    AddBookmark,
-    ToggleSettings,
-    SetDefaultBrowser,
-
-    // Bookmark context menu
-    BookmarkOpenNewTab(String),
-    BookmarkOpenNewWindow(String),
-    BookmarkEdit(String),
-    BookmarkEditTitleChanged(String),
-    BookmarkEditUrlChanged(String),
-    BookmarkEditCommit,
-    BookmarkEditCancel,
-    BookmarkCut(String),
-    BookmarkCopy(String),
-    BookmarkPasteAfter(String),
-    BookmarkDelete(String),
-
-    // Bookmark drag-and-drop
-    BookmarkBarMouseMove { x: f32 },
-    BookmarkBarEntered,
-    BookmarkBarLeft,
-    BookmarkMousePressed { id: String },
-    LeftMousePressed,
-    BookmarkDragReleased,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum CosmicMouseButton {
-    Left,
-    Right,
-    Middle,
-    Other(u16),
-}
-
-// Conversion from cosmic::iced::mouse::Button
-impl From<cosmic::iced::mouse::Button> for CosmicMouseButton {
-    fn from(button: cosmic::iced::mouse::Button) -> Self {
-        match button {
-            cosmic::iced::mouse::Button::Left => CosmicMouseButton::Left,
-            cosmic::iced::mouse::Button::Right => CosmicMouseButton::Right,
-            cosmic::iced::mouse::Button::Middle => CosmicMouseButton::Middle,
-            cosmic::iced::mouse::Button::Other(val) => CosmicMouseButton::Other(val),
-            _ => CosmicMouseButton::Other(0), // Back, Forward, etc.
-        }
-    }
-}
-
-// Convert cosmic Key to keyboard_types::Key
-fn cosmic_key_to_kbt_key(key: &cosmic::iced::keyboard::Key) -> keyboard_types::Key {
+pub(crate) fn cosmic_key_to_kbt_key(key: &cosmic::iced::keyboard::Key) -> keyboard_types::Key {
     match key {
         cosmic::iced::keyboard::Key::Character(ch) => keyboard_types::Key::Character(ch.as_str().into()),
         cosmic::iced::keyboard::Key::Named(named) => match named {
@@ -166,8 +70,7 @@ fn cosmic_key_to_kbt_key(key: &cosmic::iced::keyboard::Key) -> keyboard_types::K
     }
 }
 
-// Convert cosmic Location to keyboard_types::Location
-fn cosmic_location_to_kbt_location(location: cosmic::iced::keyboard::Location) -> keyboard_types::Location {
+pub(crate) fn cosmic_location_to_kbt_location(location: cosmic::iced::keyboard::Location) -> keyboard_types::Location {
     match location {
         cosmic::iced::keyboard::Location::Standard => keyboard_types::Location::Standard,
         cosmic::iced::keyboard::Location::Left => keyboard_types::Location::Left,
@@ -176,25 +79,16 @@ fn cosmic_location_to_kbt_location(location: cosmic::iced::keyboard::Location) -
     }
 }
 
-// Convert cosmic Modifiers to keyboard_types::Modifiers
-fn cosmic_modifiers_to_kbt_modifiers(modifiers: cosmic::iced::keyboard::Modifiers) -> keyboard_types::Modifiers {
+pub(crate) fn cosmic_modifiers_to_kbt_modifiers(modifiers: cosmic::iced::keyboard::Modifiers) -> keyboard_types::Modifiers {
     let mut result = keyboard_types::Modifiers::empty();
-    if modifiers.shift() {
-        result |= keyboard_types::Modifiers::SHIFT;
-    }
-    if modifiers.control() {
-        result |= keyboard_types::Modifiers::CONTROL;
-    }
-    if modifiers.alt() {
-        result |= keyboard_types::Modifiers::ALT;
-    }
-    if modifiers.logo() {
-        result |= keyboard_types::Modifiers::META;
-    }
+    if modifiers.shift()   { result |= keyboard_types::Modifiers::SHIFT; }
+    if modifiers.control() { result |= keyboard_types::Modifiers::CONTROL; }
+    if modifiers.alt()     { result |= keyboard_types::Modifiers::ALT; }
+    if modifiers.logo()    { result |= keyboard_types::Modifiers::META; }
     result
 }
 
-fn decode_favicon_to_handle(bytes: &[u8]) -> Option<cosmic::iced::widget::image::Handle> {
+pub(crate) fn decode_favicon_to_handle(bytes: &[u8]) -> Option<cosmic::iced::widget::image::Handle> {
     let img = image::load_from_memory(bytes).ok()?;
     let rgba = img.into_rgba8();
     let (width, height) = rgba.dimensions();
@@ -217,7 +111,6 @@ fn build_bookmark_favicon_handles(items: &[crate::bookmarks::BookmarkNode]) -> H
     handles
 }
 
-// Convert cosmic key event to BlitzKeyEvent for KeyDown
 fn cosmic_key_to_blitz_key_down(
     key: cosmic::iced::keyboard::Key,
     _modified_key: cosmic::iced::keyboard::Key,
@@ -238,7 +131,6 @@ fn cosmic_key_to_blitz_key_down(
     })
 }
 
-// Convert cosmic key event to BlitzKeyEvent for KeyUp
 fn cosmic_key_to_blitz_key_up(
     key: cosmic::iced::keyboard::Key,
     _modified_key: cosmic::iced::keyboard::Key,
@@ -257,8 +149,10 @@ fn cosmic_key_to_blitz_key_up(
     })
 }
 
+// --- CosmicBrowserApp helpers ---
+
 impl CosmicBrowserApp {
-    fn active_tab_id(&self) -> Option<&String> {
+    pub(crate) fn active_tab_id(&self) -> Option<&String> {
         self.tab_order.get(self.active_tab_index)
     }
 
@@ -272,7 +166,7 @@ impl CosmicBrowserApp {
         self.window_scale_factor.max(0.1)
     }
 
-    fn sync_scale_factor_from_core(&mut self) {
+    pub(crate) fn sync_scale_factor_from_core(&mut self) {
         let scale = self.core.scale_factor() as f32;
         if (scale - self.window_scale_factor).abs() > f32::EPSILON {
             self.window_scale_factor = scale;
@@ -301,7 +195,6 @@ impl CosmicBrowserApp {
         }
     }
 
-    // COSMIC header bar height (approximate: 32px base + padding)
     const COSMIC_HEADER_HEIGHT: f32 = 48.0;
 
     fn add_tab_with_url(&mut self, url: Option<&str>) {
@@ -330,7 +223,6 @@ impl CosmicBrowserApp {
 
     fn close_tab(&mut self, tab_id: &str) {
         if self.tab_order.len() <= 1 {
-            // Last tab — exit the app process so the window actually closes.
             std::process::exit(0);
         }
         if let Some(idx) = self.tab_order.iter().position(|id| id == tab_id) {
@@ -342,7 +234,6 @@ impl CosmicBrowserApp {
             } else if idx < self.active_tab_index {
                 self.active_tab_index -= 1;
             }
-            // Update url bar for new active tab
             if let Some(id) = self.active_tab_id().cloned() {
                 if let Some(tab) = self.tab_manager.get_tab(&id) {
                     self.url_input = tab.url.clone();
@@ -427,269 +318,9 @@ impl CosmicBrowserApp {
             }
         }
     }
-
-    fn tab_bar_view(&self) -> Element<'_, Message> {
-        let mut row = widget::row::with_capacity(self.tab_order.len() + 1);
-
-        for (i, tab_id) in self.tab_order.iter().enumerate() {
-            let tab = self.tab_manager.get_tab(tab_id);
-            let title = tab.map(|t| t.title.as_str()).unwrap_or("New Tab");
-            let is_loading = tab.map(|t| t.is_loading).unwrap_or(false);
-            let is_active = i == self.active_tab_index;
-
-            let title_text = widget::text(if title.len() > 20 {
-                format!("{}…", &title[..20])
-            } else {
-                title.to_string()
-            });
-
-            let loading_indicator: Element<'_, Message> = if is_loading {
-                Element::from(widget::text("⟳").size(14))
-            } else if let Some(handle) = self.tab_favicon_handles.get(tab_id) {
-                Element::from(
-                    widget::image::Image::new(handle.clone())
-                        .width(Length::Fixed(16.0))
-                        .height(Length::Fixed(16.0))
-                )
-            } else {
-                Element::from(widget::space::horizontal().width(Length::Fixed(16.0)))
-            };
-
-            let close_btn = widget::button::icon(
-                widget::icon::from_name("window-close-symbolic").size(12)
-            )
-            .on_press(Message::CloseTab(tab_id.clone()))
-            .padding(2);
-
-            let tab_content = widget::row![
-                loading_indicator,
-                title_text,
-                close_btn,
-            ]
-            .spacing(4)
-            .align_y(Alignment::Center);
-
-            let tab_btn = if is_active {
-                widget::button::custom(tab_content)
-                    .on_press(Message::SwitchTab(i))
-                    .class(cosmic::theme::Button::Suggested)
-            } else {
-                widget::button::custom(tab_content)
-                    .on_press(Message::SwitchTab(i))
-                    .class(cosmic::theme::Button::Text)
-            };
-
-            row = row.push(tab_btn);
-        }
-
-        // New tab button
-        let new_tab_btn = widget::button::icon(
-            widget::icon::from_name("list-add-symbolic").size(16)
-        )
-        .on_press(Message::NewTab)
-        .padding(4);
-
-        row = row.push(new_tab_btn);
-
-        Element::from(
-            row.spacing(2)
-                .align_y(Alignment::Center)
-                .width(Length::Fill)
-                .height(Length::Fixed(40.0))
-        )
-    }
-
-    fn nav_bar_view(&self) -> Element<'_, Message> {
-        let back_btn = widget::button::icon(
-            widget::icon::from_name("go-previous-symbolic").size(16)
-        )
-        .on_press(Message::GoBack)
-        .padding(6);
-
-        let fwd_btn = widget::button::icon(
-            widget::icon::from_name("go-next-symbolic").size(16)
-        )
-        .on_press(Message::GoForward)
-        .padding(6);
-
-        let refresh_btn = widget::button::icon(
-            widget::icon::from_name("view-refresh-symbolic").size(16)
-        )
-        .on_press(Message::Refresh)
-        .padding(6);
-
-        let home_btn = widget::button::icon(
-            widget::icon::from_name("go-home-symbolic").size(16)
-        )
-        .on_press(Message::Home)
-        .padding(6);
-
-        let url_input = widget::text_input("Enter URL...", &self.url_input)
-            .on_input(Message::UrlChanged)
-            .on_submit(|_| Message::UrlSubmit)
-            .width(Length::Fill);
-
-        let bookmark_btn = widget::button::icon(
-            widget::icon::from_name("user-bookmarks-symbolic").size(16)
-        )
-        .on_press(Message::AddBookmark)
-        .padding(6);
-
-        let settings_btn = widget::button::icon(
-            widget::icon::from_name("emblem-system-symbolic").size(16)
-        )
-        .on_press(Message::ToggleSettings)
-        .padding(6);
-
-        Element::from(
-            widget::row![
-                back_btn,
-                fwd_btn,
-                refresh_btn,
-                home_btn,
-                url_input,
-                bookmark_btn,
-                settings_btn,
-            ]
-            .spacing(4)
-            .align_y(Alignment::Center)
-            .width(Length::Fill)
-            .height(Length::Fixed(40.0))
-        )
-    }
-
-    fn bookmarks_bar_view(&self) -> Element<'_, Message> {
-        let drag_insert_idx = self.bookmark_drag.as_ref()
-            .filter(|d| d.active)
-            .map(|d| compute_drag_insert_index(self.bookmarks.items(), d.current_x));
-
-        let mut row = widget::row::with_capacity(32);
-
-        for (i, node) in self.bookmarks.items().iter().enumerate() {
-            if drag_insert_idx == Some(i) {
-                row = row.push(widget::divider::vertical::light());
-            }
-
-            let icon_elem: Element<'_, Message> = if node.is_folder() {
-                Element::from(widget::icon::from_name("folder-symbolic").size(14).icon())
-            } else if let Some(handle) = self.bookmark_favicon_handles.get(&node.id) {
-                Element::from(
-                    widget::image::Image::new(handle.clone())
-                        .width(Length::Fixed(14.0))
-                        .height(Length::Fixed(14.0))
-                )
-            } else {
-                Element::from(widget::space::horizontal().width(Length::Fixed(14.0)))
-            };
-
-            let bm_btn = widget::button::custom(
-                widget::row![
-                    icon_elem,
-                    widget::text(&node.title).size(13),
-                ]
-                .spacing(4)
-                .align_y(Alignment::Center)
-            )
-            .on_press(Message::BookmarkMousePressed { id: node.id.clone() })
-            .class(cosmic::theme::Button::Text)
-            .padding([2, 6]);
-
-            let cm = cosmic::widget::context_menu(
-                bm_btn,
-                build_bookmark_context_menu(
-                    &node.id,
-                    self.bookmark_clipboard.is_some(),
-                    node.is_folder(),
-                ),
-            );
-
-            let item: Element<'_, Message> =
-                if self.bookmark_edit.as_ref().map_or(false, |e| e.id == node.id) {
-                    let edit = self.bookmark_edit.as_ref().unwrap();
-                    let mut form_col = widget::column::with_capacity(3).spacing(4);
-                    form_col = form_col.push(
-                        widget::text_input("Title", &edit.title)
-                            .on_input(Message::BookmarkEditTitleChanged),
-                    );
-                    if !edit.is_folder {
-                        form_col = form_col.push(
-                            widget::text_input("URL", &edit.url)
-                                .on_input(Message::BookmarkEditUrlChanged),
-                        );
-                    }
-                    form_col = form_col.push(
-                        widget::row![
-                            widget::button::text("Save").on_press(Message::BookmarkEditCommit),
-                            widget::button::text("Cancel").on_press(Message::BookmarkEditCancel),
-                        ]
-                        .spacing(4),
-                    );
-                    Element::from(
-                        cosmic::widget::popover(cm)
-                            .popup(widget::container(form_col).padding(8))
-                            .position(cosmic::widget::popover::Position::Bottom)
-                            .on_close(Message::BookmarkEditCancel),
-                    )
-                } else {
-                    Element::from(cm)
-                };
-
-            row = row.push(item);
-        }
-
-        if drag_insert_idx == Some(self.bookmarks.items().len()) {
-            row = row.push(widget::divider::vertical::light());
-        }
-
-        Element::from(
-            mouse_area(
-                row.spacing(2)
-                    .align_y(Alignment::Center)
-                    .width(Length::Fill)
-                    .height(Length::Fixed(32.0)),
-            )
-            .on_move(|pos: cosmic::iced::Point| Message::BookmarkBarMouseMove { x: pos.x })
-            .on_enter(Message::BookmarkBarEntered)
-            .on_exit(Message::BookmarkBarLeft),
-        )
-    }
-
-    fn page_content_view(&self) -> Element<'_, Message> {
-        let image_widget: Element<'_, Message> = if let Some(primitive) = &self.current_frame {
-            let program = BrowserFrameProgram { current: Some(primitive.clone()) };
-            Element::from(
-                Shader::new(program)
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-            )
-        } else {
-            Element::from(
-                widget::container(widget::text("Loading..."))
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .align_x(Alignment::Center)
-                    .align_y(Alignment::Center)
-            )
-        };
-
-        Element::from(
-            mouse_area(image_widget)
-                .on_press(Message::PageClick)
-                .on_release(Message::PageButtonReleased)
-                .on_middle_press(Message::PagePointerPressed { button: CosmicMouseButton::Middle })
-                .on_middle_release(Message::PagePointerReleased { button: CosmicMouseButton::Middle })
-                .on_move(|pos: cosmic::iced::Point| Message::PageMouseMove { x: pos.x, y: pos.y })
-                .on_scroll(|delta| {
-                    use cosmic::iced::mouse::ScrollDelta;
-                    let (dx, dy) = match delta {
-                        ScrollDelta::Lines { x, y } => (x, y),
-                        ScrollDelta::Pixels { x, y } => (x, y),
-                    };
-                    Message::PageScroll { delta_x: dx, delta_y: dy }
-                })
-        )
-    }
 }
+
+// --- Application impl ---
 
 impl Application for CosmicBrowserApp {
     type Executor = cosmic::executor::Default;
@@ -751,7 +382,6 @@ impl Application for CosmicBrowserApp {
             cosmic::iced::time::every(Duration::from_millis(16))
                 .map(|_| Message::Tick),
 
-            // Listen to keyboard events
             cosmic::iced::event::listen_with(|event, _status, _id| {
                 match event {
                     cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
@@ -785,11 +415,9 @@ impl Application for CosmicBrowserApp {
                     cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::ModifiersChanged(modifiers)) => {
                         Some(Message::ModifiersChanged(modifiers))
                     }
-                    // Global left-button press starts bookmark drag detection
                     cosmic::iced::Event::Mouse(cosmic::iced::mouse::Event::ButtonPressed(
                         cosmic::iced::mouse::Button::Left,
                     )) => Some(Message::LeftMousePressed),
-                    // Global left-button release clears any active bookmark drag
                     cosmic::iced::Event::Mouse(cosmic::iced::mouse::Event::ButtonReleased(
                         cosmic::iced::mouse::Button::Left,
                     )) => Some(Message::BookmarkDragReleased),
@@ -805,7 +433,6 @@ impl Application for CosmicBrowserApp {
                 self.process_tab_messages();
                 self.sync_scale_factor_from_core();
 
-                // Animate spinner
                 let is_any_loading = self.tab_order.iter().any(|id| {
                     self.tab_manager.get_tab(id).map(|t| t.is_loading).unwrap_or(false)
                 });
@@ -867,7 +494,6 @@ impl Application for CosmicBrowserApp {
 
             Message::SwitchTab(index) => {
                 self.switch_to_tab(index);
-                // Reload current frame for newly active tab
                 self.current_frame = None;
             }
 
@@ -878,14 +504,7 @@ impl Application for CosmicBrowserApp {
                     let event = UiEvent::PointerDown(BlitzPointerEvent {
                         id: BlitzPointerId::Mouse,
                         is_primary: true,
-                        coords: PointerCoords {
-                            screen_x: x,
-                            screen_y: y,
-                            client_x: x,
-                            client_y: y,
-                            page_x: x,
-                            page_y: y,
-                        },
+                        coords: PointerCoords { screen_x: x, screen_y: y, client_x: x, client_y: y, page_x: x, page_y: y },
                         button: MouseEventButton::Main,
                         buttons: MouseEventButtons::Primary,
                         mods: cosmic_modifiers_to_kbt_modifiers(self.keyboard_modifiers),
@@ -902,14 +521,7 @@ impl Application for CosmicBrowserApp {
                     let event = UiEvent::PointerUp(BlitzPointerEvent {
                         id: BlitzPointerId::Mouse,
                         is_primary: true,
-                        coords: PointerCoords {
-                            screen_x: x,
-                            screen_y: y,
-                            client_x: x,
-                            client_y: y,
-                            page_x: x,
-                            page_y: y,
-                        },
+                        coords: PointerCoords { screen_x: x, screen_y: y, client_x: x, client_y: y, page_x: x, page_y: y },
                         button: MouseEventButton::Main,
                         buttons: MouseEventButtons::None,
                         mods: cosmic_modifiers_to_kbt_modifiers(self.keyboard_modifiers),
@@ -920,23 +532,14 @@ impl Application for CosmicBrowserApp {
             }
 
             Message::PageMouseMove { x, y } => {
-                // Track mouse position for click events
                 self.page_mouse_position = (x, y);
-
                 if let Some(tab_id) = self.active_tab_id().cloned() {
                     use crate::events::{BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails};
                     use keyboard_types::Modifiers;
                     let event = UiEvent::PointerMove(BlitzPointerEvent {
                         id: BlitzPointerId::Mouse,
                         is_primary: true,
-                        coords: PointerCoords {
-                            screen_x: x,
-                            screen_y: y,
-                            client_x: x,
-                            client_y: y,
-                            page_x: x,
-                            page_y: y,
-                        },
+                        coords: PointerCoords { screen_x: x, screen_y: y, client_x: x, client_y: y, page_x: x, page_y: y },
                         button: MouseEventButton::default(),
                         buttons: MouseEventButtons::None,
                         mods: Modifiers::empty(),
@@ -953,14 +556,7 @@ impl Application for CosmicBrowserApp {
                     use keyboard_types::Modifiers;
                     let event = UiEvent::Wheel(BlitzWheelEvent {
                         delta: BlitzWheelDelta::Pixels(delta_x as f64, delta_y as f64),
-                        coords: PointerCoords {
-                            screen_x: x,
-                            screen_y: y,
-                            client_x: x,
-                            client_y: y,
-                            page_x: x,
-                            page_y: y,
-                        },
+                        coords: PointerCoords { screen_x: x, screen_y: y, client_x: x, client_y: y, page_x: x, page_y: y },
                         buttons: MouseEventButtons::None,
                         mods: Modifiers::empty(),
                     });
@@ -968,30 +564,20 @@ impl Application for CosmicBrowserApp {
                 }
             }
 
-            // Handle pointer pressed with specific button
             Message::PagePointerPressed { button } => {
                 let (x, y) = self.page_mouse_position;
                 if let Some(tab_id) = self.active_tab_id().cloned() {
                     use crate::events::{BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails};
-
                     let (blitz_button, buttons) = match button {
-                        CosmicMouseButton::Left => (MouseEventButton::Main, MouseEventButtons::Primary),
-                        CosmicMouseButton::Right => (MouseEventButton::Secondary, MouseEventButtons::Secondary),
+                        CosmicMouseButton::Left   => (MouseEventButton::Main,      MouseEventButtons::Primary),
+                        CosmicMouseButton::Right  => (MouseEventButton::Secondary, MouseEventButtons::Secondary),
                         CosmicMouseButton::Middle => (MouseEventButton::Auxiliary, MouseEventButtons::Auxiliary),
-                        CosmicMouseButton::Other(_) => (MouseEventButton::Main, MouseEventButtons::Primary),
+                        CosmicMouseButton::Other(_) => (MouseEventButton::Main,    MouseEventButtons::Primary),
                     };
-
                     let event = UiEvent::PointerDown(BlitzPointerEvent {
                         id: BlitzPointerId::Mouse,
                         is_primary: true,
-                        coords: PointerCoords {
-                            screen_x: x,
-                            screen_y: y,
-                            client_x: x,
-                            client_y: y,
-                            page_x: x,
-                            page_y: y,
-                        },
+                        coords: PointerCoords { screen_x: x, screen_y: y, client_x: x, client_y: y, page_x: x, page_y: y },
                         button: blitz_button,
                         buttons,
                         mods: cosmic_modifiers_to_kbt_modifiers(self.keyboard_modifiers),
@@ -1001,30 +587,20 @@ impl Application for CosmicBrowserApp {
                 }
             }
 
-            // Handle pointer released with specific button
             Message::PagePointerReleased { button } => {
                 let (x, y) = self.page_mouse_position;
                 if let Some(tab_id) = self.active_tab_id().cloned() {
                     use crate::events::{BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails};
-
                     let (blitz_button, buttons) = match button {
-                        CosmicMouseButton::Left => (MouseEventButton::Main, MouseEventButtons::None),
-                        CosmicMouseButton::Right => (MouseEventButton::Secondary, MouseEventButtons::None),
+                        CosmicMouseButton::Left   => (MouseEventButton::Main,      MouseEventButtons::None),
+                        CosmicMouseButton::Right  => (MouseEventButton::Secondary, MouseEventButtons::None),
                         CosmicMouseButton::Middle => (MouseEventButton::Auxiliary, MouseEventButtons::None),
-                        CosmicMouseButton::Other(_) => (MouseEventButton::Main, MouseEventButtons::None),
+                        CosmicMouseButton::Other(_) => (MouseEventButton::Main,    MouseEventButtons::None),
                     };
-
                     let event = UiEvent::PointerUp(BlitzPointerEvent {
                         id: BlitzPointerId::Mouse,
                         is_primary: true,
-                        coords: PointerCoords {
-                            screen_x: x,
-                            screen_y: y,
-                            client_x: x,
-                            client_y: y,
-                            page_x: x,
-                            page_y: y,
-                        },
+                        coords: PointerCoords { screen_x: x, screen_y: y, client_x: x, client_y: y, page_x: x, page_y: y },
                         button: blitz_button,
                         buttons,
                         mods: cosmic_modifiers_to_kbt_modifiers(self.keyboard_modifiers),
@@ -1034,21 +610,17 @@ impl Application for CosmicBrowserApp {
                 }
             }
 
-            // Keyboard input handling
             Message::KeyPressed { key, modified_key, location, modifiers, text, repeat } => {
                 self.keyboard_modifiers = modifiers;
 
-                // Browser-level keybinds — intercept before forwarding to tab
                 if modifiers.control() {
                     use cosmic::iced::keyboard::Key;
                     use cosmic::iced::keyboard::key::Named;
                     match &key {
-                        // New Tab
                         Key::Character(ch) if ch.as_str() == "t" => {
                             self.add_tab_with_url(None);
                             return Task::none();
                         }
-                        // Close Tab
                         Key::Character(ch) if ch.as_str() == "w" => {
                             if let Some(tab_id) = self.active_tab_id().cloned() {
                                 self.close_tab(&tab_id);
@@ -1093,7 +665,6 @@ impl Application for CosmicBrowserApp {
                 self.keyboard_modifiers = modifiers;
             }
 
-
             Message::OpenBookmark(url) => {
                 self.navigate_to_url(&url);
                 self.url_input = url;
@@ -1102,17 +673,11 @@ impl Application for CosmicBrowserApp {
             Message::AddBookmark => {
                 if let Some(tab_id) = self.active_tab_id().cloned() {
                     if let Some(tab) = self.tab_manager.get_tab(&tab_id) {
-                        let title = if tab.title.trim().is_empty() {
-                            tab.url.clone()
-                        } else {
-                            tab.title.clone()
-                        };
+                        let title = if tab.title.trim().is_empty() { tab.url.clone() } else { tab.title.clone() };
                         let url = tab.url.clone();
                         let favicon = tab.favicon.clone();
                         if !url.trim().is_empty() {
-                            let _ = self.bookmarks.add_bookmark_with_favicon(
-                                title, url.clone(), None, favicon.clone(),
-                            );
+                            let _ = self.bookmarks.add_bookmark_with_favicon(title, url.clone(), None, favicon.clone());
                             self.bookmarks.save_to_disk();
                             if let Some(favicon_bytes) = &favicon {
                                 if let Some(bm) = self.bookmarks.find_by_url(&url) {
@@ -1144,7 +709,6 @@ impl Application for CosmicBrowserApp {
             }
 
             Message::BookmarkOpenNewWindow(id) => {
-                // Multi-window not yet implemented; open in new tab
                 if let Some(node) = self.bookmarks.get(&id) {
                     if let Some(url) = node.url.clone() {
                         self.add_tab_with_url(Some(&url));
@@ -1164,15 +728,11 @@ impl Application for CosmicBrowserApp {
             }
 
             Message::BookmarkEditTitleChanged(s) => {
-                if let Some(edit) = &mut self.bookmark_edit {
-                    edit.title = s;
-                }
+                if let Some(edit) = &mut self.bookmark_edit { edit.title = s; }
             }
 
             Message::BookmarkEditUrlChanged(s) => {
-                if let Some(edit) = &mut self.bookmark_edit {
-                    edit.url = s;
-                }
+                if let Some(edit) = &mut self.bookmark_edit { edit.url = s; }
             }
 
             Message::BookmarkEditCommit => {
@@ -1202,9 +762,7 @@ impl Application for CosmicBrowserApp {
                     Some(e) => (e.id.clone(), e.is_cut),
                     None => return Task::none(),
                 };
-                let target_idx = self.bookmarks.items()
-                    .iter()
-                    .position(|n| n.id == target_id);
+                let target_idx = self.bookmarks.items().iter().position(|n| n.id == target_id);
                 let insert_idx = target_idx.map(|i| i + 1);
 
                 if is_cut {
@@ -1231,7 +789,6 @@ impl Application for CosmicBrowserApp {
                             }
                         }
                     }
-                    // clipboard kept for copy (not consumed)
                 }
                 self.bookmarks.save_to_disk();
             }
@@ -1273,18 +830,12 @@ impl Application for CosmicBrowserApp {
                 }
             }
 
-            Message::BookmarkMousePressed { id: _ } => {
-                // No-op: drag start is handled by LeftMousePressed via global subscription.
-                // This fires on ButtonReleased (iced button behavior) — too late for drag.
-            }
+            Message::BookmarkMousePressed { id: _ } => {}
 
             Message::BookmarkDragReleased => {
                 if let Some(drag) = self.bookmark_drag.take() {
                     if drag.active {
-                        let insert_idx = compute_drag_insert_index(
-                            self.bookmarks.items(),
-                            drag.current_x,
-                        );
+                        let insert_idx = compute_drag_insert_index(self.bookmarks.items(), drag.current_x);
                         let _ = self.bookmarks.move_node(&drag.id, None, Some(insert_idx));
                         self.bookmarks.save_to_disk();
                     } else {
@@ -1306,7 +857,6 @@ impl Application for CosmicBrowserApp {
         self.sync_scale_factor_from_core();
         self.window_size = (width as u32, height as u32);
         let (physical_width, physical_height) = self.page_size_physical(width, height);
-
         for tab_id in &self.tab_order.clone() {
             let _ = self.tab_manager.send_to_tab(tab_id, ParentToTabMessage::Resize {
                 width: physical_width,
@@ -1316,16 +866,11 @@ impl Application for CosmicBrowserApp {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        let tab_bar = self.tab_bar_view();
-        let nav_bar = self.nav_bar_view();
-        let bookmarks_bar = self.bookmarks_bar_view();
-        let page = self.page_content_view();
-
         widget::column![
-            tab_bar,
-            nav_bar,
-            bookmarks_bar,
-            page,
+            views::tabs::tab_bar_view(self),
+            views::nav::nav_bar_view(self),
+            views::bookmarks::bookmarks_bar_view(self),
+            views::page::page_content_view(self),
         ]
         .spacing(0)
         .width(Length::Fill)

@@ -1,5 +1,5 @@
 use crate::engine::Engine;
-use crate::ui::{BookmarkUiAction, BrowserUI};
+use super::ui::{BookmarkUiAction, BrowserUI};
 use arboard::Clipboard;
 use smol_str::SmolStr;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseScrollDelta};

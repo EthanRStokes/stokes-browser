@@ -30,7 +30,7 @@ pub(crate) struct Env {
 
 pub(crate) fn create_window(el: &dyn ActiveEventLoop) -> Env {
     // Load and set window icon
-    let icon_data = include_bytes!("../assets/com.ethanstokes.stokes-browser.png");
+    let icon_data = include_bytes!("../../../assets/com.ethanstokes.stokes-browser.png");
     let icon = image::load_from_memory(icon_data)
         .expect("Failed to load icon")
         .into_rgba8();
@@ -43,7 +43,7 @@ pub(crate) fn create_window(el: &dyn ActiveEventLoop) -> Env {
     let window_attrs = WindowAttributes::default()
         .with_title("Stokes Browser")
         .with_surface_size(LogicalSize::new(1024, 768))
-        .with_min_surface_size(LogicalSize::new(500, crate::ui::BrowserUI::CHROME_HEIGHT as i32))
+        .with_min_surface_size(LogicalSize::new(500, super::ui::BrowserUI::CHROME_HEIGHT as i32))
         .with_window_icon(Some(icon));
 
     let template = ConfigTemplateBuilder::new()

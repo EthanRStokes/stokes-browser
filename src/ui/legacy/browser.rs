@@ -18,9 +18,10 @@ use winit_core::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeReque
 use crate::ipc::{ParentToTabMessage, TabToParentMessage};
 use crate::renderer::painter::{ScenePainter, SkiaCache};
 use crate::tab_manager::{ManagedTab, TabManager};
-use crate::ui::{BookmarkUiAction, BrowserUI, TextBrush};
-use crate::window::{create_surface, Env};
-use crate::{input, ipc};
+use super::ui::{BookmarkUiAction, BrowserUI, TextBrush};
+use super::window::{create_surface, Env};
+use super::input;
+use crate::ipc;
 use crate::convert_events::{button_source_to_blitz, pointer_source_to_blitz, pointer_source_to_blitz_details, winit_ime_to_blitz, winit_key_event_to_blitz, winit_modifiers_to_kbt_modifiers};
 use crate::events::{BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent};
 use crate::shell_provider::ShellProviderMessage;
@@ -897,7 +898,7 @@ impl BrowserApp {
 
 impl ApplicationHandler for BrowserApp {
     fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
-        self.env = Some(crate::window::create_window(event_loop));
+        self.env = Some(super::window::create_window(event_loop));
 
         let env = self.env.as_ref().unwrap();
         let viewport = Viewport {
@@ -1458,4 +1459,18 @@ impl ApplicationHandler for BrowserApp {
             _ => {}
         }
     }
+}
+
+pub fn run(startup_url: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    use winit::event_loop::EventLoop;
+    use tokio::runtime::Builder;
+
+    let event_loop = EventLoop::new()?;
+    let rt = Builder::new_multi_thread().enable_all().build()?;
+    let app = rt.block_on(BrowserApp::new(&event_loop, startup_url));
+    // run_app requires 'static; since this is the main browser loop the process
+    // exits when run_app returns, so leaking is intentional here.
+    let app: &'static mut BrowserApp = Box::leak(Box::new(app));
+    event_loop.run_app(app)?;
+    Ok(())
 }

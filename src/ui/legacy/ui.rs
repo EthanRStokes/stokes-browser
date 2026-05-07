@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::time::{Duration, Instant};
 use usvg::Tree;
-use crate::cosmic_app::VERSION;
+use crate::ui::libcosmic::app::VERSION;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TextBrush {
@@ -407,15 +407,15 @@ impl BrowserUI {
             viewport: viewport.clone(),
             tab_scroll_offset: 0.0,
             tab_drag_state: TabDragState::default(),
-            back_svg: load_svg(include_str!("../assets/left_arrow.svg")).unwrap(),
-            forward_svg: load_svg(include_str!("../assets/right_arrow.svg")).unwrap(),
-            reload_svg: load_svg(include_str!("../assets/reload.svg")).unwrap(),
-            home_svg: load_svg(include_str!("../assets/home.svg")).unwrap(),
-            bookmark_svg: load_svg(include_str!("../assets/bookmark.svg")).unwrap(),
-            new_tab_svg: load_svg(include_str!("../assets/plus.svg")).unwrap(),
-            close_tab_svg: load_svg(include_str!("../assets/close.svg")).unwrap(),
-            settings_svg: load_svg(include_str!("../assets/settings.svg")).unwrap(),
-            folder_svg: load_svg(include_str!("../assets/folder.svg")).unwrap(),
+            back_svg: load_svg(include_str!("../../../assets/left_arrow.svg")).unwrap(),
+            forward_svg: load_svg(include_str!("../../../assets/right_arrow.svg")).unwrap(),
+            reload_svg: load_svg(include_str!("../../../assets/reload.svg")).unwrap(),
+            home_svg: load_svg(include_str!("../../../assets/home.svg")).unwrap(),
+            bookmark_svg: load_svg(include_str!("../../../assets/bookmark.svg")).unwrap(),
+            new_tab_svg: load_svg(include_str!("../../../assets/plus.svg")).unwrap(),
+            close_tab_svg: load_svg(include_str!("../../../assets/close.svg")).unwrap(),
+            settings_svg: load_svg(include_str!("../../../assets/settings.svg")).unwrap(),
+            folder_svg: load_svg(include_str!("../../../assets/folder.svg")).unwrap(),
             show_settings: false,
             text_selection_drag_active: false,
             text_selection_drag_anchor: None,
