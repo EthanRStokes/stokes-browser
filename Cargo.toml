@@ -139,6 +139,22 @@ libcosmic = {
     ]
 }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libcosmic = {
+    git = "https://github.com/pop-os/libcosmic.git",
+    rev = "0e0960f",
+    version = "1.0.0",
+    default-features = false,
+    features = [
+        #"debug",
+        "winit",
+        "tokio",
+        "multi-window",
+        "serde-keycode",
+        "wgpu"
+    ]
+}
+
 [patch.crates-io]
 glutin = { git = "https://github.com/EthanRStokes/glutin.git" }
 glutin-winit = { git = "https://github.com/EthanRStokes/glutin.git" }
