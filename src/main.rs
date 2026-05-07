@@ -18,6 +18,7 @@ mod browser_frame_primitive;
 mod shell_provider;
 mod default_browser;
 mod bookmarks;
+mod bookmark_context_menu;
 
 use cosmic::app::Settings;
 use tokio::runtime::Builder;

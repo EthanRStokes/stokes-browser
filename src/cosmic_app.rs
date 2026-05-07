@@ -10,6 +10,10 @@ use cosmic::widget::{self, mouse_area};
 use cosmic::{Application, Element};
 
 use base64::Engine as _;
+use crate::bookmark_context_menu::{
+    BookmarkClipboardEntry, BookmarkDragState, BookmarkEditState,
+    build_bookmark_context_menu, compute_drag_insert_index,
+};
 use crate::bookmarks::BookmarkStore;
 use crate::events::UiEvent;
 use crate::ipc::ParentToTabMessage;
@@ -48,6 +52,11 @@ pub struct CosmicBrowserApp {
 
     tab_favicon_handles: HashMap<String, widget::image::Handle>,
     bookmark_favicon_handles: HashMap<String, widget::image::Handle>,
+
+    bookmark_clipboard: Option<BookmarkClipboardEntry>,
+    bookmark_drag: Option<BookmarkDragState>,
+    bookmark_edit: Option<BookmarkEditState>,
+    bookmark_bar_mouse_x: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +109,24 @@ pub enum Message {
     AddBookmark,
     ToggleSettings,
     SetDefaultBrowser,
+
+    // Bookmark context menu
+    BookmarkOpenNewTab(String),
+    BookmarkOpenNewWindow(String),
+    BookmarkEdit(String),
+    BookmarkEditTitleChanged(String),
+    BookmarkEditUrlChanged(String),
+    BookmarkEditCommit,
+    BookmarkEditCancel,
+    BookmarkCut(String),
+    BookmarkCopy(String),
+    BookmarkPasteAfter(String),
+    BookmarkDelete(String),
+
+    // Bookmark drag-and-drop
+    BookmarkBarMouseMove { x: f32 },
+    BookmarkMousePressed { id: String },
+    BookmarkDragReleased,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -528,52 +555,96 @@ impl CosmicBrowserApp {
     }
 
     fn bookmarks_bar_view(&self) -> Element<'_, Message> {
-        let mut row = widget::row::with_capacity(16);
+        let drag_insert_idx = self.bookmark_drag.as_ref()
+            .filter(|d| d.active)
+            .map(|d| compute_drag_insert_index(self.bookmarks.items(), d.current_x));
 
-        for node in self.bookmarks.items() {
-            if node.is_folder() {
-                let folder_btn = widget::button::custom(
-                    widget::row![
-                        widget::icon::from_name("folder-symbolic").size(14).icon(),
-                        widget::text(&node.title).size(13),
-                    ]
-                    .spacing(4)
-                    .align_y(Alignment::Center)
+        let mut row = widget::row::with_capacity(32);
+
+        for (i, node) in self.bookmarks.items().iter().enumerate() {
+            if drag_insert_idx == Some(i) {
+                row = row.push(widget::divider::vertical::light());
+            }
+
+            let icon_elem: Element<'_, Message> = if node.is_folder() {
+                Element::from(widget::icon::from_name("folder-symbolic").size(14).icon())
+            } else if let Some(handle) = self.bookmark_favicon_handles.get(&node.id) {
+                Element::from(
+                    widget::image::Image::new(handle.clone())
+                        .width(Length::Fixed(14.0))
+                        .height(Length::Fixed(14.0))
                 )
-                .class(cosmic::theme::Button::Text)
-                .padding([2, 6]);
-                // Folders shown as plain buttons for now (no popover in this iteration)
-                row = row.push(folder_btn);
-            } else if let Some(url) = &node.url {
-                let favicon_elem: Element<'_, Message> = if let Some(handle) = self.bookmark_favicon_handles.get(&node.id) {
+            } else {
+                Element::from(widget::space::horizontal().width(Length::Fixed(14.0)))
+            };
+
+            let bm_btn = widget::button::custom(
+                widget::row![
+                    icon_elem,
+                    widget::text(&node.title).size(13),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center)
+            )
+            .on_press(Message::BookmarkMousePressed { id: node.id.clone() })
+            .class(cosmic::theme::Button::Text)
+            .padding([2, 6]);
+
+            let cm = cosmic::widget::context_menu(
+                bm_btn,
+                build_bookmark_context_menu(
+                    &node.id,
+                    self.bookmark_clipboard.is_some(),
+                    node.is_folder(),
+                ),
+            );
+
+            let item: Element<'_, Message> =
+                if self.bookmark_edit.as_ref().map_or(false, |e| e.id == node.id) {
+                    let edit = self.bookmark_edit.as_ref().unwrap();
+                    let mut form_col = widget::column::with_capacity(3).spacing(4);
+                    form_col = form_col.push(
+                        widget::text_input("Title", &edit.title)
+                            .on_input(Message::BookmarkEditTitleChanged),
+                    );
+                    if !edit.is_folder {
+                        form_col = form_col.push(
+                            widget::text_input("URL", &edit.url)
+                                .on_input(Message::BookmarkEditUrlChanged),
+                        );
+                    }
+                    form_col = form_col.push(
+                        widget::row![
+                            widget::button::text("Save").on_press(Message::BookmarkEditCommit),
+                            widget::button::text("Cancel").on_press(Message::BookmarkEditCancel),
+                        ]
+                        .spacing(4),
+                    );
                     Element::from(
-                        widget::image::Image::new(handle.clone())
-                            .width(Length::Fixed(14.0))
-                            .height(Length::Fixed(14.0))
+                        cosmic::widget::popover(cm)
+                            .popup(widget::container(form_col).padding(8))
+                            .position(cosmic::widget::popover::Position::Bottom)
+                            .on_close(Message::BookmarkEditCancel),
                     )
                 } else {
-                    Element::from(widget::space::horizontal().width(Length::Fixed(14.0)))
+                    Element::from(cm)
                 };
-                let bm_btn = widget::button::custom(
-                    widget::row![
-                        favicon_elem,
-                        widget::text(&node.title).size(13),
-                    ]
-                    .spacing(4)
-                    .align_y(Alignment::Center)
-                )
-                .on_press(Message::OpenBookmark(url.clone()))
-                .class(cosmic::theme::Button::Text)
-                .padding([2, 6]);
-                row = row.push(bm_btn);
-            }
+
+            row = row.push(item);
+        }
+
+        if drag_insert_idx == Some(self.bookmarks.items().len()) {
+            row = row.push(widget::divider::vertical::light());
         }
 
         Element::from(
-            row.spacing(2)
-                .align_y(Alignment::Center)
-                .width(Length::Fill)
-                .height(Length::Fixed(32.0))
+            mouse_area(
+                row.spacing(2)
+                    .align_y(Alignment::Center)
+                    .width(Length::Fill)
+                    .height(Length::Fixed(32.0)),
+            )
+            .on_move(|pos: cosmic::iced::Point| Message::BookmarkBarMouseMove { x: pos.x }),
         )
     }
 
@@ -652,6 +723,10 @@ impl Application for CosmicBrowserApp {
             keyboard_modifiers: cosmic::iced::keyboard::Modifiers::empty(),
             tab_favicon_handles: HashMap::new(),
             bookmark_favicon_handles,
+            bookmark_clipboard: None,
+            bookmark_drag: None,
+            bookmark_edit: None,
+            bookmark_bar_mouse_x: 0.0,
         };
 
         let initial_scale = app.core.scale_factor() as f32;
@@ -703,6 +778,10 @@ impl Application for CosmicBrowserApp {
                     cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::ModifiersChanged(modifiers)) => {
                         Some(Message::ModifiersChanged(modifiers))
                     }
+                    // Global left-button release clears any active bookmark drag
+                    cosmic::iced::Event::Mouse(cosmic::iced::mouse::Event::ButtonReleased(
+                        cosmic::iced::mouse::Button::Left,
+                    )) => Some(Message::BookmarkDragReleased),
                     _ => None,
                 }
             }),
@@ -1043,6 +1122,152 @@ impl Application for CosmicBrowserApp {
 
             Message::SetDefaultBrowser => {
                 crate::default_browser::set_as_default_browser();
+            }
+
+            Message::BookmarkOpenNewTab(id) => {
+                if let Some(node) = self.bookmarks.get(&id) {
+                    if let Some(url) = node.url.clone() {
+                        self.add_tab_with_url(Some(&url));
+                    }
+                }
+            }
+
+            Message::BookmarkOpenNewWindow(id) => {
+                // Multi-window not yet implemented; open in new tab
+                if let Some(node) = self.bookmarks.get(&id) {
+                    if let Some(url) = node.url.clone() {
+                        self.add_tab_with_url(Some(&url));
+                    }
+                }
+            }
+
+            Message::BookmarkEdit(id) => {
+                if let Some(node) = self.bookmarks.get(&id) {
+                    self.bookmark_edit = Some(BookmarkEditState {
+                        id,
+                        title: node.title.clone(),
+                        url: node.url.clone().unwrap_or_default(),
+                        is_folder: node.is_folder(),
+                    });
+                }
+            }
+
+            Message::BookmarkEditTitleChanged(s) => {
+                if let Some(edit) = &mut self.bookmark_edit {
+                    edit.title = s;
+                }
+            }
+
+            Message::BookmarkEditUrlChanged(s) => {
+                if let Some(edit) = &mut self.bookmark_edit {
+                    edit.url = s;
+                }
+            }
+
+            Message::BookmarkEditCommit => {
+                if let Some(edit) = self.bookmark_edit.take() {
+                    let _ = self.bookmarks.rename(&edit.id, edit.title);
+                    if !edit.is_folder && !edit.url.is_empty() {
+                        let _ = self.bookmarks.update_url(&edit.id, edit.url);
+                    }
+                    self.bookmarks.save_to_disk();
+                }
+            }
+
+            Message::BookmarkEditCancel => {
+                self.bookmark_edit = None;
+            }
+
+            Message::BookmarkCut(id) => {
+                self.bookmark_clipboard = Some(BookmarkClipboardEntry { id, is_cut: true });
+            }
+
+            Message::BookmarkCopy(id) => {
+                self.bookmark_clipboard = Some(BookmarkClipboardEntry { id, is_cut: false });
+            }
+
+            Message::BookmarkPasteAfter(target_id) => {
+                let (entry_id, is_cut) = match &self.bookmark_clipboard {
+                    Some(e) => (e.id.clone(), e.is_cut),
+                    None => return Task::none(),
+                };
+                let target_idx = self.bookmarks.items()
+                    .iter()
+                    .position(|n| n.id == target_id);
+                let insert_idx = target_idx.map(|i| i + 1);
+
+                if is_cut {
+                    self.bookmark_clipboard = None;
+                    let _ = self.bookmarks.move_node(&entry_id, None, insert_idx);
+                } else {
+                    if let Some(node) = self.bookmarks.get(&entry_id) {
+                        let title = node.title.clone();
+                        let url_opt = node.url.clone();
+                        let favicon_b64 = node.favicon.clone();
+                        if let Some(url) = url_opt {
+                            let favicon_bytes = favicon_b64.and_then(|b| {
+                                base64::engine::general_purpose::STANDARD.decode(&b).ok()
+                            });
+                            if let Ok(new_id) = self.bookmarks.add_bookmark_with_favicon(
+                                title, url, None, favicon_bytes.clone(),
+                            ) {
+                                let _ = self.bookmarks.move_node(&new_id, None, insert_idx);
+                                if let Some(bytes) = favicon_bytes {
+                                    if let Some(handle) = decode_favicon_to_handle(&bytes) {
+                                        self.bookmark_favicon_handles.insert(new_id, handle);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // clipboard kept for copy (not consumed)
+                }
+                self.bookmarks.save_to_disk();
+            }
+
+            Message::BookmarkDelete(id) => {
+                let _ = self.bookmarks.delete(&id);
+                self.bookmarks.save_to_disk();
+                self.bookmark_favicon_handles.remove(&id);
+            }
+
+            Message::BookmarkBarMouseMove { x } => {
+                self.bookmark_bar_mouse_x = x;
+                if let Some(drag) = &mut self.bookmark_drag {
+                    drag.current_x = x;
+                    if !drag.active && (x - drag.start_x).abs() > 8.0 {
+                        drag.active = true;
+                    }
+                }
+            }
+
+            Message::BookmarkMousePressed { id } => {
+                self.bookmark_drag = Some(BookmarkDragState {
+                    id,
+                    start_x: self.bookmark_bar_mouse_x,
+                    current_x: self.bookmark_bar_mouse_x,
+                    active: false,
+                });
+            }
+
+            Message::BookmarkDragReleased => {
+                if let Some(drag) = self.bookmark_drag.take() {
+                    if drag.active {
+                        let insert_idx = compute_drag_insert_index(
+                            self.bookmarks.items(),
+                            drag.current_x,
+                        );
+                        let _ = self.bookmarks.move_node(&drag.id, None, Some(insert_idx));
+                        self.bookmarks.save_to_disk();
+                    } else {
+                        if let Some(node) = self.bookmarks.get(&drag.id) {
+                            if let Some(url) = node.url.clone() {
+                                self.navigate_to_url(&url);
+                                self.url_input = url;
+                            }
+                        }
+                    }
+                }
             }
         }
 
