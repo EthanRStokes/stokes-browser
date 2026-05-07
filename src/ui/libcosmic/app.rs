@@ -17,7 +17,8 @@ use crate::ipc::{ParentToTabMessage, TabToParentMessage};
 use crate::shell_provider::ShellProviderMessage;
 use crate::tab_manager::TabManager;
 use crate::ui::libcosmic::messages::{CosmicMouseButton, Message};
-use crate::ui::libcosmic::state::{BookmarkClipboardEntry, BookmarkDragState, BookmarkEditState, TabDragState};
+use std::collections::HashSet;
+use crate::ui::libcosmic::state::{BookmarkClipboardEntry, BookmarkDragState, BookmarkEditState, PendingFolder, TabDragState};
 use crate::ui::libcosmic::views;
 use crate::ui::libcosmic::views::bookmarks::{compute_drag_insert_index, find_bookmark_at_x};
 use crate::ui::libcosmic::views::tabs::{compute_tab_width, find_tab_at_x, tab_drag_insert_index};
@@ -734,11 +735,21 @@ impl Application for CosmicBrowserApp {
 
             Message::BookmarkEdit(id) => {
                 if let Some(node) = self.bookmarks.get(&id) {
+                    let parent_id = self.bookmarks.parent_folder_id(&id);
+                    let mut expanded = HashSet::new();
+                    if let Some(ref pid) = parent_id {
+                        expanded.insert(pid.clone());
+                    }
                     self.bookmark_edit = Some(BookmarkEditState {
                         id,
                         title: node.title.clone(),
                         url: node.url.clone().unwrap_or_default(),
                         is_folder: node.is_folder(),
+                        selected_folder_id: parent_id,
+                        expanded_folders: expanded,
+                        pending_folders: Vec::new(),
+                        naming_folder_temp_id: None,
+                        next_temp_id: 0,
                     });
                 }
             }
@@ -751,12 +762,82 @@ impl Application for CosmicBrowserApp {
                 if let Some(edit) = &mut self.bookmark_edit { edit.url = s; }
             }
 
+            Message::BookmarkEditFolderSelected(id) => {
+                if let Some(edit) = &mut self.bookmark_edit {
+                    if let Some(ref real_id) = id {
+                        edit.expanded_folders.insert(real_id.clone());
+                    }
+                    edit.selected_folder_id = id;
+                }
+            }
+
+            Message::BookmarkEditToggleFolder(id) => {
+                if let Some(edit) = &mut self.bookmark_edit {
+                    if edit.expanded_folders.contains(&id) {
+                        edit.expanded_folders.remove(&id);
+                    } else {
+                        edit.expanded_folders.insert(id);
+                    }
+                }
+            }
+
+            Message::BookmarkEditNewFolder => {
+                if let Some(edit) = &mut self.bookmark_edit {
+                    let temp_id = format!("pending_{}", edit.next_temp_id);
+                    edit.next_temp_id += 1;
+                    if let Some(ref pid) = edit.selected_folder_id.clone() {
+                        edit.expanded_folders.insert(pid.clone());
+                    }
+                    edit.pending_folders.push(PendingFolder {
+                        temp_id: temp_id.clone(),
+                        parent_id: edit.selected_folder_id.clone(),
+                        name: String::new(),
+                    });
+                    edit.naming_folder_temp_id = Some(temp_id);
+                }
+            }
+
+            Message::BookmarkEditNewFolderNameChanged(s) => {
+                if let Some(edit) = &mut self.bookmark_edit {
+                    if let Some(tid) = edit.naming_folder_temp_id.clone() {
+                        if let Some(pf) = edit.pending_folders.iter_mut().find(|p| p.temp_id == tid) {
+                            pf.name = s;
+                        }
+                    }
+                }
+            }
+
+            Message::BookmarkEditNewFolderConfirm => {
+                if let Some(edit) = &mut self.bookmark_edit {
+                    edit.naming_folder_temp_id = None;
+                }
+            }
+
             Message::BookmarkEditCommit => {
                 if let Some(edit) = self.bookmark_edit.take() {
                     let _ = self.bookmarks.rename(&edit.id, edit.title);
                     if !edit.is_folder && !edit.url.is_empty() {
                         let _ = self.bookmarks.update_url(&edit.id, edit.url);
                     }
+                    // Create pending folders in order, resolving temp_id → real_id
+                    let mut temp_to_real: HashMap<String, String> = HashMap::new();
+                    for pf in &edit.pending_folders {
+                        if pf.name.is_empty() { continue; }
+                        let resolved_parent: Option<String> = pf.parent_id.as_ref().map(|p| {
+                            temp_to_real.get(p).cloned().unwrap_or_else(|| p.clone())
+                        });
+                        if let Ok(real_id) = self.bookmarks.add_folder(
+                            pf.name.clone(),
+                            resolved_parent.as_deref(),
+                        ) {
+                            temp_to_real.insert(pf.temp_id.clone(), real_id);
+                        }
+                    }
+                    // Move bookmark to selected folder (resolving temp_id if needed)
+                    let resolved_target: Option<String> = edit.selected_folder_id.as_ref().map(|id| {
+                        temp_to_real.get(id).cloned().unwrap_or_else(|| id.clone())
+                    });
+                    let _ = self.bookmarks.move_node(&edit.id, resolved_target.as_deref(), None);
                     self.bookmarks.save_to_disk();
                 }
             }
@@ -931,7 +1012,7 @@ impl Application for CosmicBrowserApp {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        widget::column![
+        let base = widget::column![
             views::tabs::tab_bar_view(self),
             views::nav::nav_bar_view(self),
             views::bookmarks::bookmarks_bar_view(self),
@@ -939,7 +1020,16 @@ impl Application for CosmicBrowserApp {
         ]
         .spacing(0)
         .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        .height(Length::Fill);
+
+        if self.bookmark_edit.is_some() {
+            cosmic::iced::widget::stack([
+                base.into(),
+                views::bookmarks::bookmark_edit_dialog_view(self),
+            ])
+            .into()
+        } else {
+            base.into()
+        }
     }
 }

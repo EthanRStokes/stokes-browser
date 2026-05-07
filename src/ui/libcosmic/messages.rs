@@ -61,6 +61,11 @@ pub enum Message {
     BookmarkCopy(String),
     BookmarkPasteAfter(String),
     BookmarkDelete(String),
+    BookmarkEditFolderSelected(Option<String>),
+    BookmarkEditToggleFolder(String),
+    BookmarkEditNewFolder,
+    BookmarkEditNewFolderNameChanged(String),
+    BookmarkEditNewFolderConfirm,
 
     // Tab drag-and-drop
     TabBarMouseMove { x: f32 },
