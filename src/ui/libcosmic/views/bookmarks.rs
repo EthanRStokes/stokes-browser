@@ -158,7 +158,8 @@ pub fn bookmark_edit_dialog_view(app: &CosmicBrowserApp) -> Element<'_, Message>
         widget::column![dialog_box]
             .align_x(Alignment::Center)
     )
-    .align_y(Alignment::Center)
+    .align_x(Alignment::Center)
+    .align_y(Alignment::Start)
     .width(Length::Fill)
     .height(Length::Fill)
     .class(cosmic::theme::Container::custom(|_theme| ContainerStyle {
