@@ -12,7 +12,7 @@ use cosmic::{Application, Element};
 use base64::Engine as _;
 use crate::bookmark_context_menu::{
     BookmarkClipboardEntry, BookmarkDragState, BookmarkEditState,
-    build_bookmark_context_menu, compute_drag_insert_index,
+    build_bookmark_context_menu, compute_drag_insert_index, find_bookmark_at_x,
 };
 use crate::bookmarks::BookmarkStore;
 use crate::events::UiEvent;
@@ -57,6 +57,7 @@ pub struct CosmicBrowserApp {
     bookmark_drag: Option<BookmarkDragState>,
     bookmark_edit: Option<BookmarkEditState>,
     bookmark_bar_mouse_x: f32,
+    cursor_over_bar: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -125,7 +126,10 @@ pub enum Message {
 
     // Bookmark drag-and-drop
     BookmarkBarMouseMove { x: f32 },
+    BookmarkBarEntered,
+    BookmarkBarLeft,
     BookmarkMousePressed { id: String },
+    LeftMousePressed,
     BookmarkDragReleased,
 }
 
@@ -644,7 +648,9 @@ impl CosmicBrowserApp {
                     .width(Length::Fill)
                     .height(Length::Fixed(32.0)),
             )
-            .on_move(|pos: cosmic::iced::Point| Message::BookmarkBarMouseMove { x: pos.x }),
+            .on_move(|pos: cosmic::iced::Point| Message::BookmarkBarMouseMove { x: pos.x })
+            .on_enter(Message::BookmarkBarEntered)
+            .on_exit(Message::BookmarkBarLeft),
         )
     }
 
@@ -727,6 +733,7 @@ impl Application for CosmicBrowserApp {
             bookmark_drag: None,
             bookmark_edit: None,
             bookmark_bar_mouse_x: 0.0,
+            cursor_over_bar: false,
         };
 
         let initial_scale = app.core.scale_factor() as f32;
@@ -778,6 +785,10 @@ impl Application for CosmicBrowserApp {
                     cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::ModifiersChanged(modifiers)) => {
                         Some(Message::ModifiersChanged(modifiers))
                     }
+                    // Global left-button press starts bookmark drag detection
+                    cosmic::iced::Event::Mouse(cosmic::iced::mouse::Event::ButtonPressed(
+                        cosmic::iced::mouse::Button::Left,
+                    )) => Some(Message::LeftMousePressed),
                     // Global left-button release clears any active bookmark drag
                     cosmic::iced::Event::Mouse(cosmic::iced::mouse::Event::ButtonReleased(
                         cosmic::iced::mouse::Button::Left,
@@ -1241,13 +1252,30 @@ impl Application for CosmicBrowserApp {
                 }
             }
 
-            Message::BookmarkMousePressed { id } => {
-                self.bookmark_drag = Some(BookmarkDragState {
-                    id,
-                    start_x: self.bookmark_bar_mouse_x,
-                    current_x: self.bookmark_bar_mouse_x,
-                    active: false,
-                });
+            Message::BookmarkBarEntered => {
+                self.cursor_over_bar = true;
+            }
+
+            Message::BookmarkBarLeft => {
+                self.cursor_over_bar = false;
+            }
+
+            Message::LeftMousePressed => {
+                if self.cursor_over_bar {
+                    if let Some(id) = find_bookmark_at_x(self.bookmarks.items(), self.bookmark_bar_mouse_x) {
+                        self.bookmark_drag = Some(BookmarkDragState {
+                            id,
+                            start_x: self.bookmark_bar_mouse_x,
+                            current_x: self.bookmark_bar_mouse_x,
+                            active: false,
+                        });
+                    }
+                }
+            }
+
+            Message::BookmarkMousePressed { id: _ } => {
+                // No-op: drag start is handled by LeftMousePressed via global subscription.
+                // This fires on ButtonReleased (iced button behavior) — too late for drag.
             }
 
             Message::BookmarkDragReleased => {

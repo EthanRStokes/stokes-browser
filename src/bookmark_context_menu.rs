@@ -67,11 +67,30 @@ pub fn compute_drag_insert_index(
 ) -> usize {
     let mut x = 0.0f32;
     for (i, node) in items.iter().enumerate() {
-        let width = node.title.len() as f32 * 7.5 + 32.0;
+        let width = estimated_bookmark_width(node);
         if current_x < x + width / 2.0 {
             return i;
         }
         x += width + 2.0;
     }
     items.len()
+}
+
+pub fn find_bookmark_at_x(
+    items: &[crate::bookmarks::BookmarkNode],
+    x: f32,
+) -> Option<String> {
+    let mut cur_x = 0.0f32;
+    for node in items {
+        let width = estimated_bookmark_width(node);
+        if x >= cur_x && x < cur_x + width {
+            return Some(node.id.clone());
+        }
+        cur_x += width + 2.0;
+    }
+    None
+}
+
+fn estimated_bookmark_width(node: &crate::bookmarks::BookmarkNode) -> f32 {
+    node.title.len() as f32 * 7.5 + 32.0
 }
