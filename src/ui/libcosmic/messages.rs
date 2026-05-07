@@ -62,6 +62,11 @@ pub enum Message {
     BookmarkPasteAfter(String),
     BookmarkDelete(String),
 
+    // Tab drag-and-drop
+    TabBarMouseMove { x: f32 },
+    TabBarEntered,
+    TabBarLeft,
+
     // Bookmark drag-and-drop
     BookmarkBarMouseMove { x: f32 },
     BookmarkBarEntered,

@@ -111,7 +111,7 @@ pub fn bookmarks_bar_view(app: &CosmicBrowserApp) -> Element<'_, Message> {
 }
 
 pub fn compute_drag_insert_index(
-    items: &[crate::bookmarks::BookmarkNode],
+    items: &[crate::ui::bookmarks::BookmarkNode],
     current_x: f32,
 ) -> usize {
     let mut x = 0.0f32;
@@ -126,7 +126,7 @@ pub fn compute_drag_insert_index(
 }
 
 pub fn find_bookmark_at_x(
-    items: &[crate::bookmarks::BookmarkNode],
+    items: &[crate::ui::bookmarks::BookmarkNode],
     x: f32,
 ) -> Option<String> {
     let mut cur_x = 0.0f32;
@@ -140,6 +140,6 @@ pub fn find_bookmark_at_x(
     None
 }
 
-fn estimated_bookmark_width(node: &crate::bookmarks::BookmarkNode) -> f32 {
+fn estimated_bookmark_width(node: &crate::ui::bookmarks::BookmarkNode) -> f32 {
     node.title.len() as f32 * 7.5 + 32.0
 }

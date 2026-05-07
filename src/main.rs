@@ -13,10 +13,8 @@ pub mod events;
 mod ipc;
 mod tab_process;
 mod tab_manager;
-mod browser_frame_primitive;
 mod shell_provider;
 mod default_browser;
-mod bookmarks;
 
 use cosmic::app::Settings;
 use tokio::runtime::Builder;

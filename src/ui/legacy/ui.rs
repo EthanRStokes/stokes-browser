@@ -1,5 +1,5 @@
 use crate::renderer::painter::ScenePainter;
-use crate::bookmarks::BookmarkNode;
+use crate::ui::bookmarks::BookmarkNode;
 use anyrender::PaintScene;
 use base64::Engine;
 use blitz_traits::shell::Viewport;

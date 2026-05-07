@@ -25,7 +25,7 @@ use crate::ipc;
 use crate::convert_events::{button_source_to_blitz, pointer_source_to_blitz, pointer_source_to_blitz_details, winit_ime_to_blitz, winit_key_event_to_blitz, winit_modifiers_to_kbt_modifiers};
 use crate::events::{BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent};
 use crate::shell_provider::ShellProviderMessage;
-use crate::bookmarks::BookmarkStore;
+use crate::ui::bookmarks::BookmarkStore;
 
 /// Result of closing a tab
 #[derive(Debug, PartialEq)]
@@ -685,7 +685,7 @@ impl BrowserApp {
         }
     }
 
-    fn find_folder_id_by_title(nodes: &[crate::bookmarks::BookmarkNode], title: &str) -> Option<String> {
+    fn find_folder_id_by_title(nodes: &[crate::ui::bookmarks::BookmarkNode], title: &str) -> Option<String> {
         for node in nodes {
             if node.is_folder() && node.title.eq_ignore_ascii_case(title) {
                 return Some(node.id.clone());

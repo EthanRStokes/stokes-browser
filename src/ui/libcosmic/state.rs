@@ -1,3 +1,10 @@
+pub struct TabDragState {
+    pub index: usize,
+    pub start_x: f32,
+    pub current_x: f32,
+    pub active: bool,
+}
+
 pub struct BookmarkClipboardEntry {
     pub id: String,
     pub is_cut: bool,

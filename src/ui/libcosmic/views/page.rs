@@ -2,7 +2,7 @@ use cosmic::{Element, widget};
 use cosmic::iced::Length;
 use cosmic::iced::Alignment;
 use cosmic::iced::widget::shader::Shader;
-use crate::browser_frame_primitive::BrowserFrameProgram;
+use crate::ui::libcosmic::views::browser_frame_primitive::BrowserFrameProgram;
 use crate::ui::libcosmic::app::CosmicBrowserApp;
 use crate::ui::libcosmic::messages::{CosmicMouseButton, Message};
 use cosmic::widget::mouse_area;

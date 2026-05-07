@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 use cosmic::app::{Core, Task};
@@ -9,16 +10,17 @@ use cosmic::widget::{self, mouse_area};
 use cosmic::{Application, Element};
 use base64::Engine as _;
 
-use crate::bookmarks::BookmarkStore;
-use crate::browser_frame_primitive::{BrowserFramePrimitive, BrowserFrameProgram};
+use crate::ui::bookmarks::BookmarkStore;
+use crate::ui::libcosmic::views::browser_frame_primitive::{BrowserFramePrimitive, BrowserFrameProgram};
 use crate::events::UiEvent;
 use crate::ipc::{ParentToTabMessage, TabToParentMessage};
 use crate::shell_provider::ShellProviderMessage;
 use crate::tab_manager::TabManager;
 use crate::ui::libcosmic::messages::{CosmicMouseButton, Message};
-use crate::ui::libcosmic::state::{BookmarkClipboardEntry, BookmarkDragState, BookmarkEditState};
+use crate::ui::libcosmic::state::{BookmarkClipboardEntry, BookmarkDragState, BookmarkEditState, TabDragState};
 use crate::ui::libcosmic::views;
 use crate::ui::libcosmic::views::bookmarks::{compute_drag_insert_index, find_bookmark_at_x};
+use crate::ui::libcosmic::views::tabs::{compute_tab_width, find_tab_at_x, tab_drag_insert_index};
 
 const DEFAULT_HOMEPAGE: &str = "https://html.duckduckgo.com";
 
@@ -49,6 +51,10 @@ pub struct CosmicBrowserApp {
 
     pub(crate) tab_favicon_handles: HashMap<String, widget::image::Handle>,
     pub(crate) bookmark_favicon_handles: HashMap<String, widget::image::Handle>,
+
+    pub(crate) tab_drag: Option<TabDragState>,
+    pub(crate) tab_bar_mouse_x: f32,
+    pub(crate) cursor_over_tab_bar: bool,
 
     pub(crate) bookmark_clipboard: Option<BookmarkClipboardEntry>,
     pub(crate) bookmark_drag: Option<BookmarkDragState>,
@@ -96,7 +102,7 @@ pub(crate) fn decode_favicon_to_handle(bytes: &[u8]) -> Option<cosmic::iced::wid
     Some(widget::image::Handle::from_rgba(width, height, pixels))
 }
 
-fn build_bookmark_favicon_handles(items: &[crate::bookmarks::BookmarkNode]) -> HashMap<String, cosmic::iced::widget::image::Handle> {
+fn build_bookmark_favicon_handles(items: &[crate::ui::bookmarks::BookmarkNode]) -> HashMap<String, cosmic::iced::widget::image::Handle> {
     let mut handles = HashMap::new();
     for node in items {
         if let Some(favicon_b64) = &node.favicon {
@@ -360,6 +366,10 @@ impl Application for CosmicBrowserApp {
             keyboard_modifiers: cosmic::iced::keyboard::Modifiers::empty(),
             tab_favicon_handles: HashMap::new(),
             bookmark_favicon_handles,
+            tab_drag: None,
+            tab_bar_mouse_x: 0.0,
+            cursor_over_tab_bar: false,
+
             bookmark_clipboard: None,
             bookmark_drag: None,
             bookmark_edit: None,
@@ -711,7 +721,13 @@ impl Application for CosmicBrowserApp {
             Message::BookmarkOpenNewWindow(id) => {
                 if let Some(node) = self.bookmarks.get(&id) {
                     if let Some(url) = node.url.clone() {
-                        self.add_tab_with_url(Some(&url));
+                        // Get the current executable path
+                        let exe_path = std::env::current_exe().unwrap();
+
+                        let _ = Command::new(exe_path)
+                            .arg("--url")
+                            .arg(&url)
+                            .spawn();
                     }
                 }
             }
@@ -799,6 +815,24 @@ impl Application for CosmicBrowserApp {
                 self.bookmark_favicon_handles.remove(&id);
             }
 
+            Message::TabBarMouseMove { x } => {
+                self.tab_bar_mouse_x = x;
+                if let Some(drag) = &mut self.tab_drag {
+                    drag.current_x = x;
+                    if !drag.active && (x - drag.start_x).abs() > 8.0 {
+                        drag.active = true;
+                    }
+                }
+            }
+
+            Message::TabBarEntered => {
+                self.cursor_over_tab_bar = true;
+            }
+
+            Message::TabBarLeft => {
+                self.cursor_over_tab_bar = false;
+            }
+
             Message::BookmarkBarMouseMove { x } => {
                 self.bookmark_bar_mouse_x = x;
                 if let Some(drag) = &mut self.bookmark_drag {
@@ -818,6 +852,17 @@ impl Application for CosmicBrowserApp {
             }
 
             Message::LeftMousePressed => {
+                if self.cursor_over_tab_bar {
+                    let tw = compute_tab_width(self.window_size.0 as f32, self.tab_order.len());
+                    if let Some(idx) = find_tab_at_x(self.tab_order.len(), tw, self.tab_bar_mouse_x) {
+                        self.tab_drag = Some(TabDragState {
+                            index: idx,
+                            start_x: self.tab_bar_mouse_x,
+                            current_x: self.tab_bar_mouse_x,
+                            active: false,
+                        });
+                    }
+                }
                 if self.cursor_over_bar {
                     if let Some(id) = find_bookmark_at_x(self.bookmarks.items(), self.bookmark_bar_mouse_x) {
                         self.bookmark_drag = Some(BookmarkDragState {
@@ -833,6 +878,26 @@ impl Application for CosmicBrowserApp {
             Message::BookmarkMousePressed { id: _ } => {}
 
             Message::BookmarkDragReleased => {
+                if let Some(drag) = self.tab_drag.take() {
+                    if drag.active {
+                        let tw = compute_tab_width(self.window_size.0 as f32, self.tab_order.len());
+                        let insert_idx = tab_drag_insert_index(self.tab_order.len(), tw, drag.current_x);
+                        let from = drag.index;
+                        let to = if insert_idx > from { insert_idx - 1 } else { insert_idx };
+                        if from != to {
+                            let tab_id = self.tab_order.remove(from);
+                            self.tab_order.insert(to, tab_id);
+                            if self.active_tab_index == from {
+                                self.active_tab_index = to;
+                            } else if from < self.active_tab_index && to >= self.active_tab_index {
+                                self.active_tab_index -= 1;
+                            } else if from > self.active_tab_index && to <= self.active_tab_index {
+                                self.active_tab_index += 1;
+                            }
+                        }
+                    }
+                }
+
                 if let Some(drag) = self.bookmark_drag.take() {
                     if drag.active {
                         let insert_idx = compute_drag_insert_index(self.bookmarks.items(), drag.current_x);

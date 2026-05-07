@@ -386,7 +386,7 @@ impl BookmarkStore {
 
 fn bookmarks_file_path() -> PathBuf {
     let base = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
+        .unwrap_or_else(|| PathBuf::from("../.."))
         .join("stokes-browser");
     base.join(BOOKMARKS_FILE)
 }
