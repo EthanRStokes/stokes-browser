@@ -32,6 +32,7 @@ pub struct FolderLevel {
     pub cursor_over: bool,
     pub hovered_subfolder: Option<String>,
     pub hover_started: Option<Instant>,
+    pub close_started: Option<Instant>,
 }
 
 pub struct FolderDropdownState {

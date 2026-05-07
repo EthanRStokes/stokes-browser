@@ -24,6 +24,7 @@ use crate::ui::libcosmic::views::bookmarks::{bar_x_of_id, compute_drag_insert_in
 use crate::ui::libcosmic::views::tabs::{compute_tab_width, find_tab_at_x, tab_drag_insert_index};
 
 const DEFAULT_HOMEPAGE: &str = "https://html.duckduckgo.com";
+const FOLDER_CLOSE_GRACE_MS: u64 = 200;
 
 #[cfg(debug_assertions)]
 pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-dev");
@@ -456,6 +457,25 @@ impl Application for CosmicBrowserApp {
                     }
                 }
 
+                if let Some(dd) = &mut self.folder_dropdown {
+                    let close_level = dd.levels.iter().enumerate().find_map(|(idx, level)| {
+                        level.close_started.and_then(|started| {
+                            if started.elapsed() >= Duration::from_millis(FOLDER_CLOSE_GRACE_MS) {
+                                Some(idx)
+                            } else {
+                                None
+                            }
+                        })
+                    });
+
+                    if let Some(level) = close_level {
+                        dd.levels.truncate(level);
+                        if dd.levels.is_empty() {
+                            self.folder_dropdown = None;
+                        }
+                    }
+                }
+
                 // Subfolder hover timer: open nested popup after 750ms
                 let mut open_subfolder: Option<(usize, String, f32, f32)> = None;
                 if let Some(dd) = &self.folder_dropdown {
@@ -494,6 +514,7 @@ impl Application for CosmicBrowserApp {
                             cursor_over: false,
                             hovered_subfolder: None,
                             hover_started: None,
+                            close_started: None,
                         });
                     }
                 }
@@ -1042,6 +1063,7 @@ impl Application for CosmicBrowserApp {
                         cursor_over: false,
                         hovered_subfolder: None,
                         hover_started: None,
+                        close_started: None,
                     }],
                 });
             }
@@ -1054,6 +1076,11 @@ impl Application for CosmicBrowserApp {
                 if let Some(dd) = &mut self.folder_dropdown {
                     if let Some(lv) = dd.levels.get_mut(level) {
                         lv.cursor_y = y;
+                        lv.cursor_over = true;
+                        lv.close_started = None;
+                    }
+                    for ancestor in dd.levels.iter_mut().take(level) {
+                        ancestor.close_started = None;
                     }
                 }
                 if let Some(drag) = &mut self.bookmark_drag {
@@ -1069,6 +1096,10 @@ impl Application for CosmicBrowserApp {
                 if let Some(dd) = &mut self.folder_dropdown {
                     if let Some(lv) = dd.levels.get_mut(level) {
                         lv.cursor_over = true;
+                        lv.close_started = None;
+                    }
+                    for ancestor in dd.levels.iter_mut().take(level) {
+                        ancestor.close_started = None;
                     }
                 }
                 if let Some(drag) = &mut self.bookmark_drag {
@@ -1082,10 +1113,7 @@ impl Application for CosmicBrowserApp {
                         lv.cursor_over = false;
                         lv.hovered_subfolder = None;
                         lv.hover_started = None;
-                    }
-                    // Pop any deeper levels when leaving a parent level
-                    if dd.levels.len() > level + 1 {
-                        dd.levels.truncate(level + 1);
+                        lv.close_started = Some(std::time::Instant::now());
                     }
                 }
             }
@@ -1095,6 +1123,10 @@ impl Application for CosmicBrowserApp {
                     if let Some(lv) = dd.levels.get_mut(level) {
                         lv.hovered_subfolder = Some(subfolder_id);
                         lv.hover_started = Some(std::time::Instant::now());
+                        lv.close_started = None;
+                    }
+                    for ancestor in dd.levels.iter_mut().take(level) {
+                        ancestor.close_started = None;
                     }
                 }
             }
@@ -1192,6 +1224,7 @@ impl Application for CosmicBrowserApp {
                                             cursor_over: false,
                                             hovered_subfolder: None,
                                             hover_started: None,
+                                            close_started: None,
                                         }],
                                     });
                                 }
