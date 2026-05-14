@@ -423,9 +423,10 @@ impl ElementData {
             Some(CssRuleType::Style),
             ParsingMode::DEFAULT,
             QuirksMode::NoQuirks,
-            /* namespaces = */ Default::default(),
+            Default::default(),
             None,
             None,
+            Default::default(),
         );
 
         let Ok(property_id) = PropertyId::parse(name, &context) else {
@@ -470,6 +471,7 @@ impl ElementData {
             /* namespaces = */ Default::default(),
             None,
             None,
+            Default::default(),
         );
         let Ok(property_id) = PropertyId::parse(name, &context) else {
             return false;

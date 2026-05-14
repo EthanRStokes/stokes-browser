@@ -120,7 +120,7 @@ pub(crate) unsafe extern "C" fn location_assign(raw_cx: *mut mozjs::jsapi::JSCon
             if let Some(resolved) = dom.url.resolve_relative(&url) {
                 dom.nav_provider.navigate_to(NavigationOptions::new(
                     resolved,
-                    String::from("text/plain"),
+                    None,
                     dom.id(),
                 ));
             }
@@ -149,7 +149,7 @@ pub(crate) unsafe extern "C" fn location_replace(raw_cx: *mut mozjs::jsapi::JSCo
             if let Some(resolved) = dom.url.resolve_relative(&url) {
                 dom.nav_provider.navigate_replace(NavigationOptions::new(
                     resolved,
-                    String::from("text/plain"),
+                    None,
                     dom.id(),
                 ));
             }

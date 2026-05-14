@@ -200,6 +200,7 @@ fn property_value_supported(property: &str, value: &str) -> bool {
         /* namespaces */ Default::default(),
         None,
         None,
+        Default::default(),
     );
 
     let property_id = match PropertyId::parse(property, &context) {
